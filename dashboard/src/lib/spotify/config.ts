@@ -1,27 +1,24 @@
 const DEFAULT_SPOTIFY_CLIENT_ID = "cb7cb4f043ed42759672098759409ba8";
-const DEFAULT_SPOTIFY_OAUTH_CALLBACK =
-  "http://127.0.0.1:3000/api/hermes/mcp/oauth/callback";
+export const SPOTIFY_OAUTH_CALLBACK_PATH =
+  "/api/hermes/mcp/oauth/callback" as const;
 
-function secureCallbackUrl(value: string): URL {
+export function spotifyOAuthCallbackOrigin(requestOrigin: string): string {
   let url: URL;
   try {
-    url = new URL(value);
+    url = new URL(requestOrigin);
   } catch {
-    throw new Error("The Spotify OAuth callback URL is invalid.");
+    throw new Error("The Spotify OAuth callback origin is invalid.");
+  }
+  if (url.protocol === "http:" && url.hostname === "localhost") {
+    // Spotify rejects localhost but permits a loopback IP with a dynamic port.
+    url.hostname = "127.0.0.1";
   }
   const loopback =
     url.protocol === "http:" && ["127.0.0.1", "::1"].includes(url.hostname);
   if ((url.protocol !== "https:" && !loopback) || url.username || url.password) {
-    throw new Error("The Spotify OAuth callback URL must use HTTPS or loopback HTTP.");
+    throw new Error("The Spotify OAuth callback must use HTTPS or loopback HTTP.");
   }
-  if (url.pathname !== "/api/hermes/mcp/oauth/callback") {
-    throw new Error(
-      "The Spotify OAuth callback URL must end with /api/hermes/mcp/oauth/callback.",
-    );
-  }
-  url.search = "";
-  url.hash = "";
-  return url;
+  return url.origin;
 }
 
 export function spotifyClientId(): string {
@@ -32,13 +29,4 @@ export function spotifyClientId(): string {
     throw new Error("The Spotify OAuth Client ID is invalid.");
   }
   return clientId;
-}
-
-export function spotifyOAuthCallbackUrl(): string {
-  const configured =
-    process.env.BREADBOARD_SPOTIFY_OAUTH_CALLBACK_URL?.trim() ||
-    // Preserve installations that registered the earlier shared callback key.
-    process.env.BREADBOARD_MCP_OAUTH_CALLBACK_URL?.trim() ||
-    DEFAULT_SPOTIFY_OAUTH_CALLBACK;
-  return secureCallbackUrl(configured).toString();
 }

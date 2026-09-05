@@ -180,7 +180,33 @@ function createComets(random: RandomSource): Comet[] {
 const INITIAL_STARS = createStars(seededRandom(7319));
 const INITIAL_COMETS = createComets(seededRandom(9021));
 
-function plantStyle(plant: Plant): CSSProperties {
+/**
+ * CSS animation delays are relative to the document that mounted them. Anchor
+ * the phase to the wall clock instead, so two Electron tabs show the same gust
+ * even when they were opened minutes apart.
+ */
+function synchronizedDelay(
+  delay: string,
+  duration: string,
+  animationClockMs: number | null,
+): string {
+  if (animationClockMs === null) return delay;
+
+  const durationSeconds = Number.parseFloat(duration);
+  const phaseOffsetSeconds = Math.abs(Number.parseFloat(delay));
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return delay;
+
+  const clockSeconds = animationClockMs / 1000;
+  const phaseSeconds =
+    ((clockSeconds + phaseOffsetSeconds) % durationSeconds + durationSeconds) %
+    durationSeconds;
+  return `-${phaseSeconds.toFixed(3)}s`;
+}
+
+function plantStyle(
+  plant: Plant,
+  animationClockMs: number | null,
+): CSSProperties {
   const sway = Number.parseFloat(plant.sway);
   const rotate = Number.parseFloat(plant.rotate);
 
@@ -188,7 +214,11 @@ function plantStyle(plant: Plant): CSSProperties {
     "--plant-left": plant.left,
     "--plant-bottom": `${plant.bottom}px`,
     "--plant-scale": plant.scale,
-    "--plant-delay": plant.delay,
+    "--plant-delay": synchronizedDelay(
+      plant.delay,
+      plant.duration,
+      animationClockMs,
+    ),
     "--plant-duration": plant.duration,
     "--plant-sway-left": `${-(sway * 0.45).toFixed(1)}px`,
     "--plant-sway-right": plant.sway,
@@ -244,7 +274,13 @@ function GrassTallSprite() {
   );
 }
 
-function FlowerSprite({ tall }: { tall: boolean }) {
+function FlowerSprite({
+  tall,
+  showFlower,
+}: {
+  tall: boolean;
+  showFlower: boolean;
+}) {
   const headY = tall ? 1 : 7;
   const stemY = tall ? 14 : 19;
   const stemHeight = tall ? 15 : 10;
@@ -257,89 +293,114 @@ function FlowerSprite({ tall }: { tall: boolean }) {
       aria-hidden="true"
     >
       <rect className={styles.grassDark} x="0" y="29" width="26" height="3" />
-      <rect className={styles.stem} x="12" y={stemY} width="2" height={stemHeight} />
+      {showFlower && (
+        <rect className={styles.stem} x="12" y={stemY} width="2" height={stemHeight} />
+      )}
       <rect className={styles.grassMid} x="4" y="21" width="2" height="8" />
       <rect className={styles.grassLight} x="7" y="24" width="4" height="2" />
       <rect className={styles.grassMid} x="14" y="23" width="5" height="2" />
       <rect className={styles.grassLight} x="20" y="20" width="2" height="9" />
-      <rect className={styles.flowerHead} x="11" y={headY} width="4" height="4" />
-      <rect
-        className={styles.flowerHead}
-        x="6"
-        y={headY + 5}
-        width="5"
-        height="5"
-      />
-      <rect
-        className={styles.flowerHead}
-        x="15"
-        y={headY + 5}
-        width="5"
-        height="5"
-      />
-      <rect
-        className={styles.flowerHead}
-        x="11"
-        y={headY + 10}
-        width="4"
-        height="4"
-      />
-      <rect
-        className={styles.flowerCenter}
-        x="11"
-        y={headY + 5}
-        width="4"
-        height="4"
-      />
+      {showFlower && (
+        <>
+          <rect className={styles.flowerHead} x="11" y={headY} width="4" height="4" />
+          <rect
+            className={styles.flowerHead}
+            x="6"
+            y={headY + 5}
+            width="5"
+            height="5"
+          />
+          <rect
+            className={styles.flowerHead}
+            x="15"
+            y={headY + 5}
+            width="5"
+            height="5"
+          />
+          <rect
+            className={styles.flowerHead}
+            x="11"
+            y={headY + 10}
+            width="4"
+            height="4"
+          />
+          <rect
+            className={styles.flowerCenter}
+            x="11"
+            y={headY + 5}
+            width="4"
+            height="4"
+          />
+        </>
+      )}
     </svg>
   );
 }
 
-function PlantSprite({ variant }: { variant: PlantVariant }) {
+function PlantSprite({
+  variant,
+  showFlowers,
+}: {
+  variant: PlantVariant;
+  showFlowers: boolean;
+}) {
   if (variant === "flowerLow" || variant === "flowerTall") {
-    return <FlowerSprite tall={variant === "flowerTall"} />;
+    return (
+      <FlowerSprite
+        tall={variant === "flowerTall"}
+        showFlower={showFlowers}
+      />
+    );
   }
 
   if (variant === "grassTall") return <GrassTallSprite />;
   return <GrassShortSprite />;
 }
 
-export default function NavbarFlowerWind() {
-  const [plants, setPlants] = useState(INITIAL_PLANTS);
-  const [stars, setStars] = useState(INITIAL_STARS);
-  const [comets, setComets] = useState(INITIAL_COMETS);
+export default function NavbarFlowerWind({
+  showFlowers = true,
+}: {
+  showFlowers?: boolean;
+}) {
+  const [animationClockMs, setAnimationClockMs] = useState<number | null>(null);
 
   useEffect(() => {
+    // Keep the server and first client render identical, then sample the shared
+    // wall clock before starting the paused animations. The plant/star layout
+    // itself stays seeded and identical in every document.
     const frame = window.requestAnimationFrame(() => {
-      setPlants(createPlants(Math.random));
-      setStars(createStars(Math.random));
-      setComets(createComets(Math.random));
+      setAnimationClockMs(Date.now());
     });
 
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
+  const animationReady = animationClockMs !== null ? "true" : undefined;
+
   return (
     <>
       <div className={styles.plantAnimation} aria-hidden="true">
-        <div className={styles.wind}>
+        <div className={styles.wind} data-animation-ready={animationReady}>
           <div className={styles.grassBed} />
-          {plants.map((plant, index) => (
+          {INITIAL_PLANTS.map((plant, index) => (
             <span
               key={`${plant.variant}-${index}`}
               className={styles.plant}
-              style={plantStyle(plant)}
+              style={plantStyle(plant, animationClockMs)}
             >
               <span className={styles.plantSprite}>
-                <PlantSprite variant={plant.variant} />
+                <PlantSprite
+                  variant={plant.variant}
+                  showFlowers={showFlowers}
+                />
               </span>
             </span>
           ))}
         </div>
       </div>
       <div className={styles.skyAnimation} aria-hidden="true">
-        <div className={styles.starField}>
-          {stars.map((star, index) => (
+        <div className={styles.starField} data-animation-ready={animationReady}>
+          {INITIAL_STARS.map((star, index) => (
             <span
               key={index}
               className={styles.star}
@@ -348,7 +409,11 @@ export default function NavbarFlowerWind() {
                   "--star-left": star.left,
                   "--star-top": star.top,
                   "--star-size": star.size,
-                  "--star-delay": star.delay,
+                  "--star-delay": synchronizedDelay(
+                    star.delay,
+                    star.duration,
+                    animationClockMs,
+                  ),
                   "--star-duration": star.duration,
                   "--star-drift": star.drift,
                   "--star-color": star.color,
@@ -356,7 +421,7 @@ export default function NavbarFlowerWind() {
               }
             />
           ))}
-          {comets.map((comet, index) => (
+          {INITIAL_COMETS.map((comet, index) => (
             <span
               key={`comet-${index}`}
               className={styles.comet}
@@ -367,7 +432,11 @@ export default function NavbarFlowerWind() {
                   "--comet-length": comet.length,
                   "--comet-angle": comet.angle,
                   "--comet-travel-y": comet.travelY,
-                  "--comet-delay": comet.delay,
+                  "--comet-delay": synchronizedDelay(
+                    comet.delay,
+                    comet.duration,
+                    animationClockMs,
+                  ),
                   "--comet-duration": comet.duration,
                 } as CSSProperties
               }

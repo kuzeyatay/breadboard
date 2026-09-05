@@ -9,11 +9,12 @@ import {
   deriveHotRuntimeClosure,
   prepareHotDevRuntimes,
 } from "../scripts/prepare-hot-dev-runtimes.mjs";
+import { HERMES_SOURCE_HOOK } from "../scripts/hermes-python-source-hook.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredByTarget = Object.freeze({
   node: Object.freeze(["runtimes/node/node.exe"]),
-  python: Object.freeze(["runtimes/python/python.exe"]),
+  python: Object.freeze(["runtimes/python/Lib/site-packages/breadboard-hermes.pth", "runtimes/python/python.exe"]),
   cad: Object.freeze([
     "runtimes/cad-python/python.exe",
     "runtimes/cad-python/runtime-artifact.json",
@@ -123,7 +124,7 @@ test("the authoritative manifest maps to the five reviewed hot runtime targets",
   );
 });
 
-test("complete hot runtime closure is an incremental no-op", (t) => {
+test("cached Python repairs its source hook without rebuilding dependencies", (t) => {
   const current = fixture();
   t.after(() => fs.rmSync(current.root, { recursive: true, force: true }));
   let calls = 0;
@@ -137,6 +138,8 @@ test("complete hot runtime closure is an incremental no-op", (t) => {
   assert.deepEqual(result.requiredPaths, allRequiredPaths);
   assert.deepEqual(result.requiredTargets, ["node", "python", "cad", "colpali", "humanizer"]);
   assert.deepEqual(result.preparedTargets, []);
+  assert.equal(fs.readFileSync(path.join(current.runtimeRoot,
+    "runtimes/python/Lib/site-packages/breadboard-hermes.pth"), "utf8"), HERMES_SOURCE_HOOK);
 });
 
 test("only missing reviewed runtime groups invoke their exact preparer targets", (t) => {

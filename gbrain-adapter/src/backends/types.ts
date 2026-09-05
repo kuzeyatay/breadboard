@@ -12,6 +12,7 @@
 import type {
   GBrainGraphResponse,
   GBrainRegisterSourceResponse,
+  GBrainRemoveSourceResponse,
   GBrainRetrieveResponse,
   GBrainScope,
   GBrainSearchResponse,
@@ -40,6 +41,10 @@ export interface RetrievalBackend {
     label: string,
     pages: GBrainIndexPage[],
   ): Promise<GBrainRegisterSourceResponse>;
+
+  /** Hard-delete one derived retrieval source. Missing sources are a successful
+   * idempotent no-op so a retried Garden delete can finish cleanly. */
+  removeSource(sourceId: string): Promise<GBrainRemoveSourceResponse>;
 
   search(
     scope: GBrainScope,

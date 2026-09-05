@@ -30,4 +30,23 @@ describe("PDF formatting fallback", () => {
       /mapGenerated:\s*generateMap && !mapGenerationWarning && !skipKnowledgeExtraction/,
     );
   });
+
+  test("does not downgrade an incomplete chunked extraction to a successful upload", () => {
+    const ingestWorker = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "runtime-v2", "ingest-executor.ts"),
+      "utf8",
+    );
+    const extractionCatch = ingestWorker.indexOf(
+      "if (error instanceof IncompleteKnowledgeExtractionError) throw error;",
+    );
+    const fallbackWarning = ingestWorker.indexOf(
+      "Map generation failed for ${filename}; saved source note",
+    );
+
+    assert.notEqual(extractionCatch, -1);
+    assert.ok(
+      extractionCatch < fallbackWarning,
+      "the integrity error must be rethrown before the optional map fallback",
+    );
+  });
 });

@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth-options";
 import { getCluster, getReadableCluster } from "@/app/actions/clusters";
 import db from "@/lib/db";
 import { organizationClusterClause } from "@/lib/organizations/store";
+import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import WorkspaceClient from "./workspace-client";
 
 export default async function WorkspacePage({
@@ -11,7 +12,7 @@ export default async function WorkspacePage({
   searchParams,
 }: {
   params: Promise<{ clusterSlug: string }>;
-  searchParams: Promise<{ chat?: string | string[] }>;
+  searchParams: Promise<{ chat?: string | string[]; learn?: string | string[] }>;
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login");
@@ -22,6 +23,12 @@ export default async function WorkspacePage({
   const initialChatId = Array.isArray(requested.chat)
     ? requested.chat[0] ?? null
     : requested.chat ?? null;
+  // A Learn notice links here with `?learn=1` so the panel it describes is
+  // already open on arrival.
+  const requestedLearn = Array.isArray(requested.learn)
+    ? requested.learn[0]
+    : requested.learn;
+  const initialLearnPanelOpen = requestedLearn !== undefined && requestedLearn !== "0";
 
   // Try owner access first
   let cluster = await getCluster(userId, clusterSlug);
@@ -81,10 +88,12 @@ export default async function WorkspacePage({
       clusterSlug={clusterSlug}
       clusterName={cluster.name}
       initialChatId={initialChatId}
+      initialLearnPanelOpen={initialLearnPanelOpen}
       isOwner={isOwner}
       clusterVisibility={cluster.visibility}
       chatAccessible={cluster.chat_accessible}
       forkAllowed={cluster.fork_allowed}
+      showNavbarFlowers={getNavbarFlowers(userId)}
     />
   );
 }

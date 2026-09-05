@@ -348,9 +348,9 @@ export async function semanticMemoryClient(
   }
 }
 
-/** Hold exactly one lease across a complete semantic retrieval/extraction. */
+/** Hold exactly one lease across a complete semantic-memory operation. */
 export async function withSemanticMemoryClient<T>(
-  reason: "retrieval" | "extraction",
+  reason: "retrieval" | "extraction" | "deletion",
   operation: (client: SemanticMemoryClient) => Promise<T>,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<T | null> {

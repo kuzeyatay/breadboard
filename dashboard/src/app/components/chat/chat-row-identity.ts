@@ -44,20 +44,30 @@ export type IdentifiableMessage = {
  * A row's identity, used both as the React key and as the key the virtualizer
  * files a measured height under.
  *
- * A persisted id is preferred wherever a transcript has one. Where none exists
- * the position plus the timestamp is enough: these transcripts only ever append
- * — history is loaded whole, never paged in above — and the measurement cache
- * is thrown away when the conversation changes, so a key never has to survive
- * a row moving. Content is deliberately left out, or a streaming answer would
- * change its own identity on every token and remount itself.
+ * A persisted id is preferred wherever a transcript has one. A client message
+ * id identifies a whole turn, though, so its user and assistant rows are kept
+ * distinct by role until their separate persisted ids arrive. Where neither id
+ * exists the position plus the timestamp is enough: these transcripts only ever
+ * append — history is loaded whole, never paged in above — and the measurement
+ * cache is thrown away when the conversation changes, so a key never has to
+ * survive a row moving. Content is deliberately left out, or a streaming answer
+ * would change its own identity on every token and remount itself.
  */
 export function chatRowKey(
   message: IdentifiableMessage | undefined,
   index: number,
 ): string {
-  const persisted = message?.id ?? message?.clientMessageId;
+  const persisted = message?.id;
   if (persisted !== undefined && persisted !== null && persisted !== "") {
     return `id:${persisted}`;
+  }
+  const clientMessageId = message?.clientMessageId;
+  if (
+    clientMessageId !== undefined &&
+    clientMessageId !== null &&
+    clientMessageId !== ""
+  ) {
+    return `client:${clientMessageId}:${message?.role ?? "unknown"}`;
   }
   return `${index}:${message?.role ?? "unknown"}:${message?.createdAt ?? ""}`;
 }

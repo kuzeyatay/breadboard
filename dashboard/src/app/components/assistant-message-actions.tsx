@@ -15,6 +15,10 @@ import { createPortal } from "react-dom";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
+import {
+  chatResponseCompletedAt,
+  formatChatClockTime,
+} from "@/lib/chat-time-separators";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
 
@@ -31,6 +35,11 @@ export interface AssistantResponseBranch {
 
 interface Props {
   content: string;
+  /** Durable response start plus elapsed time reveal when streaming finished. */
+  responseStartedAt?: string;
+  responseDurationMs?: number;
+  /** Exact terminal instant when available; preferred over deriving it. */
+  responseCompletedAt?: string;
   /** Open the response's inline editor. Saving is owned by the transcript. */
   onEdit?: () => void;
   onRetry?: () => void;
@@ -162,28 +171,58 @@ export function AssistantResponseBranchNavigation({
 const MessageActionsSlotContext = createContext<{
   slot: HTMLElement | null;
   suppressActions: boolean;
-}>({ slot: null, suppressActions: false });
+  responseStartedAt?: string;
+  responseDurationMs?: number;
+  responseCompletedAt?: string;
+}>({
+  slot: null,
+  suppressActions: false,
+  responseStartedAt: undefined,
+  responseDurationMs: undefined,
+  responseCompletedAt: undefined,
+});
 
 export function MessageActionsSlot({
   children,
   suppressActions = false,
+  responseStartedAt,
+  responseDurationMs,
+  responseCompletedAt,
 }: {
   children: ReactNode;
   /** Keep controls from escaping a visually hidden owner through the portal. */
   suppressActions?: boolean;
+  /** Timing shared with action rows rendered by nested inline run cards. */
+  responseStartedAt?: string;
+  responseDurationMs?: number;
+  responseCompletedAt?: string;
 }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null);
   return (
-    <MessageActionsSlotContext.Provider value={{ slot, suppressActions }}>
-      {children}
-      {/* `contents` so an empty slot adds no gap to a flex message column. */}
-      <div ref={setSlot} className="contents" />
+    <MessageActionsSlotContext.Provider
+      value={{
+        slot,
+        suppressActions,
+        responseStartedAt,
+        responseDurationMs,
+        responseCompletedAt,
+      }}
+    >
+      {/* `contents` preserves the row layout while defining one hover target. */}
+      <div className="group/assistant-message contents">
+        {children}
+        {/* `contents` so an empty slot adds no gap to a flex message column. */}
+        <div ref={setSlot} className="contents" />
+      </div>
     </MessageActionsSlotContext.Provider>
   );
 }
 
 export default function AssistantMessageActions({
   content,
+  responseStartedAt,
+  responseDurationMs,
+  responseCompletedAt,
   onEdit,
   onRetry,
   onRewrite,
@@ -208,9 +247,23 @@ export default function AssistantMessageActions({
   const speechAbortRef = useRef<AbortController | null>(null);
   const dictationAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
-  const { slot, suppressActions } = useContext(MessageActionsSlotContext);
+  const {
+    slot,
+    suppressActions,
+    responseStartedAt: contextualResponseStartedAt,
+    responseDurationMs: contextualResponseDurationMs,
+    responseCompletedAt: contextualResponseCompletedAt,
+  } = useContext(MessageActionsSlotContext);
   const storageKey = useMemo(() => contentKey(content), [content]);
   const displayedVerification = verification ?? NO_RECORDED_EVIDENCE;
+  const completedAt =
+    responseCompletedAt ??
+    contextualResponseCompletedAt ??
+    chatResponseCompletedAt(
+      responseStartedAt ?? contextualResponseStartedAt,
+      responseDurationMs ?? contextualResponseDurationMs,
+    );
+  const responseTime = formatChatClockTime(completedAt);
 
   useEffect(() => {
     const stored = localStorage.getItem(storageKey);
@@ -622,6 +675,15 @@ export default function AssistantMessageActions({
       </div>
       {branch ? (
         <AssistantResponseBranchNavigation branch={branch} className="ml-1" />
+      ) : null}
+      {responseTime ? (
+        <time
+          dateTime={completedAt}
+          aria-label={`Response completed at ${responseTime}`}
+          className="ml-2 select-none text-xs tabular-nums text-[var(--ink-muted)] opacity-0 transition-opacity duration-150 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100"
+        >
+          {responseTime}
+        </time>
       ) : null}
     </div>
   );

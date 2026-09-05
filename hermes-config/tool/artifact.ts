@@ -34,7 +34,7 @@ export const create = tool({
     title: tool.schema.string(),
     filename: tool.schema.string().optional(),
     mimeType: tool.schema.string().optional(),
-    content: tool.schema.string(),
+    content: tool.schema.string().describe("Complete artifact source. In Markdown, delimit all LaTeX with $...$ or $$...$$ and JSON-escape every LaTeX backslash as two backslashes."),
     render: tool.schema.boolean().default(true),
     metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(),
     sourceSkill: tool.schema.string().optional(),
@@ -62,7 +62,7 @@ export const update = tool({
   description: "Replace an artifact's content. Updating a ready artifact creates a traceable new version and preserves the prior version. For native Word, PowerPoint, or XLSX artifacts, first call artifact_read and pass only changed anchored blocks/cells as patches.",
   args: {
     artifactId: tool.schema.string(),
-    content: tool.schema.string().optional(),
+    content: tool.schema.string().describe("Complete replacement source. In Markdown, JSON-escape every LaTeX backslash as two backslashes.").optional(),
     patches: tool.schema.array(tool.schema.object({
       anchor: tool.schema.string(),
       text: tool.schema.string(),
@@ -76,7 +76,7 @@ export const update = tool({
 
 export const append = tool({
   description: "Append incremental content to a generating artifact. Do not use this to overwrite completed versions.",
-  args: { artifactId: tool.schema.string(), content: tool.schema.string(), metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(), sourceSkill: tool.schema.string().optional(), provenance },
+  args: { artifactId: tool.schema.string(), content: tool.schema.string().describe("Markdown additions must JSON-escape every LaTeX backslash as two backslashes."), metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(), sourceSkill: tool.schema.string().optional(), provenance },
   async execute(args, ctx) { return call(ctx.sessionID, (ctx as { callID?: string }).callID, "artifact_append", args) },
 })
 
@@ -111,6 +111,6 @@ export const search = tool({
 
 export const fork = tool({
   description: "Create a new traceable version from an existing artifact's content, preserving every earlier version.",
-  args: { artifactId: tool.schema.string(), content: tool.schema.string(), metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(), sourceSkill: tool.schema.string().optional(), provenance },
+  args: { artifactId: tool.schema.string(), content: tool.schema.string().describe("Complete fork source. In Markdown, JSON-escape every LaTeX backslash as two backslashes."), metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(), sourceSkill: tool.schema.string().optional(), provenance },
   async execute(args, ctx) { return call(ctx.sessionID, (ctx as { callID?: string }).callID, "artifact_fork", args) },
 })

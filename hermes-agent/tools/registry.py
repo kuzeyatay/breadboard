@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,29 @@ _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
 _check_fn_last_good: Dict[Callable, float] = {}
 _check_fn_cache_lock = threading.Lock()
+
+
+def _bare_function_schema(schema: Any) -> Dict[str, Any]:
+    """Return the bare ``{"name", "description", "parameters"}`` schema.
+
+    ``register()`` documents a bare function schema, but a tool module can
+    hand over the OpenAI envelope ``{"type": "function", "function": {...}}``
+    instead (``expand_output`` did). Wrapping that again puts ``type`` and
+    ``function`` keys inside the function object; OpenAI-compatible gateways
+    shrug, Gemini's generateContent returns HTTP 400 for the whole request,
+    so one such tool disables every turn on that provider.
+    """
+    if not isinstance(schema, dict):
+        return {}
+    inner = schema.get("function")
+    if (
+        schema.get("type") == "function"
+        and isinstance(inner, dict)
+        and "name" not in schema
+        and "parameters" not in schema
+    ):
+        return _bare_function_schema(inner)
+    return schema
 
 
 def _check_fn_cached(fn: Callable) -> bool:
@@ -555,8 +578,13 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            # Ensure schema always has a "name" field — use entry.name as fallback
-            schema_with_name = {**entry.schema, "name": entry.name}
+            # A schema registered already in OpenAI tool form
+            # ({"type": "function", "function": {...}}) must be unwrapped
+            # here, or the wrap below nests it a second time. Lenient
+            # providers ignore the stray "type"/"function" keys inside the
+            # function object; Gemini rejects the whole request with
+            # `Unknown name "type" at request.tools[0].function_declarations[N]`.
+            schema_with_name = {**_bare_function_schema(entry.schema), "name": entry.name}
             # Apply runtime-dynamic overrides (e.g. delegate_task description
             # depends on current delegation.max_concurrent_children /
             # max_spawn_depth). Caller side (model_tools.get_tool_definitions)

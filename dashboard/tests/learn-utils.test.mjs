@@ -302,7 +302,7 @@ describe("learn route and council wiring", () => {
 
     assert.match(
       workspaceSource,
-      /shouldRepairFailedJob =\s*status === "failed" && hasExistingLearnContent/,
+      /shouldRepairFailedJob =\s*status === "failed" &&\s*hasExistingLearnContent &&\s*job\?\.mode !== "update_sources"/,
     );
     assert.match(
       workspaceSource,
@@ -547,7 +547,7 @@ describe("learn route and council wiring", () => {
 
     assert.match(
       workspaceSource,
-      /status === "awaiting_confirmation" && hasExistingLearnContent/,
+      /status === "awaiting_confirmation" &&\s*hasExistingLearnContent &&\s*job\?\.mode !== "update_sources"/,
     );
     assert.match(
       workspaceSource,
@@ -612,6 +612,7 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /latest\.id !== expectedJobId/);
     assert.match(learnSource, /void publishQuartzAfterMutation\(`learn cancellation cleanup/);
     assert.match(cancelRouteSource, /await cancelLatestLearnJob/);
+    assert.match(cancelRouteSource, /cancelLatestLearnJob\(\{[\s\S]*?userId,/);
     assert.match(cancelRouteSource, /expectedJobId/);
     assert.match(cancelRouteSource, /LearnCancelConflictError/);
     assert.match(cancelRouteSource, /status: 409/);
@@ -628,7 +629,14 @@ describe("learn route and council wiring", () => {
       "utf8",
     );
 
-    assert.match(learnSource, /resetSourceMap \? "full_rebuild" : "plan"/);
+    assert.match(
+      learnSource,
+      /operationMode === "plan" \|\| operationMode === "update_sources"/,
+    );
+    assert.match(
+      learnSource,
+      /mode: updateExisting \? "update_sources" : "generate"/,
+    );
     assert.match(regenerateRouteSource, /executeLearnOperationForRoute/);
     assert.match(regenerateRouteSource, /operation: "repair"/);
     assert.match(regenerateRouteSource, /legacyDefault: "repair"/);

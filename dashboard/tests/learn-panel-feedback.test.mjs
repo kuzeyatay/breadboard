@@ -125,7 +125,7 @@ test("model call labels are plain text without a badge or status dot", () => {
   );
   assert.match(
     workspaceSource,
-    /\{learnPanelModel \? \([\s\S]*?<span className="text-gray-600">Model:<\/span>[\s\S]*?<span[\s\S]*?className="font-mono tabular-nums text-gray-200"/,
+    /\{learnPanelModel \? \([\s\S]*?<span className="text-gray-600">Model:<\/span>[\s\S]*?<LearnModelPicker/,
   );
   // In flight, the chip names the model actually placing the calls. Idle, it
   // names the model the next run will use, so changing the Intelligence picker
@@ -138,6 +138,36 @@ test("model call labels are plain text without a badge or status dot", () => {
     modelCallIndicatorSource,
     /text-\[10px\]|rounded-full|border-gray|bg-gray|bg-emerald/,
   );
+});
+
+test("Learn panel has one model selector, inline in the Tokens row, that locks to an active map", () => {
+  assert.match(workspaceSource, /groupAssistantModels/);
+  // The selector lives next to the "Model:" label in the token row, not in the
+  // toolbar, so the model is named exactly once.
+  assert.strictEqual(
+    workspaceSource.match(/aria-label="Model for Learn"/g)?.length,
+    1,
+  );
+  assert.match(
+    workspaceSource,
+    /<span className="text-gray-600">Model:<\/span>[\s\S]*?<LearnModelPicker[\s\S]*?value=\{learnPanelModel\}[\s\S]*?groups=\{learnPanelModelGroups\}[\s\S]*?onOpen=\{loadModels\}[\s\S]*?onChange=\{setModel\}[\s\S]*?disabled=\{learnDocumentSelectionLocked\}/,
+  );
+  // Reads as plain text with a chevron: no button chrome around the name, but
+  // the open menu is a themed, viewport-aware popover rather than a native OS
+  // popup that becomes unreadable in dark mode.
+  assert.match(
+    workspaceSource,
+    /aria-label="Model for Learn"[\s\S]*?className="[^"]*bg-transparent[^"]*font-mono tabular-nums text-gray-200/,
+  );
+  assert.doesNotMatch(
+    workspaceSource,
+    /aria-label="Model for Learn"[\s\S]{0,800}?<select/,
+  );
+  assert.match(
+    workspaceSource,
+    /<ViewportPopover[\s\S]*?overflow-y-auto overscroll-contain[\s\S]*?groups\.map\(\(group\) => \([\s\S]*?role="menuitemradio"[\s\S]*?formatAssistantModelName\(item\)/,
+  );
+  assert.match(workspaceSource, /event\.key === "ArrowDown" \|\| event\.key === "ArrowUp"/);
 });
 
 test("a long syllabus name stays bounded while the panel closes from the toolbar", () => {
@@ -170,7 +200,7 @@ test("Learn controls stay on one row and the syllabus name absorbs the pressure"
     'justify-end gap-x-2 gap-y-1.5 md:flex-nowrap',
   );
   const rowEnd = workspaceSource.indexOf(
-    '{(active || status === "complete" || status === "failed") && (',
+    '{(learnStatusBarActive || status === "complete" || status === "failed") && (',
     rowStart,
   );
   assert.ok(rowStart >= 0 && rowEnd > rowStart, "Learn control row is missing");

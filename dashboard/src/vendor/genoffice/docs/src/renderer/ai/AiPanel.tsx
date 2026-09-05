@@ -51,9 +51,43 @@ interface SaveResult {
 const MAX_CHAT_ENTRIES = 30
 const MAX_DOCUMENT_HTML = 96_000
 const SAVE_EVENT = 'breadboard:genoffice-save-complete'
+const DIRECT_FILE_SAVE_ERROR = 'The Office input must be a direct file.'
+const SAVED_ACTIVITY = 'Saved as a new artifact version'
 
 function messageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function activityItems(activities: readonly string[]): string[] {
+  return activities
+    .flatMap((activity) => activity.split(';'))
+    .map((activity) => activity.trim())
+    .filter(Boolean)
+}
+
+function ActivityReceipt({ activities }: { activities: readonly string[] }) {
+  const items = activityItems(activities)
+  if (items.length === 0) return null
+
+  const saved = items.includes(SAVED_ACTIVITY)
+  const changeCount = items.filter((activity) => activity !== SAVED_ACTIVITY).length
+  const label = changeCount === 0
+    ? 'Document saved'
+    : `${changeCount} document ${changeCount === 1 ? 'change' : 'changes'}`
+
+  return (
+    <details className="ai-work-group">
+      <summary className="ai-work-summary">
+        <span>{label}</span>
+        {saved && changeCount > 0 ? <span className="ai-work-state">Saved</span> : null}
+      </summary>
+      <ul className="ai-work-list">
+        {items.map((activity, index) => (
+          <li key={`${activity}-${index}`} className="ai-applied-tag">{activity}</li>
+        ))}
+      </ul>
+    </details>
+  )
 }
 
 function artifactIdFromLocation(): string {
@@ -265,6 +299,35 @@ export function AiPanel({
   )
 
   useEffect(() => {
+    const markRecoveredSave = (event: Event) => {
+      const detail = (event as CustomEvent<SaveResult>).detail
+      if (!detail?.ok) return
+      setChat((current) => {
+        let changed = false
+        const failedSuffix = `\n\nI could not finish cleanly: ${DIRECT_FILE_SAVE_ERROR}`
+        const recovered = current.map((entry) => {
+          if (entry.error?.trim() !== DIRECT_FILE_SAVE_ERROR) return entry
+          changed = true
+          const activities = entry.activities?.includes(SAVED_ACTIVITY)
+            ? entry.activities
+            : [...(entry.activities ?? []), SAVED_ACTIVITY]
+          return {
+            ...entry,
+            text: entry.text.endsWith(failedSuffix)
+              ? `${entry.text.slice(0, -failedSuffix.length)}\n\nThe changes are applied and saved in this document.`
+              : entry.text,
+            activities,
+            error: undefined,
+          }
+        })
+        return changed ? recovered : current
+      })
+    }
+    window.addEventListener(SAVE_EVENT, markRecoveredSave)
+    return () => window.removeEventListener(SAVE_EVENT, markRecoveredSave)
+  }, [])
+
+  useEffect(() => {
     localStorage.setItem(chatStorageKey(), JSON.stringify(chat.slice(-MAX_CHAT_ENTRIES)))
     const frame = window.requestAnimationFrame(() => {
       if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -317,7 +380,7 @@ export function AiPanel({
 
       if (mutated && failures.length === 0) {
         const saved = await saveCurrentDocument(controller.signal)
-        if (saved.ok) activities.push('Saved as a new artifact version')
+        if (saved.ok) activities.push(SAVED_ACTIVITY)
         else failures.push(saved.error || 'The edited document could not be saved.')
       }
 
@@ -381,13 +444,9 @@ export function AiPanel({
         {chat.map((entry) => (
           <div key={entry.id} className={`ai-msg ai-msg-${entry.role}`}>
             {entry.role === 'assistant' ? <Markdown text={entry.text} /> : entry.text}
-            {entry.activities && entry.activities.length > 0 ? (
-              <div className="ai-work-group" style={{ gap: 6 }}>
-                {entry.activities.map((activity, index) => (
-                  <span key={`${activity}-${index}`} className="ai-applied-tag">{activity}</span>
-                ))}
-              </div>
-            ) : null}
+            {entry.activities && entry.activities.length > 0
+              ? <ActivityReceipt activities={entry.activities} />
+              : null}
             {entry.error ? <div className="ai-msg-error">{entry.error}</div> : null}
           </div>
         ))}

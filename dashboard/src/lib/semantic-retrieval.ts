@@ -108,6 +108,10 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function markdownBody(value: string): string {
+  return value.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim();
+}
+
 function jsonStrings(value: string): string[] {
   try {
     const parsed = JSON.parse(value);
@@ -389,7 +393,10 @@ export function headingAwareChunks(
 
 function sectionTitle(node: KnowledgeNode): string {
   const segments = node.relPath.replace(/\\/g, '/').split('/');
-  return segments.length >= 3 && segments[0] === 'learning' ? segments[1] : '';
+  const root = segments[0]?.toLowerCase();
+  return segments.length >= 3 && (root === 'learning' || root === 'concepts')
+    ? segments[1]
+    : '';
 }
 
 function sourcePriority(sourceType: string): number {
@@ -424,15 +431,21 @@ function retrievalChunksForNode(input: {
     ...node.locations,
   ])];
   const conceptTerms = conceptSearchTerms([...node.primaryConcepts, ...node.supportingConcepts], registry);
-  const chunks = headingAwareChunks(node.content);
+  const pageContent = markdownBody(node.content);
+  const chunks = headingAwareChunks(pageContent);
+  // Garden navigation needs the full nested path, not the basename-only graph
+  // slug. Basename links sent every page inside a folder to a non-existent
+  // root URL and produced the persistent "garden is being prepared" fallback.
+  const pageSlug = node.relPath.replace(/\\/g, '/').replace(/\.md$/i, '');
   const pageContext = JSON.stringify({
     page: node.relPath,
+    pageSlug,
     title: node.title,
     concepts: conceptTerms,
     claims: pageClaims.map((claim) => claim.text),
     anchors: evidenceAnchors,
   });
-  const pageHash = sha256(pageContext + node.content);
+  const pageHash = sha256(pageContext + pageContent);
   return chunks.map((chunk, index) => {
     const contextPrefix = [
       `Garden: ${garden.name}`,
@@ -449,7 +462,7 @@ function retrievalChunksForNode(input: {
       id: sha256(`${garden.slug}:${node.relPath}:${index}:${contentHash}`).slice(0, 32),
       gardenSlug: garden.slug,
       gardenName: garden.name,
-      pageSlug: node.slug,
+      pageSlug,
       pageRelPath: node.relPath,
       pageTitle: node.title,
       sectionTitle: sectionTitle(node),
@@ -549,10 +562,13 @@ export async function indexRetrievalGarden(input: {
   const database = input.database ?? db;
   ensureSemanticRetrievalSchema(database);
   const { registry, claims } = readGardenSemanticArtifacts(input.garden.rootPath, input.garden.slug);
-  const eligibleNodes = input.garden.knowledge.nodes.filter((node) =>
-    node.type === 'learning-page' ||
-    node.breadboardType === 'learning_page' ||
-    node.type === 'source-document',
+  const eligibleNodes = input.garden.knowledge.nodes.filter(
+    (node) =>
+      node.internal !== 'true' &&
+      node.draft !== 'true' &&
+      (node.type === 'learning-page' ||
+        node.breadboardType === 'learning_page' ||
+        node.type === 'source-document'),
   );
   const chunks = eligibleNodes.flatMap((node) =>
     retrievalChunksForNode({ garden: input.garden, node, registry, claims: claims.claims }),

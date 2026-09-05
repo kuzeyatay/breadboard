@@ -10,9 +10,13 @@
   and no secret ever crosses the bridge.
 - Navigation is restricted to the app's own local origins (dashboard + Quartz
   on their allocated loopback ports) plus the local `file://` startup screen.
-  Everything else is cancelled; http(s)/mailto links open in the OS browser.
+  Everything else is cancelled; http(s) links from a normal Breadboard window
+  open in a new sandboxed Breadboard browser tab while browser navigation is
+  enabled (the default). Protocols such as `mailto:` and the explicit
+  browser-navigation-off fallback remain with the OS.
 - `window.open` is always denied (`setWindowOpenHandler` → deny); local-origin
-  targets are loaded in the main window instead, external ones go to the OS.
+  targets are loaded in a hardened Breadboard window or tab, and external web
+  targets are handed to the built-in browser tab manager.
 - `will-attach-webview` is prevented; permission requests (camera, mic,
   geolocation, notifications, …) are denied except clipboard-write and
   fullscreen.

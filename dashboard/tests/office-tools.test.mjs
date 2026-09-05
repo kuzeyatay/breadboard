@@ -29,7 +29,11 @@ import {
   tokenizeOfficeCommand,
   validateOfficeCommand,
 } from "../src/lib/office/officecli.ts";
-import { prepareOfficeExport, runOfficeCommand } from "../src/lib/office/agent-query.ts";
+import {
+  describeOfficeExport,
+  prepareOfficeExport,
+  runOfficeCommand,
+} from "../src/lib/office/agent-query.ts";
 import { officeArtifactRequirement } from "../src/lib/hermes/office-artifact-requirement.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -292,6 +296,19 @@ test("containWorkspacePath rejects the workspace itself and empty paths", () => 
   const workspace = makeWorkspace();
   assert.throws(() => containWorkspacePath(workspace, ".", "The path"), OfficeCliError);
   assert.throws(() => containWorkspacePath(workspace, "", "The path"), OfficeCliError);
+});
+
+test("Windows extended paths identify the same direct Office file", {
+  skip: process.platform !== "win32" && "Windows path namespaces do not apply",
+}, () => {
+  const workspace = makeWorkspace();
+  const file = path.join(workspace, "report.docx");
+  fs.writeFileSync(file, "direct Office file");
+
+  const described = describeOfficeExport(`\\\\?\\${workspace}`, { file: "report.docx" });
+
+  assert.equal(path.toNamespacedPath(described.filePath), path.toNamespacedPath(file));
+  assert.equal(described.relativeFile, "report.docx");
 });
 
 // ── behaviour: the real binary, when provisioned ────────────────────────────

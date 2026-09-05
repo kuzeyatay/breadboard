@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   mcpToolSelection,
   assignCommandTokens,
+  promptRequestsImplementation,
   resolveCommandMessage,
 } from "../src/lib/hermes/commands.ts";
 
@@ -74,6 +75,27 @@ test("a prompt token resolves server-side and preserves user text", async () => 
   assert.deepEqual(result.invocations, [
     { kind: "prompt", slug: "study-guide", id: "dp-2" },
   ]);
+});
+
+test("long-form writing prompts are not mistaken for software implementation", () => {
+  assert.equal(
+    promptRequestsImplementation(
+      "Build the logic step by step. Treat the transcript as a primary source of substance.",
+    ),
+    false,
+  );
+  assert.equal(
+    promptRequestsImplementation(
+      "Do not edit the source code. Explain the existing implementation.",
+    ),
+    false,
+  );
+  assert.equal(
+    promptRequestsImplementation(
+      "Inspect the behavior, then implement the fix in the source code.",
+    ),
+    true,
+  );
 });
 
 test("malformed and conflicting slash commands are rejected clearly", async () => {

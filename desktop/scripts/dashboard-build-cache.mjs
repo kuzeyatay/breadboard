@@ -1094,12 +1094,24 @@ function dashboardBuildBackupPath(repoRoot) {
   return path.join(repoRoot, "dashboard", ".next-desktop-last-good");
 }
 
+function removeDashboardBuildTree(target) {
+  fs.rmSync(target, {
+    recursive: true,
+    force: true,
+    // A stopped Next/Turbopack process can release the final directory handle
+    // a moment after it exits on Windows. Let Node retry ENOTEMPTY/EBUSY rather
+    // than turning a successfully contained build interruption into a crash.
+    maxRetries: 12,
+    retryDelay: 250,
+  });
+}
+
 /** Restore the last complete artifact after a killed/interrupted build. */
 export function recoverInterruptedDashboardBuild(repoRoot) {
   const { output } = dashboardBuildPaths(repoRoot);
   const backup = dashboardBuildBackupPath(repoRoot);
   if (fs.existsSync(backup)) {
-    if (fs.existsSync(output)) fs.rmSync(output, { recursive: true, force: true });
+    if (fs.existsSync(output)) removeDashboardBuildTree(output);
     fs.renameSync(backup, output);
     return true;
   }
@@ -1108,7 +1120,7 @@ export function recoverInterruptedDashboardBuild(repoRoot) {
   // by the trace-safety gate, never leave its unvalidated server tree available
   // for a later packaging command to mistake for a completed artifact.
   if (fs.existsSync(output) && !availableDashboardBuild(repoRoot).available) {
-    fs.rmSync(output, { recursive: true, force: true });
+    removeDashboardBuildTree(output);
     return true;
   }
   return false;
@@ -1123,20 +1135,20 @@ export function beginDashboardBuild(repoRoot) {
   recoverInterruptedDashboardBuild(repoRoot);
   const { output } = dashboardBuildPaths(repoRoot);
   const backup = dashboardBuildBackupPath(repoRoot);
-  if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
+  if (fs.existsSync(backup)) removeDashboardBuildTree(backup);
   const current = availableDashboardBuild(repoRoot);
   if (current.available) {
     fs.renameSync(output, backup);
     return true;
   }
-  if (fs.existsSync(output)) fs.rmSync(output, { recursive: true, force: true });
+  if (fs.existsSync(output)) removeDashboardBuildTree(output);
   return false;
 }
 
 /** Commit the newly validated artifact and discard its rollback slot. */
 export function completeDashboardBuild(repoRoot) {
   const backup = dashboardBuildBackupPath(repoRoot);
-  if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
+  if (fs.existsSync(backup)) removeDashboardBuildTree(backup);
 }
 
 export function reusableDashboardBuild(repoRoot) {

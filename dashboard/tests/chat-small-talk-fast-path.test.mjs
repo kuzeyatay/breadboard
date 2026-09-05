@@ -13,16 +13,24 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const source = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
-test("complete small-talk turns resolve without matching one spelling of hi", () => {
+test("non-greeting small-talk turns still use the fast path", () => {
   for (const [message, intent] of [
-    ["Hi!", "greeting"],
-    ["hello there", "greeting"],
-    ["Good morning, Bread", "greeting"],
     ["How's it going?", "wellbeing"],
     ["Thank you very much!", "gratitude"],
     ["See you later", "farewell"],
   ]) {
     assert.equal(resolveSmallTalkReply(message)?.intent, intent, message);
+  }
+});
+
+test("greetings do not produce the canned automatic reply", () => {
+  for (const message of [
+    "Hi!",
+    "hello there",
+    "Good morning, Bread",
+    "hey assistant",
+  ]) {
+    assert.equal(resolveSmallTalkReply(message), null, message);
   }
 });
 

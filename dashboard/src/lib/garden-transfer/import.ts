@@ -202,7 +202,9 @@ async function republish(
     );
     refreshPrivateQuartzIndex(userId);
     const { publishQuartzAfterMutation } = await import("../quartz-publish.ts");
-    await publishQuartzAfterMutation(reason, { userId });
+    // The imported Gardens are invalidated individually below; this first
+    // publication covers the aggregate/private index only.
+    await publishQuartzAfterMutation(reason, { userId, topologyImpact: "none" });
     const { invalidateThoughtTopologyAfterMutation } = await import(
       "../thought-topology/state.ts"
     );

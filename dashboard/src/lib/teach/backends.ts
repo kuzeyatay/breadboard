@@ -1,11 +1,10 @@
 import "server-only";
 
-// Choosing a platform implementation, and saying so plainly when there isn't one.
+// Choosing platform implementations, and saying so plainly when there isn't one.
 //
-// Understudy's capture and control code assumes macOS. Breadboard's workflow
-// domain must not, so the selection happens here and nowhere else: add a Linux
-// or macOS adapter by implementing the same two interfaces and adding a line to
-// each factory.
+// Demonstration capture remains platform-specific. Replay does not: Hermes
+// Agent's background computer-use backend owns Windows, macOS, and Linux, so
+// every learned workflow gets the same controller and safety behavior.
 //
 // A platform with no implementation gets a backend that refuses clearly rather
 // than one that pretends. Teaching then shows as unavailable and the rest of
@@ -14,13 +13,11 @@ import "server-only";
 import type {
   CaptureArtifact,
   CaptureSession,
-  ComputerObservation,
   DemonstrationCaptureBackend,
-  ActionResult,
   WorkflowComputerBackend,
 } from "./types.ts";
 import { WindowsDemonstrationCaptureBackend } from "./windows-capture.ts";
-import { WindowsComputerBackend } from "./windows-computer.ts";
+import { HermesComputerBackend } from "./hermes-computer.ts";
 
 function unsupportedReason(): string {
   return `Teaching by demonstration needs a capture backend for ${process.platform}, and this build only ships the Windows one.`;
@@ -49,23 +46,6 @@ class UnsupportedCaptureBackend implements DemonstrationCaptureBackend {
   }
 }
 
-class UnsupportedComputerBackend implements WorkflowComputerBackend {
-  readonly platform = process.platform;
-
-  available(): { available: boolean; reason?: string } {
-    return { available: false, reason: unsupportedReason() };
-  }
-  async observe(): Promise<ComputerObservation> {
-    throw new Error(unsupportedReason());
-  }
-  async execute(): Promise<ActionResult> {
-    return { ok: false, error: unsupportedReason() };
-  }
-  async stop(): Promise<void> {
-    // Nothing was ever started, so nothing is holding the machine.
-  }
-}
-
 let captureBackend: DemonstrationCaptureBackend | null = null;
 
 /** The capture backend for this platform. One instance: it owns live recorders. */
@@ -87,7 +67,7 @@ export function demonstrationCaptureBackend(): DemonstrationCaptureBackend {
  * up sharing one process and one Stop button.
  */
 export function createWorkflowComputerBackend(): WorkflowComputerBackend {
-  return process.platform === "win32" ? new WindowsComputerBackend() : new UnsupportedComputerBackend();
+  return new HermesComputerBackend();
 }
 
 export interface TeachAvailability {
@@ -107,10 +87,7 @@ export interface TeachAvailability {
  */
 export function teachAvailability(): TeachAvailability {
   const capture = demonstrationCaptureBackend().available();
-  const computer =
-    process.platform === "win32"
-      ? new WindowsComputerBackend().available()
-      : { available: false, reason: unsupportedReason() };
+  const computer = new HermesComputerBackend().available();
   return {
     available: capture.available && computer.available,
     capture,

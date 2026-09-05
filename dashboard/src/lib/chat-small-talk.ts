@@ -1,4 +1,4 @@
-export type SmallTalkIntent = "greeting" | "wellbeing" | "gratitude" | "farewell";
+export type SmallTalkIntent = "wellbeing" | "gratitude" | "farewell";
 
 export type SmallTalkReply = {
   intent: SmallTalkIntent;
@@ -25,17 +25,6 @@ export function resolveSmallTalkReply(value: string): SmallTalkReply | null {
   if (!text || text.length > 80) return null;
 
   const addressed = "(?: bread| assistant)?";
-  if (
-    new RegExp(
-      `^(?:(?:hi|hello|hey|hiya|howdy|greetings|yo)(?: there)?|good (?:morning|afternoon|evening)|morning|afternoon|evening)${addressed}$`,
-    ).test(text)
-  ) {
-    return {
-      intent: "greeting",
-      text: "Hi! I'm Bread. What can I help with?",
-    };
-  }
-
   if (
     new RegExp(
       `^(?:how are you|hows it going|how is it going|whats up|what is up|how do you do|are you there)${addressed}$`,

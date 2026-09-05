@@ -13,8 +13,34 @@ import {
   refreshStandaloneDashboardAssets,
   reusableDashboardBuild,
 } from "./dashboard-build-cache.mjs";
+import {
+  claimLeanDesktopLease,
+  duplicateLeanDesktopWarning,
+  releaseLeanDesktopLease,
+} from "./lean-desktop-lease.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+let leanLease;
+try {
+  const claim = claimLeanDesktopLease({ repoRoot });
+  if (!claim.acquired) {
+    process.stderr.write(`[desktop] ${duplicateLeanDesktopWarning(claim.existing)}\n`);
+    process.exit(2);
+  }
+  leanLease = claim.record;
+  if (claim.staleReplaced) {
+    process.stdout.write("[desktop] replaced a stale lean desktop lease\n");
+  }
+} catch (error) {
+  process.stderr.write(
+    `[desktop] ${error instanceof Error ? error.message : String(error)}\n`,
+  );
+  process.exit(2);
+}
+process.once("exit", () => {
+  releaseLeanDesktopLease(repoRoot, leanLease);
+});
+
 recoverInterruptedDashboardBuild(repoRoot);
 const forceRebuild = process.argv.includes("--rebuild");
 const rawBuildEstimate = process.env.BREADBOARD_LEAN_BUILD_ESTIMATE_MB?.trim();

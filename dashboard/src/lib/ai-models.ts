@@ -135,11 +135,38 @@ export interface AssistantModelGroup {
 }
 
 /**
- * The model list split into vendor sections, in first-appearance order.
+ * Pay-per-token gateways that resell other vendors' models. A model reached
+ * through one of these is billed, rate-limited and sometimes versioned by the
+ * gateway, not by the vendor whose name is in the id: "Claude Sonnet 4.5 via
+ * OpenRouter" runs out of OpenRouter credits, not Anthropic's. So the menu
+ * files it under the gateway. Subscription routes (`cliproxy`) are the
+ * vendor's own account and keep the vendor heading.
+ */
+const GATEWAY_GROUPS: Readonly<Record<string, string>> = {
+  openrouter: 'OpenRouter',
+  groq: 'Groq',
+  together: 'Together AI',
+  custom: 'Custom endpoint',
+};
+
+/** The section a model belongs to in the Intelligence menu. */
+export function assistantModelGroup(
+  modelId: string,
+): { id: string; label: string } {
+  const slash = modelId.indexOf('/');
+  const provider = slash < 0 ? '' : modelId.slice(0, slash).toLowerCase();
+  const gateway = provider ? GATEWAY_GROUPS[provider] : undefined;
+  if (gateway) return { id: provider, label: gateway };
+  return assistantModelVendor(modelId);
+}
+
+/**
+ * The model list split into sections, in first-appearance order.
  *
  * A flat list of bare names gives no footing — a dozen `claude-*` and a few
  * `gpt-*` read as one undifferentiated column. Sections restore that without
- * lengthening every row with a prefix.
+ * lengthening every row with a prefix. Vendors head their own models and
+ * their subscriptions; a gateway heads whatever it resells.
  */
 export function groupAssistantModels(
   modelIds: readonly string[],
@@ -147,7 +174,7 @@ export function groupAssistantModels(
   const groups: AssistantModelGroup[] = [];
   const byVendor = new Map<string, AssistantModelGroup>();
   for (const modelId of modelIds) {
-    const vendor = assistantModelVendor(modelId);
+    const vendor = assistantModelGroup(modelId);
     let group = byVendor.get(vendor.id);
     if (!group) {
       group = { vendorId: vendor.id, vendorLabel: vendor.label, models: [] };

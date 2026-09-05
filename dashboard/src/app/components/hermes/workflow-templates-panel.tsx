@@ -5,6 +5,7 @@ import { loadTeachAvailability, type TeachAvailabilityView } from "@/app/workflo
 import { WorkflowSourceIcon } from "@/app/workflows/components/workflow-source-icon";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from "@/lib/workflows/navigation";
+import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
 
 // Native replacement for the n8n-backed template/local-automation browser.
 // Lists the user's own workflows from the native engine (/api/workflows/local)
@@ -264,12 +265,16 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
       </div>
 
       {error ? (
-        <div className="rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-3 text-xs text-[var(--danger)]">
-          {error}
-          <button type="button" onClick={() => { setLoading(true); setError(null); setReload((current) => current + 1); }} className="ml-2 underline underline-offset-2">
-            Try again
-          </button>
-        </div>
+        <ReloadableFetchError
+          message={error}
+          onReload={() => {
+            setLoading(true);
+            setError(null);
+            setReload((current) => current + 1);
+          }}
+          label="Reload workflows"
+          className="justify-start rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-3 text-xs text-[var(--danger)]"
+        />
       ) : null}
 
       {loading ? <div className="py-4 text-center text-xs text-[var(--ink-muted)]">Loading your workflows…</div> : null}

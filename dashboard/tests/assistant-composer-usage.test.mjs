@@ -16,20 +16,16 @@ test("Usage lives in the shared Intelligence menu", () => {
   assert.ok(usageIndex > modelIndex, "Usage should be shown after the model choices");
 });
 
-test("Gemini failover appears in Usage, not at the top of Intelligence", () => {
+test("the Usage field never shows a quota fail-over badge", () => {
+  // It once announced "Gemini 3.7 Flash High is out of quota — using GPT-5.6
+  // Sol" beside a Google report showing 93% of the quota left: ChatMock's
+  // short-term cooldown is not the plan's quota. The field now describes the
+  // chosen model's own usage and nothing else.
   const composerSource = source("../src/app/components/assistant-composer.tsx");
   const usageSource = source("../src/app/components/usage-limits-popover.tsx");
-  const intelligenceIndex = composerSource.indexOf(">Intelligence</div>");
-  const usageIndex = composerSource.indexOf("<UsageLimitsPopover", intelligenceIndex);
-
-  assert.doesNotMatch(
-    composerSource.slice(intelligenceIndex, usageIndex),
-    /is out of quota|modelFailover\?\.usingFallback/,
-  );
-  assert.match(composerSource, /modelFailover=\{modelFailover\}/);
-  assert.match(usageSource, /assistantModelVendor\(activeModel\)\.id === "google"/);
-  assert.match(usageSource, /modelFailover\.preferredModel === activeModel/);
-  assert.match(usageSource, /is out of quota/);
+  assert.doesNotMatch(usageSource, /is out of quota|usingFallback|modelFailover|formatResetWindow/);
+  assert.doesNotMatch(composerSource, /modelFailover/);
+  assert.match(usageSource, /const effectiveModel = activeModel;/);
 });
 
 test("Intelligence remains editable during a run and its panels do not block the menu", () => {

@@ -42,6 +42,7 @@ import type {
   ProfilePhrases,
   ProfileReliability,
   ProfileStats,
+  GardenUse,
 } from "@/lib/profile/stats.ts";
 import type {
   ReviewChannel,
@@ -69,10 +70,24 @@ import {
   inDesktopShell,
   requestCurrentLocationFix,
 } from "@/lib/current-location-source.ts";
+import { persistCurrentLocationPreference } from "@/app/components/current-location-preference.ts";
 import {
   startupSoundControl,
   type StartupSoundControl,
 } from "@/lib/desktop-startup-sound.ts";
+import {
+  browserNavigationControl,
+  type BrowserNavigationControl,
+} from "@/lib/desktop-browser-tabs.ts";
+import {
+  breadboardRestartControl,
+  type BreadboardRestartControl,
+} from "@/lib/desktop-app-restart.ts";
+import {
+  clickyDesktopControl,
+  type ClickyDesktopControl,
+  type ClickyLauncherState,
+} from "@/lib/clicky/desktop-control.ts";
 
 interface Invite {
   id: number;
@@ -714,6 +729,77 @@ function StartupSoundPanel() {
   );
 }
 
+/**
+ * The tabs a desktop window carries along its caption strip.
+ *
+ * Like the startup sound, the card is absent rather than disabled outside the
+ * desktop shell: a browser has tabs of its own, and a switch for the shell's
+ * would be a switch that does nothing. It is on by default; switching it off
+ * turns every open tab into a window of its own.
+ */
+function BrowserNavigationPanel() {
+  const [control, setControl] = useState<BrowserNavigationControl | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const desktop = browserNavigationControl();
+    if (!desktop) return;
+    let active = true;
+    void desktop.read().then((current) => {
+      if (!active) return;
+      setEnabled(current);
+      setControl(() => desktop);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!control) return null;
+
+  async function toggle() {
+    if (!control) return;
+    const next = !enabled;
+    setEnabled(next);
+    setBusy(true);
+    setError(null);
+    const saved = await control.write(next);
+    setBusy(false);
+    if (saved) return;
+    setEnabled(!next);
+    setError("Breadboard could not save this preference on this computer.");
+  }
+
+  return (
+    <Card title="Browser navigation" hint="Tabs along the top of the window.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Browser tabs</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled
+              ? "Open in new tab puts a page in a tab beside this one. Ctrl+T, Ctrl+W and Ctrl+Tab work as they do in a browser."
+              : "Every page opens in a window of its own."}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          label="Show browser tabs along the top of the window"
+          busy={busy}
+          onChange={() => void toggle()}
+        />
+      </div>
+
+      {error && (
+        <p className="mt-4 text-xs text-red-400" role="alert">
+          {error}
+        </p>
+      )}
+    </Card>
+  );
+}
+
 // --------------------------------------------------------------- location
 
 type LocationRequestState = "idle" | "checking" | "blocked" | "unavailable";
@@ -856,17 +942,28 @@ function LocationPanel() {
     setError(null);
   }
 
-  function enableLocation() {
+  async function enableLocation() {
     if (!storePreference(true, preference.snapshot)) return;
-    void requestLocation();
+    if (!(await persistCurrentLocationPreference(true))) {
+      storePreference(false, null);
+      setError("Breadboard could not save the location preference on this computer.");
+      return;
+    }
+    await requestLocation();
   }
 
-  function turnOffLocation() {
+  async function turnOffLocation() {
     requestSequence.current += 1;
+    const previous = preference;
     try {
       const next = clearStoredCurrentLocationPreference(window.localStorage);
       setPreference(next);
       announceCurrentLocationChange();
+      if (!(await persistCurrentLocationPreference(false))) {
+        storePreference(previous.useForAnswers, previous.snapshot);
+        setError("Breadboard could not save the location preference on this computer.");
+        return;
+      }
       setRequestState("idle");
       setError(null);
     } catch {
@@ -874,11 +971,11 @@ function LocationPanel() {
     }
   }
 
-  function toggleLocation() {
+  async function toggleLocation() {
     if (preference.useForAnswers) {
-      turnOffLocation();
+      await turnOffLocation();
     } else {
-      enableLocation();
+      await enableLocation();
     }
   }
 
@@ -978,7 +1075,7 @@ function LocationPanel() {
           checked={preference.useForAnswers}
           label="Use this device's current location in relevant answers"
           busy={false}
-          onChange={toggleLocation}
+          onChange={() => void toggleLocation()}
         />
       </div>
 
@@ -1571,10 +1668,19 @@ function GoogleImageGenerationPanel({ initial }: { initial: GoogleImageGeneratio
   );
 }
 
-function ShortcutPanel({ initial }: { initial: NavbarShortcuts }) {
+function NavbarPanel({
+  initial,
+  initialFlowers,
+  onFlowersChange,
+}: {
+  initial: NavbarShortcuts;
+  initialFlowers: boolean;
+  onFlowersChange: (showFlowers: boolean) => void;
+}) {
   const router = useRouter();
   const [shortcuts, setShortcuts] = useState(initial);
-  const [busy, setBusy] = useState<keyof NavbarShortcuts | null>(null);
+  const [flowers, setFlowers] = useState(initialFlowers);
+  const [busy, setBusy] = useState<keyof NavbarShortcuts | "flowers" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function toggle(key: keyof NavbarShortcuts) {
@@ -1609,17 +1715,65 @@ function ShortcutPanel({ initial }: { initial: NavbarShortcuts }) {
     }
   }
 
+  async function toggleFlowers() {
+    const previous = flowers;
+    const optimistic = !flowers;
+    setFlowers(optimistic);
+    onFlowersChange(optimistic);
+    setBusy("flowers");
+    setError(null);
+
+    try {
+      const response = await fetch("/api/profile/navbar-shortcuts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowers: optimistic }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        flowers?: boolean;
+        error?: string;
+      };
+      if (!response.ok || typeof data.flowers !== "boolean") {
+        throw new Error(data.error || "Could not save the change");
+      }
+      setFlowers(data.flowers);
+      onFlowersChange(data.flowers);
+      router.refresh();
+    } catch (cause) {
+      setFlowers(previous);
+      onFlowersChange(previous);
+      setError(cause instanceof Error ? cause.message : "Could not save the change");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const on = NAVBAR_SHORTCUTS.filter((shortcut) => shortcuts[shortcut.key]).length;
 
   return (
     <Card
-      title="Navbar shortcuts"
+      title="Navbar"
       hint={
         on === 0
           ? "The navbar shows none of these. Switch one on to give it a seat."
           : `${on} of ${NAVBAR_SHORTCUTS.length} showing in the navbar.`
       }
     >
+      <div className="mb-4 flex items-start justify-between gap-4 border-b border-gray-800 pb-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Flowers</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            Adds flowers to the animated grass in the top navbar.
+          </p>
+        </div>
+        <Switch
+          checked={flowers}
+          label="Show flowers in the top navbar"
+          busy={busy !== null}
+          onChange={() => void toggleFlowers()}
+        />
+      </div>
+
       <ul className="space-y-3">
         {NAVBAR_SHORTCUTS.map((shortcut) => (
           <li key={shortcut.key} className="flex items-start justify-between gap-4">
@@ -2104,9 +2258,247 @@ function AuditFeed({ entries }: { entries: AuditEntry[] }) {
 
 // ---------------------------------------------------------------------- page
 
+/**
+ * Restarts the complete desktop product. It is intentionally absent in an
+ * ordinary browser, where reloading this page would leave every service alive
+ * and would not honor what the control says.
+ */
+function RestartBreadboardButton() {
+  const [control, setControl] = useState<BreadboardRestartControl | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      const desktop = breadboardRestartControl();
+      if (active && desktop) setControl(() => desktop);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!control) return null;
+
+  async function restart() {
+    if (!control || busy) return;
+    if (
+      !window.confirm(
+        "Restart Breadboard? Any work that is still running will be stopped.",
+      )
+    ) {
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    const accepted = await control.restart();
+    if (accepted) return;
+    setBusy(false);
+    setError("Restart failed. Check the Breadboard logs and try again.");
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={() => void restart()}
+        disabled={busy}
+        aria-busy={busy}
+        title="Restart Breadboard. Development launches rebuild before restarting."
+        className="neu-button flex items-center gap-1.5 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
+      >
+        <RefreshCw
+          className={`h-4 w-4 shrink-0 ${busy ? "animate-spin" : ""}`}
+          aria-hidden
+        />
+        <span aria-live="polite">{busy ? "Restarting…" : "Restart Breadboard"}</span>
+      </button>
+      {error && (
+        <p className="max-w-56 text-right text-xs text-red-400" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The desktop shell launches the built-in Windows companion or the native
+ * macOS app. An ordinary browser leaves this card out.
+ */
+function ClickyPanel() {
+  const [control, setControl] = useState<ClickyDesktopControl | null>(null);
+  const [state, setState] = useState<ClickyLauncherState | null>(null);
+  const [busy, setBusy] = useState<"launch" | "project" | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const desktop = clickyDesktopControl();
+    if (!desktop) return;
+    let active = true;
+    void desktop
+      .read()
+      .then((next) => {
+        if (!active) return;
+        setControl(() => desktop);
+        setState(next);
+      })
+      .catch(() => {
+        if (!active) return;
+        setControl(() => desktop);
+        setMessage("Breadboard could not read Clicky's launch state.");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!control || (!state && !message)) return null;
+
+  async function act(action: "launch" | "project") {
+    if (!control || busy) return;
+    setBusy(action);
+    setMessage(null);
+    try {
+      const launch =
+        action === "launch"
+          ? await control.launch()
+          : await control.openProject();
+      setState(launch.state);
+      setMessage(launch.message);
+    } catch {
+      setMessage("Breadboard could not reach the Clicky launcher.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card
+      title="Clicky"
+      hint="A voice companion for Windows and macOS that can see your screen when you ask for help."
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                state?.available
+                  ? "bg-emerald-400"
+                  : state?.supported
+                    ? "bg-amber-400"
+                    : "bg-gray-600"
+              }`}
+              aria-hidden
+            />
+            <p className="text-sm font-medium text-white">
+              {state?.available
+                ? "Ready"
+                : state?.status === "not_built"
+                  ? "Needs its first build"
+                  : "Unavailable"}
+            </p>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-gray-500">
+            {message ?? state?.message}
+          </p>
+          {state?.supported && (
+            <p className="mt-2 text-xs leading-5 text-gray-600">
+              You can also type <span className="font-mono text-gray-400">launch Clicky</span> in
+              any chat.
+            </p>
+          )}
+        </div>
+
+        {state?.available ? (
+          <button
+            type="button"
+            onClick={() => void act("launch")}
+            disabled={busy !== null}
+            aria-busy={busy === "launch"}
+            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy === "launch" ? "Launching…" : "Launch Clicky"}
+          </button>
+        ) : state?.projectAvailable ? (
+          <button
+            type="button"
+            onClick={() => void act("project")}
+            disabled={busy !== null}
+            aria-busy={busy === "project"}
+            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy === "project" ? "Opening…" : "Open in Xcode"}
+          </button>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * A garden needs more than a single ranking number: activity volume, the
+ * number of separate chats, measured generation time, and recency answer
+ * different questions. The progress bar remains the quick comparison while
+ * the compact second line carries that context without becoming a table.
+ */
+function GardenRow({
+  garden,
+  share,
+}: {
+  garden: GardenUse;
+  share: number;
+}) {
+  const conversationLabel = garden.conversations === 1 ? "chat" : "chats";
+
+  return (
+    <div className="rounded-xl border border-gray-800 px-3 py-2.5">
+      <div className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
+        <Link
+          href={`/gardens/${garden.slug}`}
+          className="truncate font-medium text-gray-200 transition-colors hover:text-white"
+        >
+          {garden.name}
+        </Link>
+        <span className="shrink-0 tabular-nums text-gray-300">
+          {formatCount(garden.prompts)}
+          <span className="ml-1 font-normal text-gray-600">prompts</span>
+        </span>
+      </div>
+
+      <div className="neu-progress-track mt-2 h-1.5 overflow-hidden rounded-full" aria-hidden>
+        <span
+          className="block h-full rounded-full"
+          style={{
+            width: `${Math.max(2, Math.round(share * 100))}%`,
+            background: "var(--botanical)",
+          }}
+        />
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-600">
+        <span>
+          <span className="tabular-nums text-gray-400">{formatCount(garden.conversations)}</span>{" "}
+          {conversationLabel}
+        </span>
+        <span>
+          <span className="tabular-nums text-gray-400">
+            {garden.thinkingMs > 0 ? formatDuration(garden.thinkingMs) : "—"}
+          </span>{" "}
+          AI time
+        </span>
+        {garden.lastPromptAt && <span>Active {relativeTime(garden.lastPromptAt)}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function ProfileClient({
   stats,
   initialShortcuts,
+  initialNavbarFlowers,
   browserProfile,
   contacts,
   contactTotal,
@@ -2118,6 +2510,7 @@ export default function ProfileClient({
 }: {
   stats: ProfileStats;
   initialShortcuts: NavbarShortcuts;
+  initialNavbarFlowers: boolean;
   browserProfile: BrowserProfileState;
   contacts: Contact[];
   contactTotal: number;
@@ -2131,6 +2524,7 @@ export default function ProfileClient({
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
   const [tab, setTab] = useState<"profile" | "knowledge">(initialTab);
   const [brainScope, setBrainScope] = useState(initialBrainScope);
+  const [showNavbarFlowers, setShowNavbarFlowers] = useState(initialNavbarFlowers);
   // The heading is the name when there is one, because that is the thing this
   // page is about. The username does not disappear — it moves down a line, to
   // sit with the email as the other piece of account plumbing.
@@ -2161,7 +2555,7 @@ export default function ProfileClient({
   return (
     <div className="flex min-h-screen flex-col bg-[var(--paper-bg)] text-white">
       <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
-        <NavbarFlowerWind />
+        <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" fixed />
           <span className="text-gray-700">/</span>
@@ -2215,6 +2609,7 @@ export default function ProfileClient({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            <RestartBreadboardButton />
             <button
               type="button"
               onClick={() => signOut({ callbackUrl: "/auth/login" })}
@@ -2300,7 +2695,7 @@ export default function ProfileClient({
 
           <Card
             title="Where you work"
-            hint="Prompts by surface, and the gardens that carry the most of them."
+            hint="Prompts by surface, with a closer look at your busiest gardens."
           >
             {surfaces.length === 0 ? (
               <p className="text-xs text-gray-600">No prompts yet.</p>
@@ -2322,13 +2717,11 @@ export default function ProfileClient({
                 <h3 className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-gray-600">
                   Busiest gardens
                 </h3>
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                   {gardens.map((garden) => (
-                    <Bar
+                    <GardenRow
                       key={garden.slug}
-                      label={garden.name}
-                      href={`/gardens/${garden.slug}`}
-                      value={formatCount(garden.prompts)}
+                      garden={garden}
                       share={gardenMax === 0 ? 0 : garden.prompts / gardenMax}
                     />
                   ))}
@@ -2439,7 +2832,11 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
-            <ShortcutPanel initial={initialShortcuts} />
+            <NavbarPanel
+              initial={initialShortcuts}
+              initialFlowers={initialNavbarFlowers}
+              onFlowersChange={setShowNavbarFlowers}
+            />
           </Packed>
 
           <Packed>
@@ -2456,6 +2853,14 @@ export default function ProfileClient({
 
           <Packed>
             <StartupSoundPanel />
+          </Packed>
+
+          <Packed>
+            <ClickyPanel />
+          </Packed>
+
+          <Packed>
+            <BrowserNavigationPanel />
           </Packed>
         </div>
 

@@ -29,7 +29,17 @@ const ibmPlexMono = IBM_Plex_Mono({
   weight: ["400", "500", "600", "700"],
 });
 
-const themeInitializationScript = `try{const theme=localStorage.getItem("breadboard:theme");if(theme==="dark")document.documentElement.dataset.theme="dark"}catch{}`;
+/**
+ * Choose the theme before the first paint.
+ *
+ * The desktop dashboard is served from a loopback port that can change between
+ * launches, so a new launch can have a fresh origin and therefore no
+ * localStorage yet—or can reuse a port whose origin contains an older choice.
+ * The shell appends its durable, last-active theme to the launch URL, so that
+ * value is authoritative when present and seeds the origin before first paint.
+ * In-page theme changes keep the launch URL current for renderer-only reloads.
+ */
+const themeInitializationScript = `(()=>{const key="breadboard:theme";const launch=new URLSearchParams(location.search).get("theme");let theme=launch==="dark"||launch==="light"?launch:null;if(!theme){try{const stored=localStorage.getItem(key);if(stored==="dark"||stored==="light")theme=stored}catch{}}if(theme){try{localStorage.setItem(key,theme)}catch{}document.documentElement.dataset.theme=theme}})()`;
 
 /**
  * Electron's preload exposes `window.breadboardDesktop` before any page script

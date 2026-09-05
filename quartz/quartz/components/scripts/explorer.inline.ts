@@ -7,6 +7,7 @@ import {
 import { isVisibleGardenRootEntry } from "../../util/explorerScope"
 import { FullSlug, resolveRelative, simplifySlug } from "../../util/path"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
+import { TOPOLOGY_SOURCE_COLORS, topologySourceKind } from "./sourceNodeVisual"
 
 type MaybeHTMLElement = HTMLElement | undefined
 
@@ -207,30 +208,36 @@ interface CreateFolderDialog {
   relFolder: string
   pendingFolder: string
   pending: boolean
+  retryTimer: number | null
   returnFocus: HTMLElement | null
 }
 
 let createFolderDialog: CreateFolderDialog | null = null
 let createFolderResultListenerBound = false
 
-function setCreateFolderDialogError(dialog: CreateFolderDialog, message = "") {
+function setCreateFolderDialogError(dialog: CreateFolderDialog, message = "", waiting = false) {
   dialog.error.textContent = message
   dialog.error.hidden = !message
+  dialog.error.dataset.waiting = String(waiting)
 }
 
-function setCreateFolderDialogPending(dialog: CreateFolderDialog, pending: boolean) {
+function setCreateFolderDialogPending(
+  dialog: CreateFolderDialog,
+  pending: boolean,
+  waiting = false,
+) {
   dialog.pending = pending
   dialog.panel.setAttribute("aria-busy", String(pending))
   dialog.input.disabled = pending
-  dialog.cancel.disabled = pending
-  dialog.close.disabled = pending
   dialog.submit.disabled = pending || !dialog.input.value.trim()
-  dialog.submit.textContent = pending ? "Creating..." : "Create folder"
+  dialog.submit.textContent = pending ? (waiting ? "Waiting..." : "Creating...") : "Create folder"
 }
 
 function closeCreateFolderDialog(force = false) {
   const dialog = createFolderDialog
   if (!dialog || (dialog.pending && !force)) return
+  if (dialog.retryTimer !== null) window.clearTimeout(dialog.retryTimer)
+  dialog.retryTimer = null
   dialog.overlay.hidden = true
   dialog.input.value = ""
   dialog.pendingFolder = ""
@@ -247,7 +254,14 @@ function bindCreateFolderResultListener() {
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return
     const data = event.data as
-      | { type?: string; folder?: string; ok?: boolean; error?: string }
+      | {
+          type?: string
+          folder?: string
+          ok?: boolean
+          error?: string
+          retryable?: boolean
+          retryAfterMs?: number
+        }
       | undefined
     const dialog = createFolderDialog
     if (
@@ -260,6 +274,22 @@ function bindCreateFolderResultListener() {
 
     if (data.ok) {
       closeCreateFolderDialog(true)
+      return
+    }
+
+    if (data.retryable) {
+      const retryAfterMs = Number.isFinite(data.retryAfterMs)
+        ? Math.min(10_000, Math.max(1_000, Number(data.retryAfterMs)))
+        : 2_000
+      setCreateFolderDialogPending(dialog, true, true)
+      setCreateFolderDialogError(dialog, "Waiting for the current garden update to finish…", true)
+      if (dialog.retryTimer !== null) window.clearTimeout(dialog.retryTimer)
+      dialog.retryTimer = window.setTimeout(() => {
+        const current = createFolderDialog
+        if (!current?.pending || current.pendingFolder !== data.folder) return
+        current.retryTimer = null
+        sendCreateFolder(current.cluster, current.pendingFolder)
+      }, retryAfterMs)
       return
     }
 
@@ -316,6 +346,7 @@ function ensureCreateFolderDialog(): CreateFolderDialog {
     relFolder: "",
     pendingFolder: "",
     pending: false,
+    retryTimer: null,
     returnFocus: null,
   }
 
@@ -336,16 +367,24 @@ function ensureCreateFolderDialog(): CreateFolderDialog {
     }
     const folder = dialog.relFolder ? `${dialog.relFolder}/${name}` : name
     dialog.pendingFolder = folder
+    if (dialog.retryTimer !== null) window.clearTimeout(dialog.retryTimer)
+    dialog.retryTimer = null
+    setCreateFolderDialogError(dialog)
     setCreateFolderDialogPending(dialog, true)
     sendCreateFolder(dialog.cluster, folder)
   })
-  cancel.addEventListener("click", () => closeCreateFolderDialog())
-  close.addEventListener("click", () => closeCreateFolderDialog())
+  const cancelPendingCreation = () => {
+    const returnFocus = createFolderDialog?.returnFocus
+    closeCreateFolderDialog(true)
+    returnFocus?.focus()
+  }
+  cancel.addEventListener("click", cancelPendingCreation)
+  close.addEventListener("click", cancelPendingCreation)
   overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) closeCreateFolderDialog()
+    if (event.target === overlay) cancelPendingCreation()
   })
   overlay.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeCreateFolderDialog()
+    if (event.key === "Escape") cancelPendingCreation()
   })
 
   bindCreateFolderResultListener()
@@ -500,7 +539,15 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const li = clone.querySelector("li") as HTMLLIElement
   const a = li.querySelector("a") as HTMLAnchorElement
   const flagColor = validFlagColor(node.data?.flagColor)
-  const isSourceDocument = node.data?.knowledgeType === "source-document"
+  const sourceKind = topologySourceKind(
+    {
+      knowledgeType: node.data?.knowledgeType,
+      sourceType: node.data?.sourceType,
+      title: node.data?.title ?? node.displayName,
+      relPath: String(node.data?.filePath ?? node.slug),
+    },
+    String(node.slug),
+  )
   const isTextbookPage =
     node.data?.knowledgeType === "textbook-page" ||
     node.data?.knowledgeType === "learning-page" ||
@@ -512,7 +559,12 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const isChatNodeNote =
     node.data?.knowledgeType === "generated-note" && node.data?.generatedNoteType === "chat-node"
   li.classList.add("explorer-file")
-  if (isSourceDocument) li.classList.add("source-document")
+  if (sourceKind) {
+    li.classList.add("source-document")
+    li.dataset.sourceKind = sourceKind
+    li.style.setProperty("--source-node-color-light", TOPOLOGY_SOURCE_COLORS.light[sourceKind])
+    li.style.setProperty("--source-node-color-dark", TOPOLOGY_SOURCE_COLORS.dark[sourceKind])
+  }
   if (isTextbookPage) li.classList.add("textbook-page")
   if (isInternalConcept) li.classList.add("internal-concept")
   if (isChatNodeNote) li.classList.add("chat-node-note")

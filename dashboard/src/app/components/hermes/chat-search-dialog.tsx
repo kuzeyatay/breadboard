@@ -5,7 +5,8 @@
 // The ranking that makes the second case work lives on the server
 // (lib/conversations/search.ts); this dialog only debounces, lists and picks.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { readLastOpenedChats } from "@/lib/conversations/last-opened";
 import { formatChatTime, type TerminalSidebarChat } from "./terminal-sidebar";
 
 export interface ChatSearchResult {
@@ -45,7 +46,14 @@ export default function ChatSearchDialog({
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [lastOpenedIds, setLastOpenedIds] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setLastOpenedIds(
+      readLastOpenedChats(window.localStorage, surface, gardenSlug),
+    );
+  }, [surface, gardenSlug]);
 
   useEffect(() => {
     const trimmed = query.trim();
@@ -89,15 +97,46 @@ export default function ChatSearchDialog({
   }, [query, surface, gardenSlug]);
 
   const searchingNow = searching && query.trim().length > 0;
-  const rows: Array<{ id: string; title: string; updatedAt: string; snippet: string }> =
-    query.trim()
-      ? results
-      : recents.slice(0, 12).map((chat) => ({
-          id: chat.id,
-          title: chat.title,
-          updatedAt: chat.updatedAt,
-          snippet: "",
-        }));
+  const recentRows = recents.slice(0, 12).map((chat) => ({
+    id: chat.id,
+    title: chat.title,
+    updatedAt: chat.updatedAt,
+    snippet: "",
+  }));
+  const recentById = new Map(
+    recents.map((chat) => [
+      chat.id,
+      {
+        id: chat.id,
+        title: chat.title,
+        updatedAt: chat.updatedAt,
+        snippet: "",
+      },
+    ]),
+  );
+  const lastOpenedRows = lastOpenedIds.flatMap((id) => {
+    const chat = recentById.get(id);
+    return chat ? [chat] : [];
+  });
+  const displayRows = query.trim()
+    ? results.map((row) => ({
+        key: `result:${row.id}`,
+        section: null,
+        row,
+      }))
+    : [
+        ...lastOpenedRows.map((row) => ({
+          key: `last-opened:${row.id}`,
+          section: "Last opened",
+          row,
+        })),
+        ...recentRows.map((row) => ({
+          key: `recent:${row.id}`,
+          section: "Recent",
+          row,
+        })),
+      ];
+  const rows = displayRows.map(({ row }) => row);
 
   const choose = useCallback(
     (chatId: string) => {
@@ -158,11 +197,6 @@ export default function ChatSearchDialog({
         </div>
 
         <div className="max-h-[52vh] overflow-y-auto p-2">
-          {!query.trim() ? (
-            <p className="px-2 pb-1 pt-1 text-xs font-semibold text-[var(--ink-muted)]">
-              Recent
-            </p>
-          ) : null}
           {error ? <p className="px-3 py-4 text-xs text-[#9a4438]">{error}</p> : null}
           {!error && rows.length === 0 ? (
             <p className="px-3 py-8 text-center text-xs text-[var(--ink-muted)]">
@@ -170,27 +204,40 @@ export default function ChatSearchDialog({
             </p>
           ) : null}
           <ul className="space-y-0.5">
-            {rows.map((row, index) => (
-              <li key={row.id}>
-                <button
-                  type="button"
-                  onClick={() => choose(row.id)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  className={`w-full rounded-lg px-3 py-2 text-left transition ${
-                    index === activeIndex
-                      ? "bg-[var(--paper-strong)]"
-                      : "hover:bg-[var(--paper-surface)]"
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">{row.title}</span>
-                    <span className="shrink-0 text-[10px] text-[var(--ink-muted)]">{formatChatTime(row.updatedAt)}</span>
-                  </span>
-                  {row.snippet ? (
-                    <span className="mt-0.5 block truncate text-[11px] text-[var(--ink-muted)]">{row.snippet}</span>
-                  ) : null}
-                </button>
-              </li>
+            {displayRows.map(({ key, section, row }, index) => (
+              <Fragment key={key}>
+                {section && section !== displayRows[index - 1]?.section ? (
+                  <li role="presentation">
+                    <p
+                      className={`px-2 pb-1 text-xs font-semibold text-[var(--ink-muted)] ${
+                        index === 0 ? "pt-1" : "pt-3"
+                      }`}
+                    >
+                      {section}
+                    </p>
+                  </li>
+                ) : null}
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => choose(row.id)}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    className={`w-full rounded-lg px-3 py-2 text-left transition ${
+                      index === activeIndex
+                        ? "bg-[var(--paper-strong)]"
+                        : "hover:bg-[var(--paper-surface)]"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">{row.title}</span>
+                      <span className="shrink-0 text-[10px] text-[var(--ink-muted)]">{formatChatTime(row.updatedAt)}</span>
+                    </span>
+                    {row.snippet ? (
+                      <span className="mt-0.5 block truncate text-[11px] text-[var(--ink-muted)]">{row.snippet}</span>
+                    ) : null}
+                  </button>
+                </li>
+              </Fragment>
             ))}
           </ul>
         </div>

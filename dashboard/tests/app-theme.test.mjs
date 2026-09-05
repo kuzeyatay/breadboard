@@ -1,26 +1,33 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import vm from "node:vm";
 import {
   APP_THEME_CHANGE_EVENT,
   APP_THEME_LOCATION_STORAGE_KEY,
   APP_THEME_MESSAGE,
   APP_THEME_MODE_STORAGE_KEY,
+  APP_THEME_OVERRIDE_STORAGE_KEY,
   APP_THEME_STORAGE_KEY,
   appThemeForMoment,
   appThemeScheduleForShell,
+  applyAppTheme,
+  applyAppThemeMode,
   getStoredAppTheme,
   getStoredAppThemeLocation,
   getStoredAppThemeMode,
+  getStoredAppThemeOverrideUntil,
   isAppTheme,
   isAppThemeMode,
   nextAppThemeTransition,
   rememberEffectiveAppTheme,
+  resolveAppTheme,
   solarTimesForDate,
 } from "../src/lib/app-theme.ts";
 import { quartzUrlWithTheme } from "../src/lib/quartz-url.ts";
 
 const layout = fs.readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
+const home = fs.readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
 const runtime = fs.readFileSync(
   new URL("../src/app/components/app-theme-runtime.tsx", import.meta.url),
   "utf8",
@@ -63,6 +70,32 @@ const gardenQuartzFrame = fs.readFileSync(
   new URL("../src/app/garden/garden-quartz-frame.tsx", import.meta.url),
   "utf8",
 );
+
+function runThemeInitialization({ stored, search, storageThrows = false }) {
+  const script = layout.match(
+    /const themeInitializationScript = `([^`]*)`;/,
+  )?.[1];
+  assert.ok(script, "theme initialization script should be extractable");
+  const values = new Map();
+  if (stored !== undefined) values.set("breadboard:theme", stored);
+  const documentElement = { dataset: {} };
+  vm.runInNewContext(script, {
+    URLSearchParams,
+    location: { search },
+    document: { documentElement },
+    localStorage: {
+      getItem(key) {
+        if (storageThrows) throw new Error("storage unavailable");
+        return values.get(key) ?? null;
+      },
+      setItem(key, value) {
+        if (storageThrows) throw new Error("storage unavailable");
+        values.set(key, value);
+      },
+    },
+  });
+  return { theme: documentElement.dataset.theme, stored: values.get("breadboard:theme") };
+}
 
 test("theme preference accepts only explicit light and dark values", () => {
   assert.equal(APP_THEME_STORAGE_KEY, "breadboard:theme");
@@ -136,8 +169,121 @@ test("automatic theme has a deterministic local-clock fallback", () => {
   assert.equal(appThemeForMoment(new Date(2026, 0, 1, 18), null), "dark");
 });
 
+test("a manual pick under the sun switch holds until the next transition, then the sun resumes", () => {
+  const storage = new Map();
+  const readable = { getItem: (key) => storage.get(key) ?? null };
+  const location = { latitude: 41.008, longitude: 28.978 };
+  const noon = new Date(2026, 5, 21, 12);
+  const { sunset } = solarTimesForDate(noon, location);
+  storage.set(APP_THEME_LOCATION_STORAGE_KEY, JSON.stringify(location));
+
+  // Manual mode never consults the override.
+  storage.set(APP_THEME_STORAGE_KEY, "dark");
+  storage.set(APP_THEME_OVERRIDE_STORAGE_KEY, String(sunset.getTime()));
+  assert.deepEqual(resolveAppTheme(readable, noon), {
+    theme: "dark",
+    mode: "manual",
+    overridden: false,
+  });
+
+  // Sun mode at noon says light, unless a pick is standing.
+  storage.set(APP_THEME_MODE_STORAGE_KEY, "sun");
+  assert.deepEqual(resolveAppTheme(readable, noon), {
+    theme: "dark",
+    mode: "sun",
+    overridden: true,
+  });
+  // The minute after sunset the pick has expired and the sun answers again,
+  // without anyone having touched the mode.
+  assert.deepEqual(resolveAppTheme(readable, new Date(sunset.getTime() + 60_000)), {
+    theme: "dark",
+    mode: "sun",
+    overridden: false,
+  });
+  storage.delete(APP_THEME_OVERRIDE_STORAGE_KEY);
+  assert.deepEqual(resolveAppTheme(readable, noon), {
+    theme: "light",
+    mode: "sun",
+    overridden: false,
+  });
+
+  // Garbage in the override slot is no override.
+  assert.equal(getStoredAppThemeOverrideUntil({ getItem: () => "soon" }), null);
+  assert.equal(getStoredAppThemeOverrideUntil({ getItem: () => "-5" }), null);
+  assert.equal(getStoredAppThemeOverrideUntil({ getItem: () => "1700000000000" }), 1_700_000_000_000);
+});
+
+test("picking a theme records an override only while following the sun, and flipping the switch clears it", () => {
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  const originalFetch = globalThis.fetch;
+  const stored = new Map();
+  const events = [];
+  const localStorage = {
+    getItem: (key) => stored.get(key) ?? null,
+    setItem: (key, value) => stored.set(key, value),
+    removeItem: (key) => stored.delete(key),
+  };
+  globalThis.window = {
+    localStorage,
+    dispatchEvent: (event) => events.push(event.type),
+  };
+  globalThis.CustomEvent ??= class CustomEvent {
+    constructor(type, init) {
+      this.type = type;
+      this.detail = init?.detail;
+    }
+  };
+  globalThis.document = {
+    documentElement: { dataset: { theme: "light" } },
+    visibilityState: "hidden",
+  };
+  globalThis.fetch = () => Promise.reject(new Error("offline"));
+
+  try {
+    // Manual mode: a pick is just the theme.
+    applyAppTheme("dark");
+    assert.equal(stored.get(APP_THEME_STORAGE_KEY), "dark");
+    assert.equal(stored.has(APP_THEME_OVERRIDE_STORAGE_KEY), false);
+
+    // Sun mode: the pick is remembered together with the instant it lapses,
+    // which is the next sunrise or sunset, and the switch itself stays on.
+    stored.set(APP_THEME_MODE_STORAGE_KEY, "sun");
+    const before = Date.now();
+    applyAppTheme("light");
+    const until = Number(stored.get(APP_THEME_OVERRIDE_STORAGE_KEY));
+    assert.equal(stored.get(APP_THEME_MODE_STORAGE_KEY), "sun");
+    assert.equal(until, nextAppThemeTransition(new Date(before), null).getTime());
+    assert.ok(until > before);
+    assert.deepEqual(resolveAppTheme(localStorage, new Date(before)), {
+      theme: "light",
+      mode: "sun",
+      overridden: true,
+    });
+
+    // The account replaying the switch on page load is not a new decision.
+    applyAppThemeMode("sun", { persist: false });
+    assert.equal(stored.has(APP_THEME_OVERRIDE_STORAGE_KEY), true);
+    // The person flipping it is.
+    applyAppThemeMode("manual");
+    assert.equal(stored.has(APP_THEME_OVERRIDE_STORAGE_KEY), false);
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("the remembered theme initializes before paint and is configurable from the pencil", () => {
   assert.match(layout, /themeInitializationScript/);
+  // Desktop launches can move to a new loopback origin or reuse one containing
+  // an older choice. The durable shell decision seeds that origin before paint.
+  assert.match(layout, /new URLSearchParams\(location\.search\)\.get\("theme"\)/);
+  assert.match(layout, /localStorage\.setItem\(key,theme\)/);
+  assert.ok(
+    layout.indexOf("new URLSearchParams(location.search)") <
+      layout.indexOf("localStorage.getItem(key)"),
+  );
   assert.match(layout, /suppressHydrationWarning/);
   assert.match(layout, /<AppThemeRuntime\s*\/>/);
   assert.match(dashboard, /aria-label="Customize dashboard appearance"/);
@@ -149,18 +295,49 @@ test("the remembered theme initializes before paint and is configurable from the
   );
   assert.match(runtime, /document\.querySelectorAll\("iframe"\)/);
   assert.match(runtime, /nextAppThemeTransition/);
+  assert.match(runtime, /window\.history\.replaceState\(window\.history\.state, "", current\)/);
   // A timer armed for the exact sunrise instant is a monotonic-clock deadline
   // that a sleeping machine never reaches, so automatic mode re-reads the wall
   // clock at least once a minute instead of trusting one long countdown.
   assert.match(runtime, /const THEME_RECHECK_INTERVAL_MS = 60_000;/);
   assert.match(runtime, /Math\.min\(\s*THEME_RECHECK_INTERVAL_MS,/);
   assert.match(runtime, /window\.addEventListener\("focus", handleModeChange\)/);
+  // Every recheck (the minute tick, focus, visibility, the account replaying
+  // the switch) goes through the resolver, so a manual pick made under the
+  // sun switch is not put back to the sun's answer before the next transition.
+  assert.match(runtime, /resolveAppTheme\(window\.localStorage, now\)/);
+  assert.doesNotMatch(runtime, /appThemeForMoment/);
+  assert.match(runtime, /event\.key === APP_THEME_OVERRIDE_STORAGE_KEY/);
   assert.match(profile, /title="Theme"/);
   assert.match(profile, /Sunrise to sunset/);
   assert.match(profile, /applyAppThemeMode\("sun"\)/);
   // Sunrise and sunset need a fix from whichever source this machine has, not
   // from the browser alone — inside the desktop shell the browser has none.
   assert.match(profile, /requestCurrentLocationFix\(\{ maxAgeMs: 7 \* 86_400_000 \}\)/);
+});
+
+test("the durable desktop launch theme overrides an empty or stale origin", () => {
+  // The desktop opens the origin root. Its server redirect must not discard
+  // the loading screen's decision before the final dashboard document exists.
+  assert.match(home, /searchParams:\s*Promise<\{ theme\?: string \| string\[\] \}>/);
+  assert.match(home, /theme === "dark" \|\| theme === "light"/);
+  assert.match(home, /`\/dashboard\?theme=\$\{theme\}`/);
+  assert.deepEqual(runThemeInitialization({ search: "?theme=dark" }), {
+    theme: "dark",
+    stored: "dark",
+  });
+  assert.deepEqual(
+    runThemeInitialization({ stored: "light", search: "?theme=dark" }),
+    { theme: "dark", stored: "dark" },
+  );
+  assert.deepEqual(
+    runThemeInitialization({ search: "?theme=dark", storageThrows: true }),
+    { theme: "dark", stored: undefined },
+  );
+  assert.deepEqual(runThemeInitialization({ search: "?theme=sepia" }), {
+    theme: undefined,
+    stored: undefined,
+  });
 });
 
 test("theme changes crossfade without moving the page", () => {
@@ -246,14 +423,19 @@ test("dark mode uses charcoal paper and Breadboard's pastel utility bridge", () 
   assert.match(login, /bg-gray-900/);
 });
 
-test("dark navbars use a reduced-motion-aware randomized pastel sky", () => {
+test("navbar gardens share a deterministic, wall-clock-synchronized animation", () => {
   assert.match(animation, /const STAR_COUNT = 56/);
   assert.match(animation, /styles\.skyAnimation/);
-  assert.match(animation, /createStars\(Math\.random\)/);
-  assert.match(animation, /createComets\(Math\.random\)/);
+  assert.doesNotMatch(animation, /createPlants\(Math\.random\)/);
+  assert.doesNotMatch(animation, /createStars\(Math\.random\)/);
+  assert.doesNotMatch(animation, /createComets\(Math\.random\)/);
+  assert.match(animation, /function synchronizedDelay/);
+  assert.match(animation, /setAnimationClockMs\(Date\.now\(\)\)/);
+  assert.match(animation, /data-animation-ready=\{animationReady\}/);
   assert.match(animationStyles, /html\[data-theme="dark"\].*\.skyAnimation/);
   assert.match(animationStyles, /@keyframes starTwinkle/);
   assert.match(animationStyles, /@keyframes cometPass/);
+  assert.match(animationStyles, /animation-play-state:\s*paused/);
   assert.match(animationStyles, /prefers-reduced-motion: reduce/);
 });
 
@@ -261,6 +443,11 @@ test("the embedded Quartz reader accepts the dashboard theme message", () => {
   assert.match(quartzTheme, /event\.source !== window\.parent/);
   assert.match(quartzTheme, /message\?\.type !== "breadboard:theme"/);
   assert.match(quartzTheme, /applyTheme\(message\.theme\)/);
+  assert.match(
+    quartzTheme,
+    /localStorage\.setItem\("theme", requestedTheme\)/,
+    "the initial iframe theme must survive navigation to another Markdown page",
+  );
 });
 
 test("Quartz iframe URLs carry the dashboard theme before first paint", () => {

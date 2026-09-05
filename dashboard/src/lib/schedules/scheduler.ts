@@ -28,6 +28,7 @@ export async function runDueScheduledChats(
       store.recordRun(job.id, {
         status: result.status,
         conversationId: result.conversationId,
+        objectiveDecision: result.objectiveDecision,
         error: result.error ?? null,
         at: new Date(),
       });

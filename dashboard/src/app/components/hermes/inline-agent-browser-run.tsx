@@ -23,6 +23,10 @@ import type {
 } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
+import {
+  desktopTabsBridge,
+  openBrowserAgentRunInDesktop,
+} from "@/lib/desktop-browser-tabs";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -136,6 +140,9 @@ export default function InlineAgentBrowserRun({
   const followRef = useRef(true);
   const onTerminalRef = useRef(onTerminal);
   const reportedTerminalRef = useRef(false);
+  // The launchers own the one automatic open. This observer must stay passive:
+  // a chat refresh or virtualized remount must not resurrect a user-closed tab.
+  const usesDesktopBrowser = desktopTabsBridge() !== undefined;
 
   const base = `/api/agent-browser/agents/${agentId}/runs/${runId}`;
 
@@ -237,6 +244,11 @@ export default function InlineAgentBrowserRun({
     }
 
     async function startSignIn(): Promise<SignInStartResult> {
+      if (usesDesktopBrowser) {
+        const opened = await openBrowserAgentRunInDesktop(runId, authRequired!.url);
+        if (!opened) throw new Error("Breadboard could not reopen the live browser tab.");
+        return { browserName: "Breadboard browser" };
+      }
       const profile = await waitUntilRunReleasesBrowser();
       const response = await fetch("/api/agent-browser/browser-profile", {
         method: "POST",
@@ -259,6 +271,7 @@ export default function InlineAgentBrowserRun({
     }
 
     async function finishSignIn(): Promise<void> {
+      if (usesDesktopBrowser) return;
       const profile = await readProfile();
       if (!profile.windowOpen) return;
       const response = await fetch("/api/agent-browser/browser-profile", {
@@ -282,7 +295,7 @@ export default function InlineAgentBrowserRun({
       finishSignIn,
       retry: onRetry,
     });
-  }, [authRequired, base, onRetry, runId, signInSessionId, signInSurface]);
+  }, [authRequired, base, onRetry, runId, signInSessionId, signInSurface, usesDesktopBrowser]);
 
   useEffect(() => {
     // A finished turn already carries its result, and its run is long gone from

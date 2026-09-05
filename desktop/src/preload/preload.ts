@@ -1,5 +1,14 @@
 import type { IpcRenderer } from "electron";
-import type { WindowThemeSchedule } from "../shared/ipc-contract";
+import type {
+  BrowserBookmark,
+  ClickyLaunchResult,
+  ClickyLauncherState,
+  DesktopNotificationToast,
+  NotificationOverlaySize,
+  TabsCommand,
+  TabsState,
+  WindowThemeSchedule,
+} from "../shared/ipc-contract";
 
 export const PRELOAD_IPC_CHANNELS = {
   getVersions: "breadboard:get-versions",
@@ -8,17 +17,33 @@ export const PRELOAD_IPC_CHANNELS = {
   openLogs: "breadboard:open-logs",
   copyDiagnostics: "breadboard:copy-diagnostics",
   quit: "breadboard:quit",
+  restartApp: "breadboard:restart-app",
   pickFolder: "breadboard:pick-folder",
   openMicrophoneSettings: "breadboard:open-microphone-settings",
   allowThemeLocation: "breadboard:allow-theme-location",
   setTheme: "breadboard:set-theme",
   getStartupSound: "breadboard:get-startup-sound",
   setStartupSound: "breadboard:set-startup-sound",
+  getCurrentLocationPreference: "breadboard:get-current-location-preference",
+  setCurrentLocationPreference: "breadboard:set-current-location-preference",
   startupContinue: "breadboard:startup-continue",
   startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
   openTeachController: "breadboard:open-teach-controller",
   closeTeachController: "breadboard:close-teach-controller",
+  getTabsState: "breadboard:get-tabs-state",
+  tabsCommand: "breadboard:tabs-command",
+  tabsState: "breadboard:tabs-state",
+  notificationToast: "breadboard:notification-toast",
+  getBrowserNavigation: "breadboard:get-browser-navigation",
+  setBrowserNavigation: "breadboard:set-browser-navigation",
+  getBrowserBookmarks: "breadboard:get-browser-bookmarks",
+  setBrowserBookmarks: "breadboard:set-browser-bookmarks",
+  getBrowserShortcuts: "breadboard:get-browser-shortcuts",
+  setBrowserShortcuts: "breadboard:set-browser-shortcuts",
+  getClickyState: "breadboard:get-clicky-state",
+  launchClicky: "breadboard:launch-clicky",
+  openClickyProject: "breadboard:open-clicky-project",
 } as const;
 
 export interface StartupServiceView {
@@ -54,6 +79,16 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
   ipcRenderer.on(PRELOAD_IPC_CHANNELS.startupState, (_event, state) => {
     for (const listener of startupListeners) listener(state as StartupStateView);
   });
+  const tabsListeners = new Set<(state: TabsState) => void>();
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.tabsState, (_event, state) => {
+    for (const listener of tabsListeners) listener(state as TabsState);
+  });
+  const notificationListeners = new Set<(notice: DesktopNotificationToast) => void>();
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.notificationToast, (_event, notice) => {
+    for (const listener of notificationListeners) {
+      listener(notice as DesktopNotificationToast);
+    }
+  });
 
   return {
     getVersions: (): Promise<{ app: string; electron: string }> =>
@@ -74,6 +109,12 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     copyDiagnostics: (): Promise<void> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.copyDiagnostics) as Promise<void>,
     quit: (): Promise<void> => ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.quit) as Promise<void>,
+    /**
+     * Relaunch the complete application. Development launches rebuild the
+     * artifacts used by their active dashboard mode before they close.
+     */
+    restartBreadboard: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.restartApp) as Promise<boolean>,
     // The startup screen ends on a welcome the person dismisses themselves; this
     // is the renderer telling the shell its dissolve has finished and the
     // dashboard may take the window.
@@ -113,6 +154,19 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     /** Resolves false when the choice could not be written down. */
     setStartupSound: (enabled: boolean): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setStartupSound, enabled) as Promise<boolean>,
+    // The answer-location consent belongs to this installation. The actual
+    // coordinates never cross this bridge; the renderer asks the device for a
+    // fresh, coarse fix after restoring an enabled preference.
+    getCurrentLocationPreference: (): Promise<boolean | null> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.getCurrentLocationPreference,
+      ) as Promise<boolean | null>,
+    /** Resolves false when the durable choice could not be written. */
+    setCurrentLocationPreference: (enabled: boolean): Promise<boolean> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.setCurrentLocationPreference,
+        enabled,
+      ) as Promise<boolean>,
     // While someone demonstrates a task they are working in another
     // application, so the recording indicator and the Finish button have to
     // float above it. The shell owns that window; the page asks for it by
@@ -122,6 +176,84 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.openTeachController, sessionId) as Promise<boolean>,
     closeTeachController: (): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.closeTeachController) as Promise<boolean>,
+    // Browser navigation. The shell owns the tabs of the window this page is
+    // in; the page draws the strip from the state it is sent and asks for
+    // changes by command. The state arrives whenever any of it changes, and
+    // can be asked for outright on first paint.
+    getTabsState: (): Promise<TabsState> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getTabsState) as Promise<TabsState>,
+    onTabsState: (listener: (state: TabsState) => void): (() => void) => {
+      tabsListeners.add(listener);
+      return () => tabsListeners.delete(listener);
+    },
+    /** Resolves false when the window could not do what was asked. */
+    tabs: (command: TabsCommand): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.tabsCommand, command) as Promise<boolean>,
+    /** Send a page-local notice to the window-level host above every tab. */
+    publishNotificationToast: (notice: DesktopNotificationToast): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.tabsCommand, {
+        type: "notification-toast",
+        notice,
+      }) as Promise<boolean>,
+    /** Listen inside the dedicated overlay renderer for page-local notices. */
+    onNotificationToast: (
+      listener: (notice: DesktopNotificationToast) => void,
+    ): (() => void) => {
+      notificationListeners.add(listener);
+      return () => notificationListeners.delete(listener);
+    },
+    /** Resize the native overlay to exactly its interactive card content. */
+    resizeNotificationOverlay: (size: NotificationOverlaySize): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.tabsCommand, {
+        type: "notification-overlay-resize",
+        size,
+      }) as Promise<boolean>,
+    // The Profile switch for the tabs, held by the shell for the same reason
+    // the startup sound is: it has to be known before any account is.
+    getBrowserNavigation: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserNavigation) as Promise<boolean>,
+    /** Resolves false when the choice could not be written down. */
+    setBrowserNavigation: (enabled: boolean): Promise<boolean> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.setBrowserNavigation,
+        enabled,
+      ) as Promise<boolean>,
+    // Bookmarks are kept by the shell so a development port change or a full
+    // application restart cannot strand them in one renderer origin.
+    getBrowserBookmarks: (ownerKey: string): Promise<BrowserBookmark[] | null> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.getBrowserBookmarks,
+        ownerKey,
+      ) as Promise<BrowserBookmark[] | null>,
+    /** Resolves false when the complete bounded collection could not be written. */
+    setBrowserBookmarks: (
+      ownerKey: string,
+      bookmarks: BrowserBookmark[],
+    ): Promise<boolean> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.setBrowserBookmarks,
+        ownerKey,
+        bookmarks,
+      ) as Promise<boolean>,
+    getBrowserShortcuts: (ownerKey: string): Promise<BrowserBookmark[] | null> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserShortcuts, ownerKey) as Promise<BrowserBookmark[] | null>,
+    setBrowserShortcuts: (ownerKey: string, shortcuts: BrowserBookmark[]): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setBrowserShortcuts, ownerKey, shortcuts) as Promise<boolean>,
+    /** Readiness for the native macOS Clicky companion. */
+    getClickyState: (): Promise<ClickyLauncherState> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.getClickyState,
+      ) as Promise<ClickyLauncherState>,
+    /** Launch the built Clicky app without accepting a renderer-supplied path. */
+    launchClicky: (): Promise<ClickyLaunchResult> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.launchClicky,
+      ) as Promise<ClickyLaunchResult>,
+    /** Open the cloned Xcode project when Clicky still needs its first build. */
+    openClickyProject: (): Promise<ClickyLaunchResult> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.openClickyProject,
+      ) as Promise<ClickyLaunchResult>,
   };
 }
 

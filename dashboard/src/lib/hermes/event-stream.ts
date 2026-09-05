@@ -57,7 +57,6 @@ import {
   failAssistantMessage,
 } from "../conversations/store.ts";
 import { hermesMessageId } from "./message-id.ts";
-import { compactConversationMemoryIfNeeded } from "../conversations/memory.ts";
 import {
   associateArtifactToolCall,
   hasReadyArtifactForRun,
@@ -143,7 +142,6 @@ function persistAssistantOnce(
         sources,
         tokenUsage: persistedTokenUsage,
       });
-      compactConversationMemoryIfNeeded(session.row.conversation_id);
     } else {
       failAssistantMessage({
         conversationId: session.row.conversation_id,

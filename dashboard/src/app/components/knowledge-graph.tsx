@@ -10,7 +10,9 @@ import {
   type ReactNode,
 } from 'react';
 import Link from 'next/link';
+import LinkContextMenu from './link-context-menu';
 import RailDivider from './hermes/rail-divider';
+import ThoughtTopologyLoadingDots from './thought-topology-loading-dots';
 import { useRailResize } from './hermes/use-rail-resize';
 import { useQuartzViewLease } from '@/app/garden/use-quartz-view-lease';
 import {
@@ -42,6 +44,7 @@ interface TreeItem {
 }
 
 interface GraphResponse {
+  revision: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
   tree: TreeItem[];
@@ -55,6 +58,24 @@ interface GraphResponse {
     generatedNotes: number;
     links: number;
     words: number;
+  };
+}
+
+interface TopologyFreshnessResponse {
+  enabled?: boolean;
+  mode?: string;
+  stale?: boolean;
+  topology?: {
+    sourceRevision?: string;
+    build?: {
+      state?: string;
+      generatedAt?: string;
+      contentFingerprint?: string;
+    };
+  };
+  status?: {
+    state?: string;
+    progress?: number;
   };
 }
 
@@ -74,6 +95,7 @@ interface PreviewState {
 }
 
 const emptyResponse: GraphResponse = {
+  revision: '',
   nodes: [],
   edges: [],
   tree: [],
@@ -89,10 +111,6 @@ const emptyResponse: GraphResponse = {
     words: 0,
   },
 };
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en-US').format(value);
-}
 
 function graphHref(clusterSlug: string): string {
   return `/garden/${clusterSlug}`;
@@ -110,11 +128,12 @@ function hashString(value: string): string {
 function quartzMapPreviewUrl(
   clusterSlug: string,
   refreshKey: string,
+  serverRefreshKey: string,
   theme: AppTheme,
 ): string {
   const params = new URLSearchParams({
     clusterSlug,
-    refresh: hashString(refreshKey),
+    refresh: hashString(`${refreshKey}:${serverRefreshKey}`),
     embed: 'graph',
     theme,
   });
@@ -127,6 +146,38 @@ const MAP_PANEL_MAX = 600;
 const MAP_PANEL_THRESHOLD = 180; // below this the panel collapses to a rail
 const MAP_PANEL_RAIL = 48;
 const MAP_PANEL_WIDTH_KEY = 'breadboard:garden-workspace:map-width';
+const MAP_PREVIEW_DEFAULT_HEIGHT = 256;
+const MAP_PREVIEW_MIN_HEIGHT = 176;
+const MAP_PREVIEW_MAX_HEIGHT = 384;
+const MAP_PREVIEW_HEIGHT_RATIO = 0.72;
+const MAP_PREVIEW_VIEWPORT_RATIO = 0.42;
+const MAP_PREVIEW_FRESHNESS_POLL_MS = 5_000;
+
+function topologyFreshnessKey(payload: TopologyFreshnessResponse): string {
+  if (payload.enabled !== true) return `links:${payload.mode ?? 'links'}`;
+  const build = payload.topology?.build;
+  return [
+    payload.topology?.sourceRevision ?? 'pending',
+    build?.generatedAt ?? 'pending',
+    payload.status?.state ?? build?.state ?? 'ready',
+  ].join(':');
+}
+
+function topologyIsCurrent(
+  payload: TopologyFreshnessResponse,
+  gardenRevision: string,
+): boolean {
+  if (payload.enabled !== true) return true;
+  const build = payload.topology?.build;
+  if (
+    payload.status?.state === 'building' ||
+    payload.status?.state === 'stale' ||
+    build?.state === 'building'
+  ) {
+    return false;
+  }
+  return Boolean(gardenRevision && build?.contentFingerprint === gardenRevision);
+}
 
 function KnowledgeGraph({
   clusterSlug,
@@ -152,16 +203,32 @@ function KnowledgeGraph({
   });
   const panelWidth = map.width;
   const sidebarOpen = !map.collapsed;
+  const previewHostRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const gardenRevisionRef = useRef('');
+  const topologyRevisionRef = useRef('');
+  const publishedRevisionRef = useRef('');
   const [previewTheme, setPreviewTheme] = useState<AppTheme | null>(null);
+  const [previewHeight, setPreviewHeight] = useState(MAP_PREVIEW_DEFAULT_HEIGHT);
+  const [gardenRevision, setGardenRevision] = useState('');
+  const [topologyRevision, setTopologyRevision] = useState('pending');
+  const [publishedRevision, setPublishedRevision] = useState('pending');
+  const [serverPreviewCurrent, setServerPreviewCurrent] = useState(false);
+  const [previewUpdateLabel, setPreviewUpdateLabel] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>({
     url: '',
     status: 'loading',
   });
   const graph = data ?? emptyResponse;
   const loading = data === null;
+  const previewFreshnessReady =
+    gardenRevision !== '' &&
+    topologyRevision !== 'pending' &&
+    publishedRevision !== 'pending' &&
+    serverPreviewCurrent;
+  const serverRefreshKey = `${gardenRevision}:${topologyRevision}:${publishedRevision}`;
   const quartzLease = useQuartzViewLease(
-    sidebarOpen && !loading && graph.nodes.length > 0 && previewTheme !== null,
+    sidebarOpen && !loading && graph.nodes.length > 0 && previewTheme !== null && previewFreshnessReady,
   );
 
   // The edge sits on the panel's own left border rather than beside it in the
@@ -199,16 +266,183 @@ function KnowledgeGraph({
     let cancelled = false;
     const params = new URLSearchParams({ clusterSlug });
     if (showInternalConceptGraph) params.set('includeInternalConcepts', '1');
-    fetch(`/api/knowledge-graph?${params.toString()}`)
+    fetch(`/api/knowledge-graph?${params.toString()}`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : emptyResponse))
-      .then((g: GraphResponse) => { if (!cancelled) setData(g); })
+      .then((g: GraphResponse) => {
+        if (cancelled) return;
+        setData(g);
+        if (g.revision) {
+          if (gardenRevisionRef.current && gardenRevisionRef.current !== g.revision) {
+            setServerPreviewCurrent(false);
+          }
+          gardenRevisionRef.current = g.revision;
+          setGardenRevision(g.revision);
+        }
+      })
       .catch(() => { if (!cancelled) setData(emptyResponse); });
     return () => { cancelled = true; };
   }, [clusterSlug, refreshKey, showInternalConceptGraph]);
 
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const host = previewHostRef.current;
+    if (!host) return;
+
+    const resizePreview = () => {
+      const width = host.getBoundingClientRect().width;
+      if (!width) return;
+      const viewportLimit = Math.max(
+        MAP_PREVIEW_MIN_HEIGHT,
+        Math.floor(window.innerHeight * MAP_PREVIEW_VIEWPORT_RATIO),
+      );
+      const nextHeight = Math.round(
+        Math.max(
+          MAP_PREVIEW_MIN_HEIGHT,
+          Math.min(
+            MAP_PREVIEW_MAX_HEIGHT,
+            viewportLimit,
+            width * MAP_PREVIEW_HEIGHT_RATIO,
+          ),
+        ),
+      );
+      setPreviewHeight((current) => current === nextHeight ? current : nextHeight);
+    };
+
+    resizePreview();
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(resizePreview);
+    observer?.observe(host);
+    window.addEventListener('resize', resizePreview);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', resizePreview);
+    };
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    const controller = new AbortController();
+    const graphParams = new URLSearchParams({ clusterSlug });
+    if (showInternalConceptGraph) graphParams.set('includeInternalConcepts', '1');
+    const graphUrl = `/api/knowledge-graph?${graphParams.toString()}`;
+    const revisionParams = new URLSearchParams({ clusterSlug, revisionOnly: '1' });
+    const revisionUrl = `/api/knowledge-graph?${revisionParams.toString()}`;
+    const topologyUrl = `/api/thought-topology?clusterSlug=${encodeURIComponent(clusterSlug)}`;
+    const publishedParams = new URLSearchParams({
+      clusterSlug,
+      asset: 'revision',
+    });
+    const publishedUrl = `/api/quartz-graph-preview?${publishedParams.toString()}`;
+
+    gardenRevisionRef.current = '';
+    topologyRevisionRef.current = '';
+    publishedRevisionRef.current = '';
+    setGardenRevision('');
+    setTopologyRevision('pending');
+    setPublishedRevision('pending');
+    setServerPreviewCurrent(false);
+    setPreviewUpdateLabel(null);
+
+    const checkFreshness = async () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        let observedGardenRevision = gardenRevisionRef.current;
+        const [gardenResult, topologyResult, publishedResult] = await Promise.allSettled([
+          fetch(revisionUrl, { cache: 'no-store', signal: controller.signal }),
+          fetch(topologyUrl, { cache: 'no-store', signal: controller.signal }),
+          fetch(publishedUrl, { cache: 'no-store', signal: controller.signal }),
+        ]);
+
+        if (gardenResult.status === 'fulfilled' && gardenResult.value.ok) {
+          const payload = await gardenResult.value.json() as { revision?: unknown };
+          const revision = typeof payload.revision === 'string' ? payload.revision : '';
+          const previousRevision = gardenRevisionRef.current;
+          if (revision && revision !== previousRevision) {
+            observedGardenRevision = revision;
+            gardenRevisionRef.current = revision;
+            setGardenRevision(revision);
+            if (previousRevision) setServerPreviewCurrent(false);
+            if (previousRevision) {
+              const response = await fetch(graphUrl, {
+                cache: 'no-store',
+                signal: controller.signal,
+              });
+              if (response.ok && !disposed) {
+                const freshGraph = await response.json() as GraphResponse;
+                setData(freshGraph);
+              }
+            }
+          }
+        }
+
+        if (topologyResult.status === 'fulfilled' && topologyResult.value.ok) {
+          const payload = await topologyResult.value.json() as TopologyFreshnessResponse;
+          const revision = topologyFreshnessKey(payload);
+          if (revision !== topologyRevisionRef.current) {
+            topologyRevisionRef.current = revision;
+            setTopologyRevision(revision);
+          }
+          setServerPreviewCurrent(topologyIsCurrent(payload, observedGardenRevision));
+          const progress = payload.status?.state === 'building'
+            ? Math.max(0, Math.min(99, Math.floor(payload.status.progress ?? 0)))
+            : null;
+          setPreviewUpdateLabel(
+            progress === null ? null : `Updating learning map · ${progress}%`,
+          );
+        } else if (!topologyRevisionRef.current) {
+          topologyRevisionRef.current = 'unavailable';
+          setTopologyRevision('unavailable');
+          setServerPreviewCurrent(true);
+        }
+
+        if (publishedResult.status === 'fulfilled' && publishedResult.value.ok) {
+          const payload = await publishedResult.value.json() as { revision?: unknown };
+          const revision = typeof payload.revision === 'string' ? payload.revision : '';
+          if (revision && revision !== publishedRevisionRef.current) {
+            publishedRevisionRef.current = revision;
+            setPublishedRevision(revision);
+          }
+        } else if (!publishedRevisionRef.current) {
+          publishedRevisionRef.current = 'unavailable';
+          setPublishedRevision('unavailable');
+        }
+      } catch {
+        // Keep the last confirmed frame during a transient poll failure. The
+        // next interval, focus, visibility or online event retries it.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const checkWhenVisible = () => {
+      if (document.visibilityState === 'visible') void checkFreshness();
+    };
+    void checkFreshness();
+    const timer = window.setInterval(checkFreshness, MAP_PREVIEW_FRESHNESS_POLL_MS);
+    window.addEventListener('focus', checkFreshness);
+    window.addEventListener('online', checkFreshness);
+    document.addEventListener('visibilitychange', checkWhenVisible);
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener('focus', checkFreshness);
+      window.removeEventListener('online', checkFreshness);
+      document.removeEventListener('visibilitychange', checkWhenVisible);
+    };
+  }, [clusterSlug, showInternalConceptGraph]);
+
   const quartzPreviewUrl = useMemo(
-    () => quartzMapPreviewUrl(clusterSlug, refreshKey, previewTheme ?? 'light'),
-    [clusterSlug, previewTheme, refreshKey],
+    () => quartzMapPreviewUrl(
+      clusterSlug,
+      refreshKey,
+      serverRefreshKey,
+      previewTheme ?? 'light',
+    ),
+    [clusterSlug, previewTheme, refreshKey, serverRefreshKey],
   );
 
   const previewStatus: PreviewStatus = quartzLease.failed
@@ -233,7 +467,14 @@ function KnowledgeGraph({
   }, [quartzPreviewUrl]);
 
   useEffect(() => {
-    if (!sidebarOpen || loading || graph.nodes.length === 0 || previewStatus === 'ready') return;
+    if (
+      !sidebarOpen ||
+      loading ||
+      graph.nodes.length === 0 ||
+      !previewFreshnessReady ||
+      !quartzLease.ready ||
+      previewStatus === 'ready'
+    ) return;
 
     const timer = window.setTimeout(() => {
       setPreviewState((current) =>
@@ -244,7 +485,15 @@ function KnowledgeGraph({
     }, 15000);
 
     return () => window.clearTimeout(timer);
-  }, [graph.nodes.length, loading, previewStatus, quartzPreviewUrl, sidebarOpen]);
+  }, [
+    graph.nodes.length,
+    loading,
+    previewFreshnessReady,
+    previewStatus,
+    quartzLease.ready,
+    quartzPreviewUrl,
+    sidebarOpen,
+  ]);
 
   return (
     <>
@@ -256,20 +505,6 @@ function KnowledgeGraph({
         }`}
       >
         {resizeHandle}
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-gray-800 shrink-0">
-          <div className="flex items-center gap-3">
-            <div>
-              <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-                Learning map
-              </h2>
-              <p className="text-xs text-gray-600 mt-0.5">
-                {formatNumber(graph.stats.words)} words across this cluster
-              </p>
-            </div>
-          </div>
-        </div>
-
         {/* Stats */}
         <div className="px-4 pt-3 pb-1 border-b border-gray-800 shrink-0">
           <div className="grid grid-cols-4 gap-2 mb-3">
@@ -288,12 +523,12 @@ function KnowledgeGraph({
 
           {/* Quartz graph preview */}
           <div
-            className="bb-neu-recessed group relative mb-3 block h-64 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30"
+            ref={previewHostRef}
+            className="bb-neu-recessed group relative mb-3 block w-full shrink-0 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30"
+            style={{ height: previewHeight }}
           >
             {loading ? (
-              <div className="h-full flex items-center justify-center text-xs text-gray-700">
-                Loading...
-              </div>
+              <ThoughtTopologyLoadingDots label="Loading garden preview" />
             ) : graph.nodes.length === 0 ? (
               <div className="h-full flex items-center justify-center text-xs text-gray-700 px-8 text-center">
                 Upload a source to grow the map.
@@ -303,7 +538,7 @@ function KnowledgeGraph({
                 <iframe
                   ref={previewFrameRef}
                   key={quartzPreviewUrl}
-                  src={quartzLease.ready ? quartzPreviewUrl : undefined}
+                  src={quartzLease.ready && previewFreshnessReady ? quartzPreviewUrl : undefined}
                   title="Garden learning map preview"
                   className={`pointer-events-none h-full w-full border-0 bg-gray-950 transition-opacity duration-300 ${
                     previewStatus === 'ready' ? 'opacity-100' : 'opacity-0'
@@ -318,22 +553,33 @@ function KnowledgeGraph({
                   onError={() => setPreviewState({ url: quartzPreviewUrl, status: 'error' })}
                 />
                 {previewStatus !== 'ready' ? (
-                  <div className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs text-gray-600">
-                    {previewStatus === 'error' ? 'Preview unavailable.' : 'Loading garden preview...'}
-                  </div>
+                  previewStatus === 'error' ? (
+                    <div className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs text-gray-600">
+                      Preview unavailable.
+                    </div>
+                  ) : (
+                    <ThoughtTopologyLoadingDots
+                      label={previewUpdateLabel ?? 'Loading garden preview'}
+                    />
+                  )
                 ) : null}
-                <Link
-                  href={graphHref(clusterSlug)}
-                  prefetch
-                  className="absolute inset-0"
-                  aria-label="Explore"
-                >
-                  <span className="neu-button absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-2 py-1 text-[11px] font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
-                    Explore
-                  </span>
-                </Link>
               </>
             )}
+            <LinkContextMenu
+              href={graphHref(clusterSlug)}
+              label="Explore learning map"
+            >
+              <Link
+                href={graphHref(clusterSlug)}
+                prefetch
+                className="absolute inset-0"
+                aria-label="Explore"
+              >
+                <span className="neu-button absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-3 py-1.5 text-xs font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
+                  Explore
+                </span>
+              </Link>
+            </LinkContextMenu>
           </div>
         </div>
 

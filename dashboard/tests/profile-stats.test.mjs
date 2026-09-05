@@ -360,8 +360,19 @@ test("surfaces and gardens are ranked, and gardens link by slug", () => {
   addConversation(db, 2, { gardenId: 2 });
   addMessage(db, 1, { role: "user", at: "2026-06-01 08:00:00", surface: "garden_chat" });
   addMessage(db, 1, { role: "user", at: "2026-06-01 09:00:00", surface: "garden_chat" });
+  addMessage(db, 1, {
+    role: "assistant",
+    at: "2026-06-01 09:01:00",
+    surface: "garden_chat",
+    usage: { responseDurationMs: 90_000 },
+  });
   addMessage(db, 2, { role: "user", at: "2026-06-01 10:00:00", surface: "dashboard_terminal" });
-  addMessage(db, 2, { role: "assistant", at: "2026-06-01 10:01:00", surface: "dashboard_terminal" });
+  addMessage(db, 2, {
+    role: "assistant",
+    at: "2026-06-01 10:01:00",
+    surface: "dashboard_terminal",
+    metadata: { responseDurationMs: 45_000 },
+  });
 
   const stats = readProfileStats(db, 1, { today: "2026-06-02" });
 
@@ -370,9 +381,18 @@ test("surfaces and gardens are ranked, and gardens link by slug", () => {
     [["Garden chat", 2], ["Terminal", 1]],
   );
   assert.deepEqual(
-    stats.gardens.map((garden) => [garden.slug, garden.prompts]),
-    [["physics", 2], ["quiet", 1]],
-    "replies do not inflate a garden's rank",
+    stats.gardens.map((garden) => [
+      garden.slug,
+      garden.prompts,
+      garden.conversations,
+      garden.thinkingMs,
+      garden.lastPromptAt,
+    ]),
+    [
+      ["physics", 2, 1, 90_000, "2026-06-01 09:00:00"],
+      ["quiet", 1, 1, 45_000, "2026-06-01 10:00:00"],
+    ],
+    "replies add measured time without inflating prompt rank or recency",
   );
 });
 

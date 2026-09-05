@@ -12,6 +12,10 @@
 // run manager remembering anything.
 
 import { randomUUID } from "node:crypto";
+import {
+  chatTokenUsageFromResponse,
+  type ChatTokenUsage,
+} from "../chat-token-usage.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
 import { godsEyeRunLabel } from "./identity.ts";
 import { godsEyeAvailability } from "./runtime.ts";
@@ -19,7 +23,9 @@ import { ensureService } from "./service.ts";
 import {
   attachGodsEyeView,
   godsEyeOpenPath,
+  GODS_EYE_LAYERS,
   GODS_EYE_STYLES,
+  inferGodsEyeLayers,
   normalizeGodsEyeView,
   type GodsEyeView,
 } from "./view.ts";
@@ -91,18 +97,20 @@ function finish(run: RunState, status: GodsEyeRunStatus, payload: Record<string,
 const VIEW_PROMPT = `You aim God's Eye View, a photorealistic 3D globe with live aircraft, ships, satellites, earthquakes, fires, and public cameras. Turn the user's request into one camera view.
 
 Answer with ONE JSON object and nothing else:
-{"label": string, "lat": number, "lon": number, "altM": number, "headingDeg": number, "pitchDeg": number, "style": "${GODS_EYE_STYLES.join("|")}", "summary": string}
+{"label": string, "lat": number, "lon": number, "altM": number, "headingDeg": number, "pitchDeg": number, "style": "${GODS_EYE_STYLES.join("|")}", "layers": ("${GODS_EYE_LAYERS.join('"|"')}")[], "summary": string}
 
 - label: what the view is of, in a few words.
 - lat/lon: the place the request names, from your geographic knowledge. If it names none, pick the most relevant place and say so in the summary.
 - altM: camera altitude in meters. 400–2000 sees a few blocks, 2000–15000 a city, 50000–400000 a region, 1000000+ a continent. Watching air or sea traffic needs at least a regional altitude.
 - pitchDeg: -90 is straight down; -30 to -45 is a natural oblique look.
 - style: flir for thermal or heat, nvg for night vision, crt for retro, noir, snow, anime when asked; otherwise normal.
+- layers: only the live feeds needed for the request. Use flights for civilian aircraft, military for military aircraft, ais-live-vessels for ships, satellites, earthquakes, local-firms for active fires, cctv for public cameras, and traffic for roads.
 - summary: one or two present-tense sentences on what this view shows and which live layers (aircraft, vessels, satellites, quakes, fires, cameras) are worth watching there. Do not include links or Markdown.`;
 
 /** The model's answer, holding a view and a sentence about it. */
 export function parseViewAnswer(
   content: string,
+  request = "",
 ): { view: GodsEyeView; summary: string } | null {
   const stripped = content.replace(/<think>[\s\S]*?(<\/think>|$)/gi, "").trim();
   // The object may arrive bare, fenced, or inside prose; take the first
@@ -111,12 +119,20 @@ export function parseViewAnswer(
   for (const candidate of [stripped, ...candidates]) {
     try {
       const parsed = JSON.parse(candidate) as Record<string, unknown>;
-      const view = normalizeGodsEyeView(parsed);
-      if (!view) continue;
+      const baseView = normalizeGodsEyeView(parsed);
+      if (!baseView) continue;
       const summary =
         typeof parsed.summary === "string" && parsed.summary.trim()
           ? parsed.summary.trim().slice(0, 2_000)
-          : `Holding over ${view.label}.`;
+          : `Holding over ${baseView.label}.`;
+      const view = normalizeGodsEyeView({
+        ...baseView,
+        layers: [
+          ...baseView.layers,
+          ...inferGodsEyeLayers(`${request} ${baseView.label} ${summary}`),
+        ],
+      });
+      if (!view) continue;
       return { view, summary };
     } catch {
       // Try the next candidate.
@@ -136,7 +152,7 @@ export function godsEyeSummary(input: { view: GodsEyeView; summary: string }): s
 async function resolveView(
   run: RunState,
   input: GodsEyeRuntimeWorkerRunInput,
-): Promise<{ view: GodsEyeView; summary: string }> {
+): Promise<{ view: GodsEyeView; summary: string; usage: ChatTokenUsage | null }> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   run.controller.signal.addEventListener("abort", abort, { once: true });
@@ -161,13 +177,18 @@ async function resolveView(
     if (!response.ok) throw new Error(`ChatMock returned ${response.status}`);
     const data = (await response.json()) as {
       choices?: Array<{ message?: { content?: string | null } }>;
+      usage?: unknown;
+      usageEstimated?: boolean;
     };
     const content = data.choices?.[0]?.message?.content ?? "";
-    const answer = parseViewAnswer(content);
+    const answer = parseViewAnswer(content, run.task);
     if (!answer) {
       throw new Error("The model did not return a usable view for this request.");
     }
-    return answer;
+    return {
+      ...answer,
+      usage: chatTokenUsageFromResponse(data),
+    };
   } finally {
     clearTimeout(timer);
     run.controller.signal.removeEventListener("abort", abort);
@@ -230,10 +251,19 @@ async function drive(run: RunState, input: GodsEyeRuntimeWorkerRunInput): Promis
   if (run.aborted) return;
   emit(run, "view.resolved", { view: answer.view });
 
+  const usage = answer.usage
+    ? {
+        ...answer.usage,
+        scope: "request" as const,
+        responseDurationMs: Math.max(0, Date.now() - run.createdAt),
+      }
+    : null;
+
   finish(run, "completed", {
     summary: godsEyeSummary(answer),
     view: answer.view,
     openPath: godsEyeOpenPath(answer.view),
+    ...(usage ? { usage } : {}),
   });
 }
 

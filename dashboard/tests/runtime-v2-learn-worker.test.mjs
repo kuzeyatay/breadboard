@@ -291,6 +291,10 @@ test("Runtime V2 Learn permits two finite native-owned workers with packaged sta
   assert.match(source, /completionSequence/u);
   assert.match(source, /createRuntimeV2WorkerEventWriter/u);
   assert.match(source, /sourceRoot: layout\.quartzSourceRoot/u);
+  assert.match(
+    source,
+    /temporaryDirectory = path\.join\(launch\.dataRoot, "runtime-v2", "temp"\)[\s\S]*?fs\.mkdirSync\(temporaryDirectory, \{ recursive: true \}\)[\s\S]*?process\.env\.TEMP = temporaryDirectory[\s\S]*?process\.env\.TMP = temporaryDirectory/u,
+  );
   const eventWriter = fs.readFileSync(
     path.join(dashboardRoot, "scripts", "runtime-v2-worker-events.mjs"),
     "utf8",

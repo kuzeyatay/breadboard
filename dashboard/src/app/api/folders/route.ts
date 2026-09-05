@@ -6,6 +6,7 @@ import {
   moveGardenDocument,
   renameGardenFolder,
 } from '@/lib/garden-filesystem';
+import { isGardenMutationBusyError } from '@/lib/garden-mutation-lease';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -45,6 +46,17 @@ async function getContext(clusterSlug: unknown): Promise<
 function failure(error: unknown): NextResponse {
   if (error instanceof GardenFilesystemError) {
     return json({ error: error.message }, { status: error.status });
+  }
+  if (isGardenMutationBusyError(error)) {
+    return json(
+      {
+        error: error.message,
+        code: error.code,
+        retryable: true,
+        retryAfterMs: 2_000,
+      },
+      { status: error.status, headers: { 'Retry-After': '2' } },
+    );
   }
   return routeErrorResponse(error);
 }

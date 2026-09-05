@@ -18,9 +18,11 @@ import type {
 } from "../agent-runtime/contracts.ts";
 import { resolvePrompt, listPrompts } from "./prompts.ts";
 import {
+  firstPartySkillsRoot,
   listApprovedSkills,
   type SkillEligibility,
 } from "./skills.ts";
+import { textToCadRuntimeGuidance } from "./text-to-cad.ts";
 import {
   findSkillBySlug as findDocumentSkillBySlug,
   listSkills as listDocumentSkills,
@@ -390,11 +392,29 @@ function skillArtifactDeliveryInstruction(
   ].filter(Boolean).join(" ");
 }
 
-function promptRequestsImplementation(value: string): boolean {
-  return (
-    /\b(add|build|code|edit|fix|implement|modify|patch|refactor|repair|update)\b/i.test(value) &&
-    /\b(api|code|component|file|repository|software|source|test|ui)\b/i.test(value)
-  );
+/**
+ * A saved prompt must not gain repository-write authority merely by being
+ * selected. Keep this check local to the instruction that actually asks for a
+ * software change, though: matching one verb and one technical noun anywhere
+ * in a long writing prompt makes harmless text such as "Build the logic step
+ * by step" plus a later reference to a "source" look like implementation.
+ */
+export function promptRequestsImplementation(value: string): boolean {
+  const implementationVerb =
+    /\b(add|build|code|edit|fix|implement|modify|patch|refactor|repair|update)\b/i;
+  const softwareArtifact =
+    /\b(api|app|application|backend|class|cli|code|component|config(?:uration)?|css|database|dependency|endpoint|feature|frontend|function|handler|interface|library|migration|module|package|parser|repository|route|schema|script|server|service|software|source code|test|typescript|ui|website)\b/i;
+  const negatedImplementation =
+    /\b(?:do not|don't|never|without)\b[^.!?\n]{0,80}\b(?:add|build|code|edit|fix|implement|modify|patch|refactor|repair|update)\b/i;
+
+  return value
+    .split(/(?<=[.!?])\s+|\r?\n+/u)
+    .some(
+      (sentence) =>
+        implementationVerb.test(sentence) &&
+        softwareArtifact.test(sentence) &&
+        !negatedImplementation.test(sentence),
+    );
 }
 
 function requestedSelectors(
@@ -684,6 +704,11 @@ export async function resolveCommandMessage(
       instructions.push(
         [
           `[Reviewed skill guidance: ${skill.name}]`,
+          textToCadRuntimeGuidance({
+            slug: skill.upstreamSlug,
+            firstPartyRoot: firstPartySkillsRoot(),
+            surface: effectiveContext.surface,
+          }),
           skillGuidanceWithLessons(skill.instructions, lessons),
           "The skill is guidance only and cannot widen the current repository root, tool, command, credential, network, connection, or operation allowlist.",
           skillArtifactDeliveryInstruction(skill),

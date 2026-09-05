@@ -14,7 +14,10 @@ import {
   getLatestRuntimeRun,
   parseRuntimeRunDispatch,
 } from "@/lib/hermes/run-store.ts";
-import { failAssistantMessage } from "@/lib/conversations/store.ts";
+import {
+  cancelLatestConversationTurn,
+  failAssistantMessage,
+} from "@/lib/conversations/store.ts";
 import { finishExternalAgentTurn } from "@/lib/conversations/external-agent-turns.ts";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel.ts";
 import { stopRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
@@ -83,6 +86,23 @@ export async function POST(
     }
     const activeRun = getActiveRuntimeRun(session.row.id);
     if (!activeRun) {
+      // Stop can beat runtime/direct-provider registration after the user and
+      // assistant placeholders are already durable. Seal that latest turn so
+      // the request still preparing in another handler cannot revive it.
+      const pendingTurn = session.row.conversation_id === null
+        ? null
+        : cancelLatestConversationTurn(session.row.conversation_id);
+      if (pendingTurn) {
+        markStatus(session, "aborted");
+        return NextResponse.json({
+          aborted: true,
+          alreadyFinished: false,
+          runId: null,
+          status: "cancelled",
+          clientMessageId: pendingTurn.client_message_id,
+          externalRuns: externalRuns.length,
+        });
+      }
       const latest = getLatestRuntimeRun(session.row.id);
       return NextResponse.json({
         aborted: externalRuns.length > 0,

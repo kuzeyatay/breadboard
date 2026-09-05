@@ -34,9 +34,13 @@ export async function POST(request: Request) {
       authorizeGardenAccess(userId, gardenSlug);
     }
 
+    const prompt = typeof body.prompt === "string" ? body.prompt : "";
     const created = getScheduledChatJobStore().create(userId, {
-      title: typeof body.title === "string" ? body.title : "",
-      prompt: typeof body.prompt === "string" ? body.prompt : "",
+      // A schedule has one name: its prompt. Keeping this explicit at the API
+      // boundary prevents an old client from restoring the former short-title
+      // plus duplicate-description layout.
+      title: prompt,
+      prompt,
       cron: typeof body.cron === "string" ? body.cron : "",
       surface,
       gardenSlug: surface === "garden_chat" ? gardenSlug : null,

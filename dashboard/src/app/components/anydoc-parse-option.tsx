@@ -82,15 +82,15 @@ export function AnydocParseOption({
   disabled,
   status,
   loading,
-  overriddenByVlm,
+  combinedWithVlm,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled: boolean;
   status: AnydocAvailability;
   loading: boolean;
-  /** True when Parse using VLM is on and would claim the same PDFs. */
-  overriddenByVlm?: boolean;
+  /** True when Parse using VLM is also on for compatible PDFs. */
+  combinedWithVlm?: boolean;
 }) {
   const usable = status.available && !loading;
 
@@ -116,8 +116,8 @@ export function AnydocParseOption({
               ? `Converts Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and text PDFs to clean Markdown${
                   status.version ? ` with anydoc ${status.version}` : ""
                 } — headings, tables, lists and links survive instead of being flattened to raw text. Runs locally in milliseconds, so it uses no ChatMock quota.${
-                  overriddenByVlm
-                    ? " Parse using VLM still takes the PDFs and images while both are on."
+                  combinedWithVlm
+                    ? " Compatible PDFs run through both readers: VLM reads the page visually and anydoc adds a text-layer cross-check."
                     : ""
                 }`
               : anydocUnavailableReason(status)}

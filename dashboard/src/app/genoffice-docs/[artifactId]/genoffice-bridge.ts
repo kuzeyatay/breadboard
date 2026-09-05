@@ -2,6 +2,7 @@ import type {
   DesktopApi,
   OpenDocxResult,
   PickImageResult,
+  UiTheme,
 } from "@/vendor/genoffice/docs/src/shared/ipc";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 
@@ -9,9 +10,12 @@ interface BridgeOptions {
   artifactId: string;
   conversationId: string;
   initialVersion: number;
+  initialTheme: Extract<UiTheme, "light" | "dark">;
 }
 
 const SAVE_COMPLETE_EVENT = "breadboard:genoffice-save-complete";
+const THEME_MESSAGE = "breadboard:theme";
+const THEME_STORAGE_KEY = "breadboard:theme";
 
 function reportSave(result: { ok: boolean; error?: string }): void {
   window.dispatchEvent(new CustomEvent(SAVE_COMPLETE_EVENT, { detail: result }));
@@ -56,12 +60,34 @@ export function installGenOfficeBridge({
   artifactId,
   conversationId,
   initialVersion,
+  initialTheme,
 }: BridgeOptions): DesktopApi {
   const query = new URLSearchParams({ conversationId });
   const endpoint = `/api/hermes/artifacts/${encodeURIComponent(artifactId)}/genoffice`;
   const virtualPath = `breadboard-artifact://${artifactId}`;
   let version = initialVersion;
   let pending = true;
+  let theme: Extract<UiTheme, "light" | "dark"> = initialTheme;
+  const themeHandlers = new Set<(value: UiTheme) => void>();
+
+  const applyTheme = (value: unknown) => {
+    if (value !== "light" && value !== "dark") return;
+    theme = value;
+    document.documentElement.dataset.theme = value;
+    for (const handler of themeHandlers) handler(value);
+  };
+  window.addEventListener("message", (event) => {
+    if (
+      event.source !== window.parent ||
+      event.origin !== window.location.origin ||
+      !event.data ||
+      event.data.type !== THEME_MESSAGE
+    ) return;
+    applyTheme(event.data.theme);
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key === THEME_STORAGE_KEY) applyTheme(event.newValue);
+  });
 
   const load = async (): Promise<OpenDocxResult> => {
     const response = await fetch(`${endpoint}?${query}`, { cache: "no-store" });
@@ -116,8 +142,11 @@ export function installGenOfficeBridge({
   const api: DesktopApi = {
     getLanguage: async () => "en",
     onLanguageChanged: noopSubscription,
-    getTheme: async () => "light",
-    onThemeChanged: noopSubscription,
+    getTheme: async () => theme,
+    onThemeChanged: (handler) => {
+      themeHandlers.add(handler);
+      return () => themeHandlers.delete(handler);
+    },
     onChromePressed: noopSubscription,
     openDocx: async () => null,
     openDocxPath: async () => null,

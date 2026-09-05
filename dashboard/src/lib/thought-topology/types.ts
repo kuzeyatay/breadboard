@@ -37,6 +37,8 @@ export interface TopologyNode {
   title: string;
   kind: "markdown" | "source" | "internal-concept";
   knowledgeType: string;
+  /** Original source medium from Markdown frontmatter (`source_type`). */
+  sourceType?: string;
   contentHash: string;
   summary: EnrichmentText;
   primaryConcepts: string[];
@@ -117,6 +119,9 @@ export interface ThoughtTopology {
     edgePromptVersion: string;
     retrievalMode: "semantic-vector" | "concept-lexical";
     threshold: number;
+    /** `gardenContentFingerprint` of the Markdown tree when the build started;
+     * absent on artifacts built before drift detection existed. */
+    contentFingerprint?: string;
   };
 }
 
@@ -132,8 +137,17 @@ export interface ThoughtTopologyCacheNode {
   embeddingDimension: number;
   embedding: number[] | null;
   summary: EnrichmentText;
+  /** Section vectors of a long document, keyed by the section text's hash so
+   * an unchanged chapter is never embedded twice. Cache-only, never rendered. */
+  sections?: ThoughtTopologyCacheSection[];
   x?: number;
   y?: number;
+}
+
+export interface ThoughtTopologyCacheSection {
+  hash: string;
+  label: string;
+  embedding: number[] | null;
 }
 
 export interface ThoughtTopologyCacheEdge {
@@ -163,5 +177,7 @@ export type ThoughtTopologyApiResponse =
       status?: {
         state: "building" | "failed" | "stale";
         message: string;
+        /** Integer completion percentage for an active background build. */
+        progress?: number;
       };
     };

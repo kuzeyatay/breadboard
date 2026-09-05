@@ -8,6 +8,8 @@ from chatmock.model_registry import DEFAULT_MODEL, allowed_efforts_for_model, li
 
 class ModelRegistryTests(unittest.TestCase):
     def test_normalizes_aliases(self) -> None:
+        self.assertEqual(normalize_model_name("gpt6-astra"), "gpt-6-astra")
+        self.assertEqual(normalize_model_name("gpt-6-astra-latest"), "gpt-6-astra")
         self.assertEqual(normalize_model_name("gpt-5.6"), "gpt-5.6-sol")
         self.assertEqual(normalize_model_name("gpt5.6-sol"), "gpt-5.6-sol")
         self.assertEqual(normalize_model_name("gpt5.6-terra"), "gpt-5.6-terra")
@@ -30,6 +32,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(council.upstream_fallback_model, DEFAULT_MODEL)
 
     def test_strips_reasoning_suffixes(self) -> None:
+        self.assertEqual(normalize_model_name("gpt-6-astra:max"), "gpt-6-astra")
+        self.assertEqual(normalize_model_name("gpt-6-astra-xhigh"), "gpt-6-astra")
         self.assertEqual(normalize_model_name("gpt-5.6:max"), "gpt-5.6-sol")
         self.assertEqual(normalize_model_name("gpt-5.6-sol-max"), "gpt-5.6-sol")
         self.assertEqual(normalize_model_name("gpt-5.6-terra-max"), "gpt-5.6-terra")
@@ -41,6 +45,10 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(normalize_model_name("gpt-5.1-codex:high"), "gpt-5.1-codex")
 
     def test_allowed_efforts_follow_registry(self) -> None:
+        self.assertEqual(
+            allowed_efforts_for_model("gpt-6-astra"),
+            frozenset(("low", "medium", "high", "xhigh", "max")),
+        )
         self.assertEqual(
             allowed_efforts_for_model("gpt-5.6"),
             frozenset(("none", "low", "medium", "high", "xhigh", "max")),
@@ -59,7 +67,8 @@ class ModelRegistryTests(unittest.TestCase):
 
     def test_public_models_include_variants(self) -> None:
         model_ids = list_public_models(expose_reasoning_models=True)
-        self.assertEqual(model_ids[0], "gpt-5.6-sol")
+        self.assertEqual(model_ids[0], "gpt-6-astra")
+        self.assertIn("gpt-6-astra-max", model_ids)
         self.assertIn("gpt-5.6-sol-max", model_ids)
         self.assertIn("gpt-5.6-terra", model_ids)
         self.assertIn("gpt-5.6-terra-max", model_ids)

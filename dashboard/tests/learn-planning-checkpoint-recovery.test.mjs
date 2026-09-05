@@ -23,6 +23,7 @@ import {
   dispatchAfterDurablePlanningIssuance,
   ensureLearnPlanningCheckpointSchema,
   exactStrictReceiptOriginBinding,
+  hasExactExpiredStartedPlanningReceiptBoundary,
   hasCompletedNativePlanningCheckpoint,
   hasExactPlanningDispatchAuthority,
   materializeLegacyPlanningCheckpoint,
@@ -31,6 +32,7 @@ import {
   planningCheckpointRecoveryDisposition,
   priorPlanningCheckpoints,
   recoverBeforePlanningDispatch,
+  recordExpiredStartedPlanningReceiptBoundary,
   resolveUniquePlanningCandidate,
 } from "../src/lib/learn-planning-checkpoints.ts";
 import {
@@ -263,6 +265,103 @@ test("checkpoint rows contain bindings only and allow two distinct reauthor cycl
   database.close();
 });
 
+test("an expired started planning receipt is durably sealed before a fresh request is allowed", () => {
+  const database = fixtureDatabase();
+  insertJob(database, { id: "job-origin" });
+  createStartedPlanningCheckpoint(database, {
+    requestId: "lrq_expired_planning_origin",
+    jobId: "job-origin",
+    gardenId: "fixture-garden",
+    stageKey: "source_map:source_map:cycle:0",
+    semanticAttempt: 0,
+    requestHash: "a".repeat(64),
+    now: "2030-01-01T00:00:10.000Z",
+  });
+  const observation = {
+    originRequestId: "lrq_expired_planning_origin",
+    receiptRequestId: "lrq_expired_planning_origin",
+    requestHash: "a".repeat(64),
+    dispatchGeneration: 1,
+    dispatchCount: 1,
+    redispatchCount: 0,
+    redispatchAllowed: false,
+    attemptCount: 0,
+    maxStartedAgeMs: 1_000,
+  };
+
+  assert.equal(
+    recordExpiredStartedPlanningReceiptBoundary(database, {
+      ...observation,
+      observedAt: "2030-01-01T00:00:10.999Z",
+    }),
+    null,
+    "a live receipt must remain a duplicate-dispatch fence",
+  );
+  assert.equal(
+    recordExpiredStartedPlanningReceiptBoundary(database, {
+      ...observation,
+      dispatchGeneration: 2,
+      dispatchCount: 2,
+      redispatchCount: 1,
+      attemptCount: 1,
+      observedAt: "2030-01-01T00:00:12.000Z",
+    }),
+    null,
+    "planning has no independent generation-two checkpoint proof",
+  );
+  const boundary = recordExpiredStartedPlanningReceiptBoundary(database, {
+    ...observation,
+    observedAt: "2030-01-01T00:00:11.000Z",
+  });
+  assert.equal(boundary?.failure_code, "council_started_receipt_expired");
+  assert.equal(boundary?.dispatch_count, 1);
+  assert.equal(boundary?.attempt_count, 0);
+  assert.equal(
+    hasExactExpiredStartedPlanningReceiptBoundary(
+      database,
+      "lrq_expired_planning_origin",
+    ),
+    true,
+  );
+  assert.deepEqual(
+    recordExpiredStartedPlanningReceiptBoundary(database, {
+      ...observation,
+      observedAt: "2030-01-01T00:00:20.000Z",
+    }),
+    boundary,
+    "the first exact expiry observation is immutable and idempotent",
+  );
+
+  database.prepare(
+    "UPDATE learn_planning_request_checkpoints SET request_hash = ? WHERE request_id = ?",
+  ).run("b".repeat(64), "lrq_expired_planning_origin");
+  assert.throws(
+    () => hasExactExpiredStartedPlanningReceiptBoundary(
+      database,
+      "lrq_expired_planning_origin",
+    ),
+    /is not exact/,
+  );
+  database.close();
+});
+
+test("planning resolver persists an exact expired-started boundary before authorizing a fresh request", () => {
+  const resolverStart = learnSource.indexOf("async function resolvePriorPlanningResult");
+  const resolverEnd = learnSource.indexOf("function sourceMapPlanProblems", resolverStart);
+  const resolver = learnSource.slice(resolverStart, resolverEnd);
+  const skip = resolver.indexOf("hasExactExpiredStartedPlanningReceiptBoundary");
+  const started = resolver.indexOf('lookup.code === "request_started"', skip);
+  const persist = resolver.indexOf("recordExpiredStartedPlanningReceiptBoundary", started);
+  const fresh = resolver.indexOf("freshRequestAuthorized: true", persist);
+  const returnNull = resolver.indexOf("return null", fresh);
+
+  assert.ok(skip >= 0);
+  assert.ok(started > skip);
+  assert.ok(persist > started);
+  assert.ok(fresh > persist);
+  assert.ok(returnNull > fresh);
+});
+
 test("checkpoint schema upgrades the pre-result-origin table without losing rows", () => {
   const database = fixtureDatabase();
   insertJob(database, { id: "job-origin" });
@@ -483,6 +582,25 @@ test("the promptless resolver is GET-only and exact routing is retained for vali
   assert.match(resolver, /method: "GET"/);
   assert.match(resolver, /await fetch\(/);
   assert.doesNotMatch(resolver, /chat\.completions\.create/);
+  assert.match(
+    resolver,
+    /throw new LearnCouncilResultObservationTransportError\(/,
+  );
+  const observerStart = learnSource.indexOf(
+    "async function observeOrdinaryCouncilReceipt",
+  );
+  const observerEnd = learnSource.indexOf(
+    "function learnCouncilDispatchStartedAt",
+    observerStart,
+  );
+  const observer = learnSource.slice(observerStart, observerEnd);
+  assert.match(
+    observer,
+    /error instanceof LearnCouncilResultObservationTransportError/,
+  );
+  assert.match(observer, /Date\.now\(\) >= deadline/);
+  assert.match(observer, /assertExactOrdinaryCouncilAuthority/);
+  assert.doesNotMatch(observer, /chat\.completions\.create/);
   assert.match(learnSource, /row\.state === "started"/);
   assert.match(learnSource, /planningReceiptProvesOneExactModelCall\(result, expectedModel\)/);
   assert.match(learnSource, /A clean completed receipt from an ordinary semantic-failure job is not/);

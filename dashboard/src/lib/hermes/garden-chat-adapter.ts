@@ -17,6 +17,7 @@ import {
 } from "./session-service.ts";
 import {
   getRuntimeSessionByChatSession,
+  getHermesUserSettings,
   persistCapabilityDecision,
   recordAuditEvent,
   revokeCapabilityDecision,
@@ -39,9 +40,23 @@ import {
   mergeSelectedTools,
   type PreparedTurn,
 } from "./dispatch-core.ts";
-import { listFilesystemGrants } from "./filesystem-grant-store.ts";
+import {
+  grantFilesystemRoot,
+  listFilesystemGrants,
+  revokeFilesystemGrant,
+} from "./filesystem-grant-store.ts";
+import {
+  decideAutonomy,
+  riskClassForPermission,
+} from "./autonomy.ts";
 import { connectedAppRegistryForTurn } from "./unified-tool-registry.ts";
 import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
+import { openableSkills } from "./super-agent.ts";
+import {
+  renderSkillShortlistDirective,
+  shortlistSkillsForTurn,
+} from "./skill-shortlist.ts";
+import { listMcpConnections } from "./mcp-connections.ts";
 import {
   beginRuntimeRun,
   finishRuntimeRun,
@@ -56,6 +71,7 @@ import { RUN_HEARTBEAT_INTERVAL_MS } from "./run-liveness.ts";
 import {
   annotateConversationTurn,
   completeAssistantMessage,
+  conversationTurnWasCancelled,
   ensureConversationForLegacyChatSession,
   failAssistantMessage,
   getConversationById,
@@ -103,8 +119,16 @@ import { PATENT_DISCLOSURE_SKILL } from "./patent-disclosure-source.ts";
 import { agentLoopCommandText } from "./agent-loop-intent.ts";
 import { messagingCommandText } from "./messaging-intent.ts";
 import { humanizeCommandText } from "./humanize-intent.ts";
+import {
+  computerUseCommandText,
+  COMPUTER_USE_SKILL,
+} from "./computer-use-intent.ts";
 import { imageTo3dCommandText, IMAGE_TO_3D_SKILL } from "./image-3d-intent.ts";
 import { diagramCommandText, DIAGRAM_DESIGN_SKILL } from "./diagram-intent.ts";
+import {
+  asciiDiagramCommandText,
+  ASCII_ART_DIAGRAMS_SKILL,
+} from "./ascii-diagram-intent.ts";
 import {
   githubExplorerCommandText,
   GITHUB_EXPLORER_SKILL,
@@ -144,6 +168,7 @@ import {
   type GenerativeUiResource,
 } from "../generative-ui/contracts.ts";
 import { watchCommandText } from "./watch-intent.ts";
+import { textToCadCommandText } from "./text-to-cad-intent.ts";
 import {
   prepareGardenVideosForWatch,
   renderWatchVideoContext,
@@ -162,6 +187,8 @@ type GardenChatPayload = {
   selectedTextContext?: unknown;
   attachments?: unknown;
   adhdMode?: unknown;
+  superAgent?: unknown;
+  yoloMode?: unknown;
   /** Personalize, as it stood when the message was sent. Absent means on. */
   personalize?: unknown;
   /** This turn exists to report a delegated worker's finished run. */
@@ -243,6 +270,11 @@ export async function openGardenAgentChat(
   const preDispatchHeartbeat = setInterval(touchPreDispatch, 10_000);
   preDispatchHeartbeat.unref?.();
   try {
+    if (
+      conversationTurnWasCancelled(conversation.id, reservedClientMessageId)
+    ) {
+      throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
+    }
     // Attachments reach this surface in the request body but used to stop here:
     // the payload was parsed for messages only, so a file picked in the Garden
     // composer never reached the runtime at all.
@@ -323,17 +355,142 @@ export async function openGardenAgentChat(
     // The shared planner records the requested outcome, while the broker's
     // surface ceiling keeps Garden Chat on curated Garden, artifact, and selected
     // MCP tools. Filesystem grants can never turn this surface into a Terminal.
-    const prepared = prepareTurn({
+    const priorRequests = messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content)
+      .slice(-6, -1);
+    const filesystemGrants = listFilesystemGrants(userId);
+    const superAgent = payload.superAgent === true;
+    const yoloMode = payload.yoloMode === true;
+    let prepared = prepareTurn({
       request: text,
-      priorRequests: messages
-        .filter((message) => message.role === "user")
-        .map((message) => message.content)
-        .slice(-6, -1),
+      priorRequests,
       surface: "garden_chat",
       userId,
-      grants: listFilesystemGrants(userId),
+      grants: filesystemGrants,
       workspaceRoot: session.activeDirectory,
+      superAgent,
     });
+
+    // Super Agent enables the shared YOLO switch. Garden Chat used to drop
+    // both per-message flags, so its duplicate dispatch path paused on a card
+    // while the canonical Terminal/Garden path auto-granted the same preflight
+    // server-side. Mirror that canonical behaviour here: approve only what the
+    // selected autonomy tier permits, re-broker, and remove the one-turn grants
+    // as soon as the runtime decision has captured their scoped rules.
+    if (prepared.blocked && yoloMode) {
+      const autonomy = decideAutonomy({
+        tier: getHermesUserSettings(userId).autonomyTier,
+        pendingPermissions: prepared.pendingPermissions,
+      });
+      const grantable = autonomy.autoApprove;
+      const filesystemRequests = grantable.filter(
+        (permission) =>
+          permission.kind === "filesystem" && Boolean(permission.path?.trim()),
+      );
+      const confirmations = grantable
+        .filter((permission) => permission.kind === "confirmation")
+        .map((permission) => permission.id);
+      const unresolvable = grantable.some(
+        (permission) =>
+          permission.kind !== "confirmation" &&
+          !(permission.kind === "filesystem" && Boolean(permission.path?.trim())),
+      );
+
+      if (autonomy.withheld.length > 0) {
+        recordAuditEvent({
+          eventType: "conversation.permission_withheld_by_tier",
+          runtimeSessionId: session.row.id,
+          userId,
+          gardenId: session.row.garden_id,
+          payload: {
+            conversationPublicId: conversation.public_id,
+            clientMessageId: reservedClientMessageId,
+            tier: autonomy.tier,
+            withheld: autonomy.withheld.map((entry) => ({
+              id: entry.permission.id,
+              risk: entry.risk,
+              capability: entry.permission.capability,
+            })),
+          },
+        });
+      }
+
+      if (!unresolvable) {
+        const createdGrantIds: string[] = [];
+        const widenedGrants = new Map<string, (typeof filesystemGrants)[number]>();
+        try {
+          for (const permission of filesystemRequests) {
+            const granted = grantFilesystemRoot({
+              userId,
+              requestedPath: permission.path!,
+              permissions: Object.fromEntries(
+                (permission.operations ?? ["read"]).map((operation) => [
+                  operation,
+                  true,
+                ]),
+              ),
+              scope: "one_time",
+            });
+            const previous = filesystemGrants.find(
+              (grant) => grant.id === granted.id,
+            );
+            if (previous) widenedGrants.set(granted.id, previous);
+            else createdGrantIds.push(granted.id);
+          }
+          const regranted = prepareTurn({
+            request: text,
+            priorRequests,
+            surface: "garden_chat",
+            userId,
+            grants: listFilesystemGrants(userId),
+            workspaceRoot: session.activeDirectory,
+            confirmedPermissionIds: confirmations,
+            superAgent,
+          });
+          if (!regranted.blocked) {
+            prepared = regranted;
+            recordAuditEvent({
+              eventType: "conversation.permission_auto_granted",
+              runtimeSessionId: session.row.id,
+              userId,
+              gardenId: session.row.garden_id,
+              payload: {
+                conversationPublicId: conversation.public_id,
+                clientMessageId: reservedClientMessageId,
+                reason: "yolo",
+                tier: autonomy.tier,
+                approvedRisks: Array.from(
+                  new Set(
+                    grantable.map((permission) =>
+                      riskClassForPermission(permission),
+                    ),
+                  ),
+                ),
+                paths: filesystemRequests.map((permission) => permission.path),
+                confirmedPermissionIds: confirmations,
+              },
+            });
+          }
+        } catch {
+          // A missing or invalid folder leaves the normal approval card in
+          // place, with the same actionable error path as supervised mode.
+        } finally {
+          for (const grantId of createdGrantIds) {
+            revokeFilesystemGrant(userId, grantId);
+          }
+          for (const previous of widenedGrants.values()) {
+            grantFilesystemRoot({
+              userId,
+              requestedPath: previous.canonicalPath,
+              displayName: previous.displayName,
+              permissions: previous.permissions,
+              scope: previous.scope,
+            });
+          }
+        }
+      }
+    }
     const decision = prepared.decision;
     const premortemSelection = premortemCommandText({
       text,
@@ -375,6 +532,14 @@ export async function openGardenAgentChat(
       hasVideoAttachment: false,
       hasSelectedGardenVideo: selectedMedia.video.length > 0,
     });
+    // Keep Garden and Terminal routing identical: CAD requests select their
+    // reviewed workflow by intent, before generic image-to-mesh reconstruction.
+    const textToCadSelection = textToCadCommandText({
+      text: watchSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
     // Garden Chat's own copy of the chain in conversations/turn-service.ts. A
     // picture attached here has to select the skill for itself exactly as it does
     // there — missing this second pipeline is how a feature silently works on one
@@ -382,7 +547,7 @@ export async function openGardenAgentChat(
     // legacy path parses messages as role and content only, so an attachment from
     // an earlier turn is not visible from it.
     const imageTo3dSelection = imageTo3dCommandText({
-      text: watchSelection.text,
+      text: textToCadSelection.text,
       surface: "garden_chat",
       authenticated: true,
       hasImageAttachment: hasReconstructableAttachment(attachments),
@@ -404,12 +569,20 @@ export async function openGardenAgentChat(
       authenticated: true,
       hasAudioAttachment: hasAnalyzableAttachment(attachments),
     });
+    // ASCII/plain-text drawing is the more specific output request, so it gets
+    // first refusal before the normal rendered Diagram Design capability.
+    const asciiDiagramSelection = asciiDiagramCommandText({
+      text: audioSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
     // The same second copy of the chain: a request to draw something has to
     // select the skill here exactly as it does in conversations/turn-service.ts,
     // and for the same reason it sits after the attachment-driven selections
     // there.
     const diagramSelection = diagramCommandText({
-      text: audioSelection.text,
+      text: asciiDiagramSelection.text,
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
@@ -431,9 +604,15 @@ export async function openGardenAgentChat(
       authenticated: true,
       priorMessages: messages,
     });
+    const computerUseSelection = computerUseCommandText({
+      text: humanizeSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
     // Last in the chain: see the same call in conversations/turn-service.ts.
     const messagingSelection = messagingCommandText({
-      text: humanizeSelection.text,
+      text: computerUseSelection.text,
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
@@ -456,13 +635,16 @@ export async function openGardenAgentChat(
     ).catch(async (error: unknown) => {
       if (
         !watchSelection.automatic &&
+        !textToCadSelection.automatic &&
         !patentDisclosureSelection.automatic &&
         !imageTo3dSelection.automatic &&
         !spotifySelection.automatic &&
         !audioSelection.automatic &&
+        !asciiDiagramSelection.automatic &&
         !diagramSelection.automatic &&
         !githubExplorerSelection.automatic &&
-        !humanizeSelection.automatic
+        !humanizeSelection.automatic &&
+        !computerUseSelection.automatic
       )
         throw error;
       return await resolveCommandMessage(
@@ -485,12 +667,56 @@ export async function openGardenAgentChat(
     const automaticWatch =
       watchSelection.automatic &&
       decision.selectedConditionalSkills.includes("watch");
+    const automaticTextToCad =
+      textToCadSelection.automatic &&
+      textToCadSelection.skill !== null &&
+      decision.selectedConditionalSkills.includes(textToCadSelection.skill);
     const automaticPatentDisclosure =
       patentDisclosureSelection.automatic &&
       decision.selectedConditionalSkills.includes(PATENT_DISCLOSURE_SKILL);
+    const automaticAsciiDiagram =
+      asciiDiagramSelection.automatic &&
+      decision.selectedConditionalSkills.includes(ASCII_ART_DIAGRAMS_SKILL);
+    const automaticComputerUse =
+      computerUseSelection.automatic &&
+      decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL);
     decision.selectedConnections = resolved.invocations
       .filter((item) => item.kind === "mcp")
       .map((item) => item.slug);
+    const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
+    if (parametricCadSelected) {
+      decision.allowedTools = [
+        ...new Set([...decision.allowedTools, "agent_launch"]),
+      ];
+    }
+    // The same offer the Terminal turn service makes when its chain selects
+    // nothing: the installed skills whose descriptions match this request,
+    // behind `skill_open`, selected but not injected. Garden Chat has no Super
+    // agent, so this is the only way a skill without a router reaches a turn
+    // here short of the user typing its slash command.
+    const skillShortlist =
+      decision.selectedConditionalSkills.length === 0
+        ? shortlistSkillsForTurn({
+            request: resolved.userText || text,
+            skills: openableSkills(
+              "garden_chat",
+              listMcpConnections(userId, true).map(
+                (connection) => connection.slug,
+              ),
+            ),
+          })
+        : [];
+    if (skillShortlist.length > 0) {
+      decision.selectedConditionalSkills = [
+        ...new Set([
+          ...decision.selectedConditionalSkills,
+          ...skillShortlist.map((skill) => skill.slug),
+        ]),
+      ];
+      decision.allowedTools = [
+        ...new Set([...decision.allowedTools, "skill_open"]),
+      ];
+    }
 
     // Whether this turn owes live web evidence. The keyword planner's "no" is
     // final and free; its "yes" is a proposal a cheap model adjudicates, because
@@ -563,12 +789,16 @@ export async function openGardenAgentChat(
         reasoningEffortAdjusted: engine.adjusted,
         commands: resolved.invocations,
         automaticWatch,
+        automaticTextToCad,
+        automaticTextToCadSkill: automaticTextToCad ? textToCadSelection.skill : null,
         automaticPremortem: premortemSelection.automatic,
         automaticFactcheck: factcheckSelection.automatic,
         automaticPatentDisclosure,
         automaticInteractiveVisualizer: visualizerSelection.automatic,
+        automaticAsciiDiagram,
         automaticDiagramDesign: diagramSelection.automatic,
         automaticGithubExplorer: githubExplorerSelection.automatic,
+        automaticComputerUse,
         ...(repository
           ? {
               connectedRepository: repository.repository.name,
@@ -632,6 +862,11 @@ export async function openGardenAgentChat(
       ...resolved.tools,
       ...connectedApps.tools,
       ...(repository?.tools ?? {}),
+      ...(decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL)
+        ? { computer_use: true }
+        : {}),
+      ...(parametricCadSelected ? { agent_launch: true } : {}),
+      ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
     });
     // Documents the turn can see — files the user just attached and garden
     // sources they ticked in the sidebar — become book-to-skill skills when they
@@ -679,6 +914,8 @@ export async function openGardenAgentChat(
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",
         connectedApps.systemContext,
+        // Empty unless this turn was offered a shortlist above.
+        renderSkillShortlistDirective(skillShortlist),
         documents.context,
         renderWatchVideoContext(preparedGardenVideos),
         editableDocuments.context,
@@ -726,13 +963,23 @@ export async function openGardenAgentChat(
               },
             ]
           : []),
+        ...(automaticTextToCad && textToCadSelection.skill
+          ? [
+              {
+                slug: textToCadSelection.skill,
+                reason: "The request named CAD, robot-description, fabrication, or manufacturing work handled by the reviewed text-to-cad suite.",
+              },
+            ]
+          : []),
         ...(imageTo3dSelection.automatic ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
         ...(spotifySelection.automatic ? [{ slug: SPOTIFY_SKILL }] : []),
         ...(audioSelection.automatic ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
+        ...(automaticAsciiDiagram ? [{ slug: ASCII_ART_DIAGRAMS_SKILL }] : []),
         ...(diagramSelection.automatic ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
         ...(githubExplorerSelection.automatic
           ? [{ slug: GITHUB_EXPLORER_SKILL }]
           : []),
+        ...(automaticComputerUse ? [{ slug: COMPUTER_USE_SKILL }] : []),
         ...(automaticPatentDisclosure
           ? [{ slug: PATENT_DISCLOSURE_SKILL }]
           : []),
@@ -774,6 +1021,14 @@ export async function openGardenAgentChat(
       "Acknowledge the persona selection briefly and ask how you can help.";
     let run: ReturnType<typeof beginRuntimeRun>;
     try {
+      // Document retrieval, command resolution, and skill preparation can take
+      // several seconds. Stop may land during that window, before a runtime id
+      // exists; the turn tombstone is authoritative at the dispatch boundary.
+      if (
+        conversationTurnWasCancelled(conversation.id, reservedClientMessageId)
+      ) {
+        throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
+      }
       run = beginRuntimeRun({
         runtimeSessionId: session.row.id,
         instruction: text,
@@ -1152,6 +1407,14 @@ function legacyGardenEventStream(
           message: pending.message,
           path: pending.path,
           operations: pending.operations,
+          // This request exists before Hermes starts. The legacy activity hook
+          // must not submit it to the mid-run approval endpoint, which has no
+          // live run to resume; Garden owns the grant-and-retry flow below it.
+          preflight: {
+            kind: pending.kind,
+            path: pending.path,
+            operations: pending.operations ?? [],
+          },
         });
         recordAuditEvent({
           eventType: "permission.requested",
@@ -1177,6 +1440,7 @@ function legacyGardenEventStream(
             clientMessageId,
             status: "aborted",
             error: "awaiting_permission",
+            metadata: { pendingPermissions: prepared.pendingPermissions },
           });
         }
         // Nothing executed under this decision. It is abandoned rather than
@@ -1273,6 +1537,7 @@ function legacyGardenEventStream(
         markRuntimeRunSubmitted(runId);
         emitArtifactEvents();
         emitAgentLaunchRequests();
+        let completedSuccessfully = false;
         for (
           let next = await firstEvent;
           !next.done;
@@ -1419,8 +1684,25 @@ function legacyGardenEventStream(
               requestId: event.payload.requestId,
             });
           }
-          if (event.type === "error")
-            emit({ type: "error", error: event.payload.message });
+          if (event.type === "error") {
+            throw new Error(event.payload.message);
+          }
+          if (
+            event.type === "session.status" &&
+            event.payload.status === "failed"
+          ) {
+            throw new Error(
+              assistantText.trim() || "The agent failed to complete this turn.",
+            );
+          }
+          if (
+            event.type === "session.status" &&
+            event.payload.status === "aborted"
+          ) {
+            // The abort route owns the durable cancelled state. Exiting here
+            // prevents this detached pump from overwriting it as completed.
+            return;
+          }
           if (
             event.type === "session.status" &&
             event.payload.status === "idle"
@@ -1495,8 +1777,14 @@ function legacyGardenEventStream(
                 },
               });
             }
+            completedSuccessfully = true;
             break;
           }
+        }
+        if (!completedSuccessfully) {
+          throw new Error(
+            "Agent event stream closed before a successful terminal result.",
+          );
         }
         markStatus(session, "idle");
         finishRuntimeRun(runId, "completed");

@@ -104,6 +104,15 @@ const ThoughtTopologyMeta = () => (
   </div>
 )
 
+const ThoughtTopologyLoadingDots = () => (
+  <div class="thought-topology-loading-dots" aria-hidden={true}>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+)
+
 const ThoughtCallout = () => (
   <div class="thought-callout" role="status" aria-live="polite" aria-hidden="true"></div>
 )
@@ -174,6 +183,7 @@ export default ((opts?: Partial<GraphOptions>) => {
         <ThoughtTopologyMeta />
         <div class="graph-outer" data-graph-surface={isHomeVariant ? "garden" : "note-local"}>
           <div class="graph-container" data-cfg={JSON.stringify(localGraph)}></div>
+          {isHomeVariant && <ThoughtTopologyLoadingDots />}
           {showGlobalButton && (
             <button class="global-graph-icon" aria-label="Expand Graph">
               <svg

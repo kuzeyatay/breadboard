@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { backfillUninitializedConversationMemory } from "@/lib/conversations/memory";
 import {
   clearMemoryProfile,
   editMemoryProfile,
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 export async function POST() {
   try {
     const userId = await requireUserId();
+    backfillUninitializedConversationMemory(userId);
     // Opening Settings -> Memory calls this automatically. Keep the normal
     // evidence thresholds so repeatedly opening the tab cannot spend a model
     // call when the profile is already fresh.

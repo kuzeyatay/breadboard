@@ -94,6 +94,8 @@ export interface BrainEdge {
   origin: BrainEdgeOrigin;
   explicit: boolean;
   confidence?: number;
+  /** Affinity threshold used to admit this semantic edge. */
+  threshold?: number;
   createdAt?: string;
   weight?: number;
   organizationId?: string;

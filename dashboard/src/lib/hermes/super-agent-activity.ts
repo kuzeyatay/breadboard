@@ -102,6 +102,7 @@ export function delegatedAgentStartedAtForMessage(
 interface DelegationPresentationMessage {
   role: "user" | "assistant";
   content: string;
+  progressNotes?: string[];
   internalAgentContinuation?: boolean;
   delegatedAgentRun?: boolean;
   delegatedAgentPreamble?: string;
@@ -169,7 +170,7 @@ export function supersededDelegationAssistantIndices(
   return superseded;
 }
 
-/** Keep the original hand-off text in the single row until synthesis speaks. */
+/** Carry the original hand-off into the continuation row's Thinking updates. */
 export function delegatedContinuationPreamble(
   messages: readonly DelegationPresentationMessage[],
   assistantIndex: number,
@@ -193,6 +194,29 @@ export function delegatedContinuationPreamble(
     if (content) preamble = content;
   }
   return preamble;
+}
+
+/**
+ * Public text emitted before a delegated worker starts describes work in
+ * progress. Keep it with the response's other Thinking updates instead of
+ * letting it masquerade as a partial answer below the disclosure.
+ */
+export function delegatedThinkingUpdates(
+  message: Pick<
+    DelegationPresentationMessage,
+    "progressNotes" | "delegatedAgentPreamble"
+  >,
+  inheritedPreamble = "",
+): string[] {
+  return [
+    ...(message.progressNotes ?? []),
+    message.delegatedAgentPreamble ?? "",
+    inheritedPreamble,
+  ].reduce<string[]>((updates, value) => {
+    const update = value.trim();
+    if (update && !updates.includes(update)) updates.push(update);
+    return updates;
+  }, []);
 }
 
 function agentLabel(agentName: string): string {

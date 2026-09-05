@@ -22,6 +22,7 @@ interface Props {
   sourceUrl: string;
   /** Whether this account asked for the Fast-read seat in its profile. */
   fastRead?: boolean;
+  showNavbarFlowers?: boolean;
 }
 
 interface Heading {
@@ -196,6 +197,7 @@ export default function DocumentViewerClient({
   warnings,
   sourceUrl,
   fastRead = false,
+  showNavbarFlowers = true,
 }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -379,7 +381,7 @@ export default function DocumentViewerClient({
       `}</style>
 
       <header className="breadboard-flower-navbar relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
-        <NavbarFlowerWind />
+        <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"

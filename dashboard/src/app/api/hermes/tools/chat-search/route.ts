@@ -2,10 +2,13 @@ import { NextResponse } from "next/server";
 
 import db from "@/lib/db.ts";
 import {
+  boundedConversationReferenceMessages,
   searchConversations,
   type ConversationSearchCandidate,
   type ConversationSearchMessage,
+  type ConversationReferenceMessage,
 } from "@/lib/conversations/search.ts";
+import { isSensitiveMemoryText } from "@/lib/conversations/memory.ts";
 import { getConversationById } from "@/lib/conversations/store.ts";
 import { chatSearchResourceFromHits } from "@/lib/generative-ui/contracts.ts";
 import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth.ts";
@@ -31,6 +34,7 @@ const MAX_CONVERSATIONS = 200;
 const MAX_MESSAGES_PER_CONVERSATION = 60;
 const DEFAULT_RESULTS = 5;
 const MAX_RESULTS = 8;
+const MAX_REFERENCES = 3;
 
 interface ConversationRow {
   id: number;
@@ -39,6 +43,12 @@ interface ConversationRow {
   updated_at: string;
   pinned_at: string | null;
   legacy_chat_session_id: number | null;
+}
+
+interface ReferenceMessageRow {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
 }
 
 function integerResultCount(value: unknown): number {
@@ -51,6 +61,27 @@ function integerResultCount(value: unknown): number {
     );
   }
   return Number(value);
+}
+
+function referenceIds(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > MAX_REFERENCES ||
+    value.some(
+      (entry) =>
+        typeof entry !== "string" ||
+        !/^conv_[A-Za-z0-9_-]{1,80}$/.test(entry),
+    )
+  ) {
+    throw new ApiError(
+      400,
+      "chat_search_invalid_reference_ids",
+      `Chat references must contain 1 to ${MAX_REFERENCES} result IDs from chat_search.`,
+    );
+  }
+  return [...new Set(value)];
 }
 
 /** Internal, capability-scoped endpoint for Hermes's direct chat-history search. */
@@ -112,6 +143,7 @@ export async function POST(request: Request) {
       throw new ApiError(400, "chat_search_query_required", "A chat search query is required.");
     }
     const count = integerResultCount(args.count);
+    const requestedReferenceIds = referenceIds(args.reference_ids);
 
     let gardenSlug: string | undefined;
     if (session.surface === "garden_chat") {
@@ -173,8 +205,90 @@ export async function POST(request: Request) {
         readMessages.all(row.id, MAX_MESSAGES_PER_CONVERSATION) as ConversationSearchMessage[]
       ).reverse(),
     }));
-    const results = searchConversations(candidates, query, { limit: count });
-    const uiResource = results.length > 0
+    // A follow-up may select any id from the widest first-page search even if
+    // the model omits `count` on the second call. Re-run the same ranking at the
+    // route's hard maximum so a valid selected result cannot fall off at five.
+    const results = searchConversations(candidates, query, {
+      limit: requestedReferenceIds.length > 0 ? MAX_RESULTS : count,
+    });
+    const rowsByNavigationId = new Map(
+      conversations.map((row) => [
+        session.surface === "garden_chat"
+          ? String(row.legacy_chat_session_id)
+          : row.public_id,
+        row,
+      ]),
+    );
+    const searchResults = results.map((result) => ({
+      ...result,
+      // Navigation ids differ by surface. This stable id is the only value the
+      // model may pass back when the user asked it to use a result as context.
+      referenceId: rowsByNavigationId.get(result.id)!.public_id,
+    }));
+
+    let references: Array<{
+      referenceId: string;
+      title: string;
+      updatedAt: string;
+      sourceLabel: string;
+      transcriptScope: "latest_messages";
+      transcriptTruncated: boolean;
+      messages: ReturnType<typeof boundedConversationReferenceMessages>;
+    }> = [];
+    if (requestedReferenceIds.length > 0) {
+      const resultByReferenceId = new Map(
+        searchResults.map((result) => [result.referenceId, result]),
+      );
+      const missing = requestedReferenceIds.filter(
+        (referenceId) => !resultByReferenceId.has(referenceId),
+      );
+      if (missing.length > 0) {
+        throw new ApiError(
+          404,
+          "chat_search_reference_not_found",
+          "A referenced chat is not among this query's authorized search results.",
+        );
+      }
+      const readReferenceMessages = db.prepare(`
+        SELECT role, content, created_at AS createdAt
+        FROM conversation_messages
+        WHERE conversation_id = ? AND status <> 'pending' AND trim(content) <> ''
+        ORDER BY order_index DESC
+        LIMIT 30
+      `);
+      const rowsByPublicId = new Map(
+        conversations.map((row) => [row.public_id, row]),
+      );
+      references = requestedReferenceIds.map((referenceId) => {
+        const row = rowsByPublicId.get(referenceId)!;
+        const referenceMessages = (
+          readReferenceMessages.all(row.id) as ReferenceMessageRow[]
+        ).reverse().map((message): ConversationReferenceMessage => ({
+          ...message,
+          // Match the existing /reference path: a message containing likely
+          // credentials is withheld as a whole rather than partially leaked.
+          content: isSensitiveMemoryText(message.content)
+            ? "[sensitive content omitted]"
+            : message.content,
+        }));
+        const messages = boundedConversationReferenceMessages(referenceMessages);
+        return {
+          referenceId,
+          title: row.title,
+          updatedAt: row.updated_at,
+          sourceLabel: `Chat: ${row.title}`,
+          transcriptScope: "latest_messages",
+          transcriptTruncated:
+            referenceMessages.length === 30 ||
+            messages.length < referenceMessages.length ||
+            messages.some((message) => message.truncated),
+          messages,
+        };
+      });
+    }
+    // The first call already produced the navigation card. Repeating it on the
+    // transcript-read call would render the same result list twice in one turn.
+    const uiResource = requestedReferenceIds.length === 0 && results.length > 0
       ? chatSearchResourceFromHits({
           id: `chat-search:${session.id}:${Date.now()}`,
           query,
@@ -190,14 +304,21 @@ export async function POST(request: Request) {
       runtimeSessionId: session.id,
       userId: session.user_id,
       gardenId: session.garden_id,
-      payload: { query, resultsReturned: results.length, surface: session.surface },
+      payload: {
+        query,
+        resultsReturned: results.length,
+        referencesReturned: references.length,
+        surface: session.surface,
+      },
     });
     return NextResponse.json({
       ok: true,
       data: {
         query,
         resultsReturned: results.length,
-        results,
+        results: searchResults,
+        referencesReturned: references.length,
+        references,
         uiResources: uiResource ? [uiResource] : [],
       },
     });

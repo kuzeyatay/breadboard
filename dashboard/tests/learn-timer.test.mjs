@@ -188,7 +188,7 @@ test("failed Learn jobs restart rolled-back planning but preserve generation ret
   );
   assert.match(
     workspaceSource,
-    /shouldRepairFailedJob =\s*status === "failed" && hasExistingLearnContent/,
+    /shouldRepairFailedJob =\s*status === "failed" &&\s*hasExistingLearnContent &&\s*job\?\.mode !== "update_sources"/,
   );
   assert.match(
     workspaceSource,
@@ -301,7 +301,7 @@ test("completed Learn panel exposes scoped repair beside Skip review", () => {
   assert.ok(primaryActionIndex > repairIndex);
   assert.match(
     workspaceSource.slice(repairIndex, primaryActionIndex),
-    /onClick=\{handleRepairIssues\}[\s\S]*?bg-white[\s\S]*?text-gray-950[\s\S]*?M12 6\.75v10\.5[\s\S]*?"Repair issues"/,
+    /shouldAddNewLearnMaterial \|\| hasLearnUserInstruction[\s\S]*?handleLearnPrimary[\s\S]*?handleRepairIssues[\s\S]*?bg-white[\s\S]*?text-gray-950[\s\S]*?"Add new material"[\s\S]*?"Repair issues"/,
   );
   assert.match(workspaceSource.slice(repairIndex, primaryActionIndex), /Rebuild entire garden/);
   assert.match(completedFooter, /Open lessons/);
@@ -329,7 +329,10 @@ test("cancelled Learn jobs recover according to the current garden state", () =>
   const failedPlanningIndex = primaryHandler.indexOf("if (shouldRestartFailedPlanning)");
   const staleBindingIndex = primaryHandler.lastIndexOf("if (shouldReplanStaleMapBinding)");
   const replanIndex = primaryHandler.indexOf('postLearnAction("plan")', cancelledPlanningIndex);
-  const generateIndex = primaryHandler.indexOf('postLearnAction("generate"');
+  const generateIndex = primaryHandler.indexOf(
+    'postLearnAction("generate"',
+    staleBindingIndex,
+  );
   const initialPlanIndex = primaryHandler.lastIndexOf('postLearnAction("plan")');
 
   assert.ok(primaryStart >= 0 && primaryEnd > primaryStart);

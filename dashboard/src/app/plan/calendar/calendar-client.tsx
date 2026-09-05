@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import CalendarEventEditor, {
   draftToPayload,
   type EventDraft,
@@ -64,6 +65,7 @@ interface Props {
    * control stays, because those belong to the calendar and not to the page.
    */
   embedded?: boolean;
+  showNavbarFlowers?: boolean;
   /** Due work to draw beside the events, keyed by "YYYY-MM-DD". */
   dueTasks?: ReadonlyMap<string, readonly DueTaskChip[]>;
   onSelectTask?: (taskId: number) => void;
@@ -101,6 +103,7 @@ export default function CalendarClient({
   initialView,
   initialAnchor,
   embedded = false,
+  showNavbarFlowers = true,
   dueTasks,
   onSelectTask,
   onRangeChange,
@@ -460,14 +463,15 @@ export default function CalendarClient({
       }`}
     >
       <header
-        className={`bb-neu-toolbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5 ${
+        className={`bb-neu-toolbar relative flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5 ${
           embedded ? "" : "breadboard-flower-navbar"
         }`}
       >
+        {!embedded && <NavbarFlowerWind showFlowers={showNavbarFlowers} />}
         {!embedded && (
           <a
             href="/dashboard"
-            className="flex items-center gap-2 text-sm font-medium text-white"
+            className="relative z-10 flex items-center gap-2 text-sm font-medium text-white"
             title="Back to breadboard"
           >
             <CalendarIcon className="h-4 w-4" />
@@ -475,7 +479,7 @@ export default function CalendarClient({
           </a>
         )}
 
-        <div className="flex items-center gap-1">
+        <div className="relative z-10 flex items-center gap-1">
           <button
             type="button"
             onClick={() => setAnchor(today)}
@@ -504,11 +508,11 @@ export default function CalendarClient({
           </button>
         </div>
 
-        <h1 className="min-w-0 truncate text-base font-medium text-white">
+        <h1 className="relative z-10 min-w-0 truncate text-base font-medium text-white">
           {formatRangeTitle(range.from, range.to)}
         </h1>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="relative z-10 ml-auto flex items-center gap-3">
           {loading && <span className="text-xs text-gray-500">Loading…</span>}
 
           <div className="neu-segmented flex items-center gap-0.5 rounded-lg border">

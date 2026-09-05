@@ -71,6 +71,7 @@ interface ChatMessage {
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  responseCompletedAt?: string;
 }
 
 interface ChatSession {
@@ -91,7 +92,8 @@ const HISTORY_KEY = 'breadboard:knowledge-terminal-history';
 const MAX_SESSIONS = 40;
 // Collapsed height shows just the grab bar; drag the top edge up to open it,
 // the same way garden cards are resized.
-const COLLAPSED_HEIGHT = 48;
+// Match the dashboard dock's slimmer golden-proportion bar (42 / phi² ≈ 16).
+const COLLAPSED_HEIGHT = 42;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
 
 // Bottom edge of the breadboard navbar, so a fully opened terminal stops right
@@ -195,10 +197,10 @@ const TranscriptRow = memo(function TranscriptRow({
           dateTime={message.createdAt}
         />
       ) : null}
-      <div className={message.role === 'user' ? 'flex justify-end' : ''}>
-        <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
+      <div className={message.role === 'user' ? 'flex justify-end' : 'group/assistant-message'}>
+        <div className={message.role === 'user' ? 'w-fit max-w-[80%]' : 'w-full'}>
         {message.role === 'user' ? (
-          <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
+          <div className="neu-chat-message neu-chat-message-user w-fit max-w-full rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
             <CollapsibleUserMessage messageKey={messageKey}>
               <UserMessageText content={message.content} />
             </CollapsibleUserMessage>
@@ -223,6 +225,9 @@ const TranscriptRow = memo(function TranscriptRow({
             {!responding ? (
               <AssistantMessageActions
                 content={message.content || 'Response unavailable'}
+                responseStartedAt={message.createdAt}
+                responseDurationMs={message.responseDurationMs}
+                responseCompletedAt={message.responseCompletedAt}
                 onRetry={onRetry}
               />
             ) : null}
@@ -318,10 +323,12 @@ export default function KnowledgeTerminal({ scope }: Props) {
       conversationKey: activeId === null ? null : String(activeId),
       runInFlight: isStreaming,
       steerableRunActive: false,
-      onRestoreDraft: (text) =>
-        restoreQueuedFollowUpDraft(text, setInput, composerTextareaRef),
-      onSendQueued: async (text) => {
-        await sendMessage(text);
+      onRestoreDraft: (text, attachments) => {
+        restoreQueuedFollowUpDraft(text, setInput, composerTextareaRef);
+        setChatAttachments([...attachments]);
+      },
+      onSendQueued: async (text, attachments) => {
+        await sendMessage(text, undefined, attachments);
       },
     });
   // The newest answer's text is revealed at a readable pace rather than drawn
@@ -350,7 +357,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
     reasoningEffort,
     setReasoningEffort,
     intelligenceModes,
-    failover: modelFailover,
   } = useAssistantIntelligence();
   const { models, modelsLoading, loadModels } = useAssistantModels();
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
@@ -499,9 +505,14 @@ export default function KnowledgeTerminal({ scope }: Props) {
   async function sendMessage(
     textOverride?: string,
     historyOverride?: ChatMessage[],
+    attachmentOverride?: readonly ChatAttachment[],
   ) {
     const text = (textOverride ?? input).trim();
-    const pendingAttachments = historyOverride ? [] : chatAttachments;
+    const pendingAttachments = attachmentOverride
+      ? [...attachmentOverride]
+      : historyOverride
+        ? []
+        : chatAttachments;
     if ((!text && pendingAttachments.length === 0) || isStreaming) return;
 
     const history = historyOverride ?? messages;
@@ -636,6 +647,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       assistantMessage = {
         ...assistantMessage,
         responseDurationMs: Math.round(performance.now() - responseStartedAt),
+        responseCompletedAt: new Date().toISOString(),
       };
       const finalMessages = [...nextMessages, assistantMessage];
       setMessages(finalMessages);
@@ -653,6 +665,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
           createdAt: turnCreatedAt,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
+          responseCompletedAt: new Date().toISOString(),
         },
       ];
       setMessages(finalMessages);
@@ -790,7 +803,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     : 'terminal-boot-reveal';
 
   const terminalClassName =
-    'neu-surface-raised fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden border-t text-gray-100';
+    'bb-terminal-dock neu-surface-raised fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden border-t text-gray-100';
 
   return (
     <>
@@ -1051,7 +1064,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
           intelligenceModes={intelligenceModes}
-          modelFailover={modelFailover}
               onAddDocuments={() => attachmentInputRef.current?.click()}
               onPasteFiles={addAttachmentFiles}
               isAddingDocuments={extractingAttachments}

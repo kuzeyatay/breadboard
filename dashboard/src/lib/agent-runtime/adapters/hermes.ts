@@ -69,6 +69,10 @@ const TOKENJUICE_TOOLSET = "tokenjuice";
 // delegate_tool.resolve_root_task_id), so the per-turn capability decision
 // still governs every call they make.
 const DELEGATION_TOOLSET = "delegation";
+// Hermes's cross-platform cua-driver tool. It is present from session creation
+// because Hermes toolsets are immutable; turn guidance decides when the model
+// may reach for it, and Super Agent treats it as a last resort.
+const COMPUTER_USE_TOOLSET = "computer_use";
 // `clarify`: the model asks the user a question mid-turn and waits. Surfaces
 // render it as a card (choices + typed answer) and relay the answer through
 // `clarify.respond`; headless turns (Telegram, WhatsApp, email, hooks) are
@@ -89,6 +93,7 @@ const BASE_SYSTEM_PROMPT = [
   BREAD_ASSISTANT_IDENTITY,
   "Breadboard is the canonical owner of users, conversations, gardens, artifacts, permissions, memory, and audit records.",
   "Use only the tools exposed in this session.",
+  "Use computer_use only for a task that genuinely requires operating a graphical desktop application after a direct API, connected service, filesystem operation, terminal command, or purpose-built browser tool is unavailable or has failed. In Super Agent mode computer_use is always a last resort. Keep it in background delivery mode; never raise, front, or visibly focus a window.",
   "On Windows, terminal_execute_command runs Windows PowerShell 5.1, even if Hermes' generic host context mentions Bash; use PowerShell syntax and Windows paths only.",
   "For a total directory-size request, enumerate the directory tree only once and do not calculate per-folder breakdowns unless the user asks for them.",
   "Never claim filesystem, terminal, network, garden, or artifact access unless a Breadboard tool completed successfully.",
@@ -125,6 +130,8 @@ interface HermesSessionState extends RuntimeSession {
   /** Exact turn acknowledged by prompt.submit and therefore safe to recover. */
   submittedTurnId?: string;
   serviceLease?: SupervisorLease | null;
+  /** Keeps the on-demand subscription proxy alive, owned by correlated turn. */
+  subscriptionLeases?: Map<string, SupervisorLease>;
 }
 
 interface HermesTurnResult {
@@ -353,6 +360,9 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     this.client.close();
     for (const session of this.sessions.values()) {
       void releaseSupervisorLease(session.serviceLease);
+      for (const lease of session.subscriptionLeases?.values() ?? []) {
+        void releaseSupervisorLease(lease);
+      }
     }
     this.sessions.clear();
   }
@@ -362,6 +372,36 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     const lease = await acquireServiceLease("hermes", "garden-chat");
     if (session) session.serviceLease = lease;
     return lease;
+  }
+
+  private async ensureModelServiceLease(
+    session: HermesSessionState,
+    identity: HermesModelIdentity,
+    turnId?: string,
+  ): Promise<void> {
+    if (identity.provider !== "cliproxy") return;
+    const leaseKey = turnId ?? "uncorrelated";
+    if (session.subscriptionLeases?.has(leaseKey)) return;
+    const lease = await acquireServiceLease(
+      "cliproxy",
+      "subscription-model-turn",
+    );
+    if (!lease) return;
+    (session.subscriptionLeases ??= new Map()).set(leaseKey, lease);
+  }
+
+  private async releaseModelServiceLease(
+    session: HermesSessionState,
+    turnId?: string,
+  ): Promise<void> {
+    const leases = session.subscriptionLeases;
+    if (!leases) return;
+    const leaseKey = turnId ?? "uncorrelated";
+    const lease = leases.get(leaseKey);
+    if (!lease) return;
+    leases.delete(leaseKey);
+    await releaseSupervisorLease(lease);
+    if (leases.size === 0) session.subscriptionLeases = undefined;
   }
 
   async health() {
@@ -541,6 +581,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           TOKENJUICE_TOOLSET,
           DELEGATION_TOOLSET,
           CLARIFY_TOOLSET,
+          COMPUTER_USE_TOOLSET,
         ],
         system_prompt: this.systemPrompt(modelIdentity),
         close_on_disconnect: false,
@@ -637,9 +678,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       requestedModel ?? session.model,
       selectedModel,
     );
+    const turnId = input.messageId?.trim();
+    await this.ensureModelServiceLease(session, modelIdentity, turnId);
     session.selectedModel = selectedModel;
     session.modelIdentity = modelIdentity;
-    const turnId = input.messageId?.trim();
     session.activeTurnId = turnId;
     session.activeTurnText = runtimeText;
     // The event stream is intentionally connected before prompt.submit so no
@@ -661,6 +703,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         session.activeTurnText = undefined;
         session.submittedTurnId = undefined;
       }
+      await this.releaseModelServiceLease(session, turnId);
       throw error;
     }
   }
@@ -670,6 +713,17 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   ): Promise<void> {
     const session = this.requireSession(input);
     await this.ensureSessionLease(session);
+    // Mid-run guidance owns attachments just like a new turn. The gateway
+    // consumes these specifically in session.steer and turns them into vision
+    // context before injecting the correction into the active tool loop.
+    for (const attachment of input.attachments ?? []) {
+      if (attachment.type !== "image") continue;
+      await this.client.request("image.attach_bytes", {
+        session_id: session.liveSessionId,
+        content_base64: imageBase64(attachment.dataUrl),
+        filename: attachment.name,
+      });
+    }
     const result = await this.client.request<{ status?: string }>(
       "session.steer",
       {
@@ -706,6 +760,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     let activeApprovalFingerprint: string | undefined;
     let activeClarifyRequestId: string | undefined;
     let lastRunningHeartbeatAt = 0;
+    // The iterator's own reference is authoritative. Session fields are
+    // mutable because the same live Hermes session serves later turns.
+    let streamTurnId = input.messageId ?? session.activeTurnId;
+    let streamTurnText = input.instruction ?? session.activeTurnText;
     const completedToolCallIds = new Set<string>();
     const normalizeWithRecoveredTools = (
       raw: RawHermesEvent,
@@ -773,15 +831,14 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         // A transient database read failure must not tear down the live event
         // stream. The next recovery poll gets another chance.
       }
-      const turnId =
-        session.activeTurnId ?? resolved?.messageId ?? input.messageId;
+      streamTurnId ??=
+        resolved?.messageId ?? session.activeTurnId ?? input.messageId;
+      streamTurnText ??=
+        resolved?.instruction ?? session.activeTurnText ?? input.instruction;
+      const turnId = streamTurnId;
       return {
         turnId,
-        text:
-          session.activeTurnText ??
-          resolved?.instruction ??
-          input.instruction ??
-          "",
+        text: streamTurnText ?? "",
         submitted:
           Boolean(turnId && session.submittedTurnId === turnId) ||
           resolved?.submitted === true ||
@@ -835,6 +892,23 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           if (next.result.done) return;
           const raw = next.result.value;
           nextRaw = rawIterator.next();
+          const payload = isRecord(raw.payload) ? raw.payload : {};
+          const eventTurnId =
+            typeof payload.turn_id === "string"
+              ? payload.turn_id
+              : undefined;
+          const expectedTurnId = activeTurnReference().turnId;
+          // A detached listener from an earlier Garden request can still be
+          // bound to this live Hermes session. Never let a later turn's frames
+          // complete that older request (or vice versa): correlated gateway
+          // frames belong only to the turn this iterator was opened for.
+          if (
+            eventTurnId &&
+            expectedTurnId &&
+            eventTurnId !== expectedTurnId
+          ) {
+            continue;
+          }
           if (raw.type === "approval.request") {
             const fingerprint =
               approvalFingerprint(raw.payload) ??
@@ -852,7 +926,6 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           }
           const normalized = normalizeWithRecoveredTools(raw);
           if (raw.type === "message.complete") {
-            const payload = isRecord(raw.payload) ? raw.payload : {};
             const completedTurnId =
               typeof payload.turn_id === "string"
                 ? payload.turn_id
@@ -986,6 +1059,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       void rawIterator.return?.();
       await releaseSupervisorLease(session.serviceLease);
       session.serviceLease = null;
+      await this.releaseModelServiceLease(session, streamTurnId);
     }
   }
 
@@ -1074,6 +1148,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     } finally {
       await releaseSupervisorLease(session.serviceLease);
       session.serviceLease = null;
+      for (const lease of session.subscriptionLeases?.values() ?? []) {
+        await releaseSupervisorLease(lease);
+      }
+      session.subscriptionLeases = undefined;
       this.client.clearSession(session.liveSessionId);
       this.sessions.delete(input.externalSessionId);
     }

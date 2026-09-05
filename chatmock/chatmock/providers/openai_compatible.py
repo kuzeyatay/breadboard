@@ -60,6 +60,32 @@ def build_headers(credentials: ResolvedCredentials) -> Dict[str, str]:
     return headers
 
 
+def _unwrap_double_wrapped_tool(tool: Any) -> Any:
+    """Flatten ``{"type": "function", "function": {"type": "function", "function": {...}}}``.
+
+    A client that wraps an already-wrapped tool definition sends a function
+    object carrying stray ``type``/``function`` keys. OpenAI-style upstreams
+    ignore them; Gemini (reached through CLIProxyAPI) rejects the whole
+    request with ``Unknown name "type" at request.tools[0].function_declarations[N]``.
+    The inner definition is the real one, so use it.
+    """
+    if not isinstance(tool, dict):
+        return tool
+    function = tool.get("function")
+    if not isinstance(function, dict):
+        return tool
+    inner = function.get("function")
+    if function.get("type") != "function" or not isinstance(inner, dict):
+        return tool
+    if not isinstance(inner.get("name"), str):
+        return tool
+    flattened = {key: value for key, value in function.items() if key not in ("type", "function")}
+    # The inner definition is authoritative; the registry-added outer name is
+    # only kept when the inner one lacks it.
+    merged = {**flattened, **inner}
+    return _unwrap_double_wrapped_tool({**tool, "function": merged})
+
+
 def _normalized_tools(tools: Any) -> Any:
     """Give every function tool an explicit parameter schema.
 
@@ -73,6 +99,7 @@ def _normalized_tools(tools: Any) -> Any:
 
     normalized = []
     for tool in tools:
+        tool = _unwrap_double_wrapped_tool(tool)
         function = tool.get("function") if isinstance(tool, dict) else None
         if isinstance(function, dict) and not function.get("parameters"):
             tool = {

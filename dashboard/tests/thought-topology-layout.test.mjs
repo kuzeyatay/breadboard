@@ -15,6 +15,15 @@ const {
   pageLabelBudget,
   paddedHull,
   analysisStatus,
+  topologySourceKind,
+  labelClearanceRadius,
+  labelAwareLinkDistance,
+  shouldShowTopologyNodeLabel,
+  connectionStrength,
+  connectionOpacity,
+  topologyNavigationSlug,
+  CONNECTION_STROKE_WIDTH,
+  AUTHORED_CONNECTION_STRENGTH,
 } = layout;
 
 function folder(
@@ -53,6 +62,38 @@ function page(id, folderId, title, wordCount = 1000) {
     wordCount,
   };
 }
+
+function sourcePage(id, title, sourceType) {
+  return {
+    ...page(id, "folder:sources", title),
+    relPath: `sources/${id.slice(5)}.md`,
+    kind: "source",
+    knowledgeType: "source-document",
+    sourceType,
+  };
+}
+
+test("persistent topology labels omit Markdown node names without hiding other names", () => {
+  assert.equal(
+    shouldShowTopologyNodeLabel({ kind: "page", contentKind: "markdown" }),
+    false,
+  );
+  assert.equal(
+    shouldShowTopologyNodeLabel({ kind: "page", contentKind: "source" }),
+    true,
+  );
+  assert.equal(
+    shouldShowTopologyNodeLabel({
+      kind: "page",
+      contentKind: "internal-concept",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldShowTopologyNodeLabel({ kind: "folder", contentKind: null }),
+    true,
+  );
+});
 
 function fixture(edges = []) {
   const nodes = [];
@@ -140,6 +181,17 @@ function edge(id, source, target, score, origin = "inferred") {
   };
 }
 
+test("durable worker coordinates keep existing nodes fixed across incremental inserts", () => {
+  const payload = fixture();
+  Object.assign(payload.folders.find((item) => item.id === "folder:waves"), { x: 410, y: -90 });
+  Object.assign(payload.nodes.find((item) => item.id === "page:w1"), { x: 455, y: -40 });
+  const plan = planThoughtTopology(payload);
+  const folderNode = plan.nodes.find((node) => node.id === "folder:waves");
+  const pageNode = plan.nodes.find((node) => node.id === "page:w1");
+  assert.deepEqual({ x: folderNode.x, y: folderNode.y }, { x: 410, y: -90 });
+  assert.deepEqual({ x: pageNode.x, y: pageNode.y }, { x: 455, y: -40 });
+});
+
 test("library topology namespaces Gardens beneath one root without losing their routes or affinities", () => {
   const physics = fixture([edge("edge:inside", "page:w1", "page:w2", 0.91)]);
   const signals = fixture([edge("edge:inside", "page:w1", "page:w2", 0.82)]);
@@ -210,22 +262,18 @@ test("library topology namespaces Gardens beneath one root without losing their 
   );
 });
 
-test("empty and source folders are hidden; the three module folders become stable radial sectors", () => {
+test("every folder becomes a stable radial sector, including empty and source folders", () => {
   const plan = planThoughtTopology(fixture());
   assert.deepEqual(plan.meaningfulFolderIds, [
+    "folder:a",
+    "folder:generated",
     "folder:waves",
     "folder:light",
     "folder:quantum",
+    "folder:sources",
   ]);
-  assert.deepEqual(
-    plan.hiddenFolders.map((item) => [item.id, item.reason]).sort(),
-    [
-      ["folder:a", "empty"],
-      ["folder:generated", "empty"],
-      ["folder:sources", "sources"],
-    ],
-  );
-  assert.equal(plan.nodes.filter((node) => node.kind === "folder").length, 3);
+  assert.deepEqual(plan.hiddenFolders, []);
+  assert.equal(plan.nodes.filter((node) => node.kind === "folder").length, 6);
   assert.equal(plan.visiblePageCount, 38);
   assert.equal(plan.totalPageCount, 38);
   assert.deepEqual([plan.garden.x, plan.garden.y], [0, 0]);
@@ -238,6 +286,54 @@ test("empty and source folders are hidden; the three module folders become stabl
       Math.round(node.y),
     ]),
     "layout is deterministic across reloads",
+  );
+});
+
+test("source pages retain distinct Quartz node kinds for PDFs, links, video, audio, and documents", () => {
+  const payload = fixture();
+  payload.nodes.push(
+    sourcePage("page:pdf", "Field theory.pdf", "pdf"),
+    sourcePage("page:link", "Field theory online", "url"),
+    sourcePage("page:video", "Field theory lecture", "youtube"),
+    sourcePage("page:audio", "Field theory recording", "audio_upload"),
+    sourcePage("page:document", "Field theory notes", "docx"),
+  );
+  const plan = planThoughtTopology(payload);
+  assert.deepEqual(
+    Object.fromEntries(
+      plan.nodes
+        .filter((node) => node.folderId === "folder:sources")
+        .map((node) => [node.id, node.sourceKind]),
+    ),
+    {
+      "page:audio": "audio",
+      "page:document": "document",
+      "page:link": "link",
+      "page:pdf": "pdf",
+      "page:video": "video",
+    },
+  );
+  assert.equal(
+    topologySourceKind(
+      sourcePage("page:legacy-pdf", "Legacy reference.pdf", ""),
+      "sources",
+    ),
+    "pdf",
+  );
+  assert.equal(
+    topologySourceKind(
+      sourcePage("page:legacy-video", "Legacy lecture.mp4", ""),
+      "sources",
+    ),
+    "video",
+  );
+  assert.equal(
+    topologySourceKind(
+      page("page:ordinary", "folder:waves", "Ordinary.pdf"),
+      "module-v",
+    ),
+    null,
+    "a filename outside Sources is still an ordinary page",
   );
 });
 
@@ -280,7 +376,7 @@ test("folder anchors sit on one ring and every page stays inside its folder's cl
   }
 });
 
-test("the visible hierarchy connects Garden to folders to pages, while affinity weight controls line width", () => {
+test("the visible hierarchy connects Garden to folders to pages, while affinity weight controls colour weight, not width", () => {
   const plan = planThoughtTopology(
     fixture([
       edge("edge:bridge", "page:l11", "page:l12", 0.9),
@@ -316,22 +412,20 @@ test("the visible hierarchy connects Garden to folders to pages, while affinity 
     false,
   );
   for (const item of plan.edges) {
-    assert.ok(
-      item.width >= 0.7 && item.width <= 7,
-      `${item.id} width ${item.width} is bounded`,
+    assert.equal(
+      item.width,
+      CONNECTION_STROKE_WIDTH,
+      `${item.id} is drawn as the shared hairline`,
     );
-    assert.ok(item.opacity <= 0.92);
+    assert.ok(item.opacity > 0 && item.opacity <= 0.9);
   }
+  const bridge = plan.edges.find((item) => item.id === "edge:bridge");
+  const cross = plan.edges.find((item) => item.id === "edge:cross");
   assert.ok(
-    plan.edges.find((item) => item.id === "edge:bridge").width >
-      plan.edges.find((item) => item.id === "edge:cross").width,
+    bridge.opacity - cross.opacity > 0.3,
+    "strong and weak affinities should differ visibly in colour weight",
   );
-  assert.ok(
-    plan.edges.find((item) => item.id === "edge:bridge").width -
-      plan.edges.find((item) => item.id === "edge:cross").width >
-      2.5,
-    "strong and weak affinities should have visibly different widths",
-  );
+  assert.ok(bridge.strength > 0.7 && cross.strength < 0.3);
   assert.equal(
     plan.edges.find((item) => item.id === "edge:cross").crossFolder,
     true,
@@ -410,7 +504,7 @@ test("preview keeps the Garden, folders, a handful of pages, and only the strong
     ]),
     { preview: true },
   );
-  assert.equal(plan.nodes.filter((node) => node.kind === "folder").length, 3);
+  assert.equal(plan.nodes.filter((node) => node.kind === "folder").length, 6);
   const pages = plan.nodes.filter((node) => node.kind === "page");
   assert.ok(pages.length <= 10);
   assert.deepEqual(
@@ -550,6 +644,31 @@ test("labels never overlap each other, nodes, blocked controls, or the clip edge
   );
 });
 
+test("default node proximity grows with the rendered label footprint", () => {
+  const short = labelClearanceRadius(3, 42, 14);
+  const long = labelClearanceRadius(3, 128, 42);
+
+  assert.ok(short > 3, "even short names keep breathing room around the dot");
+  assert.ok(
+    long > short * 2,
+    "wrapped long names reserve substantially more room",
+  );
+  assert.equal(
+    labelAwareLinkDistance(44, short, long),
+    short + long + 12,
+    "a close link expands to fit both endpoint names",
+  );
+  assert.equal(
+    labelAwareLinkDistance(240, short, long),
+    240,
+    "an already-roomy authored relationship is preserved",
+  );
+  assert.ok(
+    labelClearanceRadius(3, 128, 42, 1.8) < long,
+    "the label-budgeted preview remains more compact than the full map",
+  );
+});
+
 test("text helpers produce readable folder names, summaries, and an honest overview", () => {
   assert.equal(
     displayFolderTitle("Module Vi Propagation Of Light"),
@@ -621,14 +740,11 @@ test("text helpers produce readable folder names, summaries, and an honest overv
   const overview = gardenOverview(plan, "Physics for EE", plan.garden.summary);
   assert.match(
     overview,
-    /organized into 3 folders — Module VII Quantum Mechanics, Module VI Propagation of Light, and Module V Waves and Oscilations — holding 38 pages/,
+    /organized into 6 folders — Module VII Quantum Mechanics, Module VI Propagation of Light, Module V Waves and Oscilations, A, Generated, and Sources — holding 38 pages/,
   );
   assert.match(overview, /No semantic connections have been confirmed/);
   assert.doesNotMatch(overview, /Folders: A/);
-  assert.equal(
-    analysisStatus(fixture()).notice,
-    "Concept and lexical mode · Semantic bridges will appear after vector analysis.",
-  );
+  assert.equal(analysisStatus(fixture()).notice, "");
   assert.equal(
     analysisStatus({
       ...fixture(),
@@ -651,4 +767,225 @@ test("text helpers produce readable folder names, summaries, and an honest overv
     10,
   );
   assert.ok(hull.length >= 8);
+});
+
+test("sub-folders carrying their own page rings get room on the parent ring instead of page spacing", () => {
+  const folders = [
+    folder("folder:$root", "", "Garden root", 0, 0, null),
+    folder("folder:concepts", "Concepts", "Concepts", 1, 0),
+    folder("folder:sources", "sources", "Sources", 1, 4),
+  ];
+  const nodes = [];
+  for (let section = 1; section <= 12; section += 1) {
+    const id = `folder:concepts/${section}`;
+    folders.push(folder(id, `Concepts/${section}. section-${section}`, `${section}. Section ${section}`, 2, 6, "folder:concepts"));
+    for (let item = 1; item <= 6; item += 1)
+      nodes.push(page(`page:c${section}-${item}`, id, `${section}.${item} Concept ${item}`));
+  }
+  // One empty sub-folder still takes a slot of its own.
+  folders.push(folder("folder:concepts/13", "Concepts/13. empty", "13. Empty", 2, 0, "folder:concepts"));
+  for (let item = 1; item <= 4; item += 1) nodes.push(page(`page:s${item}`, "folder:sources", `Source ${item}`));
+  const plan = planThoughtTopology({
+    schemaVersion: 1,
+    garden: { slug: "g", title: "G", summary: { state: "ready", text: "" } },
+    folders,
+    nodes,
+    edges: [],
+    build: { state: "ready", retrievalMode: "semantic-vector", threshold: 0.4 },
+  });
+  const byId = new Map(plan.nodes.map((node) => [node.id, node]));
+  const subFolders = plan.nodes.filter((node) => node.kind === "folder" && node.sectorId === "folder:concepts" && node.id !== "folder:concepts");
+  assert.equal(subFolders.length, 13);
+  // Every page sits nearer to its own sub-folder than to any other one, and
+  // pages of different sub-folders never crowd each other.
+  const pages = plan.nodes.filter((node) => node.kind === "page" && node.folderId.startsWith("folder:concepts/"));
+  for (const item of pages) {
+    const own = byId.get(item.folderId);
+    const ownDistance = Math.hypot(item.x - own.x, item.y - own.y);
+    for (const other of subFolders) {
+      if (other.id === item.folderId) continue;
+      assert.ok(Math.hypot(item.x - other.x, item.y - other.y) > ownDistance, `${item.id} stays with ${own.id}`);
+    }
+  }
+  for (const left of pages)
+    for (const right of pages) {
+      if (left.id >= right.id || left.folderId === right.folderId) continue;
+      assert.ok(Math.hypot(left.x - right.x, left.y - right.y) >= 20, `${left.id} and ${right.id} keep apart`);
+    }
+  // Neighbouring sub-folder anchors are further apart than two page slots.
+  for (const left of subFolders)
+    for (const right of subFolders) {
+      if (left.id >= right.id) continue;
+      assert.ok(Math.hypot(left.x - right.x, left.y - right.y) >= 60);
+    }
+  // The sector's measured radius covers its furthest page.
+  const sector = plan.sectors.find((entry) => entry.folderId === "folder:concepts");
+  const anchor = byId.get("folder:concepts");
+  for (const item of pages)
+    assert.ok(Math.hypot(item.x - anchor.x, item.y - anchor.y) <= sector.clusterRadius + 1);
+  // A neighbouring sector keeps clear of the whole fan.
+  const sources = byId.get("folder:sources");
+  assert.ok(Math.hypot(sources.x - anchor.x, sources.y - anchor.y) >= sector.clusterRadius * 0.5);
+});
+
+test("fit keeps the Garden centred on a balanced map but frames the whole map when one sector dwarfs the rest", () => {
+  const viewport = { width: 1600, height: 1000 };
+  const insets = { top: 0, right: 0, bottom: 0, left: 0 };
+  const limits = { minScale: 0.3, maxScale: 1.35 };
+  const balanced = fitTransform({ minX: -500, minY: -300, maxX: 500, maxY: 300 }, viewport, insets, limits, { x: 0, y: 0 });
+  // World (0,0) is drawn at (width/2, height/2) before the transform.
+  assert.ok(Math.abs(balanced.x + balanced.k * (viewport.width / 2) - viewport.width / 2) < 1e-6, "garden at the centre");
+  const lopsided = fitTransform({ minX: -200, minY: -300, maxX: 2000, maxY: 300 }, viewport, insets, limits, { x: 0, y: 0 });
+  assert.ok(lopsided.k > 0.7, `the frame uses the viewport for the map, not for empty space (${lopsided.k})`);
+  const screenX = (wx) => lopsided.x + lopsided.k * (wx + viewport.width / 2);
+  assert.ok(screenX(-200) >= -1e-6 && screenX(2000) <= viewport.width + 1e-6, "both map edges are on screen");
+});
+
+test("connection strength ramps over a fixed span above the threshold", () => {
+  // Centred-cosine Gardens sit around 0.4; the strongest real pairs top out
+  // about 0.35 above that, so that span is where the full colour range goes.
+  assert.equal(connectionStrength(0.4, 0.4), 0);
+  assert.ok(Math.abs(connectionStrength(0.575, 0.4) - 0.5) < 1e-9);
+  assert.equal(connectionStrength(0.9, 0.4), 1);
+  // Raw-cosine Gardens near the 0.82 clamp keep a narrower span.
+  assert.equal(connectionStrength(1, 0.82), 1);
+  assert.ok(connectionStrength(0.91, 0.82) > 0.49);
+  assert.equal(connectionStrength(0.3, 0.4), 0);
+  assert.ok(connectionOpacity(0) < connectionOpacity(0.5));
+  assert.ok(connectionOpacity(1) <= 0.9);
+});
+
+test("navigation slugs match what Quartz publishes", () => {
+  assert.equal(
+    topologyNavigationSlug("electromagnetism-1/Concepts/6. Static Magnetic Fields"),
+    "electromagnetism-1/Concepts/6.-Static-Magnetic-Fields",
+  );
+  assert.equal(topologyNavigationSlug("/garden/Sources/lecture 1.md"), "garden/Sources/lecture-1");
+  assert.equal(topologyNavigationSlug("garden/Q&A 100% done?#"), "garden/Q-and-A-100-percent-done");
+  assert.equal(topologyNavigationSlug("garden/folder/_index"), "garden/folder/index");
+  assert.equal(topologyNavigationSlug("garden\\Folder Name"), "garden/Folder-Name");
+});
+
+test("excluded folders leave the map with their subtree, pages and connections", () => {
+  const payload = fixture([
+    edge("edge:bridge", "page:l11", "page:l12", 0.9),
+    edge("edge:cross", "page:w7", "page:q12", 0.7),
+    edge("edge:sub", "page:w1", "page:wsub1", 0.8),
+  ]);
+  payload.folders.push(
+    folder(
+      "folder:waves-sub",
+      "module-v-waves-and-oscilations/extras",
+      "Extras",
+      2,
+      1,
+      "folder:waves",
+    ),
+  );
+  payload.nodes.push(page("page:wsub1", "folder:waves-sub", "Extra waves topic"));
+
+  const full = planThoughtTopology(payload);
+  assert.ok(full.nodes.some((node) => node.id === "folder:waves-sub"));
+  assert.ok(full.nodes.some((node) => node.id === "page:wsub1"));
+  assert.equal(full.edges.length, 3);
+  assert.deepEqual(
+    full.folderOptions.filter((option) => option.depth === 2).map((option) => option.id),
+    ["folder:waves-sub"],
+  );
+  assert.equal(
+    full.folderOptions.find((option) => option.id === "folder:waves").pageCount,
+    12,
+    "a folder's page count covers its whole subtree",
+  );
+  assert.ok(full.folderOptions.every((option) => option.excluded === false));
+  assert.equal(full.hiddenFolders.length, 0);
+
+  const trimmed = planThoughtTopology(payload, { excludedFolderIds: ["folder:waves"] });
+  for (const id of ["folder:waves", "folder:waves-sub", "page:w7", "page:wsub1"]) {
+    assert.equal(
+      trimmed.nodes.some((node) => node.id === id),
+      false,
+      `${id} is gone`,
+    );
+  }
+  assert.deepEqual(
+    trimmed.edges.map((item) => item.id),
+    ["edge:bridge"],
+    "connections touching excluded pages disappear",
+  );
+  assert.ok(
+    trimmed.hierarchyEdges.every(
+      (item) => item.source !== "folder:waves" && item.target !== "folder:waves",
+    ),
+  );
+  assert.deepEqual(
+    trimmed.hiddenFolders.map((item) => [item.id, item.reason]),
+    [
+      ["folder:waves", "excluded"],
+      ["folder:waves-sub", "excluded"],
+    ],
+  );
+  const wavesOption = trimmed.folderOptions.find((option) => option.id === "folder:waves");
+  const subOption = trimmed.folderOptions.find((option) => option.id === "folder:waves-sub");
+  assert.equal(wavesOption.excluded, true);
+  assert.equal(wavesOption.inheritedExclusion, false);
+  assert.equal(subOption.excluded, true);
+  assert.equal(subOption.inheritedExclusion, true);
+  assert.equal(trimmed.visiblePageCount, full.visiblePageCount - 12);
+  assert.ok(trimmed.sectors.every((sector) => sector.folderId !== "folder:waves"));
+
+  const subOnly = planThoughtTopology(payload, { excludedFolderIds: ["folder:waves-sub"] });
+  assert.ok(subOnly.nodes.some((node) => node.id === "folder:waves"));
+  assert.equal(subOnly.nodes.some((node) => node.id === "page:wsub1"), false);
+  assert.deepEqual(
+    subOnly.edges.map((item) => item.id).sort(),
+    ["edge:bridge", "edge:cross"],
+  );
+});
+
+test("a minimum connection strength hides the weaker links only", () => {
+  const payload = fixture([
+    edge("edge:bridge", "page:l11", "page:l12", 0.9),
+    edge("edge:cross", "page:w7", "page:q12", 0.7),
+    edge("edge:authored", "page:q2", "page:l13", 0.8, "authored"),
+  ]);
+  const all = planThoughtTopology(payload);
+  assert.equal(all.edges.length, 3);
+  assert.equal(
+    all.edges.find((item) => item.id === "edge:authored").strength,
+    AUTHORED_CONNECTION_STRENGTH,
+    "authored links carry a fixed light weight",
+  );
+  const strongOnly = planThoughtTopology(payload, { minConnectionStrength: 0.5 });
+  assert.deepEqual(
+    strongOnly.edges.map((item) => item.id).sort(),
+    ["edge:bridge"],
+  );
+  const strongest = planThoughtTopology(payload, { minConnectionStrength: 0.7 });
+  assert.deepEqual(
+    strongest.edges.map((item) => item.id),
+    ["edge:bridge"],
+  );
+  assert.equal(strongest.nodes.length, all.nodes.length, "nodes stay; only lines go");
+});
+
+test("a per-page connection cap keeps each page's strongest lines", () => {
+  const payload = fixture([
+    edge("edge:a", "page:l1", "page:l2", 0.95),
+    edge("edge:b", "page:l1", "page:l3", 0.9),
+    edge("edge:weak", "page:l2", "page:l3", 0.7),
+    edge("edge:spoke", "page:l1", "page:l4", 0.85),
+    edge("edge:e", "page:w1", "page:w2", 0.66),
+  ]);
+  const all = planThoughtTopology(payload);
+  assert.equal(all.edges.length, 5);
+  const single = planThoughtTopology(payload, { maxConnectionsPerNode: 1 });
+  assert.deepEqual(
+    single.edges.map((item) => item.id).sort(),
+    ["edge:a", "edge:b", "edge:e", "edge:spoke"],
+    "each page keeps its strongest line, so a spoke's only line survives while the weak triangle side goes",
+  );
+  const pair = planThoughtTopology(payload, { maxConnectionsPerNode: 2 });
+  assert.equal(pair.edges.length, 5, "a cap wider than every degree keeps everything");
+  assert.equal(single.nodes.length, all.nodes.length, "nodes stay; only lines go");
 });

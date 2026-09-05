@@ -139,6 +139,24 @@ async function removePrivateStagingDirectory(
   await fs.promises.rm(resolvedStaging, { recursive: true, force: true });
 }
 
+function decodeMultipartFilename(value: string): string {
+  // Busboy's default for a legacy `filename=` parameter is latin1, while
+  // browsers and Node's WHATWG FormData put UTF-8 bytes there. Only reinterpret
+  // byte-shaped strings: a correctly decoded Unicode filename contains code
+  // points above 0xff and must be left alone. Fatal decoding also preserves a
+  // genuinely latin1 filename instead of replacing any character.
+  if ([...value].some((character) => character.codePointAt(0)! > 0xff)) {
+    return value;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.from(value, "latin1"),
+    );
+  } catch {
+    return value;
+  }
+}
+
 function sameAuthority(
   left: RuntimeJobAuthority,
   right: RuntimeJobAuthority,
@@ -215,7 +233,9 @@ export async function parseIngestUpload(
       stream.resume();
       return;
     }
-    const displayName = path.basename(info.filename || "upload");
+    const displayName = path.basename(
+      decodeMultipartFilename(info.filename || "upload"),
+    );
     const mediaType = info.mimeType || "application/octet-stream";
     metadata = {
       name: displayName,

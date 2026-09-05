@@ -258,7 +258,14 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // model misread which mailbox the request was about.
   profile("inbox-zero", INBOX_ZERO_COMMAND, "Inbox Zero"),
   profile("hardware-blueprint", HARDWARE_BLUEPRINT_COMMAND, "Hardware Blueprint"),
-  profile("parametric-cad", PARAMETRIC_CAD_COMMAND, "Parametric CAD"),
+  // A CAD request routed through the reviewed text-to-cad skill should feel
+  // like one capability, not an assistant asking permission to open its own
+  // local geometry kernel. The worker is confined to Breadboard's project
+  // store, produces reversible revisions/artifacts, and cannot publish or act
+  // on an external system, so the normal launch confirmation adds no safety.
+  profile("parametric-cad", PARAMETRIC_CAD_COMMAND, "Parametric CAD", {
+    requiresLaunchApproval: false,
+  }),
   profile("hyperframes", HYPERFRAMES_COMMAND, "HyperFrames"),
   profile("resource2skill", RESOURCE2SKILL_COMMAND, "Resource2Skill"),
   // OpenMontage runs its whole production inside its own workspace from one

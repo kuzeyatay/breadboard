@@ -70,11 +70,11 @@ export async function executeRuntimeV2ThoughtTopology(launch, signal, progress) 
   validateRuntimeV2ThoughtTopologyRequest(launch.request);
   validateRuntimeV2ThoughtTopologyScope(launch.executionScope);
   validateThoughtTopologyWorkerEnvironment(process.env);
-  progress.checkpoint({ stage: "loading-garden" });
+  progress.checkpoint({ stage: "loading-garden", percent: 5 });
   const sourceRoot = sourceLayout(launch.dataRoot);
   await import(pathToFileURL(path.join(path.dirname(ENTRYPOINT), "learn-worker-import-hook.mjs")).href);
   const executor = await import(pathToFileURL(path.join(sourceRoot, "lib", "thought-topology", "executor.ts")).href);
-  progress.checkpoint({ stage: "building-topology" });
+  progress.checkpoint({ stage: "building-topology", percent: 12 });
   const result = await executor.executeThoughtTopologyRuntimeBuild({
     clusterId: launch.request.clusterId,
     userId: launch.executionScope.userId,
@@ -83,8 +83,11 @@ export async function executeRuntimeV2ThoughtTopology(launch, signal, progress) 
     queueJobId: launch.request.queueJobId,
     runtimeJobId: launch.identity.jobId,
     signal,
+    onProgress(percent) {
+      progress.checkpoint({ stage: "building-topology", percent });
+    },
   });
-  progress.checkpoint({ stage: "complete" });
+  progress.checkpoint({ stage: "complete", percent: 100 });
   return result;
 }
 

@@ -22,6 +22,45 @@ const REPETITION_WINDOW_CHARS = 8_000;
 
 let cachedModelId: { baseUrl: string; id: string } | null = null;
 
+/**
+ * Undici normally rejects a response-body read when its fetch signal aborts,
+ * but a server that leaves an SSE connection half-open can strand the reader
+ * after the response headers have arrived. Race the read against the signal
+ * ourselves so the page deadline remains authoritative in that state too.
+ */
+function readWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException("The operation was aborted.", "AbortError"),
+    );
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException("The operation was aborted.", "AbortError"),
+      );
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 /** Resolve the model id to send, falling back to whatever the server serves. */
 export async function resolveVlmOcrModelId(
   config: VlmOcrConfig,
@@ -89,6 +128,7 @@ export async function runVlmOcrPage({
   const abortOuter = () => controller.abort();
   signal?.addEventListener("abort", abortOuter, { once: true });
   const timer = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
   try {
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -135,7 +175,7 @@ export async function runVlmOcrPage({
       );
     }
 
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     const parts: string[] = [];
     let buffer = "";
@@ -144,7 +184,7 @@ export async function runVlmOcrPage({
     let earlyStopped = false;
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithAbort(reader.read(), controller.signal);
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -173,6 +213,7 @@ export async function runVlmOcrPage({
 
     return { text: parts.join(""), earlyStopped };
   } catch (error) {
+    if (reader) void reader.cancel().catch(() => {});
     if (error instanceof VlmOcrRequestError) throw error;
     if (error instanceof Error && error.name === "AbortError") {
       if (signal?.aborted) throw error;

@@ -33,7 +33,7 @@ test("topology submission is Garden-authorized and revision-idempotent", async (
   assert.deepEqual(received.authority, { userId: 7, gardenId: "new-garden", conversationId: null });
   assert.deepEqual(received.submission, {
     jobType: "thought-topology",
-    idempotencyKey: "thought-topology-v1:12:4",
+    idempotencyKey: "thought-topology-v2:12:queue:31",
     requestPayload: { protocolVersion: 1, operation: "build-thought-topology", clusterId: 12, revision: 4, queueJobId: 31 },
   });
 });
@@ -101,4 +101,28 @@ test("Runtime manifest binds the topology worker to GBrain and ChatMock", () => 
   assert.deepEqual(entry.jobTypes, ["thought-topology"]);
   assert.equal(entry.resourceClass, "document-processing");
   assert.deepEqual(entry.serviceDependencies.map((dependency) => dependency.serviceId).sort(), ["chatmock", "gbrain"]);
+});
+
+test("background topology builds publish bounded percentage progress", () => {
+  const finiteWorker = fs.readFileSync(
+    new URL("../scripts/runtime-v2-finite-mcp-worker-core.mjs", import.meta.url),
+    "utf8",
+  );
+  const topologyWorker = fs.readFileSync(
+    new URL("../scripts/runtime-v2-thought-topology-worker.mjs", import.meta.url),
+    "utf8",
+  );
+  const route = fs.readFileSync(
+    new URL("../src/app/api/thought-topology/route.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(finiteWorker, /events\.progress\("processing", value\.percent, 100\)/);
+  assert.match(topologyWorker, /stage: "loading-garden", percent: 5/);
+  assert.match(topologyWorker, /onProgress\(percent\)/);
+  assert.match(route, /inspectRuntimeJobForStatus/);
+  assert.match(route, /monotonicRuntimeProgress/);
+  assert.match(route, /activeQueueRow/);
+  assert.doesNotMatch(route, /pendingExplanations/);
+  assert.match(route, /message: `\$\{action\} Thought Topology · \$\{progress\}%`/);
 });

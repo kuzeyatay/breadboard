@@ -20,6 +20,10 @@ import {
   nextCronOccurrence,
   parseCronExpression,
 } from "./cron.ts";
+import {
+  inferScheduledChatConversationPolicy,
+  type ScheduledChatConversationPolicy,
+} from "./conversation-policy.ts";
 import type {
   ScheduledChatJob,
   ScheduledChatRunStatus,
@@ -28,7 +32,12 @@ import type {
 
 type Db = DatabaseType.Database;
 
-export type { ScheduledChatJob, ScheduledChatRunStatus, ScheduledChatSurface };
+export type {
+  ScheduledChatConversationPolicy,
+  ScheduledChatJob,
+  ScheduledChatRunStatus,
+  ScheduledChatSurface,
+};
 
 export const MAX_SCHEDULE_TITLE_LENGTH = 120;
 export const MAX_SCHEDULE_PROMPT_LENGTH = 20_000;
@@ -55,6 +64,7 @@ export interface ScheduledChatJobRow {
   prompt_slug: string | null;
   model: string;
   reasoning_effort: AssistantReasoningEffort;
+  conversation_policy: ScheduledChatConversationPolicy;
   /** Optional direct destination for a messaging-origin reminder. */
   delivery_channel: "whatsapp" | "telegram" | null;
   delivery_mode: "reminder" | null;
@@ -100,7 +110,8 @@ function defaultOwnerId(): string {
 }
 
 export interface CreateScheduledChatInput {
-  title: string;
+  /** Legacy input; the prompt itself is now always used as the title. */
+  title?: string;
   prompt: string;
   cron: string;
   surface: ScheduledChatSurface;
@@ -171,8 +182,8 @@ function normalizeDirectDelivery(input: Pick<
   if (mode !== null && mode !== "reminder") {
     throw new ScheduleError(400, "The reminder delivery mode is invalid.");
   }
-  if ((channel === null) !== (mode === null)) {
-    throw new ScheduleError(400, "A direct reminder needs both a channel and delivery mode.");
+  if (channel !== null && mode === null) {
+    throw new ScheduleError(400, "A messaging reminder needs a delivery mode.");
   }
   return { channel, mode };
 }
@@ -205,6 +216,7 @@ export function presentScheduledChatJob(
     promptSlug: row.prompt_slug,
     model: row.model,
     reasoningEffort: row.reasoning_effort,
+    conversationPolicy: row.conversation_policy,
     oneShot: row.one_shot === 1,
     enabled: row.enabled === 1,
     // A one-shot disarms atomically when it starts. Keep its due time visible
@@ -279,16 +291,19 @@ export class ScheduledChatJobStore {
       );
     }
 
-    const title = boundedText(input.title, MAX_SCHEDULE_TITLE_LENGTH, "A title");
     const prompt = boundedText(input.prompt, MAX_SCHEDULE_PROMPT_LENGTH, "A prompt");
+    const title = prompt.slice(0, MAX_SCHEDULE_TITLE_LENGTH);
     const cron = boundedText(input.cron, 120, "A schedule");
     const surface = normalizeSurface(input.surface);
     const gardenSlug = surface === "garden_chat" ? boundedText(input.gardenSlug, 160, "A garden") : null;
     const model = normalizeModel(input.model);
     const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
     const delivery = normalizeDirectDelivery(input);
-    if (delivery.channel && surface !== "dashboard_terminal") {
-      throw new ScheduleError(400, "A messaging reminder must target the terminal.");
+    const conversationPolicy = delivery.mode
+      ? "always_open"
+      : inferScheduledChatConversationPolicy(prompt);
+    if (delivery.mode && surface !== "dashboard_terminal") {
+      throw new ScheduleError(400, "A reminder must target the terminal.");
     }
     // Validate the expression even for one-shot rows. It remains a readable,
     // backwards-compatible description, while next_run_at is authoritative.
@@ -302,9 +317,9 @@ export class ScheduledChatJobStore {
       .prepare(
         `INSERT INTO scheduled_chat_jobs
            (user_id, title, prompt, cron_expression, surface, garden_slug, prompt_slug,
-            model, reasoning_effort, delivery_channel, delivery_mode, one_shot, enabled,
-            next_run_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            model, reasoning_effort, conversation_policy, delivery_channel, delivery_mode,
+            one_shot, enabled, next_run_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         userId,
@@ -316,6 +331,7 @@ export class ScheduledChatJobStore {
         typeof input.promptSlug === "string" ? input.promptSlug.slice(0, 100) : null,
         model,
         reasoningEffort,
+        conversationPolicy,
         delivery.channel,
         delivery.mode,
         oneShot ? 1 : 0,
@@ -332,12 +348,10 @@ export class ScheduledChatJobStore {
     now: Date = new Date(),
   ): ScheduledChatJobRow {
     const existing = this.require(userId, id);
-    const title = input.title === undefined
-      ? existing.title
-      : boundedText(input.title, MAX_SCHEDULE_TITLE_LENGTH, "A title");
     const prompt = input.prompt === undefined
       ? existing.prompt
       : boundedText(input.prompt, MAX_SCHEDULE_PROMPT_LENGTH, "A prompt");
+    const title = prompt.slice(0, MAX_SCHEDULE_TITLE_LENGTH);
     const cron = input.cron === undefined
       ? existing.cron_expression
       : boundedText(input.cron, 120, "A schedule");
@@ -362,9 +376,12 @@ export class ScheduledChatJobStore {
       deliveryMode:
         input.deliveryMode === undefined ? existing.delivery_mode : input.deliveryMode,
     });
-    if (delivery.channel && surface !== "dashboard_terminal") {
-      throw new ScheduleError(400, "A messaging reminder must target the terminal.");
+    if (delivery.mode && surface !== "dashboard_terminal") {
+      throw new ScheduleError(400, "A reminder must target the terminal.");
     }
+    const conversationPolicy = delivery.mode
+      ? "always_open"
+      : inferScheduledChatConversationPolicy(prompt);
     const oneShot = input.oneShot === undefined
       ? existing.one_shot === 1
       : input.oneShot === true;
@@ -389,7 +406,7 @@ export class ScheduledChatJobStore {
       .prepare(
         `UPDATE scheduled_chat_jobs
          SET title = ?, prompt = ?, cron_expression = ?, surface = ?, garden_slug = ?,
-             model = ?, reasoning_effort = ?, delivery_channel = ?, delivery_mode = ?,
+             model = ?, reasoning_effort = ?, conversation_policy = ?, delivery_channel = ?, delivery_mode = ?,
              one_shot = ?, enabled = ?, next_run_at = ?, updated_at = datetime('now')
          WHERE id = ? AND user_id = ?`,
       )
@@ -401,6 +418,7 @@ export class ScheduledChatJobStore {
         gardenSlug,
         model,
         reasoningEffort,
+        conversationPolicy,
         delivery.channel,
         delivery.mode,
         oneShot ? 1 : 0,
@@ -534,6 +552,8 @@ export class ScheduledChatJobStore {
     outcome: {
       status: ScheduledChatRunStatus;
       conversationId?: string | null;
+      /** A met watch is complete and must not notify again next run. */
+      objectiveDecision?: "met" | "pending" | null;
       error?: string | null;
       at?: Date;
     },
@@ -546,6 +566,7 @@ export class ScheduledChatJobStore {
         .prepare(
           `UPDATE scheduled_chat_jobs
            SET last_run_at = ?, last_status = ?, last_error = ?, last_conversation_id = ?,
+               enabled = CASE WHEN ? = 'met' THEN 0 ELSE enabled END,
                run_count = run_count + 1, updated_at = datetime('now')
            WHERE id = ?`,
         )
@@ -554,6 +575,7 @@ export class ScheduledChatJobStore {
           outcome.status,
           outcome.error ? outcome.error.slice(0, 500) : null,
           outcome.conversationId ?? null,
+          outcome.objectiveDecision ?? null,
           id,
         );
       this.releaseLease(id);

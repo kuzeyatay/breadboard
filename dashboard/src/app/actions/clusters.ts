@@ -4,6 +4,7 @@ import db from "@/lib/db";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { countClusterMarkdown, refreshClusterIndex } from "@/lib/knowledge";
 import {
   refreshOrganizationQuartzIndex,
@@ -20,6 +21,10 @@ import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
 import { uniqueGardenSlug } from "@/lib/garden-slug";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
+import {
+  deleteOwnedGarden,
+  finalizeGardenDeletion,
+} from "@/lib/garden-deletion";
 import {
   createFolder,
   deleteFolder,
@@ -214,52 +219,6 @@ function resolveChildPath(
   return child.startsWith(`${parent}${path.sep}`) ? child : null;
 }
 
-function removeChildPath(parentPath: string, childName: string): void {
-  const child = resolveChildPath(parentPath, childName);
-  if (child && fs.existsSync(child)) {
-    fs.rmSync(child, { recursive: true, force: true });
-  }
-}
-
-function quartzPublicPathFor(contentPath: string): string {
-  return path.join(path.dirname(path.resolve(contentPath)), "public");
-}
-
-function deletedClusterRedirectHtml(): string {
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="0; url=/">
-<title>Garden deleted</title>
-<script>window.location.replace('/');</script>
-<body style="margin:0;background:#161618;color:#ebebec;font-family:system-ui,sans-serif;display:grid;min-height:100vh;place-items:center">
-  <main style="max-width:32rem;padding:2rem;text-align:center">
-    <h1 style="font-size:1.5rem;margin:0 0 .75rem">This garden was deleted.</h1>
-    <p style="color:#646464;margin:0 0 1.25rem">Taking you back to the garden home.</p>
-    <a href="/" style="color:#7b97aa">Open garden home</a>
-  </main>
-</body>
-`;
-}
-
-function writeDeletedClusterRedirect(
-  contentPath: string,
-  clusterSlug: string,
-): void {
-  const publicPath = quartzPublicPathFor(contentPath);
-  const clusterDir = resolveChildPath(publicPath, clusterSlug);
-  const clusterHtml = resolveChildPath(publicPath, `${clusterSlug}.html`);
-  if (!clusterDir || !clusterHtml) return;
-
-  fs.mkdirSync(publicPath, { recursive: true });
-  fs.rmSync(clusterDir, { recursive: true, force: true });
-  fs.mkdirSync(clusterDir, { recursive: true });
-
-  const html = deletedClusterRedirectHtml();
-  fs.writeFileSync(path.join(clusterDir, "index.html"), html, "utf-8");
-  fs.writeFileSync(clusterHtml, html, "utf-8");
-}
-
 export async function getClusters(userId: number): Promise<Cluster[]> {
   try {
     const rows = db
@@ -397,9 +356,21 @@ export async function createCluster(
     }
 
     refreshPrivateQuartzIndex(userId);
-    await publishQuartzAfterMutation(`create cluster ${slug}`, {
-      userId,
-      gardenSlug: slug,
+    // The garden is usable as soon as its database row and source index exist.
+    // A full Quartz publication can take minutes, so keep it in the request's
+    // post-response lifetime instead of holding the create dialog open.
+    after(async () => {
+      try {
+        await publishQuartzAfterMutation(`create cluster ${slug}`, {
+          userId,
+          gardenSlug: slug,
+        });
+      } catch (error) {
+        console.error(
+          `[quartz] Failed to publish newly created garden ${slug}:`,
+          error,
+        );
+      }
     });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
@@ -502,6 +473,7 @@ export async function setClusterVisibility(
     const scope = nextVisibility === "public" ? "publish" : "unpublish";
     await publishQuartzAfterMutation(`${scope} cluster ${cluster.slug}`, {
       userId,
+      topologyImpact: "none",
     });
     revalidatePath("/dashboard");
     revalidatePath("/garden");
@@ -985,64 +957,26 @@ export async function deleteCluster(clusterId: number): Promise<void> {
       .get(clusterId, userId) as { slug: string } | undefined;
 
     if (!cluster) return;
-    const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    const clusterDir = contentPath
-      ? resolveChildPath(contentPath, cluster.slug)
-      : null;
-    const lease = clusterDir
-      ? acquireGardenMutationLease(clusterDir, "delete-garden")
-      : null;
-
-    try {
-      db.prepare("DELETE FROM clusters WHERE id = ? AND user_id = ?").run(
-        clusterId,
-        userId,
-      );
-
-      if (contentPath) {
-        removeChildPath(contentPath, cluster.slug);
-        writeDeletedClusterRedirect(contentPath, cluster.slug);
-      }
-    } finally {
-      lease?.release();
-    }
-
-    if (contentPath) {
-      const remaining = db
-        .prepare("SELECT slug FROM clusters WHERE user_id = ?")
-        .all(userId) as { slug: string }[];
-      for (const { slug } of remaining) {
-        const remainingDir = resolveChildPath(contentPath, slug);
-        if (!remainingDir) continue;
-        let remainingLease: ReturnType<
-          typeof acquireGardenMutationLease
-        > | null = null;
-        try {
-          remainingLease = acquireGardenMutationLease(
-            remainingDir,
-            "refresh-garden-after-delete",
-          );
-          refreshClusterIndex(contentPath, slug);
-        } catch {
-          /* skip */
-        } finally {
-          remainingLease?.release();
-        }
-      }
-    }
+    const result = await deleteOwnedGarden({
+      clusterId,
+      userId,
+      gardenSlug: cluster.slug,
+    });
 
     revalidatePath("/dashboard");
     revalidatePath(`/gardens/${cluster.slug}`);
     revalidatePath(`/garden/${cluster.slug}`);
     revalidatePath("/garden");
-    refreshPrivateQuartzIndex(userId);
-    refreshPublicQuartzIndex();
-    await publishQuartzAfterMutation(`delete cluster ${cluster.slug}`, {
-      userId,
+    after(async () => {
+      try {
+        await finalizeGardenDeletion(result);
+      } catch (error) {
+        console.error(
+          `[garden-delete] Background publication failed for ${cluster.slug}:`,
+          error,
+        );
+      }
     });
-    if (contentPath) {
-      writeDeletedClusterRedirect(contentPath, cluster.slug);
-    }
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to delete garden",

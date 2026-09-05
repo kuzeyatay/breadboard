@@ -3,6 +3,11 @@ import os from "os";
 import type OpenAI from "openai";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import {
+  createLearnRollbackTemporaryRoot,
+  reclaimStaleLearnRollbackRoots,
+  releaseLearnRollbackTemporaryRoot,
+} from "./learn-rollback-temp.ts";
 import db from "@/lib/db";
 import { withCouncil, type CouncilMode, type CouncilTaskType } from "@/lib/council";
 import {
@@ -180,6 +185,7 @@ import {
   dispatchAfterDurablePlanningIssuance,
   ensureLearnPlanningCheckpointSchema,
   exactStrictReceiptOriginBinding,
+  hasExactExpiredStartedPlanningReceiptBoundary,
   hasCompletedNativePlanningCheckpoint,
   hasExactPlanningDispatchAuthority,
   materializeLegacyPlanningCheckpoint,
@@ -190,6 +196,7 @@ import {
   priorPlanningCheckpoints,
   priorRecoveredPlanningJobs,
   recoverBeforePlanningDispatch,
+  recordExpiredStartedPlanningReceiptBoundary,
   resolveUniquePlanningCandidate,
   type PriorPlanningCheckpointRow,
   type PriorRecoveredPlanningJobRow,
@@ -209,6 +216,8 @@ import {
   ensureLearnCouncilCheckpointSchema,
   exactFailedLearnCouncilLineage,
   exactLearnCouncilRetryJobBinding,
+  hasDurableLearnCouncilNoDispatchBoundary,
+  hasNativeLearnCouncilCheckpoint,
   isExactLegacyLearnCouncilFailureShape,
   learnCouncilDispatchGenerationOwners,
   legacyLearnCouncilLineageQuiescenceDelayMs,
@@ -218,6 +227,7 @@ import {
   priorLearnCouncilCheckpoints,
   recordLearnCouncilNativeLineageBoundary,
   selectNewestCompletedLearnCouncilCheckpoint,
+  LEARN_COUNCIL_PRE_DISPATCH_FAILURE_STEP,
   type LearnCouncilCheckpointRow,
   type LearnCouncilDispatchGenerationOwnerRow,
   type LegacyLearnCouncilFailureProof,
@@ -384,6 +394,13 @@ import {
   verifyAuthoritativeSourceAnchorLedger,
   type LearnBuildWorkspace,
 } from "@/lib/learn-build-workspace";
+import {
+  incrementalLearningUnitPreservationProblems,
+  incrementalSourceMapPreservationProblems,
+  publishedLearningPagesByUnitId,
+  readIncrementalLearnBaseline,
+  type IncrementalLearnBaseline,
+} from "@/lib/learn-incremental";
 import {
   clearGeneratedLearnState,
   type LearnFilesystemClearResult,
@@ -732,6 +749,18 @@ class LearnPlanningRecoveryConflictError extends Error {
   }
 }
 
+/** A promptless Council read is safe to repeat because it is a loopback-only
+ * GET that cannot dispatch a model call. Keep transport failures distinct from
+ * malformed/conflicting receipts so ordinary Learn recovery can wait through
+ * a temporarily saturated ChatMock process without weakening fail-closed
+ * receipt validation. */
+class LearnCouncilResultObservationTransportError extends LearnPlanningRecoveryConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = "LearnCouncilResultObservationTransportError";
+  }
+}
+
 /**
  * Fallback model for Learn.
  *
@@ -835,29 +864,32 @@ const LEARN_REVISION_COUNCIL_MODE = envCouncilMode(
   "direct_council",
 );
 /**
- * Per-call planning timeout. A chatmock council request fans out to several
- * upstream model calls (each allowed up to 10 minutes server-side), so the
- * default OpenAI-client timeout of 10 minutes aborts planning calls that were
- * still legitimately working — which is why "Request timed out." fallbacks
- * fired on every Learn press. The client must outwait the council.
- */
-const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
-  "LEARN_PLANNING_TIMEOUT_MS",
-  25 * 60 * 1000,
-);
-/**
  * A ChatMock provider generation has a finite total websocket lifetime. Once
  * that deadline plus a small final-receipt grace has elapsed, a receipt still
  * in `started` cannot belong to a live provider call. This lets a later Learn
  * retry cross a process-crash orphan without replaying an in-flight request.
  */
-const LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS =
+const LEARN_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT_MS =
   envClampedPositiveInt(
     "CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT",
     1_800,
     901,
     21_600,
-  ) * 1_000 + 60_000;
+  ) * 1_000;
+const LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS =
+  LEARN_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT_MS + 60_000;
+/**
+ * Per-call planning timeout. It must outwait the provider websocket lifetime
+ * and the final-receipt grace above; otherwise a still-live generation is
+ * surfaced as a terminal client timeout before its authoritative receipt can
+ * settle. An explicit LEARN_PLANNING_TIMEOUT_MS remains available for tightly
+ * controlled deployments, while the safe default adds one more minute for the
+ * response to cross the local proxy boundary.
+ */
+const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
+  "LEARN_PLANNING_TIMEOUT_MS",
+  LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS + 60_000,
+);
 const LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE = 1;
 /** Explicit full-generation attempts per page. This loop is never entered by
  * scoped repair; only generate/full_rebuild may create fresh page drafts. */
@@ -1097,6 +1129,13 @@ Contract rules:
 - Claims are readable source-grounded statements kept separately from public tags. Zero claims is valid when the material supports none.
 - Never turn claim text into a concept slug and never create role-template claims. Claim endpoints must use concept slugs from semanticConcepts.
 - First job: planning only. Do not generate final prose yet.`;
+
+const INCREMENTAL_TOPIC_MAP_RULES = `Additive update rules (hard requirements):
+- existingCurriculum.learningUnits is the already-published curriculum baseline. Return every supplied existing unit exactly, with the same id, fields, values, and relative order. Do not rewrite, condense, merge, split, retitle, delete, or reassign an existing unit.
+- Express newly supplied material only through new learning-unit records with new ids. Insert each new unit at the pedagogically best position among the existing units; do not merely append all new material to the end unless that is genuinely the best teaching order.
+- A new unit may reuse an existing sectionPlan verbatim when it belongs inside that section, or author a new sectionPlan when it needs a distinct section. Never edit an existing unit's sectionPlan to make room.
+- existingCurriculum omits visual presentation fields deliberately. Do not add interactiveVisual, interactiveVisualPlan, or teachingMediumPlan in this response; the later whole-garden visual review owns those fields.
+- Return a complete combined contract covering both the existing curriculum and the current source catalog. The existing lesson bodies will be reused by stable unit id; only genuinely new units will need new prose.`;
 
 const SYLLABUS_READING_PROMPT = `You read a course syllabus / study guide and extract its structure. This is internal planning data; learners never see it.
 Return ONLY JSON with this shape:
@@ -4874,7 +4913,7 @@ async function promptlessCouncilResultGet(
       signal: AbortSignal.timeout(10_000),
     });
   } catch (error) {
-    throw new LearnPlanningRecoveryConflictError(
+    throw new LearnCouncilResultObservationTransportError(
       `Durable Council result resolution could not be observed: ${errorMessage(error)}`,
     );
   }
@@ -4964,11 +5003,26 @@ async function observeOrdinaryCouncilReceipt(input: {
   const deadline = Date.now() + Math.max(1, input.observationTimeoutMs);
   for (;;) {
     assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
-    const lookup = await promptlessCouncilResultGet(
-      input.client,
-      "/internal/council-results/resolve",
-      { requestId: input.requestId, requestHash: input.requestHash },
-    );
+    let lookup: Awaited<ReturnType<typeof promptlessCouncilResultGet>>;
+    try {
+      lookup = await promptlessCouncilResultGet(
+        input.client,
+        "/internal/council-results/resolve",
+        { requestId: input.requestId, requestHash: input.requestHash },
+      );
+    } catch (error) {
+      assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
+      if (
+        !(error instanceof LearnCouncilResultObservationTransportError) ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(250, Math.max(1, deadline - Date.now()))),
+      );
+      continue;
+    }
     assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
     if (
       lookup.status !== 409 ||
@@ -5077,6 +5131,9 @@ function expiredStartedOrdinaryCouncilReceiptError(input: {
   return proof ? new LearnCouncilExpiredStartedReceiptError(proof) : null;
 }
 
+const LEARN_LEGACY_COUNCIL_OUTCOME_OBSERVATION_TIMEOUT_MS = 60_000;
+const LEARN_LEGACY_COUNCIL_OUTCOME_OBSERVATION_MAX_ATTEMPTS = 3;
+
 async function promptlessLegacyCouncilOutcomeGet(
   client: OpenAI,
   query: {
@@ -5100,18 +5157,41 @@ async function promptlessLegacyCouncilOutcomeGet(
   for (const [key, value] of Object.entries(query)) {
     url.searchParams.set(key, value);
   }
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-      redirect: "error",
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch (error) {
+  let response: Response | undefined;
+  let lastObservationError: unknown;
+  // This prompt-free lookup is read-only and idempotent. Under concurrent
+  // Council load the legacy ledger scan can legitimately exceed ten seconds;
+  // failing the entire Learn run at that point turns a safe duplicate guard
+  // into a false terminal error. Retry only the observation (never the model
+  // request), with a finite per-attempt deadline and bounded backoff.
+  for (
+    let attempt = 1;
+    attempt <= LEARN_LEGACY_COUNCIL_OUTCOME_OBSERVATION_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        cache: "no-store",
+        redirect: "error",
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(
+          LEARN_LEGACY_COUNCIL_OUTCOME_OBSERVATION_TIMEOUT_MS,
+        ),
+      });
+      break;
+    } catch (error) {
+      lastObservationError = error;
+      if (
+        attempt < LEARN_LEGACY_COUNCIL_OUTCOME_OBSERVATION_MAX_ATTEMPTS
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+      }
+    }
+  }
+  if (!response) {
     throw new LearnPlanningRecoveryConflictError(
-      `Legacy Council outcome resolution could not be observed: ${errorMessage(error)}`,
+      `Legacy Council outcome resolution could not be observed after ${LEARN_LEGACY_COUNCIL_OUTCOME_OBSERVATION_MAX_ATTEMPTS} bounded attempts: ${errorMessage(lastObservationError)}`,
     );
   }
   let body: unknown;
@@ -6366,14 +6446,22 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
     input.checkpoint.jobId,
   );
   // Stage-specific native checkpoints were already resolved above. A failed
-  // predecessor that also completed a native planning receipt is provably a
-  // post-migration strict worker: every ordinary Council POST in that runtime
-  // synchronously persists this stage checkpoint first. Its absence is exact
-  // negative issuance evidence, so it must not be reclassified as legacy and
-  // extend the 37-minute pre-receipt quiescence window. Pre-migration jobs (no
-  // completed native planning receipt) retain the full legacy lookup + wait.
+  // predecessor that completed a native planning receipt or created any native
+  // ordinary receipt is provably a post-migration strict worker: every ordinary
+  // Council POST in that runtime synchronously persists this stage checkpoint
+  // first. Its absence is exact negative issuance evidence, so it must not be
+  // reclassified as legacy and extend the 37-minute pre-receipt quiescence
+  // window. Generation-only retries have no planning checkpoint, so their
+  // ordinary receipts are the migration-epoch proof. A strict worker can also
+  // fail before its first receipt (for example while cloning a workspace or
+  // while a recovery guard is still fail-closed); its exact terminal marker is
+  // positive no-dispatch evidence. Pre-migration jobs (with none of these
+  // proofs) retain the full legacy lookup + wait.
   const lineage = exactLineage.filter(
-    (origin) => !hasCompletedNativePlanningCheckpoint(db, origin.id),
+    (origin) =>
+      !hasCompletedNativePlanningCheckpoint(db, origin.id) &&
+      !hasNativeLearnCouncilCheckpoint(db, origin.id) &&
+      !hasDurableLearnCouncilNoDispatchBoundary(origin),
   );
   if (lineage.length !== exactLineage.length) {
     appendLearnEvent(
@@ -6936,6 +7024,17 @@ async function resolvePriorPlanningResult({
     const exactBinding = row.result_origin === "receipt"
       ? exactStrictReceiptOriginBinding(row, current)
       : exactPlanningOriginBinding(row, current);
+    if (
+      exactBinding &&
+      row.result_origin === "receipt" &&
+      row.state === "started" &&
+      hasExactExpiredStartedPlanningReceiptBoundary(db, row.request_id)
+    ) {
+      // This exact receipt was previously observed past the provider's finite
+      // lifetime and durably sealed. It is no longer live ambiguity evidence,
+      // so a later job may establish a fresh strict request identity.
+      continue;
+    }
     const abandonedLineage = exactBinding
       ? exactAbandonedPlanningRecoveryLineage(
           row,
@@ -7022,6 +7121,47 @@ async function resolvePriorPlanningResult({
             requestHash,
           });
     if (lookup.status !== 200 || !lookup.result) {
+      if (
+        row.result_origin === "receipt" &&
+        row.state === "started" &&
+        lookup.status === 409 &&
+        lookup.code === "request_started" &&
+        lookup.receipt
+      ) {
+        const observedAt = nowIso();
+        const boundary = recordExpiredStartedPlanningReceiptBoundary(db, {
+          originRequestId: row.request_id,
+          receiptRequestId: row.receipt_request_id ?? row.request_id,
+          requestHash,
+          dispatchGeneration: lookup.receipt.dispatchGeneration,
+          dispatchCount: lookup.receipt.dispatchCount,
+          redispatchCount: lookup.receipt.redispatchCount,
+          redispatchAllowed: lookup.receipt.redispatchAllowed,
+          attemptCount: lookup.receipt.attempts.length,
+          observedAt,
+          maxStartedAgeMs: LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS,
+        });
+        if (boundary) {
+          appendLearnEvent(
+            checkpoint.contentPath,
+            current.garden_id,
+            "learn_planning_started_receipt_expired",
+            {
+              jobId: checkpoint.jobId,
+              originJobId: row.job_id,
+              stageKey: checkpoint.stageKey,
+              semanticAttempt: checkpoint.semanticAttempt,
+              receiptRequestId: boundary.receipt_request_id,
+              dispatchCount: boundary.dispatch_count,
+              startedAt: boundary.started_at,
+              observedAt: boundary.observed_at,
+              maxStartedAgeMs: boundary.max_started_age_ms,
+              freshRequestAuthorized: true,
+            },
+          );
+          return null;
+        }
+      }
       if (
         row.result_origin === "receipt" &&
         row.state === "started" &&
@@ -8758,6 +8898,7 @@ export async function runLearnPlanning({
   sourceOnly = true,
   includeSourceSnapshots = false,
   userInstruction,
+  updateExisting = false,
   resetSourceMap = false,
   retainLeaseOnSuccess = false,
   yieldToResponse,
@@ -8773,6 +8914,9 @@ export async function runLearnPlanning({
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
   userInstruction?: string;
+  /** Preserve the published curriculum and insert newly grounded units into
+   * its existing teaching order. */
+  updateExisting?: boolean;
   resetSourceMap?: boolean;
   /** Internal full-rebuild handoff: the caller must release retainedLease. */
   retainLeaseOnSuccess?: boolean;
@@ -8786,6 +8930,47 @@ export async function runLearnPlanning({
   const effectiveUserInstruction = normalizeLearnUserInstruction(userInstruction);
   assertNoPendingLearnClear(gardenId);
   const gardenDir = clusterPath(contentPath, gardenId);
+  const incrementalBaseline: IncrementalLearnBaseline | null = updateExisting
+    ? readIncrementalLearnBaseline(gardenDir)
+    : null;
+  if (updateExisting && !incrementalBaseline) {
+    throw new LearnPipelineConflictError(
+      "This garden has learner pages but no valid Learning Unit Contract to extend. Repair it or explicitly rebuild the garden before adding material.",
+    );
+  }
+  const publishedVersion = updateExisting ? getLatestLearnVersion(gardenId) : null;
+  const publishedMap = publishedVersion
+    ? getLearnMapById(publishedVersion.learning_map_id, gardenId)
+    : null;
+  if (updateExisting && (!publishedVersion || !publishedMap)) {
+    throw new LearnPipelineConflictError(
+      "The published Learn version is no longer bound to its Learning Map. Repair it or explicitly rebuild the garden before adding material.",
+    );
+  }
+  if (incrementalBaseline) {
+    const publishedPages = publishedLearningPagesByUnitId(gardenDir);
+    const missingPublishedUnitIds = incrementalBaseline.learningUnits
+      .map((unit) => unit.id)
+      .filter((unitId) => !publishedPages.get(unitId)?.body);
+    if (missingPublishedUnitIds.length > 0) {
+      throw new LearnPipelineConflictError(
+        `The published Learn is missing lesson pages for existing units: ${missingPublishedUnitIds.join(", ")}. Repair it or explicitly rebuild the garden before adding material.`,
+      );
+    }
+  }
+  const updateSourceIds = updateExisting
+    ? [
+        ...new Set([
+          ...(publishedMap?.sourceIds ?? []).filter(
+            (sourceId) => sourceId !== publishedMap?.syllabusSourceId,
+          ),
+          ...(includedSourceIds ?? []),
+        ]),
+      ]
+    : includedSourceIds;
+  const updateSyllabusSourceId = updateExisting
+    ? (syllabusSourceId ?? publishedMap?.syllabusSourceId)
+    : syllabusSourceId;
   const jobId = makeId("learn_job");
   const leaseResult = acquireGardenLearnLease(gardenDir, {
     gardenSlug: gardenId,
@@ -8812,8 +8997,8 @@ export async function runLearnPlanning({
     context = collectLearnSourceContext(
       contentPath,
       gardenId,
-      includedSourceIds,
-      syllabusSourceId,
+      updateSourceIds,
+      updateSyllabusSourceId,
     );
   } catch (error) {
     lease.release();
@@ -8855,7 +9040,11 @@ export async function runLearnPlanning({
       gardenId,
       userId,
       model,
-      mode: resetSourceMap ? "full_rebuild" : "plan",
+      mode: resetSourceMap
+        ? "full_rebuild"
+        : updateExisting
+          ? "update_sources"
+          : "plan",
       // The full selection is persisted, syllabus included, so a later run
       // reproduces exactly the same teaching-set/syllabus split.
       sourceIds: context.selectedSourceIds,
@@ -9520,7 +9709,13 @@ export async function runLearnPlanning({
         taskType: "source_map",
         gardenId,
         system: withLearnUserInstructionRules(
-          withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+          withSyllabusRules(
+            incrementalBaseline
+              ? `${SOURCE_MAP_PROMPT}\n\nAdditive update rule: existingSourceMap.sourceAnchors and existingSourceMap.sourceQuestions are already referenced by published lesson contracts. Copy every existing record in both arrays exactly and in the same relative order, then add newly discovered anchors or questions with new unique ids.`
+              : SOURCE_MAP_PROMPT,
+            SYLLABUS_PLANNING_RULES,
+            hasSyllabus,
+          ),
           effectiveUserInstruction,
         ),
         user: compactJson({
@@ -9531,26 +9726,35 @@ export async function runLearnPlanning({
           sourceContext: promptSourceContext,
           canonicalSourceAnchors: canonicalSourceAnchorCatalog,
           sourceQuestionEvidence,
+          ...(publishedMap
+            ? { existingSourceMap: publishedMap.sourceMap }
+            : {}),
         }),
         sourceContext: { ...planningSourceMeta, taskType: "source_map" },
         contentPath,
         jobId: job.id,
         stageKey: `source_map:source_map:cycle:${reauthorCycle}`,
         stageLabel: "Source Map",
-        validate: (value) => sourceMapPlanProblems({
-          value,
-          sourceIds: context.sources.map((source) => source.slug),
-          sourceBodies: context.sources.map((source) => ({
-            sourceId: source.slug,
-            body: source.body ?? "",
-          })),
-          registeredArtifacts: context.sourceFigures,
-          canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
-            id: String(anchor.id),
-            sourceId: String(anchor.sourceId),
-          })),
-          syllabusUnits: syllabusQuestionUnits,
-        }),
+        validate: (value) => [
+          ...sourceMapPlanProblems({
+            value,
+            sourceIds: context.sources.map((source) => source.slug),
+            sourceBodies: context.sources.map((source) => ({
+              sourceId: source.slug,
+              body: source.body ?? "",
+            })),
+            registeredArtifacts: context.sourceFigures,
+            canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
+              id: String(anchor.id),
+              sourceId: String(anchor.sourceId),
+            })),
+            syllabusUnits: syllabusQuestionUnits,
+          }),
+          ...incrementalSourceMapPreservationProblems(
+            value,
+            publishedMap?.sourceMap,
+          ),
+        ],
       });
       return { call, artifactInventory, sourceSetHash };
     };
@@ -9722,6 +9926,12 @@ export async function runLearnPlanning({
         questionReferences: unit.questionReferences ?? [],
       })),
     });
+    currentSourceMapArtifactProblems.push(
+      ...incrementalSourceMapPreservationProblems(
+        sourceMap,
+        publishedMap?.sourceMap,
+      ),
+    );
     if (currentSourceMapArtifactProblems.length > 0) {
       throw new Error(
         `The accepted Source Map is not valid against the current selected source-artifact inventory: ${currentSourceMapArtifactProblems.join("; ")}`,
@@ -9784,24 +9994,40 @@ export async function runLearnPlanning({
     // Raw source bodies stay out, while the packet projection serializes the
     // canonical artifact catalog once and retains all non-artifact semantics.
     const spineSourceContext = promptSourcesCompact(context);
-    const topicMapPlanningPacket = () => projectCanonicalLearningSpinePacket({
-      sourceOnly,
-      userInstruction: effectiveUserInstruction,
-      syllabus: syllabusPayload,
-      syllabusCoverage: syllabusCoveragePayload(),
-      sourceMap,
-      scopeContract,
-      sources: spineSourceContext,
-      extractedSourceArtifacts: context.sourceFigures.map((figure) => ({
-        id: figure.figureId,
-        kind: sourceMapArtifactKind(figure.kind),
-        sourceId: figure.sourceId ?? "",
-        page: figure.page,
-        caption: figure.caption,
-        suggestedVisualUse: figure.suggestedVisualUse,
-      })),
-      responseShape: "LearningUnitContract JSON",
-    });
+    const topicMapPlanningPacket = () => {
+      const packet = projectCanonicalLearningSpinePacket({
+        sourceOnly,
+        userInstruction: effectiveUserInstruction,
+        syllabus: syllabusPayload,
+        syllabusCoverage: syllabusCoveragePayload(),
+        sourceMap,
+        scopeContract,
+        sources: spineSourceContext,
+        extractedSourceArtifacts: context.sourceFigures.map((figure) => ({
+          id: figure.figureId,
+          kind: sourceMapArtifactKind(figure.kind),
+          sourceId: figure.sourceId ?? "",
+          page: figure.page,
+          caption: figure.caption,
+          suggestedVisualUse: figure.suggestedVisualUse,
+        })),
+        responseShape: "LearningUnitContract JSON",
+      });
+      return incrementalBaseline
+        ? {
+            ...packet,
+            updateMode: "additive",
+            existingCurriculum: {
+              learningUnits: incrementalBaseline.learningUnits,
+              sourceArtifactOmissions:
+                incrementalBaseline.sourceArtifactOmissions,
+            },
+          }
+        : packet;
+    };
+    const topicMapSystemPrompt = incrementalBaseline
+      ? `${TOPIC_MAP_PROMPT}\n\n${INCREMENTAL_TOPIC_MAP_RULES}`
+      : TOPIC_MAP_PROMPT;
     const topicMapUser = (repair?: LearningSpineFullRepairFeedback) =>
       compactJson({
         ...topicMapPlanningPacket(),
@@ -9823,7 +10049,7 @@ export async function runLearnPlanning({
       taskType: "learning_spine",
       gardenId,
       system: withLearnUserInstructionRules(
-        withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        withSyllabusRules(topicMapSystemPrompt, SYLLABUS_PLANNING_RULES, hasSyllabus),
         effectiveUserInstruction,
       ),
       user: topicMapUser(),
@@ -9924,6 +10150,10 @@ export async function runLearnPlanning({
       ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), learningUnits),
       ...syllabusUnitAssignmentProblems(learningUnits, syllabusCoverage ?? null),
       ...sourceQuestionAssignmentProblems(learningUnits, sourceQuestions),
+      ...incrementalLearningUnitPreservationProblems(
+        learningUnits,
+        incrementalBaseline?.learningUnits ?? [],
+      ),
       ...conceptRegistryAlignmentProblems({
         clusterDir: clusterPath(contentPath, gardenId),
         sourceSetHash: context.sourceSetHash,
@@ -9969,7 +10199,7 @@ export async function runLearnPlanning({
         taskType: "learning_spine",
         gardenId,
         system: withLearnUserInstructionRules(
-          withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+          withSyllabusRules(topicMapSystemPrompt, SYLLABUS_PLANNING_RULES, hasSyllabus),
           effectiveUserInstruction,
         ),
         user: topicMapUser(repairFeedback),
@@ -10007,6 +10237,10 @@ export async function runLearnPlanning({
         ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), retryUnits),
         ...syllabusUnitAssignmentProblems(retryUnits, syllabusCoverage ?? null),
         ...sourceQuestionAssignmentProblems(retryUnits, sourceQuestions),
+        ...incrementalLearningUnitPreservationProblems(
+          retryUnits,
+          incrementalBaseline?.learningUnits ?? [],
+        ),
         ...conceptRegistryAlignmentProblems({
           clusterDir: clusterPath(contentPath, gardenId),
           sourceSetHash: context.sourceSetHash,
@@ -10141,6 +10375,10 @@ export async function runLearnPlanning({
             ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), candidateUnits),
             ...syllabusUnitAssignmentProblems(candidateUnits, syllabusCoverage ?? null),
             ...sourceQuestionAssignmentProblems(candidateUnits, sourceQuestions),
+            ...incrementalLearningUnitPreservationProblems(
+              candidateUnits,
+              incrementalBaseline?.learningUnits ?? [],
+            ),
             ...conceptRegistryAlignmentProblems({
               clusterDir: clusterPath(contentPath, gardenId),
               sourceSetHash: context.sourceSetHash,
@@ -10233,6 +10471,16 @@ export async function runLearnPlanning({
     // checkpoint immediately before any map/artifact commit as a final guard.
     throwIfLearnCancelled(job.id);
     learningUnits = visualNecessityReview.learningUnits;
+    const incrementalPostVisualProblems =
+      incrementalLearningUnitPreservationProblems(
+        learningUnits,
+        incrementalBaseline?.learningUnits ?? [],
+      );
+    if (incrementalPostVisualProblems.length > 0) {
+      throw new Error(
+        `The additive Learning Unit Contract changed published units during visual planning: ${incrementalPostVisualProblems.join("; ")}`,
+      );
+    }
     const planRecord = planningRecord(topicMapCall.parsed);
     const finalOwnershipProblems = sourceArtifactOwnershipProblems(learningUnits);
     if (finalOwnershipProblems.length > 0) {
@@ -10432,6 +10680,14 @@ export async function runLearnPlanning({
     learningUnits = executabilityReview.learningUnits;
     let visualizationPlan = executabilityReview.plan;
     learningUnits = applyVisualizationRoutesToLearningUnits(learningUnits, visualizationPlan);
+    // Confirmation reloads the routed contracts through normalizeLearningUnits.
+    // Build every persisted visual projection from that same canonical form so
+    // whitespace/optional-field normalization cannot make the signed ledger
+    // disagree with the Learning Unit Contract after its SQLite round-trip.
+    learningUnits = normalizeLearningUnits(
+      { learningUnits },
+      { modelAuthoredOnly: true },
+    );
     const finalSourceQuestionProblems = sourceQuestionAssignmentProblems(
       learningUnits,
       sourceQuestions,
@@ -11894,9 +12150,7 @@ async function rollbackLearnRun({
 
   const durableFingerprintBefore = fingerprintDurableGardenState(clusterDir);
   const fileFingerprintsBefore = fingerprintGardenFiles(clusterDir);
-  const temporaryRoot = fs.mkdtempSync(
-    path.join(os.tmpdir(), "breadboard-learn-rollback-"),
-  );
+  const temporaryRoot = createLearnRollbackTemporaryRoot();
   const stagingGardenDir = path.join(temporaryRoot, gardenId);
   let previousGardenDir: string | undefined;
   try {
@@ -12033,12 +12287,7 @@ async function rollbackLearnRun({
       ...database,
     };
   } finally {
-    try {
-      fs.rmSync(temporaryRoot, { recursive: true, force: true });
-    } catch {
-      // The rollback candidate is outside the repository and can be reclaimed
-      // later if desktop sync or antivirus briefly retains a handle.
-    }
+    releaseLearnRollbackTemporaryRoot(temporaryRoot);
   }
 }
 
@@ -12076,11 +12325,13 @@ async function cleanupLearnArtifactsAfterCancel({
   contentPath,
   jobId,
   lease,
+  userId,
 }: {
   gardenId: string;
   contentPath: string;
   jobId: string;
   lease: GardenLearnLease;
+  userId?: number;
 }): Promise<LearnCleanupResult> {
   const result = await rollbackLearnRun({ gardenId, contentPath, jobId, lease });
   // The rollback above is the cancellation commit point. Rebuilding Quartz can
@@ -12094,6 +12345,7 @@ async function cleanupLearnArtifactsAfterCancel({
   void publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`, {
     requireSuccess: true,
     gardenSlug: gardenId,
+    userId,
   })
     .then(() => clearLearnPublicationRetry(gardenId, publicationToken))
     .catch((error) => {
@@ -12891,6 +13143,14 @@ export async function runTextbookGeneration({
   assertNoPendingLearnClear(gardenId);
   const repositoryGardenDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(repositoryGardenDir, { recursive: true });
+  const publishedPages = mode === "update_sources"
+    ? publishedLearningPagesByUnitId(repositoryGardenDir)
+    : new Map();
+  if (mode === "update_sources" && publishedPages.size === 0) {
+    throw new LearnPipelineConflictError(
+      "Additive Learn could not find the published unit pages to preserve. Repair the garden or explicitly rebuild it before adding material.",
+    );
+  }
   const jobId = gardenLease?.lock.jobId ?? makeId("learn_job");
   let lease: GardenLearnLease;
   let ownsLease = false;
@@ -13530,6 +13790,7 @@ export async function runTextbookGeneration({
   const backupDir = `.breadboard/backups/${textbookVersionId}`;
   const generatedAt = nowIso();
   const generatedPages: GeneratedPageRecord[] = [];
+  const preservedPublishedPagePaths = new Set<string>();
   const unusedFigureReasons = new Map<string, string>();
   // Stage 3 bookkeeping: which SourceVisual landed on which page.
   const visualAssignments = new Map<string, { pageId: string; sectionId?: string }>();
@@ -14200,7 +14461,50 @@ export async function runTextbookGeneration({
         let lastQuality: ReturnType<typeof assessLessonQuality> | null = null;
         let lastAttemptBody = "";
 
-        for (let attempt = 0; attempt < MAX_PAGE_ATTEMPTS; attempt += 1) {
+        // Additive Learn keeps the already-published prose for every stable
+        // unit whenever it still satisfies the current source/contract gates.
+        // Navigation numbers and frontmatter are rebuilt below, so the page can
+        // move to the AI-selected position without rewriting its lesson body.
+        const publishedPage = subsection.learningUnitId
+          ? publishedPages.get(subsection.learningUnitId)
+          : undefined;
+        if (publishedPage?.body) {
+          const publishedQuality = assessModelAuthoredLessonQuality(
+            publishedPage.body,
+            {
+              assignedVisualUrls,
+              assignedVisualRequirements,
+              unavailableCitations: unavailableCitationGate,
+              subsection,
+              canonicalSourceAnchors: selectedCanonicalSourceAnchors,
+              requiredSourceQuestions: pageDossier.requiredSourceQuestions,
+            },
+          );
+          lastQuality = publishedQuality;
+          lastAttemptBody = publishedPage.body;
+          if (!publishedQuality.hardFail) {
+            pageBody = publishedPage.body;
+            preservedPublishedPagePaths.add(pageRelPath);
+            appendLearnEvent(
+              contentPath,
+              gardenId,
+              "learn_page_body_reused",
+              {
+                jobId: job.id,
+                textbookVersionId,
+                learningUnitId: subsection.learningUnitId,
+                previousPath: publishedPage.relPath,
+                mergedPath: pageRelPath,
+              },
+            );
+          }
+        }
+
+        for (
+          let attempt = 0;
+          attempt < MAX_PAGE_ATTEMPTS && pageBody === null;
+          attempt += 1
+        ) {
           const failedProblemCodes = (lastQuality?.problems ?? [])
             .filter((problem) => problem.hard)
             .map((problem) => problem.code);
@@ -14421,7 +14725,7 @@ export async function runTextbookGeneration({
           visualizationPlan,
           visualizationOutcomes,
           reusePublishedVisualsFromRetainedWorkspace: Boolean(
-            workspace.resumedFromJobId,
+            workspace.resumedFromJobId || mode === "update_sources",
           ),
         });
         pageBody = visualized.markdown;
@@ -15075,6 +15379,9 @@ export async function runTextbookGeneration({
       userId,
       gardenDir: clusterDir,
       versionId: textbookVersionId,
+      preserveFilePaths: [...preservedPublishedPagePaths].map((relPath) =>
+        path.join(clusterDir, ...relPath.split("/")),
+      ),
       checkCancelled: () => throwIfLearnCancelled(job.id),
       onStart: (fileCount) =>
         updateLearnJob(job.id, {
@@ -15423,10 +15730,15 @@ export async function runTextbookGeneration({
         // Event persistence is best-effort during exact-error propagation.
       }
       try {
+        const failedBeforeFirstCouncilDispatch =
+          error instanceof LearnPlanningRecoveryConflictError &&
+          !hasNativeLearnCouncilCheckpoint(db, job.id);
         updateLearnJob(job.id, {
           status: restorePending ? "writing_quartz" : "failed",
           currentStep: restorePending
             ? "Filesystem restore pending retry"
+            : failedBeforeFirstCouncilDispatch
+              ? LEARN_COUNCIL_PRE_DISPATCH_FAILURE_STEP
             : lastInternalStep
               ? `Lesson generation failed; last internal step: ${lastInternalStep}`
               : "Lesson generation failed",
@@ -16560,7 +16872,8 @@ export async function runLearnPipeline({
   if (operationMode === "full_rebuild") {
     throw new Error("Use rebuildEntireGarden with explicit destructive confirmation.");
   }
-  if (operationMode === "plan") {
+  if (operationMode === "plan" || operationMode === "update_sources") {
+    const updateExisting = operationMode === "update_sources";
     const planning = await runLearnPlanning({
       gardenId,
       userId,
@@ -16572,6 +16885,7 @@ export async function runLearnPipeline({
       sourceOnly,
       includeSourceSnapshots,
       userInstruction,
+      updateExisting,
       retainLeaseOnSuccess: autoConfirmTopicMap,
       yieldToResponse,
     });
@@ -16596,7 +16910,7 @@ export async function runLearnPipeline({
         model,
         contentPath,
         confirmedLearningMapId: learningMap.id,
-        mode: "generate",
+        mode: updateExisting ? "update_sources" : "generate",
         sourceOnly,
         includeSourceSnapshots,
         userInstruction,
@@ -16775,10 +17089,12 @@ export async function cancelLatestLearnJob({
   gardenId,
   contentPath,
   expectedJobId,
+  userId,
 }: {
   gardenId: string;
   contentPath: string;
   expectedJobId?: string;
+  userId: number;
 }): Promise<LearnJob | null> {
   assertNoPendingLearnClear(gardenId);
   const latest = getLatestLearnJob(gardenId);
@@ -16861,6 +17177,7 @@ export async function cancelLatestLearnJob({
       contentPath,
       jobId: latest.id,
       lease: leaseResult.lease,
+      userId,
     });
     const cancelled = updateLearnJobExpectStatus(latest.id, {
       status: "cancelled",
@@ -17823,6 +18140,7 @@ async function recoverInterruptedLearnClears(contentPath: string): Promise<void>
 
 interface LearnPublicationRetryRow {
   garden_id: string;
+  user_id: number;
   reason: string;
   last_error: string | null;
   requested_at: string;
@@ -17832,8 +18150,11 @@ interface LearnPublicationRetryRow {
 async function recoverPendingLearnPublications(contentPath: string): Promise<void> {
   const pending = db
     .prepare(
-      `SELECT garden_id, reason, last_error, requested_at, updated_at
-       FROM learn_publication_retries ORDER BY requested_at ASC`,
+      `SELECT retry.garden_id, cluster.user_id, retry.reason, retry.last_error,
+              retry.requested_at, retry.updated_at
+       FROM learn_publication_retries AS retry
+       JOIN clusters AS cluster ON cluster.slug = retry.garden_id
+       ORDER BY retry.requested_at ASC`,
     )
     .all() as LearnPublicationRetryRow[];
   for (const publication of pending) {
@@ -17859,7 +18180,11 @@ async function recoverPendingLearnPublications(contentPath: string): Promise<voi
       }
       await publishQuartzAfterMutation(
         `retrying ${publication.reason} in ${publication.garden_id}`,
-        { requireSuccess: true, gardenSlug: publication.garden_id },
+        {
+          requireSuccess: true,
+          gardenSlug: publication.garden_id,
+          userId: publication.user_id,
+        },
       );
       if (!leaseResult.lease.heartbeat()) {
         throw new LearnPipelineConflictError(
@@ -17952,6 +18277,7 @@ export async function recoverAbandonedLearnJobs({
   contentPath: string;
   nowMs?: number;
 }): Promise<{ recoveredJobIds: string[]; skippedJobIds: string[] }> {
+  reclaimStaleLearnRollbackRoots({ nowMs });
   ensureLearnTables();
   await recoverInterruptedLearnClears(contentPath);
   const recoveryNow = new Date(nowMs).toISOString();

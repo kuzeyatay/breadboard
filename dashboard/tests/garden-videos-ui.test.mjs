@@ -133,8 +133,10 @@ test("recordings share the document select and highlight control", () => {
   assert.match(source, /void handleDocumentFlag\(sourceSlug, flagColor\)/);
   assert.match(componentSource, /function SourceColorSelect/);
   assert.match(componentSource, /Recording highlight; selected for chat/);
-  assert.match(componentSource, /Click once to choose a highlight color\./);
+  assert.match(componentSource, /Click once to select for chat\./);
+  assert.match(componentSource, /Double-click to choose a highlight color\./);
   assert.match(componentSource, /aria-pressed=\{selected\}/);
+  assert.match(componentSource, /\{selected \? \([\s\S]*?stroke="rgb\(3 7 18\)"[\s\S]*?stroke="white"/);
   assert.match(componentSource, /selectedSourceSlugs\.includes\(source\.slug\)/);
   assert.match(
     componentSource,

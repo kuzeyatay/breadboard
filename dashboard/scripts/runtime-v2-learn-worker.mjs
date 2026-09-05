@@ -471,6 +471,8 @@ function sourceLayout() {
 function configureTrustedLearnEnvironment(launch, request) {
   const layout = sourceLayout();
   const authoritativeContentPath = path.join(launch.dataRoot, "quartz", "content");
+  const temporaryDirectory = path.join(launch.dataRoot, "runtime-v2", "temp");
+  fs.mkdirSync(temporaryDirectory, { recursive: true });
   const scopedRequest = bindRuntimeV2LearnRequest(
     request,
     launch.executionScope,
@@ -491,6 +493,8 @@ function configureTrustedLearnEnvironment(launch, request) {
     "runtime",
     "learn-workers",
   );
+  process.env.TEMP = temporaryDirectory;
+  process.env.TMP = temporaryDirectory;
   process.env.BREADBOARD_REPO_ROOT = layout.appRoot;
   process.env.QUARTZ_CONTENT_PATH = authoritativeContentPath;
   process.env.QUARTZ_AUTO_PUBLISH = "1";

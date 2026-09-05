@@ -9,6 +9,14 @@ const ANTIGRAVITY_MODELS_URLS = [
   "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
 ] as const;
 
+// CLIProxy's public Antigravity catalog can move ahead of the quota report's
+// internal names. These public models currently consume the same tiered quota
+// window returned by fetchAvailableModels under the older internal key.
+const ANTIGRAVITY_QUOTA_MODEL_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  "gemini-3.7-flash-high": ["gemini-3.7-flash-tiered"],
+  "gemini-3.8-flash-high": ["gemini-3.7-flash-tiered"],
+};
+
 export interface GoogleUsageLimitWindow {
   used_percent: number;
   resets_in_seconds?: number;
@@ -78,9 +86,20 @@ export function googleLimitWindowFromModels(
   const models = (payload as { models?: unknown }).models;
   if (!models || typeof models !== "object" || Array.isArray(models)) return null;
 
-  const match = Object.entries(models as Record<string, unknown>).find(
-    ([name]) => name.toLowerCase() === model.toLowerCase(),
-  )?.[1];
+  const normalizedModel = model.toLowerCase();
+  const candidates = [
+    normalizedModel,
+    ...(ANTIGRAVITY_QUOTA_MODEL_ALIASES[normalizedModel] ?? []),
+  ];
+  const modelsByName = new Map(
+    Object.entries(models as Record<string, unknown>).map(([name, value]) => [
+      name.toLowerCase(),
+      value,
+    ]),
+  );
+  const match = candidates
+    .map((candidate) => modelsByName.get(candidate))
+    .find((candidate) => candidate !== undefined);
   if (!match || typeof match !== "object") return null;
 
   const quotaInfo = (match as { quotaInfo?: unknown }).quotaInfo;

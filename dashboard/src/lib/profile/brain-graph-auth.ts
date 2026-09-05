@@ -173,7 +173,6 @@ export function brainScopeOptions(
   context: BrainGraphAccessContext,
 ): BrainScopeOption[] {
   return [
-    { id: "personal", kind: "personal", label: "Personal" },
     { id: "all", kind: "all", label: "All accessible" },
     ...context.organizations.map((organization) => ({
       id: organization.publicId,

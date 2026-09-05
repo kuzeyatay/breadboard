@@ -47,12 +47,29 @@ export function readThoughtTopologyCache(gardenDir: string): ThoughtTopologyCach
     : null;
 }
 
+/** A renderer snapshot is complete only when every connection has durable
+ * explanatory text. Historical `pending` edges are intentionally rejected. */
+export function thoughtTopologyHasCompleteConnections(topology: ThoughtTopology): boolean {
+  return topology.build?.state !== "building" && topology.edges.every((edge) => {
+    const explanation = edge?.explanation;
+    return Boolean(
+      explanation &&
+      explanation.state !== "pending" &&
+      typeof explanation.text === "string" &&
+      explanation.text.trim().length > 0,
+    );
+  });
+}
+
 /** Commit private cache first and sanitized renderer data last. */
 export function commitThoughtTopology(
   gardenDir: string,
   cache: ThoughtTopologyCache,
   topology: ThoughtTopology,
 ): void {
+  if (!thoughtTopologyHasCompleteConnections(topology)) {
+    throw new Error("Thought Topology cannot be published before every connection explanation is generated.");
+  }
   atomicJson(path.join(gardenDir, TOPOLOGY_CACHE_REL_PATH), cache);
   atomicJson(path.join(gardenDir, TOPOLOGY_ARTIFACT_REL_PATH), topology);
 }

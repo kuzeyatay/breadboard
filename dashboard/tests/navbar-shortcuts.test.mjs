@@ -6,12 +6,15 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import {
+  DEFAULT_NAVBAR_FLOWERS,
   DEFAULT_NAVBAR_SHORTCUTS,
   NAVBAR_SHORTCUTS,
   applyNavbarShortcutPatch,
   ensureNavbarShortcutSchema,
   isNavbarShortcutKey,
+  readNavbarFlowers,
   readNavbarShortcuts,
+  writeNavbarFlowers,
   writeNavbarShortcuts,
 } from "../src/lib/profile/navbar-shortcuts.ts";
 
@@ -23,15 +26,31 @@ function createDatabase() {
   return db;
 }
 
-test("the work timer and Plan sit by default; Buzz and Fast-read are asked for", () => {
+test("the work timer, Clicky and Plan sit by default; Buzz and Fast-read are asked for", () => {
+  assert.equal(DEFAULT_NAVBAR_FLOWERS, true);
   assert.deepEqual(DEFAULT_NAVBAR_SHORTCUTS, {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: false,
   });
   const db = createDatabase();
   assert.deepEqual(readNavbarShortcuts(db, 1), DEFAULT_NAVBAR_SHORTCUTS);
+  assert.equal(readNavbarFlowers(db, 1), true);
+});
+
+test("flowers can be hidden without moving any navbar shortcuts", () => {
+  const db = createDatabase();
+
+  assert.equal(writeNavbarFlowers(db, 1, false), false);
+  assert.equal(readNavbarFlowers(db, 1), false);
+  assert.deepEqual(readNavbarShortcuts(db, 1), DEFAULT_NAVBAR_SHORTCUTS);
+  assert.equal(readNavbarFlowers(db, 2), true, "the preference stays with its account");
+
+  writeNavbarShortcuts(db, 1, { buzz: true });
+  assert.equal(readNavbarFlowers(db, 1), false, "shortcut changes preserve the decoration choice");
 });
 
 test("the catalog names exactly the keys the settings carry", () => {
@@ -52,6 +71,8 @@ test("the catalog names exactly the keys the settings carry", () => {
 test("a patch only moves the keys it names, and only with booleans", () => {
   const current = {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -59,6 +80,8 @@ test("a patch only moves the keys it names, and only with booleans", () => {
 
   assert.deepEqual(applyNavbarShortcutPatch(current, { buzz: true }), {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -83,12 +106,17 @@ test("a toggle survives being written and read back, per user", () => {
 
   assert.deepEqual(writeNavbarShortcuts(db, 1, { buzz: true }), {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: true,
   });
+  assert.equal(readNavbarFlowers(db, 1), true, "saving a shortcut keeps the default decoration");
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -103,6 +131,8 @@ test("a toggle survives being written and read back, per user", () => {
   writeNavbarShortcuts(db, 1, { workTimer: false });
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -111,6 +141,8 @@ test("a toggle survives being written and read back, per user", () => {
   writeNavbarShortcuts(db, 1, { buzz: false });
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -119,6 +151,8 @@ test("a toggle survives being written and read back, per user", () => {
   writeNavbarShortcuts(db, 1, { plan: false });
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
+    browser: true,
+    clicky: true,
     plan: false,
     fastRead: false,
     buzz: false,
@@ -127,6 +161,18 @@ test("a toggle survives being written and read back, per user", () => {
   writeNavbarShortcuts(db, 1, { fastRead: true });
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
+    browser: true,
+    clicky: true,
+    plan: false,
+    fastRead: true,
+    buzz: false,
+  });
+
+  writeNavbarShortcuts(db, 1, { clicky: false });
+  assert.deepEqual(readNavbarShortcuts(db, 1), {
+    workTimer: false,
+    browser: true,
+    clicky: false,
     plan: false,
     fastRead: true,
     buzz: false,
@@ -139,6 +185,8 @@ test("applying the schema twice is safe", () => {
   ensureNavbarShortcutSchema(db);
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -167,10 +215,13 @@ test("a database from before those shortcuts were withdrawn still writes", () =>
   // and the seats they used to grant are simply not read.
   assert.deepEqual(writeNavbarShortcuts(db, 1, { buzz: true }), {
     workTimer: true,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: true,
   });
+  assert.equal(readNavbarFlowers(db, 1), true, "older rows gain flowers without opting out");
 });
 
 test("existing shortcut rows gain later entries without losing their choices", () => {
@@ -193,15 +244,20 @@ test("existing shortcut rows gain later entries without losing their choices", (
   // choice this account had already made about the work timer is untouched.
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: false,
     buzz: false,
   });
+  assert.equal(readNavbarFlowers(db, 1), true, "the new appearance setting keeps its default");
 
   // And the row still writes, now that the statement names a column the
   // original table never had.
   assert.deepEqual(writeNavbarShortcuts(db, 1, { fastRead: true }), {
     workTimer: false,
+    browser: true,
+    clicky: true,
     plan: true,
     fastRead: true,
     buzz: false,

@@ -7,7 +7,7 @@
 
 import { runVlmOcrPage } from "./client.ts";
 import type { VlmOcrConfig } from "./config.ts";
-import { vlmOcrErrorMessage } from "./errors.ts";
+import { VlmOcrRequestError, vlmOcrErrorMessage } from "./errors.ts";
 import { embedPageFigures, type FigureSaver } from "./figures.ts";
 import { normalizeDocParseMarkdown } from "./normalize.ts";
 import {
@@ -45,6 +45,7 @@ export interface VlmOcrDocument {
 
 /** Page headings sit at `##`, so OCR headings start at `###`. */
 const HEADING_SHIFT = 2;
+const PAGE_TRANSPORT_RETRIES = 3;
 
 type OcrRunner = (args: {
   config: VlmOcrConfig;
@@ -57,6 +58,13 @@ function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+function isRetryableTransportFailure(error: unknown): boolean {
+  return (
+    error instanceof VlmOcrRequestError &&
+    (error.status === undefined || error.status >= 500)
+  );
+}
+
 export async function parsePagesWithVlm({
   config,
   pages,
@@ -64,6 +72,8 @@ export async function parsePagesWithVlm({
   signal,
   onProgress,
   saveFigure,
+  progressOffset = 0,
+  progressTotal,
   // Injected in tests so the pipeline can run without a model server.
   runner = runVlmOcrPage,
   ensureServer = ensureVlmOcrServer,
@@ -75,6 +85,10 @@ export async function parsePagesWithVlm({
   onProgress?: (step: string) => void;
   /** Persists a cropped figure and returns the URL to embed. */
   saveFigure?: FigureSaver;
+  /** Already-completed pages when this call is one bounded render batch. */
+  progressOffset?: number;
+  /** Whole-document page count for progress emitted by a bounded batch. */
+  progressTotal?: number;
   runner?: OcrRunner;
   ensureServer?: (
     config: VlmOcrConfig,
@@ -120,12 +134,28 @@ export async function parsePagesWithVlm({
       if (signal?.aborted) return;
 
       try {
-        const result = await runner({
-          config,
-          dataUrl: page.dataUrl,
-          prompt,
-          signal,
-        });
+        let result: Awaited<ReturnType<OcrRunner>> | null = null;
+        for (let attempt = 0; attempt <= PAGE_TRANSPORT_RETRIES; attempt += 1) {
+          try {
+            result = await runner({
+              config,
+              dataUrl: page.dataUrl,
+              prompt,
+              signal,
+            });
+            break;
+          } catch (error) {
+            if (isAbort(error) || !isRetryableTransportFailure(error)) throw error;
+            if (attempt >= PAGE_TRANSPORT_RETRIES) throw error;
+            onProgress?.(
+              `Recovering the local OCR model server for ${page.label} (${attempt + 1}/${PAGE_TRANSPORT_RETRIES})…`,
+            );
+            await ensureServer(config, onProgress);
+          }
+        }
+        if (!result) {
+          throw new VlmOcrRequestError("The OCR page retry ended without a result.");
+        }
         if (result.earlyStopped) {
           truncatedPages += 1;
           failures.push(
@@ -170,7 +200,7 @@ export async function parsePagesWithVlm({
 
       completed += 1;
       onProgress?.(
-        `Parsing with the VLM (${completed}/${selected.length} pages)…`,
+        `Parsing with the VLM (${progressOffset + completed}/${progressTotal ?? selected.length} pages)…`,
       );
     }
   };
@@ -217,6 +247,86 @@ export async function parsePagesWithVlm({
     markdown: safe.markdown,
     pages: parsed,
     warnings,
+    failedPages,
+    truncatedPages,
+    figureCount,
+  };
+}
+
+/**
+ * Parse a large document without retaining every rendered page image. The
+ * producer is advanced only after the current batch has been fully OCR'd, so
+ * callers can release each batch's multi-megabyte data URLs before rendering
+ * the next one.
+ */
+export async function parsePageBatchesWithVlm({
+  config,
+  batches,
+  totalPages,
+  task = DEFAULT_VLM_OCR_TASK,
+  signal,
+  onProgress,
+  saveFigure,
+  runner = runVlmOcrPage,
+  ensureServer = ensureVlmOcrServer,
+}: {
+  config: VlmOcrConfig;
+  batches: AsyncIterable<VlmOcrInputPage[]>;
+  totalPages: number;
+  task?: VlmOcrTask;
+  signal?: AbortSignal;
+  onProgress?: (step: string) => void;
+  saveFigure?: FigureSaver;
+  runner?: OcrRunner;
+  ensureServer?: (
+    config: VlmOcrConfig,
+    onProgress?: (step: string) => void,
+  ) => Promise<void>;
+}): Promise<VlmOcrDocument> {
+  if (!Number.isSafeInteger(totalPages) || totalPages < 0) {
+    throw new TypeError("The VLM batch page total is invalid.");
+  }
+  const pages: VlmOcrParsedPage[] = [];
+  const markdown: string[] = [];
+  const warnings: string[] = [];
+  let failedPages = 0;
+  let truncatedPages = 0;
+  let figureCount = 0;
+
+  for await (const rawBatch of batches) {
+    if (signal?.aborted) {
+      const abortError = new Error("Upload canceled");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+    const remaining = totalPages - pages.length;
+    if (remaining <= 0) break;
+    const batch = rawBatch.slice(0, remaining);
+    if (batch.length === 0) continue;
+    const result = await parsePagesWithVlm({
+      config: { ...config, maxPages: 0 },
+      pages: batch,
+      task,
+      signal,
+      onProgress,
+      saveFigure,
+      runner,
+      ensureServer,
+      progressOffset: pages.length,
+      progressTotal: totalPages,
+    });
+    pages.push(...result.pages);
+    if (result.markdown.trim()) markdown.push(result.markdown.trim());
+    warnings.push(...result.warnings);
+    failedPages += result.failedPages;
+    truncatedPages += result.truncatedPages;
+    figureCount += result.figureCount;
+  }
+
+  return {
+    markdown: markdown.join("\n\n"),
+    pages,
+    warnings: [...new Set(warnings)],
     failedPages,
     truncatedPages,
     figureCount,

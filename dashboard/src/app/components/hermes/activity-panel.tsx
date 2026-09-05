@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import {
   assistantLiveActivityReady,
@@ -16,6 +16,8 @@ import type {
 
 interface Props {
   activities: ActivityItem[];
+  /** Assistant-authored, user-visible updates emitted before the final answer. */
+  progressNotes?: string[];
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
   /** A question the model is blocked on; answered by a choice or typed text. */
@@ -44,6 +46,7 @@ interface Props {
 
 export default function ActivityPanel({
   activities,
+  progressNotes,
   connection,
   pendingPermission,
   pendingClarification = null,
@@ -60,6 +63,8 @@ export default function ActivityPanel({
   stateAction,
 }: Props) {
   const [now, setNow] = useState(() => Date.now());
+  const [progressOpen, setProgressOpen] = useState(false);
+  const progressId = useId();
   const [activeFallbackStartedAtMs] = useState(() => Date.now());
   const active =
     connection === "connecting" ||
@@ -123,6 +128,16 @@ export default function ActivityPanel({
       completedLabel ??
       completedActivityLabel ??
       "Thinking";
+  const visibleProgressNotes = useMemo(
+    () =>
+      (progressNotes ?? []).reduce<string[]>((notes, note) => {
+        const trimmed = note.trim();
+        if (trimmed && notes.at(-1) !== trimmed) notes.push(trimmed);
+        return notes;
+      }, []),
+    [progressNotes],
+  );
+  const hasProgressNotes = visibleProgressNotes.length > 0;
 
   useEffect(() => {
     const transitionTick = window.setTimeout(() => setNow(Date.now()), 0);
@@ -144,7 +159,48 @@ export default function ActivityPanel({
         usage={usage}
         responseDurationMs={elapsedMs ?? undefined}
         action={stateAction}
+        disclosureExpanded={hasProgressNotes ? progressOpen : undefined}
+        disclosureControls={hasProgressNotes ? progressId : undefined}
+        onDisclosureToggle={
+          hasProgressNotes ? () => setProgressOpen((open) => !open) : undefined
+        }
       />
+
+      {hasProgressNotes && progressOpen ? (
+        <div
+          id={progressId}
+          className="relative ml-1 mt-1 pb-1"
+          data-response-progress
+        >
+          {visibleProgressNotes.length > 1 ? (
+            <span
+              aria-hidden="true"
+              className="absolute bottom-3 left-[3px] top-3 w-px bg-[var(--line)]"
+            />
+          ) : null}
+          <ol className="space-y-3" aria-label="Thinking updates">
+            {visibleProgressNotes.map((note, index) => {
+              const latest = index === visibleProgressNotes.length - 1;
+              return (
+                <li
+                  key={`${index}-${note}`}
+                  className="relative grid min-w-0 grid-cols-[8px_minmax(0,1fr)] gap-3"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`relative z-10 mt-2 h-2 w-2 rounded-full bg-[var(--botanical)] ${
+                      responseActive && latest ? "motion-safe:animate-pulse" : ""
+                    }`}
+                  />
+                  <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--ink-muted)]">
+                    {note}
+                  </p>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ) : null}
 
       {pendingPermission ? (
         <div className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">

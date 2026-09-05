@@ -82,6 +82,24 @@ test("all four transcripts fold the messages the person sent", () => {
   }
 });
 
+test("short user bubbles size to their text instead of the action row", () => {
+  const surfaces = [
+    "src/app/components/hermes/agent-runtime-panel.tsx",
+    "src/app/components/knowledge-terminal.tsx",
+    "src/app/garden/garden-assistant.tsx",
+    "src/app/gardens/[clusterSlug]/workspace-client.tsx",
+  ];
+
+  for (const surface of surfaces) {
+    const code = fs.readFileSync(path.join(dashboardRoot, surface), "utf8");
+    assert.match(
+      code,
+      /neu-chat-message neu-chat-message-user w-fit max-w-full/,
+      `${surface} lets a short user bubble stretch wider than its text`,
+    );
+  }
+});
+
 // ── The fold, in a real DOM ──────────────────────────────────────────────────
 
 /** jsdom arrives with the Hermes agent, so a partial checkout skips instead. */

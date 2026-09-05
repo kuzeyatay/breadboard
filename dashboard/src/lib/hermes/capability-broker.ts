@@ -36,6 +36,7 @@ import {
   IMAGE_SEARCH_TOOLS,
   PRODUCT_SEARCH_TOOLS,
   CHAT_SEARCH_TOOLS,
+  PROCESS_STATUS_TOOLS,
   OFFICE_TOOLS,
   DOCUMENT_TOOLS,
   WATERMARK_TOOLS,
@@ -245,6 +246,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...IMAGE_SEARCH_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
       ...CHAT_SEARCH_TOOLS,
+      ...PROCESS_STATUS_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -335,8 +337,9 @@ export interface BrokerInput {
    * The user had Super agent on for this message. It opens the inventory tools
    * (`skill_open`, `workflow_run`, `agent_launch`) on the authenticated
    * conversational surfaces; it never widens filesystem, command, or isolation
-   * authority, and `agent_launch` only queues a launch the surface still
-   * performs under the user's confirmation.
+   * authority. `agent_launch` only queues a launch; the surface still applies
+   * that agent's approval policy (local reversible specialists may not need a
+   * second confirmation).
    */
   superAgent?: boolean;
   /**
@@ -819,6 +822,13 @@ function buildToolMap(
   for (const tool of CHAT_SEARCH_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // "How is the upload going?" is a question about the person's own account
+  // state. The route reads job tables scoped to the signed-in user and never
+  // writes, so it follows the chat-search rule rather than the capability
+  // class of the turn.
+  for (const tool of PROCESS_STATUS_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // "How far is the station" is a plain knowledge turn as well, and it is the
   // one where being wrong is least visible: a model that answers it from memory
   // sounds exactly like one that looked it up. So the map tools follow the same
@@ -933,6 +943,7 @@ function buildToolMap(
     for (const tool of IMAGE_SEARCH_TOOLS) map[tool] = false;
     for (const tool of PRODUCT_SEARCH_TOOLS) map[tool] = false;
     for (const tool of CHAT_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of PROCESS_STATUS_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.
     for (const tool of MAP_TOOLS) map[tool] = false;

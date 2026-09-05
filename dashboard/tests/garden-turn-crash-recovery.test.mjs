@@ -11,6 +11,18 @@ process.env.BREADBOARD_DATA_DIR = dataRoot;
 
 const { default: db } = await import("../src/lib/db.ts");
 const store = await import("../src/lib/conversations/store.ts");
+const workspaceSource = fs.readFileSync(
+  new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
+  "utf8",
+);
+const checkpointRouteSource = fs.readFileSync(
+  new URL("../src/app/api/chat-sessions/[sessionId]/turns/route.ts", import.meta.url),
+  "utf8",
+);
+const gardenAdapterSource = fs.readFileSync(
+  new URL("../src/lib/hermes/garden-chat-adapter.ts", import.meta.url),
+  "utf8",
+);
 
 after(() => {
   db.close();
@@ -84,4 +96,130 @@ test("a Garden checkpoint atomically persists both halves and stale preparation 
   `).get(conversation.id, "garden-turn-1");
   assert.equal(canonical.status, "failed");
   assert.match(canonical.content, /interrupted/i);
+});
+
+test("replaying a canonical completion repairs a stale Garden browser projection", () => {
+  const conversation = store.ensureConversationForLegacyChatSession(1, 1);
+  store.reserveConversationTurn({
+    conversation,
+    clientMessageId: "garden-turn-network-drop",
+    surface: "garden_chat",
+    content: "Build an interactive visualizer",
+    metadata: { gardenPreDispatch: true },
+  });
+  const completed = store.completeAssistantMessage({
+    conversationId: conversation.id,
+    clientMessageId: "garden-turn-network-drop",
+    content: "The interactive visualizer is ready.",
+    metadata: { runtimeStatus: "idle" },
+  });
+  const completedMetadata = JSON.parse(completed.metadata);
+  assert.ok(
+    Number.isFinite(Date.parse(completedMetadata.responseCompletedAt)),
+    "completion stores the exact terminal timestamp",
+  );
+
+  db.prepare(`
+    UPDATE chat_messages
+       SET content = 'network error', runtime_status = 'complete'
+     WHERE session_id = 1 AND role = 'assistant'
+  `).run();
+
+  store.completeAssistantMessage({
+    conversationId: conversation.id,
+    clientMessageId: "garden-turn-network-drop",
+    content: "This replay must not replace the canonical result.",
+  });
+
+  const legacy = db.prepare(`
+    SELECT content, runtime_status
+      FROM chat_messages
+     WHERE session_id = 1 AND role = 'assistant'
+  `).get();
+  assert.equal(legacy.content, "The interactive visualizer is ready.");
+  assert.equal(legacy.runtime_status, "complete");
+});
+
+test("Stop seals a Garden turn before runtime dispatch can revive it", () => {
+  const conversation = store.ensureConversationForLegacyChatSession(1, 1);
+  store.reserveConversationTurn({
+    conversation,
+    clientMessageId: "garden-turn-stopped-before-runtime",
+    surface: "garden_chat",
+    content: "/chapter-creation",
+    metadata: {
+      gardenPreDispatch: true,
+      focusedDocumentNames: ["lecture.pdf"],
+      focusedDocumentSlugs: ["lecture"],
+    },
+  });
+
+  const cancelled = store.cancelConversationTurn({
+    conversationId: conversation.id,
+    clientMessageId: "garden-turn-stopped-before-runtime",
+  });
+  assert.equal(cancelled.status, "aborted");
+  assert.equal(
+    store.conversationTurnWasCancelled(
+      conversation.id,
+      "garden-turn-stopped-before-runtime",
+    ),
+    true,
+  );
+
+  const metadata = JSON.parse(cancelled.metadata);
+  assert.equal(metadata.error, "cancelled_by_user");
+  assert.deepEqual(metadata.focusedDocumentSlugs, ["lecture"]);
+  const legacy = db.prepare(`
+    SELECT runtime_status, runtime_error
+    FROM chat_messages WHERE session_id = 1 AND role = 'assistant'
+  `).get();
+  assert.equal(legacy.runtime_status, "aborted");
+  assert.equal(legacy.runtime_error, "cancelled_by_user");
+});
+
+test("Stop converts a recoverable first-turn placeholder into a terminal cancellation", () => {
+  const created = store.createConversationWithInitialTurn({
+    conversation: {
+      userId: 1,
+      title: "New chat",
+      surface: "garden_chat",
+      scopeKind: "garden",
+      defaultGardenId: 1,
+    },
+    turn: {
+      clientMessageId: "reserved-first-turn",
+      surface: "garden_chat",
+      content: "/chapter-creation",
+      metadata: { preDispatchRecovery: { agentMode: true } },
+    },
+  });
+  assert.equal(
+    store.isPreDispatchReservedAssistant(created.turn.assistantMessage),
+    true,
+  );
+
+  const cancelled = store.cancelLatestConversationTurn(
+    created.conversation.id,
+  );
+  assert.equal(cancelled.status, "aborted");
+  assert.equal(store.isPreDispatchReservedAssistant(cancelled), false);
+  assert.equal(
+    store.conversationTurnWasCancelled(
+      created.conversation.id,
+      "reserved-first-turn",
+    ),
+    true,
+  );
+});
+
+test("Garden Stop is durable before a runtime id exists and blocks late dispatch", () => {
+  assert.match(checkpointRouteSource, /export async function DELETE/);
+  assert.match(checkpointRouteSource, /cancelConversationTurn\(/);
+  assert.match(workspaceSource, /abortGardenTurnCheckpoint\(/);
+  assert.match(workspaceSource, /agentActivity\.bindSession\(/);
+  assert.match(
+    gardenAdapterSource,
+    /conversationTurnWasCancelled\([\s\S]*?beginRuntimeRun\(/,
+  );
 });

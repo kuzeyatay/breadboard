@@ -70,8 +70,7 @@ test("created artifacts render as persistent response-owned file cards", () => {
   assert.match(cards, /Open \$\{artifact\.title\}/);
   assert.doesNotMatch(cards, />\s*Download\s*</);
   assert.doesNotMatch(cards, /Delete artifact/);
-  assert.doesNotMatch(cards, /artifact\.downloadAvailable/);
-  assert.match(cards, /artifact\.previewAvailable/);
+  assert.match(cards, /artifact\.previewAvailable \|\| artifact\.downloadAvailable/);
   assert.match(
     cards,
     /artifact\.status === "ready"/,
@@ -84,8 +83,17 @@ test("ready video artifacts stay compact until the artifact is opened", () => {
   // player does not take over the assistant response.
   assert.doesNotMatch(cards, /function InlineVideoArtifact/);
   assert.doesNotMatch(cards, /artifact\.kind === "video"[\s\S]*?<InlineVideoArtifact/);
-  assert.match(cards, /artifact\.previewAvailable \? \([\s\S]*?context\.openArtifact\(artifact\.id\)/);
+  assert.match(cards, /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?context\.openArtifact\(artifact\.id\)/);
   assert.match(viewer, /artifact\.kind === "video" && onEditVideo/);
+});
+
+test("download-only artifact cards still open the viewer", () => {
+  // Office files may not have an inline preview, but their viewer still owns
+  // Download and Edit. The response card must therefore remain actionable.
+  assert.match(
+    cards,
+    /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/,
+  );
 });
 
 test("clicking an open artifact closes it from inline cards and the archive", () => {
@@ -115,12 +123,20 @@ test("the whole image artifact opens while redundant Open and Edit actions stay 
   assert.doesNotMatch(imageCard, /Delete artifact/);
 });
 
-test("artifact cards use a wider centered lane without card-level download or delete", () => {
+test("artifact cards stay in the owning response lane without card-level download or delete", () => {
   assert.match(cards, /className="bb-inline-artifact-list mt-3 space-y-2"/);
   assert.match(globals, /\.bb-inline-artifact-list \{\s*width: 100%;/);
-  assert.match(
+  assert.doesNotMatch(
     globals,
-    /@media \(min-width: 64rem\)[\s\S]*?\.bb-inline-artifact-list[\s\S]*?width: min\(64rem, calc\(100% \+ 8rem\)\);[\s\S]*?transform: translateX\(-50%\);/,
+    /\.bb-inline-artifact-list[\s\S]{0,240}?calc\(100% \+ 8rem\)/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /className="bb-garden-assistant-response flex w-full max-w-\[90%\] flex-col gap-2"[\s\S]*?<GenerativeUiRenderer[\s\S]*?<InlineArtifactCards/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /className="bb-garden-assistant-response w-full max-w-\[90%\]">\s*<InlineArtifactCards ownerMessageId=\{null\}/,
   );
   assert.doesNotMatch(cards, /deleteArtifactRequest|handleDelete|deletingId|deleteError/);
 });
@@ -298,16 +314,16 @@ test("PDF artifact clicks open Breadboard's native full-page PDF viewer", () => 
   assert.match(nativePdfViewer, /readOnly \? "PDF artifact" : "PDF source"/);
 });
 
-test("Markdown artifacts keep their document reading surface in the dock", () => {
+test("document surfaces and full-window editors fill the dock body edge to edge", () => {
   assert.match(
     viewer,
     /artifact\.kind === "markdown"[\s\S]*?<ArtifactDocumentViewport>[\s\S]*?<article[\s\S]*?<ChatMarkdown content=\{text\}/,
   );
-  // The document viewport owns its own scrolling, so the dock body must not
-  // pad or scroll around it.
+  // Document viewports and full-window visual editors own their scrolling and
+  // chrome, so the dock body must not add a second inset around them.
   assert.match(
     viewer,
-    /usesDocumentViewer \|\| \(editingDocument && usesVvvebEditor\)[\s\S]*?\?\s*"overflow-hidden p-0"\s*:\s*artifact\.kind === "document" && !editingDocument\s*\?\s*"overflow-auto p-0"\s*:\s*"overflow-auto px-5 py-4"/,
+    /usesDocumentViewer \|\|\s*\(editingDocument && \(usesVvvebEditor \|\| usesGenOfficeEditor\)\)[\s\S]*?\?\s*"overflow-hidden p-0"\s*:\s*artifact\.kind === "document" && !editingDocument\s*\?\s*"overflow-auto p-0"\s*:\s*"overflow-auto px-5 py-4"/,
   );
 });
 
@@ -334,14 +350,25 @@ test("an artifact opened in the Terminal fills a lane inside the dock, not the w
   );
 });
 
-test("a Garden artifact overlays the learning-map rail in a resizable reading lane", () => {
+test("an archive replaces Terminal's side panel but uses Garden's wider reading lane", () => {
+  // Terminal's archive already occupies the right-side dock. Opening a row
+  // replaces it locally instead of appending a third column to the dock.
+  assert.match(
+    artifactPanel,
+    /const useInheritedViewerHost =\s*sourceSurface !== "dashboard_terminal" && inheritedViewerHost !== null/,
+  );
+  assert.match(
+    artifactPanel,
+    /aria-hidden=\{openArtifact && !useInheritedViewerHost \? undefined : true\}/,
+  );
+  assert.match(
+    artifactPanel,
+    /host=\{useInheritedViewerHost \? inheritedViewerHost : viewerHost\}/,
+  );
+
   // The archive is one accordion near the bottom of the right rail. Its viewer
   // inherits the rail-owned host instead of replacing only that accordion.
   assert.match(artifactPanel, /const inheritedViewerHost = useArtifactDockHost\(\)/);
-  assert.match(
-    artifactPanel,
-    /<ArtifactDockHostProvider host=\{inheritedViewerHost \?\? viewerHost\}>/,
-  );
   assert.match(
     gardenWorkspace,
     /\{\/\* Body \*\/\}\s*<div className="relative flex flex-1 min-h-0">\s*<GardenArtifactDock>[\s\S]*?<ChatTranscript[\s\S]*?<KnowledgeGraph[\s\S]*?<\/GardenArtifactDock>/,

@@ -10,9 +10,10 @@
 // The record is partial on purpose. A key that was never set is absent, so the
 // browser keeps its own default rather than a value nobody chose.
 //
-// `sunTheme` is the profile's "Sunrise to sunset" theme switch. It is not in the
-// composer, but it is the same kind of thing — a boolean the browser used to
-// keep per origin — so it rides the same column. See lib/app-theme.ts.
+// `sunTheme` and `currentLocation` are profile switches rather than composer
+// switches, but they have the same persistence problem and ride the same
+// column. Only location consent is stored here; coordinates remain in the
+// device's browser storage. See lib/app-theme.ts and lib/current-location.ts.
 
 export const COMPOSER_SWITCH_KEYS = [
   "yoloMode",
@@ -21,6 +22,7 @@ export const COMPOSER_SWITCH_KEYS = [
   "directMode",
   "personalize",
   "sunTheme",
+  "currentLocation",
 ] as const;
 
 export type ComposerSwitchKey = (typeof COMPOSER_SWITCH_KEYS)[number];

@@ -184,6 +184,10 @@ test("the capability palette exposes the cross-surface Reference picker", () => 
     path.join(root, "src/app/components/hermes/reference-chats-panel.tsx"),
     "utf8",
   );
+  const reloadableError = fs.readFileSync(
+    path.join(root, "src/app/components/reloadable-fetch-error.tsx"),
+    "utf8",
+  );
   const composer = fs.readFileSync(
     path.join(root, "src/app/components/assistant-composer.tsx"),
     "utf8",
@@ -198,6 +202,10 @@ test("the capability palette exposes the cross-surface Reference picker", () => 
   assert.match(hub, /tab === "reference"[\s\S]*?<CapabilityIcon kind="mcp" \/>/);
   assert.match(panel, /Search chats from every surface/);
   assert.match(panel, /\/api\/hermes\/references/);
+  assert.match(panel, /setReload\(\(current\) => current \+ 1\)/);
+  assert.match(panel, /label="Reload chats"/);
+  assert.match(reloadableError, /RefreshCw/);
+  assert.match(reloadableError, /role="alert"/);
   assert.match(composer, /onSelectReference=\{\(token\) => insertCommandToken\(`\/\$\{token\}`\)\}/);
   assert.match(route, /WHERE user_id = \? AND temporary = 0 AND buzz_room_id IS NULL/);
   assert.match(route, /surfaceLabel/);

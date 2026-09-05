@@ -11,18 +11,32 @@ export async function executeThoughtTopologyRuntimeBuild(input: {
   queueJobId: number;
   runtimeJobId: string;
   signal?: AbortSignal;
+  onProgress?: (percent: number) => void;
 }): Promise<ThoughtTopologyBuildResult> {
-  const row = db.prepare(
-    "SELECT id, cluster_id, revision, status FROM thought_topology_jobs WHERE id = ?",
-  ).get(input.queueJobId) as QueueRow | undefined;
-  if (!row || row.cluster_id !== input.clusterId || row.revision !== input.revision || !["queued", "running"].includes(row.status)) {
-    throw new Error("Thought Topology queue authority is invalid.");
-  }
-  db.prepare(
-    `UPDATE thought_topology_jobs
-        SET status = 'running', runtime_job_id = ?, updated_at = datetime('now')
-      WHERE id = ?`,
-  ).run(input.runtimeJobId, input.queueJobId);
+  // Admission can wait behind another document-processing worker. Markdown
+  // mutations that happen during that wait advance the same queued row. Claim
+  // it and capture its latest revision atomically, then incrementally build
+  // that revision instead of reconstructing every intermediate snapshot.
+  const row = db.transaction(() => {
+    const candidate = db.prepare(
+      "SELECT id, cluster_id, revision, status FROM thought_topology_jobs WHERE id = ?",
+    ).get(input.queueJobId) as QueueRow | undefined;
+    if (
+      !candidate ||
+      candidate.cluster_id !== input.clusterId ||
+      candidate.revision < input.revision ||
+      !["queued", "running"].includes(candidate.status)
+    ) {
+      throw new Error("Thought Topology queue authority is invalid.");
+    }
+    db.prepare(
+      `UPDATE thought_topology_jobs
+          SET status = 'running', runtime_job_id = ?, updated_at = datetime('now')
+        WHERE id = ?`,
+    ).run(input.runtimeJobId, input.queueJobId);
+    return candidate;
+  })();
+  const effectiveRevision = row.revision;
   try {
     const contentRoot = process.env.QUARTZ_CONTENT_PATH;
     if (!contentRoot) throw new Error("QUARTZ_CONTENT_PATH not configured");
@@ -30,9 +44,10 @@ export async function executeThoughtTopologyRuntimeBuild(input: {
       clusterId: input.clusterId,
       userId: input.userId,
       gardenId: input.gardenId,
-      revision: input.revision,
+      revision: effectiveRevision,
       contentRoot,
       signal: input.signal,
+      onProgress: input.onProgress,
     });
     db.prepare(
       `UPDATE thought_topology_jobs

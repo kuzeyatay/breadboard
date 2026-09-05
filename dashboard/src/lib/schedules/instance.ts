@@ -8,11 +8,21 @@ import { ScheduledChatJobStore } from "./store.ts";
 
 const globals = globalThis as typeof globalThis & {
   breadboardScheduledChatStore?: ScheduledChatJobStore;
+  breadboardScheduledChatStoreVersion?: number;
 };
 
+// Bump when the store constructor carries a new additive migration. Next dev
+// keeps globals across hot reloads, so the version makes the migration apply
+// immediately instead of waiting for a full app restart.
+const SCHEDULE_STORE_VERSION = 2;
+
 export function getScheduledChatJobStore(): ScheduledChatJobStore {
-  if (!globals.breadboardScheduledChatStore) {
+  if (
+    !globals.breadboardScheduledChatStore ||
+    globals.breadboardScheduledChatStoreVersion !== SCHEDULE_STORE_VERSION
+  ) {
     globals.breadboardScheduledChatStore = new ScheduledChatJobStore(db);
+    globals.breadboardScheduledChatStoreVersion = SCHEDULE_STORE_VERSION;
   }
   return globals.breadboardScheduledChatStore;
 }

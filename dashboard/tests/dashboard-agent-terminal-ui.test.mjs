@@ -75,9 +75,28 @@ test("Hermes terminal uses the original Breadboard terminal shell", () => {
   assert.doesNotMatch(terminal, /#0b0f14/);
 });
 
+test("the resting terminal bar is slimmer with golden-proportion shoulders", () => {
+  assert.match(terminal, /const COLLAPSED_HEIGHT = 42/);
+  assert.match(legacyTerminal, /const COLLAPSED_HEIGHT = 42/);
+  assert.match(terminal, /const GOLDEN_RATIO_SQUARED = 2\.618/);
+  assert.match(
+    terminal,
+    /cornerRadius: TERMINAL_BAR_RADIUS/,
+  );
+  assert.match(globals, /--terminal-bar-height: 42px/);
+  assert.match(
+    globals,
+    /--terminal-bar-radius: calc\(var\(--terminal-bar-height\) \/ 2\.618\)/,
+  );
+  assert.match(
+    globals,
+    /\.bb-terminal-dock \{[\s\S]{0,160}?border-start-start-radius: var\(--terminal-bar-radius\);[\s\S]{0,100}?border-start-end-radius: var\(--terminal-bar-radius\);/,
+  );
+});
+
 test("the header conceals on close the way it reveals on open", () => {
   // Items stay mounted through the exit animation instead of vanishing.
-  assert.match(terminal, /flex h-12 shrink-0/);
+  assert.match(terminal, /flex h-\[42px\] shrink-0/);
   assert.match(terminal, /headerMounted \? "" : "justify-center"/);
   assert.match(terminal, /\{headerMounted \? \(/);
   assert.match(
@@ -314,7 +333,7 @@ test("the red terminal status offers a transcript-preserving reconnect action", 
     terminal,
     /className="neu-button inline-flex h-7 w-7/,
   );
-  assert.match(terminal, /flex h-12 shrink-0/);
+  assert.match(terminal, /flex h-\[42px\] shrink-0/);
   assert.doesNotMatch(
     terminal,
     /<span>\{refreshingTerminal \? "Refreshing" : "Reconnect"\}<\/span>/,

@@ -1,176 +1,201 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { adaptBrainGraph } from "@/lib/quartz-brain-graph/adapter.ts";
-import { createThoughtTopologyRenderer } from "@/lib/quartz-brain-graph/renderer.ts";
-import { quartzLayoutStorageKey } from "@/lib/quartz-brain-graph/state.ts";
-import type { QuartzBrainRendererController } from "@/lib/quartz-brain-graph/types.ts";
-import type { BrainGraphResponse } from "@/lib/profile/brain-graph-types.ts";
+import { projectBrainGraphToQuartzTopology } from "@/lib/quartz-brain-graph/topology-adapter.ts";
+import type {
+  BrainGraphResponse,
+  BrainScopeOption,
+} from "@/lib/profile/brain-graph-types.ts";
+import {
+  renderThoughtTopology,
+  type D3Config,
+  type FullSlug,
+} from "@/vendor/quartz-thought-topology/renderer.ts";
+
+const QUARTZ_HOME_GRAPH: D3Config = {
+  mode: "thought-topology",
+  drag: true,
+  zoom: true,
+  depth: -1,
+  scope: "all",
+  clickToNavigate: true,
+  scale: 0.82,
+  repelForce: 2.8,
+  centerForce: 0.035,
+  linkDistance: 175,
+  fontSize: 0.82,
+  opacityScale: 1,
+  removeTags: [],
+  showTags: true,
+  focusOnHover: true,
+  enableRadial: false,
+};
 
 export default function BrainMapCanvas({
   graph,
   scopeKey,
-  query,
-  selectedNodeIds,
-  selectedEdgeIds,
-  visibleNodeIds,
-  evidenceNodeIds,
-  evidenceEdgeIds,
-  expansionParentId,
-  focusRequest,
-  onSelect,
-  onSelectEdge,
+  scopeOptions,
+  loading,
+  onScopeChange,
   onOpen,
   onFailure,
 }: {
   graph: BrainGraphResponse;
   scopeKey: string;
-  query: string;
-  selectedNodeIds: ReadonlySet<string>;
-  selectedEdgeIds: ReadonlySet<string>;
-  visibleNodeIds: ReadonlySet<string>;
-  evidenceNodeIds: ReadonlySet<string>;
-  evidenceEdgeIds: ReadonlySet<string>;
-  expansionParentId?: string;
-  focusRequest?: { id: string; nonce: number };
-  onSelect: (nodeId: string, additive: boolean) => void;
-  onSelectEdge: (edgeId: string) => void;
-  onOpen: (nodeId: string, href?: string) => void;
+  scopeOptions: BrainScopeOption[];
+  loading: boolean;
+  onScopeChange: (scope: string) => void;
+  onOpen: (href: string) => void;
   onFailure: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const controllerRef = useRef<QuartzBrainRendererController | null>(null);
-  const latestGraphRef = useRef(graph);
-  const latestCallbacksRef = useRef({ onSelect, onSelectEdge, onOpen, onFailure });
-  const layoutStorageKey = useMemo(
-    () => quartzLayoutStorageKey(graph.layoutKey, graph.revision, scopeKey),
-    [graph.layoutKey, graph.revision, scopeKey],
-  );
+  const [expanded, setExpanded] = useState(false);
+  const latestCallbacksRef = useRef({ onOpen, onFailure });
+  const projection = useMemo(() => projectBrainGraphToQuartzTopology(graph), [graph]);
 
-  latestGraphRef.current = graph;
-  latestCallbacksRef.current = { onSelect, onSelectEdge, onOpen, onFailure };
+  useEffect(() => {
+    latestCallbacksRef.current = { onOpen, onFailure };
+  }, [onFailure, onOpen]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [expanded]);
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
+    if (!host || projection.gardenCount === 0) return;
     let disposed = false;
-    const normalizationStarted = performance.now();
-    const adapted = adaptBrainGraph(latestGraphRef.current);
-    const normalizationMs = Math.round((performance.now() - normalizationStarted) * 10) / 10;
-    const rendererStarted = performance.now();
-    void createThoughtTopologyRenderer(host, adapted, {
-      layoutStorageKey,
-      selectedNodeIds,
-      selectedEdgeIds,
-      visibleNodeIds,
-      evidenceNodeIds,
-      evidenceEdgeIds,
-      onSelect: (nodeId, additive) => latestCallbacksRef.current.onSelect(nodeId, additive),
-      onSelectEdge: (edgeId) => latestCallbacksRef.current.onSelectEdge(edgeId),
-      onOpen: (nodeId, href) => latestCallbacksRef.current.onOpen(nodeId, href),
-      onFailure: () => latestCallbacksRef.current.onFailure(),
-      onSettled: (simulationSettleMs) => {
-        console.info("[thought-topology-renderer]", JSON.stringify({ simulationSettleMs }));
+    let destroy: (() => void) | undefined;
+
+    void renderThoughtTopology(
+      host,
+      "profile" as FullSlug,
+      QUARTZ_HOME_GRAPH,
+      projection.payload,
+      {
+        scopeCluster: projection.payload.garden.slug,
+        scopeFolderPath: null,
+        configuredDepth: -1,
+        onNavigate: (nodeId) => {
+          const href = projection.hrefByNodeId.get(nodeId);
+          if (href) latestCallbacksRef.current.onOpen(href);
+        },
       },
-    })
-      .then((controller) => {
-        if (disposed) {
-          controller.destroy();
-          return;
-        }
-        controllerRef.current = controller;
-        controller.setSearch(query);
-        console.info("[thought-topology-renderer]", JSON.stringify({
-          nodeCount: adapted.nodes.length,
-          edgeCount: adapted.links.length,
-          normalizationMs,
-          rendererInitializationMs:
-            Math.round((performance.now() - rendererStarted) * 10) / 10,
-        }));
+    )
+      .then((cleanup) => {
+        if (disposed) cleanup();
+        else destroy = cleanup;
       })
       .catch(() => {
         if (!disposed) latestCallbacksRef.current.onFailure();
       });
+
     return () => {
       disposed = true;
-      controllerRef.current?.destroy();
-      controllerRef.current = null;
+      destroy?.();
     };
-    // A scope switch intentionally creates a fresh simulation and lifecycle.
-    // Expansion and filtering use the update effects below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey]);
-
-  useEffect(() => {
-    const started = performance.now();
-    const adapted = adaptBrainGraph(graph);
-    controllerRef.current?.updateGraph(adapted, expansionParentId);
-    console.info("[thought-topology-renderer]", JSON.stringify({
-      nodeCount: adapted.nodes.length,
-      edgeCount: adapted.links.length,
-      normalizationMs: Math.round((performance.now() - started) * 10) / 10,
-    }));
-  }, [expansionParentId, graph]);
-
-  useEffect(() => {
-    controllerRef.current?.updateOptions({
-      selectedNodeIds,
-      selectedEdgeIds,
-      visibleNodeIds,
-      evidenceNodeIds,
-      evidenceEdgeIds,
-    });
-  }, [evidenceEdgeIds, evidenceNodeIds, selectedEdgeIds, selectedNodeIds, visibleNodeIds]);
-
-  useEffect(() => {
-    controllerRef.current?.setSearch(query);
-  }, [query]);
-
-  useEffect(() => {
-    if (focusRequest) controllerRef.current?.focusNode(focusRequest.id);
-  }, [focusRequest]);
+  }, [projection]);
 
   return (
-    <div className="relative h-full w-full">
-      <div
-        ref={hostRef}
-        className="h-full w-full touch-none outline-none"
-        aria-label={`Interactive Thought Topology with ${graph.nodes.length} nodes and ${graph.edges.length} weighted relationships`}
-        role="img"
-      />
-      <div className="absolute bottom-3 left-3 flex items-center gap-1 rounded-lg border border-gray-800 bg-gray-950/85 p-1 shadow-lg backdrop-blur">
-        <button
-          type="button"
-          onClick={() => controllerRef.current?.zoomBy(1.25)}
-          className="rounded px-2 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white"
-          aria-label="Zoom in"
-        >
-          +
-        </button>
-        <button
-          type="button"
-          onClick={() => controllerRef.current?.zoomBy(0.8)}
-          className="rounded px-2 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white"
-          aria-label="Zoom out"
-        >
-          −
-        </button>
-        <button
-          type="button"
-          onClick={() => controllerRef.current?.fitToView()}
-          className="rounded px-2 py-1 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-white"
-        >
-          Fit
-        </button>
-        <button
-          type="button"
-          onClick={() => controllerRef.current?.resetLayout()}
-          className="rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-white"
-        >
-          Reset
-        </button>
+    <section
+      aria-label="Private Thought Topology"
+      className="graph home-knowledge-graph profile-quartz-topology"
+      data-active-mode="thought-topology"
+    >
+      <div className="thought-topology-meta">
+        <div className="thought-topology-heading">
+          <h2>Thought Topology</h2>
+          <p>How the ideas in your gardens are organized and connected.</p>
+          <p className="thought-topology-analysis" hidden />
+        </div>
+        <label className="profile-quartz-topology-scope">
+          <span className="sr-only">Thought Topology scope</span>
+          <select
+            aria-label="Thought Topology scope"
+            value={scopeKey}
+            onChange={(event) => onScopeChange(event.target.value)}
+          >
+            {scopeOptions.map((option) => (
+              <option key={option.id} value={option.organizationId ?? option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {graph.warnings.length > 0 && (
+          <div className="profile-quartz-topology-warnings" role="status">
+            {graph.warnings.map((warning) => (
+              <p key={`${warning.source}:${warning.code}:${warning.message}`}>{warning.message}</p>
+            ))}
+          </div>
+        )}
+        {loading && <p className="profile-quartz-topology-refresh">Updating Thought Topology…</p>}
       </div>
-    </div>
+
+      <div className="graph-outer" data-expanded={expanded ? "true" : undefined}>
+        {projection.gardenCount > 0 ? (
+          <div
+            ref={hostRef}
+            className="graph-container"
+            data-active-mode="thought-topology"
+            aria-label={`Interactive Thought Topology with ${projection.gardenCount} gardens, ${projection.payload.nodes.length} pages, and ${projection.payload.edges.length} weighted relationships`}
+            role="img"
+          />
+        ) : (
+          <div className="profile-quartz-topology-empty">
+            <p>Your accessible Thought Topology is empty.</p>
+            <span>Create a Garden to add the first connection.</span>
+          </div>
+        )}
+        {projection.gardenCount > 0 && (
+          <button
+            type="button"
+            className={expanded ? "global-graph-close" : "global-graph-icon"}
+            aria-label={expanded ? "Close Graph" : "Expand Graph"}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? <CloseGraphIcon /> : <ExpandGraphIcon />}
+          </button>
+        )}
+        <div className="thought-callout" role="status" aria-live="polite" aria-hidden="true" />
+      </div>
+    </section>
+  );
+}
+
+function ExpandGraphIcon() {
+  return (
+    <svg viewBox="0 0 55 55" fill="currentColor" aria-hidden="true">
+      <path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035.263,2.009.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17s-3.542.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4c.74,0,1.424-.215,2.019-.567l7.669,7.669C21.634,21.458,21,23.154,21,25s.634,3.542,1.688,4.897L10.024,42.562C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-.263-2.009-.726-2.86l12.829-12.829c1.106.86,2.44,1.436,3.898,1.619v10.16c-2.833.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91v-10.16c1.458-.183,2.792-.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4s-1.794-4-4-4c-.74,0-1.424.215-2.019.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-.634-3.542-1.688-4.897l9.665-9.665C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0ZM11,9c0-1.103.897-2,2-2s2,.897,2,2s-.897,2-2,2S11,10.103,11,9ZM6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51Zm27-2c0,2.206-1.794,4-4,4s-4-1.794-4-4s1.794-4,4-4S33,46.794,33,49Zm-4-18c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31Zm18,10c0,1.103-.897,2-2,2s-2-.897-2-2s.897-2,2-2S47,39.897,47,41Zm2-31c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10Z" />
+    </svg>
+  );
+}
+
+function CloseGraphIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
   );
 }

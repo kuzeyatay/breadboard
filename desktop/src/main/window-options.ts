@@ -89,6 +89,31 @@ export function backgroundColorForTheme(theme: BreadboardWindowTheme): string {
   return backgroundColorForSurface(theme);
 }
 
+/**
+ * The renderer settings every Breadboard page runs under, whether it is a
+ * window's own page or a tab view inside one. Shared so a tab can never be a
+ * less locked-down page than the window that holds it.
+ */
+export function rendererWebPreferences(
+  preloadPath: string,
+): NonNullable<BrowserWindowConstructorOptions["webPreferences"]> {
+  return {
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    webviewTag: false,
+    preload: preloadPath,
+    spellcheck: false,
+    // Chromium parks timers and animation frames in windows that are hidden
+    // or occluded. Breadboard leans on both while out of sight: the dashboard
+    // is rendered in a hidden window behind the welcome screen, and popped-out
+    // surfaces (the Work timer) have to keep counting when they lose focus.
+    // Throttled, that hidden render never finishes and the swap lands on a
+    // half-painted page.
+    backgroundThrottling: false,
+  };
+}
+
 export function mainWindowOptions(
   preloadPath: string,
   iconPath?: string,
@@ -111,20 +136,6 @@ export function mainWindowOptions(
           titleBarOverlay: titleBarForTheme(theme),
         }
       : {}),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webviewTag: false,
-      preload: preloadPath,
-      spellcheck: false,
-      // Chromium parks timers and animation frames in windows that are hidden
-      // or occluded. Breadboard leans on both while out of sight: the dashboard
-      // is rendered in a hidden window behind the welcome screen, and popped-out
-      // surfaces (the Work timer) have to keep counting when they lose focus.
-      // Throttled, that hidden render never finishes and the swap lands on a
-      // half-painted page.
-      backgroundThrottling: false,
-    },
+    webPreferences: rendererWebPreferences(preloadPath),
   };
 }

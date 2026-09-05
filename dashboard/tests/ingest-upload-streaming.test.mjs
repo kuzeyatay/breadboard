@@ -12,12 +12,17 @@ import {
   uploadLimitBytes,
 } from "../src/lib/ingest-upload.ts";
 
-function multipartRequest({ boundary, size, chunkSize = 64 * 1024 }) {
+function multipartRequest({
+  boundary,
+  size,
+  chunkSize = 64 * 1024,
+  filename = "large.bin",
+}) {
   const header = Buffer.from(
     `--${boundary}\r\n` +
     `Content-Disposition: form-data; name="clusterSlug"\r\n\r\nstream-test\r\n` +
     `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="large.bin"\r\n` +
+    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
     `Content-Type: application/octet-stream\r\n\r\n`,
   );
   const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
@@ -81,6 +86,28 @@ test("multipart ingestion streams a large upload to a private staging file", asy
     if (parsed && fs.existsSync(path.dirname(parsed.file?.path ?? dataRoot))) {
       await parsed.cleanup();
     }
+    process.env.BREADBOARD_DATA_DIR = previous;
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("multipart ingestion preserves a UTF-8 filename from browser FormData", async () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-ingest-unicode-"));
+  const previous = process.env.BREADBOARD_DATA_DIR;
+  process.env.BREADBOARD_DATA_DIR = dataRoot;
+  const filename = "5XTA0 – Introduction.pdf";
+  const source = multipartRequest({
+    boundary: "breadboard-unicode-filename",
+    size: 19,
+    filename,
+  });
+  let parsed;
+  try {
+    parsed = await parseIngestUpload(source.request);
+    assert.equal(parsed.file.name, filename);
+    assert.equal(parsed.file.size, 19);
+  } finally {
+    await parsed?.cleanup();
     process.env.BREADBOARD_DATA_DIR = previous;
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }

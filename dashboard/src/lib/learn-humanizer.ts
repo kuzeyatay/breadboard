@@ -61,6 +61,9 @@ interface HumanizeFinishedLearnBuildInput {
   validate: () => LearnHumanizerValidation;
   checkCancelled?: () => void;
   onStart?: (fileCount: number) => void;
+  /** Absolute learner Markdown paths whose already-published prose must remain
+   * byte-for-byte untouched during an additive Learn update. */
+  preserveFilePaths?: readonly string[];
   /** Explicit toggles have already captured intent and do not re-read the
    * eventually-consistent account preference. */
   force?: boolean;
@@ -298,7 +301,12 @@ export async function humanizeFinishedLearnBuild(
     return unavailable;
   }
 
-  const files = learningMarkdownFiles(input.gardenDir);
+  const preservedFiles = new Set(
+    (input.preserveFilePaths ?? []).map((filePath) => path.resolve(filePath)),
+  );
+  const files = learningMarkdownFiles(input.gardenDir).filter(
+    (filePath) => !preservedFiles.has(path.resolve(filePath)),
+  );
   if (files.length === 0) {
     const empty = result({ requested: true, reason: "no_learning_pages" });
     if (input.versionId) {

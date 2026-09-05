@@ -176,6 +176,69 @@ def test_compute_host_terminal_keeps_full_tool_journal(server, monkeypatch):
     assert session["last_turn_result"]["payload"]["completed_tools"] == completed
 
 
+def test_terminal_failure_status_is_queryable_before_turn_cleanup(server, monkeypatch):
+    session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "active_client_turn_id": "msg-provider-failure",
+    }
+    server._sessions["live-provider-failure"] = session
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    server._status_update(
+        "live-provider-failure",
+        "turn.failed",
+        "API call failed after 3 retries: subscription proxy unavailable",
+    )
+
+    response = server._methods["session.turn_result"](
+        "r-provider-failure",
+        {
+            "session_id": "live-provider-failure",
+            "turn_id": "msg-provider-failure",
+            "expected_user_text": "explain DMT",
+        },
+    )
+    assert response["result"]["state"] == "failed"
+    assert response["result"]["payload"] == {
+        "text": "API call failed after 3 retries: subscription proxy unavailable",
+        "status": "error",
+        "turn_id": "msg-provider-failure",
+    }
+    assert emitted[-1][0] == "status.update"
+
+
+def test_compute_host_terminal_failure_status_is_mirrored(server, monkeypatch):
+    session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "active_client_turn_id": "msg-host-failure",
+    }
+    server._sessions["live-host-failure"] = session
+    forwarded = []
+    monkeypatch.setattr(server, "write_json", forwarded.append)
+    message = {
+        "method": "event",
+        "params": {
+            "type": "status.update",
+            "session_id": "live-host-failure",
+            "payload": {
+                "kind": "turn.failed",
+                "text": "API call failed after 3 retries: proxy unavailable",
+            },
+        },
+    }
+
+    server._forward_compute_host_rpc(message)
+
+    assert forwarded == [message]
+    assert session["last_turn_result"]["turn_id"] == "msg-host-failure"
+    assert session["last_turn_result"]["payload"]["status"] == "error"
+
+
 def test_turn_result_recovers_a_pending_permission(server, monkeypatch):
     server._sessions["live-approval"] = {
         "history": [],

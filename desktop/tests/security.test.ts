@@ -1,10 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  allowExternalBrowserNavigationFor,
   allowedOriginsFor,
+  isExternalBrowserWebContents,
   isNavigationAllowed,
   isRendererPermissionAllowed,
+  isSafeBrowserUrl,
   isSafeExternalUrl,
+  revokeExternalBrowserNavigationFor,
 } from "../src/main/security";
 
 test("navigation is restricted to owned origins and exact product local files", () => {
@@ -33,6 +37,20 @@ test("external link safety only admits web/mailto schemes", () => {
   assert.ok(!isSafeExternalUrl("javascript:alert(1)"));
   assert.ok(!isSafeExternalUrl("file:///C:/Windows/system32"));
   assert.ok(!isSafeExternalUrl("vbscript:x"));
+});
+
+test("embedded browser pages admit only web URLs and are explicitly registered", () => {
+  assert.ok(isSafeBrowserUrl("https://example.com/docs"));
+  assert.ok(isSafeBrowserUrl("http://localhost:3000/"));
+  assert.ok(!isSafeBrowserUrl("mailto:someone@example.com"));
+  assert.ok(!isSafeBrowserUrl("file:///C:/Windows/system32"));
+  assert.ok(!isSafeBrowserUrl("javascript:alert(1)"));
+
+  assert.equal(isExternalBrowserWebContents(413), false);
+  allowExternalBrowserNavigationFor(413);
+  assert.equal(isExternalBrowserWebContents(413), true);
+  revokeExternalBrowserNavigationFor(413);
+  assert.equal(isExternalBrowserWebContents(413), false);
 });
 
 test("only the owned dashboard origin may request an audio-only microphone grant", () => {

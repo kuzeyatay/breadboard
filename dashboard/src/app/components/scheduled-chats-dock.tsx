@@ -5,13 +5,14 @@
 // runs on its own is never invisible. It renders nothing when no schedule exists.
 
 import { useCallback, useEffect, useState } from "react";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import {
   formatRelativeRunTime,
   formatRunTime,
   SCHEDULES_CHANGED_EVENT,
 } from "@/app/components/hermes/schedule-client";
 import type { ScheduledChatJob } from "@/lib/schedules/types.ts";
-import { scheduleTargetLabel } from "@/lib/schedules/types.ts";
+import { scheduleConversationBehaviorLabel } from "@/lib/schedules/types.ts";
 import { ActiveChatIcon } from "@/app/components/hermes/history-client";
 
 const COLLAPSED_KEY = "breadboard:scheduled-chats-dock:collapsed";
@@ -27,6 +28,7 @@ function ClockIcon({ className = "h-4 w-4" }: { className?: string }) {
 }
 
 export default function ScheduledChatsDock() {
+  const { confirm: confirmDelete, confirmDialog } = useConfirmDialog();
   const [schedules, setSchedules] = useState<ScheduledChatJob[]>([]);
   const [collapsed, setCollapsed] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -69,6 +71,19 @@ export default function ScheduledChatsDock() {
   }
 
   async function act(job: ScheduledChatJob, action: "toggle" | "run" | "delete") {
+    if (
+      action === "delete" &&
+      !(await confirmDelete({
+        title: "Delete scheduled task?",
+        subject: job.title,
+        body: "This removes the schedule and stops all future runs.",
+        detail: "Chats this task already opened are kept.",
+        confirmLabel: "Delete schedule",
+        tone: "danger",
+      }))
+    ) {
+      return;
+    }
     setBusyId(job.id);
     setNotice(null);
     try {
@@ -83,13 +98,16 @@ export default function ScheduledChatsDock() {
       } else {
         const response = await fetch(`/api/schedules/${job.id}/run`, { method: "POST" });
         const payload = (await response.json().catch(() => ({}))) as {
-          started?: boolean;
+          conversationOpened?: boolean;
+          objectiveDecision?: "met" | "pending" | null;
           error?: string | null;
         };
         setNotice(
-          payload.started
+          payload.conversationOpened
             ? `"${job.title}" started a new chat.`
-            : payload.error ?? "That run could not start.",
+            : payload.objectiveDecision === "pending"
+              ? "Checked. The objective is not met yet, so no chat was opened."
+              : payload.error ?? "That run could not start.",
         );
       }
       await load();
@@ -109,7 +127,7 @@ export default function ScheduledChatsDock() {
 
   return (
     <aside
-      aria-label="Scheduled chats"
+      aria-label="Scheduled tasks"
       className="fixed left-4 top-20 z-30 w-[19rem] max-w-[calc(100vw-2rem)] rounded-xl border border-gray-800 bg-gray-900/90 text-white shadow-xl backdrop-blur"
     >
       <div className="flex items-start gap-2 px-3 py-2.5">
@@ -118,7 +136,7 @@ export default function ScheduledChatsDock() {
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold tracking-tight">
-            {schedules.length} scheduled chat{schedules.length === 1 ? "" : "s"}
+            {schedules.length} scheduled task{schedules.length === 1 ? "" : "s"}
           </p>
           <p className="mt-0.5 truncate text-[11px] text-gray-400">
             {next
@@ -154,8 +172,8 @@ export default function ScheduledChatsDock() {
                     }`}
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-1.5 truncate text-xs font-medium">
-                      <span className="truncate">{job.title}</span>
+                    <p className="flex items-start gap-1.5 text-xs font-medium leading-4">
+                      <span className="line-clamp-3">{job.title}</span>
                       {job.running ? (
                         <ActiveChatIcon
                           label={`${job.title} is running`}
@@ -167,7 +185,7 @@ export default function ScheduledChatsDock() {
                       {job.cronDescription}
                     </p>
                     <p className="mt-0.5 truncate text-[11px] text-gray-500">
-                      New chat in {scheduleTargetLabel(job)}
+                      {scheduleConversationBehaviorLabel(job)}
                     </p>
                     <p className="mt-0.5 text-[11px] text-gray-500">
                       {job.running
@@ -183,7 +201,11 @@ export default function ScheduledChatsDock() {
                         }`}
                         title={job.lastError ?? undefined}
                       >
-                        {job.lastStatus === "failed" ? "Last run failed" : "Last ran"}{" "}
+                        {job.lastStatus === "failed"
+                          ? "Last run failed"
+                          : job.conversationPolicy === "open_when_objective_met"
+                            ? "Last checked"
+                            : "Last ran"}{" "}
                         {formatRunTime(job.lastRunAt)}
                         {job.lastStatus === "failed" && job.lastError ? ` — ${job.lastError}` : ""}
                       </p>
@@ -228,11 +250,12 @@ export default function ScheduledChatsDock() {
             ))}
           </ul>
           <p className="border-t border-gray-800 px-3 py-2 text-[10px] leading-4 text-gray-500">
-            Scheduled chats open by themselves in the terminal or garden they were created from.
-            They only run while Breadboard is running.
+            Scheduled tasks open chats when they produce something useful. Monitoring checks only
+            open one after the watched objective is met. They run while Breadboard is running.
           </p>
         </div>
       )}
+      {confirmDialog}
     </aside>
   );
 }

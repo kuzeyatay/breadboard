@@ -234,6 +234,42 @@ test("GenOffice saves the complete DOCX package as a conflict-checked artifact v
   }
 });
 
+test("GenOffice still versions editor bytes when Windows path spelling is rejected", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  const sourcePath = path.resolve(process.cwd(), "../OfficeCLI/examples/word/document-formatting.docx");
+  fs.copyFileSync(sourcePath, path.join(input.workspace, "genoffice-path-recovery.docx"));
+  try {
+    const artifact = await createImportedArtifact(shared(input, {
+      kind: "document",
+      filename: "genoffice-path-recovery.docx",
+      authorizedRoot: input.workspace,
+      filePath: "genoffice-path-recovery.docx",
+      scrubProvenance: false,
+    }));
+    const bytes = fs.readFileSync(sourcePath);
+    const saved = await saveArtifactOfficeBytes(artifact, 1, bytes, {
+      database: input.database,
+      storageRoot: input.storage,
+      officeRuntimeControl: {
+        async reserve() {
+          throw new Error("The Office input must be a direct file.");
+        },
+      },
+    });
+
+    assert.equal(saved.current_version, 2);
+    assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
+    assert.deepEqual(
+      fs.readFileSync(artifactDeliveryFile(saved, 2, input.storage, input.database).absolutePath),
+      bytes,
+    );
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
 test("PPTX slide text round-trips through anchored native blocks", async () => {
   const input = fixture();
   fs.mkdirSync(input.workspace, { recursive: true });
@@ -372,6 +408,7 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   const studio = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-document-studio.tsx"), "utf8");
   const genoffice = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-genoffice-editor.tsx"), "utf8");
   const genofficeEntry = fs.readFileSync(path.resolve(process.cwd(), "src/genoffice-static/main.tsx"), "utf8");
+  const genofficeHtml = fs.readFileSync(path.resolve(process.cwd(), "src/genoffice-static/index.html"), "utf8");
   const bridge = fs.readFileSync(path.resolve(process.cwd(), "src/app/genoffice-docs/[artifactId]/genoffice-bridge.ts"), "utf8");
   const aiRoute = fs.readFileSync(path.resolve(process.cwd(), "src/app/api/hermes/artifacts/[artifactId]/genoffice/ai/route.ts"), "utf8");
   const pdfPage = fs.readFileSync(path.resolve(process.cwd(), "src/app/artifacts/[artifactId]/pdf/page.tsx"), "utf8");
@@ -383,6 +420,9 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   assert.match(genofficeEntry, /localStorage\.setItem\('aidocs\.autoSave', '1'\)/);
   assert.doesNotMatch(genofficeEntry, /localStorage\.setItem\('aidocs\.autoSave', '0'\)/);
   assert.match(genofficeEntry, /autoSaveDefaultVersionKey/);
+  assert.match(genofficeEntry, /initialTheme/);
+  assert.doesNotMatch(genofficeEntry, /setAttribute\('data-theme', 'light'\)/);
+  assert.match(genofficeHtml, /breadboard:theme/);
   const ribbon = fs.readFileSync(path.resolve(process.cwd(), "src/vendor-overrides/genoffice/docs/src/renderer/components/Ribbon.tsx"), "utf8");
   const aiPanel = fs.readFileSync(path.resolve(process.cwd(), "src/vendor-overrides/genoffice/docs/src/renderer/ai/AiPanel.tsx"), "utf8");
   const aiHostCss = fs.readFileSync(path.resolve(process.cwd(), "src/app/genoffice-docs/genoffice-host.css"), "utf8");
@@ -396,11 +436,20 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   assert.match(aiPanel, /executeTool/);
   assert.match(aiPanel, /The conversation and document stay in this editor/);
   assert.match(aiPanel, /Bread is working in this document/);
+  assert.match(aiPanel, /markRecoveredSave/);
+  assert.match(aiPanel, /DIRECT_FILE_SAVE_ERROR/);
+  assert.match(aiPanel, /function ActivityReceipt/);
+  assert.match(aiPanel, /activity\.split\(';'\)/);
+  assert.match(aiPanel, /<details className="ai-work-group">/);
+  assert.doesNotMatch(aiPanel, /<span[^>]+className="ai-applied-tag"/);
   assert.match(aiPanel, /iconOnly/);
   assert.doesNotMatch(aiPanel, /bread-ai-word-actions|WORD_ACTIONS|Start a new document chat|Collapse AI panel/);
   assert.match(aiHostCss, /--bread-chat-user/);
   assert.match(aiHostCss, /border-radius: 30px/);
   assert.match(aiHostCss, /\.ai-input-footer \.ai-send-btn/);
+  assert.match(aiHostCss, /\.ai-applied-tag::before \{\s*content: none;/);
+  assert.match(aiHostCss, /\.ai-work-group \{[\s\S]*?background: #f7f2e8;/);
+  assert.match(aiHostCss, /:root\[data-theme='dark'\] body \.ai-panel/);
   assert.match(artifactPanel, /onUpdated=\{\(updated\)/);
   assert.match(inlineCards, /onUpdated=\{registerArtifact\}/);
   assert.doesNotMatch(genoffice, /onAskAi/);
@@ -410,7 +459,10 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/app.css")), true);
   assert.match(bridge, /breadboard:genoffice-artifact-saved/);
   assert.match(bridge, /breadboard:genoffice-save-complete/);
+  assert.match(bridge, /breadboard:theme/);
+  assert.match(bridge, /onThemeChanged/);
   assert.match(bridge, /expectedVersion/);
+  assert.match(genoffice, /bg-\[var\(--background\)\]/);
   assert.match(studio, /Ask AI to edit/);
   assert.match(studio, /Save version/);
   assert.match(pdfPage, /readOnly=!\{editable\}|readOnly=\{!editable\}/);

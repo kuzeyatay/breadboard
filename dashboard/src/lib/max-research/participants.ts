@@ -268,6 +268,12 @@ export function participantRuntime(
         load: () => import("../agent-reach/run-manager.ts"),
         health: async () =>
           (await import("../agent-reach/runtime.ts")).runtimeAvailability(),
+        // A Max Research brief spans several sub-questions, and the default
+        // sixteen steps ran out mid-read on a live drive — the agent had
+        // fetched national price tables and a regulator's release and had
+        // no step left to report. Twenty-four is the same order of cost as
+        // the other participants and leaves room to write.
+        startOptions: { maxSteps: 24 },
       });
     case "get_doc":
       return getDocRuntime();
@@ -642,6 +648,8 @@ function runManagerRuntime(
      * to avoid.
      */
     health: () => Promise<{ available: boolean; reason?: string | null }>;
+    /** Extra fields for this runtime's `startRun`, beyond the shared shape. */
+    startOptions?: Record<string, unknown>;
   },
 ): ParticipantRuntime {
   const load = runtime.load;
@@ -696,6 +704,7 @@ function runManagerRuntime(
             ...(context.conversationContext
               ? { conversationContext: context.conversationContext }
               : {}),
+            ...(runtime.startOptions ?? {}),
           }),
         isTerminal: (runId) => isTerminal(context.userId, runId),
         abort: async (runId) => { await abortRun?.(context.userId, runId); },

@@ -626,6 +626,11 @@ export function SidePanel({
                       variant="ghost"
                       size="icon-sm"
                       onClick={() => createTab()}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        createTab();
+                      }}
                       aria-label="New tab"
                     >
                       <Plus />

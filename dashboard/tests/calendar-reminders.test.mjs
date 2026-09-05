@@ -356,7 +356,7 @@ test("the destination is the owner's own thread and nothing a caller can choose"
   const service = source("../src/lib/hermes/messaging-service.ts");
   assert.match(service, /export async function sendOwnerText/);
   assert.match(service, /deliverWhatsApp\(input\.userId, text, null\)/);
-  assert.match(service, /deliverTelegram\(text, null\)/);
+  assert.match(service, /deliverTelegram\(input\.userId, text, null\)/);
   assert.match(service, /recordDeliveredOwnerMessage\(\{/);
   assert.match(service, /appendConversationAssistantMessage\(\{/);
   assert.match(service, /store\.bindConversation\(input\.target\.chatId, conversation\.id\)/);

@@ -5,16 +5,20 @@ export interface GardenTurnCheckpointMessage {
   internalAgentContinuation?: boolean;
   attachmentNames?: string[];
   attachments?: unknown[];
+  focusedDocumentNames?: string[];
   selectedText?: string;
   inlineSelection?: unknown;
   /** Selected-text ("Ask in chat"/"Ask here") anchor for this question. */
   textSelection?: unknown;
+  /** Stable Garden document references used to rebuild this turn on Retry. */
+  focusedDocumentSlugs?: string[];
 }
 
 export interface GardenTurnCheckpoint {
   clientMessageId: string;
   userMessageId: string;
   assistantMessageId: string;
+  conversationId: string | null;
 }
 
 /** Reserve an adjacent user/assistant pair before any turn work is dispatched. */
@@ -32,6 +36,7 @@ export async function reserveGardenTurnCheckpoint(
     error?: string | { message?: string };
     userMessage?: { id?: string; clientMessageId?: string };
     assistantMessage?: { id?: string; clientMessageId?: string };
+    conversationId?: string;
   };
   const userMessageId = body.userMessage?.id;
   const assistantMessageId = body.assistantMessage?.id;
@@ -49,5 +54,19 @@ export async function reserveGardenTurnCheckpoint(
       body.userMessage?.clientMessageId ?? clientMessageId,
     userMessageId,
     assistantMessageId,
+    conversationId:
+      typeof body.conversationId === "string" ? body.conversationId : null,
   };
+}
+
+/** Persist Stop before the runtime has necessarily announced its session id. */
+export async function abortGardenTurnCheckpoint(
+  sessionId: number,
+  clientMessageId: string,
+): Promise<void> {
+  await fetch(`/api/chat-sessions/${sessionId}/turns`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clientMessageId }),
+  }).catch(() => undefined);
 }

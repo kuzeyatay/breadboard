@@ -5,6 +5,13 @@
 // Coordinates: the map is planned in "world" units with the Garden at (0, 0).
 // The renderer maps world to screen with a single zoom transform.
 
+// @ts-expect-error The direct Node test loader requires the explicit extension;
+// Quartz's bundler resolves the same TypeScript module at build time.
+import { topologySourceKind, type TopologySourceKind } from "./sourceNodeVisual.ts"
+
+// @ts-expect-error See the import above.
+export { topologySourceKind, type TopologySourceKind } from "./sourceNodeVisual.ts"
+
 export type TopologyEnrichmentText = { state: string; text: string }
 
 export type TopologyPayloadFolder = {
@@ -26,7 +33,9 @@ export type TopologyPayloadNode = {
   relPath: string
   folderId: string
   title: string
+  kind?: "markdown" | "source" | "internal-concept"
   knowledgeType: string
+  sourceType?: string
   summary: TopologyEnrichmentText
   primaryConcepts: string[]
   supportingConcepts: string[]
@@ -53,6 +62,7 @@ export type TopologyPayloadEdge = {
 }
 
 export type TopologyPayload = {
+  sourceRevision?: string
   garden: { id: number; slug: string; title: string; summary: TopologyEnrichmentText }
   folders: TopologyPayloadFolder[]
   nodes: TopologyPayloadNode[]
@@ -63,7 +73,11 @@ export type TopologyPayload = {
     retrievalMode?: "semantic-vector" | "concept-lexical"
     embeddingModel?: string
   }
-  runtimeStatus?: { state: "building" | "failed" | "stale"; message: string }
+  runtimeStatus?: {
+    state: "building" | "failed" | "stale"
+    message: string
+    progress?: number
+  }
 }
 
 export type AggregateTopologyEntry = {
@@ -160,6 +174,12 @@ export function aggregateThoughtTopologies(
     ({ topology }) =>
       topology.build.state === "building" || topology.runtimeStatus?.state === "building",
   )
+  const buildingProgress = entries
+    .filter(
+      ({ topology }) =>
+        topology.build.state === "building" || topology.runtimeStatus?.state === "building",
+    )
+    .map(({ topology }) => topology.runtimeStatus?.progress ?? 0)
   const degraded = entries.some(
     ({ topology }) =>
       topology.build.state !== "ready" ||
@@ -189,14 +209,28 @@ export function aggregateThoughtTopologies(
       threshold: thresholds.length > 0 ? Math.min(...thresholds) : 0.68,
       retrievalMode: semanticVector ? "semantic-vector" : "concept-lexical",
     },
-    ...(partial
+    ...(building
       ? {
           runtimeStatus: {
-            state: "stale" as const,
-            message: `${entries.length} of ${requestedGardenCount} gardens loaded into Thought Topology.`,
+            state: "building" as const,
+            progress:
+              buildingProgress.length > 0
+                ? Math.floor(
+                    buildingProgress.reduce((sum, progress) => sum + progress, 0) /
+                      buildingProgress.length,
+                  )
+                : 0,
+            message: "Updating Thought Topology",
           },
         }
-      : {}),
+      : partial
+        ? {
+            runtimeStatus: {
+              state: "stale" as const,
+              message: `${entries.length} of ${requestedGardenCount} gardens loaded into Thought Topology.`,
+            },
+          }
+        : {}),
   }
 }
 
@@ -205,6 +239,10 @@ export type PlannedNodeKind = "garden" | "folder" | "page"
 export interface PlannedNode {
   id: string
   kind: PlannedNodeKind
+  /** Underlying page identity; used for medium-specific display policies. */
+  contentKind: NonNullable<TopologyPayloadNode["kind"]> | null
+  /** Medium-specific identity for pages beneath Sources. */
+  sourceKind: TopologySourceKind | null
   title: string
   /** Title as shown beside the node; folder names get natural casing. */
   label: string
@@ -244,9 +282,69 @@ export interface PlannedEdge {
   crossFolder: boolean
   /** 0..1, how far above the Garden threshold the affinity sits. */
   strength: number
-  /** Screen-pixel stroke width at rest. Never a cable. */
+  /** Screen-pixel stroke width at rest. Every connection is drawn as the
+   * same thin hairline; only its colour weight (opacity) carries strength. */
   width: number
   opacity: number
+}
+
+/** Rest stroke width shared by every semantic connection, in screen pixels. */
+export const CONNECTION_STROKE_WIDTH = 1
+/** Rest stroke width of the Garden/folder/page hierarchy lines. */
+export const HIERARCHY_STROKE_WIDTH = 0.7
+/** Opacity range a connection's strength maps onto at rest. */
+export const CONNECTION_MIN_OPACITY = 0.14
+export const CONNECTION_MAX_OPACITY = 0.82
+/** Score span above the threshold over which strength ramps 0->1. Centred
+ * cosine Gardens (threshold < 0.6) top out around 0.35 above it; raw cosine
+ * Gardens keep the historical "up to 1" span, but never wider than 0.35. */
+export const CONNECTION_STRENGTH_SPAN = 0.35
+
+/** How far above its threshold a connection's score sits, 0..1. */
+export function connectionStrength(score: number, threshold: number): number {
+  const base = Number.isFinite(threshold) ? threshold : 0
+  const span = Math.max(0.000001, Math.min(CONNECTION_STRENGTH_SPAN, 1 - base))
+  return Math.min(1, Math.max(0, (score - base) / span))
+}
+
+/** Rest opacity for a connection of the given strength. */
+export function connectionOpacity(strength: number): number {
+  const unit = Math.min(1, Math.max(0, Number.isFinite(strength) ? strength : 0))
+  return CONNECTION_MIN_OPACITY + (CONNECTION_MAX_OPACITY - CONNECTION_MIN_OPACITY) * unit
+}
+
+/**
+ * The URL slug Quartz publishes for a Garden-relative path. Mirrors
+ * `slugifyFilePath` for the parts that matter to navigation: page and folder
+ * names keep their spaces in the topology payload, but Quartz writes them
+ * with dashes, and the static server answers the raw path with its
+ * "garden is being prepared" 404.
+ */
+export function topologyNavigationSlug(value: string): string {
+  const slug = value
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\.md$/i, "")
+    .split("/")
+    .filter(Boolean)
+    .map((segment) =>
+      segment
+        .replace(/\s/g, "-")
+        .replace(/&/g, "-and-")
+        .replace(/%/g, "-percent")
+        .replace(/\?/g, "")
+        .replace(/#/g, ""),
+    )
+    .join("/")
+  return slug.endsWith("_index") ? slug.replace(/_index$/, "index") : slug
+}
+
+/** Markdown pages stay visible and interactive as dots, but their persistent
+ * names are omitted to keep dense topology views legible. */
+export function shouldShowTopologyNodeLabel(
+  node: Pick<PlannedNode, "kind" | "contentKind">,
+): boolean {
+  return node.kind !== "page" || node.contentKind !== "markdown"
 }
 
 /** A visible Garden/folder/page hierarchy line. These are deliberately kept
@@ -279,13 +377,32 @@ export interface TopologyPlan {
   edges: PlannedEdge[]
   sectors: PlannedSector[]
   /** Folders that exist but are not part of the default topology. */
-  hiddenFolders: Array<{ id: string; title: string; reason: "empty" | "sources" }>
+  hiddenFolders: Array<{ id: string; title: string; reason: "empty" | "sources" | "excluded" }>
+  /** Folders a person can include or exclude from this view, parents first.
+   * Every candidate is listed, including the ones currently excluded. */
+  folderOptions: PlannedFolderOption[]
   /** Top-level folders drawn on the map. */
   meaningfulFolderIds: string[]
   visiblePageCount: number
   totalPageCount: number
   bounds: Bounds
   analysis: AnalysisStatus
+}
+
+/** One folder in the include/exclude settings list. */
+export interface PlannedFolderOption {
+  id: string
+  title: string
+  path: string
+  /** 1 for a top-level folder of this view, 2 for its direct sub-folders. */
+  depth: number
+  parentId: string | null
+  /** Pages in the folder's whole subtree. */
+  pageCount: number
+  /** Excluded by the person, directly or through an excluded parent. */
+  excluded: boolean
+  /** True when one of its ancestors is excluded, so its own choice is moot. */
+  inheritedExclusion: boolean
 }
 
 export interface AnalysisStatus {
@@ -307,6 +424,47 @@ export interface PlanOptions {
   positionOverrides?: Record<string, { x: number; y: number }>
   /** Folder path relative to the Garden root. Only this subtree is planned. */
   scopeFolderPath?: string | null
+  /** Folders (by id) the person switched off. Their whole subtree, its pages
+   * and every connection touching those pages leave the map. */
+  excludedFolderIds?: Iterable<string>
+  /** Connections weaker than this strength (0..1) are left out. */
+  minConnectionStrength?: number
+  /** Keep only each page's strongest N connections (0 = keep all). A line
+   * survives when it is among the top N of either endpoint. */
+  maxConnectionsPerNode?: number
+}
+
+/** Rest strength of an authored (wikilink) connection. Ingest scaffolding
+ * links every sibling concept page, so these stay light rather than mid-weight. */
+export const AUTHORED_CONNECTION_STRENGTH = 0.4
+
+/**
+ * Keep each node's strongest `limit` connections: an edge survives when it
+ * ranks in the top `limit` for either endpoint, so hubs do not lose their
+ * spokes' only line. `limit` <= 0 keeps everything.
+ */
+export function capConnectionsPerNode<
+  T extends { source: string; target: string; strength: number; score: number },
+>(edges: T[], limit: number): T[] {
+  const cap = Number.isFinite(limit) ? Math.floor(limit) : 0
+  if (cap <= 0) return edges
+  const byNode = new Map<string, T[]>()
+  for (const edge of edges) {
+    for (const id of [edge.source, edge.target]) {
+      const list = byNode.get(id) ?? []
+      list.push(edge)
+      byNode.set(id, list)
+    }
+  }
+  const kept = new Set<T>()
+  for (const list of byNode.values()) {
+    list
+      .slice()
+      .sort((left, right) => right.strength - left.strength || right.score - left.score)
+      .slice(0, cap)
+      .forEach((edge) => kept.add(edge))
+  }
+  return edges.filter((edge) => kept.has(edge))
 }
 
 const GOLDEN_SMALL_WORDS = new Set(["of", "and", "the", "for", "to", "in", "on", "a", "an", "with"])
@@ -344,8 +502,15 @@ export function truncateLabel(value: string, maxLength: number): string {
   return `${head}…${extension}`
 }
 
-export function affinityLabel(score: number): "Moderate" | "Strong" | "Very strong" {
-  return score >= 0.86 ? "Very strong" : score >= 0.74 ? "Strong" : "Moderate"
+/** Affinity in words, relative to the threshold the edge cleared: scores are
+ * corpus-centred, so what counts as strong depends on where the Garden's
+ * threshold sits rather than on a fixed cosine. */
+export function affinityLabel(
+  score: number,
+  threshold = 0.3,
+): "Moderate" | "Strong" | "Very strong" {
+  const base = Number.isFinite(threshold) ? threshold : 0.3
+  return score >= base + 0.28 ? "Very strong" : score >= base + 0.12 ? "Strong" : "Moderate"
 }
 
 export function relationLabel(relationType: string | undefined): string {
@@ -487,7 +652,7 @@ export function analysisStatus(payload: TopologyPayload): AnalysisStatus {
   ) {
     return {
       mode: "concept-lexical",
-      notice: "Concept and lexical mode · Semantic bridges will appear after vector analysis.",
+      notice: "",
       detail:
         "Concept and lexical mode. Semantic bridges will appear after vector analysis runs for this Garden.",
     }
@@ -509,18 +674,44 @@ const SUBFOLDER_RADIUS = 5
 const PAGE_RADIUS = 2.9
 const IMPORTANT_PAGE_RADIUS = 3.7
 
-/** Distance between neighbouring pages along an arc, in world units. */
-const ITEM_SPACING = 26
-const FIRST_RING_RADIUS = 36
-const RING_GAP = 24
+/** Distance between neighbouring pages along an arc, in world units. Wide
+ * enough that every page label has room once the view is zoomed a little. */
+const ITEM_SPACING = 46
+const FIRST_RING_RADIUS = 52
+const RING_GAP = 42
 /** Half-angle of each ring's arc, widening slightly on outer rings. */
 const RING_HALF_ANGLES = [1.22, 1.36, 1.44, 1.5, 1.52]
-const MIN_ANCHOR_DISTANCE = 150
-const SECTOR_MARGIN = 34
+const MIN_ANCHOR_DISTANCE = 210
+const SECTOR_MARGIN = 64
 
-type ClusterItem = { id: string; radius: number }
+/** Whitespace kept between two neighbouring footprints on a ring, and
+ * between one ring's footprints and the next ring's. */
+const FOOTPRINT_GAP = 24
+/** Room reserved around a sub-folder that holds no page of its own: its dot
+ * is small, but its name is as wide as any folder's. */
+const EMPTY_SUBFOLDER_FOOTPRINT = 18
 
-/** Sequential arc packing: rings of evenly spaced items facing outward. */
+type ClusterItem = {
+  id: string
+  radius: number
+  /** Half-extent of everything the item carries with it (a sub-folder's own
+   * page ring), in world units. Pages have none. */
+  footprint?: number
+}
+
+/** Arc length one item needs along its ring. */
+function arcLengthOf(item: ClusterItem): number {
+  const footprint = item.footprint ?? 0
+  return footprint > 0 ? Math.max(ITEM_SPACING, 2 * footprint + FOOTPRINT_GAP) : ITEM_SPACING
+}
+
+/**
+ * Sequential arc packing: rings of items facing outward. Pages are spaced
+ * evenly; an item with a footprint (a sub-folder carrying its own mini
+ * cluster) takes an arc proportional to it and pushes its ring, and the
+ * next one, outward by it, so neighbouring mini clusters never overlap. A
+ * cluster of pages alone packs exactly as before.
+ */
 export function packCluster(
   items: ClusterItem[],
   anchor: { x: number; y: number },
@@ -531,21 +722,49 @@ export function packCluster(
   let index = 0
   let ring = 0
   let clusterRadius = 0
+  let previousRadius = 0
+  let previousReach = 0
   while (index < items.length) {
-    const radius = FIRST_RING_RADIUS + ring * RING_GAP
     const halfAngle = RING_HALF_ANGLES[Math.min(ring, RING_HALF_ANGLES.length - 1)]
-    const capacity = Math.max(3, Math.floor((2 * halfAngle * radius) / ITEM_SPACING))
-    const count = Math.min(capacity, items.length - index)
-    const step = (2 * halfAngle) / count
+    const baseRadius = ring === 0 ? FIRST_RING_RADIUS : previousRadius + RING_GAP + previousReach
+    // Fill the ring greedily by arc length. The ring radius depends on the
+    // largest footprint it holds, which is only known once it is filled, so
+    // measure with the first item's footprint and then widen the ring.
+    let radius = baseRadius + (items[index].footprint ?? 0)
+    let count = 0
+    let used = 0
+    let reach = 0
+    for (let pass = 0; pass < 2; pass += 1) {
+      count = 0
+      used = 0
+      reach = 0
+      const available = 2 * halfAngle * radius
+      while (index + count < items.length) {
+        const item = items[index + count]
+        const need = arcLengthOf(item)
+        if (count >= 3 && used + need > available) break
+        used += need
+        reach = Math.max(reach, item.footprint ?? 0)
+        count += 1
+      }
+      radius = baseRadius + reach
+    }
+    // Slots are proportional to each item's need and spread over the whole
+    // arc, so a ring that is not full still uses its width.
+    let cursor = outwardAngle - halfAngle
     for (let slot = 0; slot < count; slot += 1) {
-      const angle = outwardAngle - halfAngle + step * (slot + 0.5)
       const item = items[index + slot]
+      const share = (arcLengthOf(item) / used) * 2 * halfAngle
+      const angle = cursor + share / 2
+      cursor += share
       positions.set(item.id, {
         x: anchor.x + Math.cos(angle) * radius,
         y: anchor.y + Math.sin(angle) * radius,
       })
     }
-    clusterRadius = radius + 6
+    clusterRadius = radius + reach + 6
+    previousRadius = radius
+    previousReach = reach
     index += count
     ring += 1
   }
@@ -555,15 +774,6 @@ export function packCluster(
 function normalizeAngle(angle: number): number {
   const twoPi = Math.PI * 2
   return ((angle % twoPi) + twoPi) % twoPi
-}
-
-function isSourcesFolder(folder: TopologyPayloadFolder): boolean {
-  const path = folder.path.toLowerCase()
-  return (
-    path === "sources" ||
-    path.startsWith("sources/") ||
-    folder.title.trim().toLowerCase() === "sources"
-  )
 }
 
 export function planThoughtTopology(
@@ -592,7 +802,7 @@ export function planThoughtTopology(
   // Treat the selected folder as the one top-level sector in this view. This
   // keeps Garden -> current folder -> descendants intact without leaking
   // sibling folders or their semantic connections into the page.
-  const folders: TopologyPayloadFolder[] = requestedScope
+  const scopedFolders: TopologyPayloadFolder[] = requestedScope
     ? sourceScope && sourceRoot
       ? [
           sourceRoot,
@@ -615,7 +825,49 @@ export function planThoughtTopology(
         ? [sourceRoot]
         : []
     : payload.folders
+
+  // People can switch folders off. An excluded folder takes its whole
+  // subtree with it; the candidates list keeps every folder so the settings
+  // panel can offer the excluded ones back.
+  const requestedExclusions = new Set(options.excludedFolderIds ?? [])
+  const scopedById = new Map(scopedFolders.map((folder) => [folder.id, folder]))
+  const exclusionOf = new Map<string, "own" | "inherited" | null>()
+  const resolveExclusion = (folderId: string): "own" | "inherited" | null => {
+    if (exclusionOf.has(folderId)) return exclusionOf.get(folderId)!
+    const folder = scopedById.get(folderId)
+    let result: "own" | "inherited" | null = null
+    if (folder && folder.depth > 0) {
+      if (requestedExclusions.has(folder.id)) result = "own"
+      else if (folder.parentId && resolveExclusion(folder.parentId)) result = "inherited"
+    }
+    exclusionOf.set(folderId, result)
+    return result
+  }
+  for (const folder of scopedFolders) resolveExclusion(folder.id)
+  const folders = scopedFolders.filter((folder) => !exclusionOf.get(folder.id))
   const folderById = new Map(folders.map((folder) => [folder.id, folder]))
+  const subtreePageCount = (folderId: string): number => {
+    const own = payload.nodes.filter((node) => node.folderId === folderId).length
+    return (
+      own +
+      scopedFolders
+        .filter((folder) => folder.parentId === folderId)
+        .reduce((sum, child) => sum + subtreePageCount(child.id), 0)
+    )
+  }
+  const folderOptions: PlannedFolderOption[] = scopedFolders
+    .filter((folder) => folder.depth === 1 || folder.depth === 2)
+    .sort((left, right) => left.depth - right.depth || naturalCompare(left.path, right.path))
+    .map((folder) => ({
+      id: folder.id,
+      title: folder.title,
+      path: folder.path,
+      depth: folder.depth,
+      parentId: folder.depth === 1 ? null : folder.parentId,
+      pageCount: subtreePageCount(folder.id),
+      excluded: Boolean(exclusionOf.get(folder.id)),
+      inheritedExclusion: exclusionOf.get(folder.id) === "inherited",
+    }))
   const pages = payload.nodes.filter(
     (node) =>
       folderById.has(node.folderId) &&
@@ -638,31 +890,18 @@ export function planThoughtTopology(
   }
   for (const folder of folders) countSubtree(folder.id)
 
-  const hiddenFolders: TopologyPlan["hiddenFolders"] = []
-  const hiddenIds = new Set<string>()
-  for (const folder of folders) {
-    if (folder.depth === 0) continue
-    if (isSourcesFolder(folder)) {
-      hiddenFolders.push({ id: folder.id, title: folder.title, reason: "sources" })
-      hiddenIds.add(folder.id)
-    } else if ((subtreeCount.get(folder.id) ?? 0) === 0) {
-      hiddenFolders.push({ id: folder.id, title: folder.title, reason: "empty" })
-      hiddenIds.add(folder.id)
-    }
-  }
-  const isHidden = (folder: TopologyPayloadFolder): boolean => {
-    let current: TopologyPayloadFolder | undefined = folder
-    while (current) {
-      if (hiddenIds.has(current.id)) return true
-      current = current.parentId ? folderById.get(current.parentId) : undefined
-    }
-    return false
-  }
+  // Every folder the payload carries is drawn, including Sources and folders
+  // that hold no page yet: the builder already limits the payload to what the
+  // Garden publishes, and a map that silently drops folders reads as broken.
+  // Only the person's own exclusions take folders off the map.
+  const hiddenFolders: TopologyPlan["hiddenFolders"] = scopedFolders
+    .filter((folder) => exclusionOf.get(folder.id))
+    .map((folder) => ({ id: folder.id, title: folder.title, reason: "excluded" as const }))
 
   const root = folders.find((folder) => folder.depth === 0) ?? null
   const rootPages = root ? (directPages.get(root.id) ?? []) : []
   const topFolders = folders
-    .filter((folder) => folder.depth === 1 && !isHidden(folder))
+    .filter((folder) => folder.depth === 1)
     .sort((left, right) => naturalCompare(left.path, right.path))
   // The Garden root only becomes a sector when pages actually live there.
   const sectorFolders: TopologyPayloadFolder[] =
@@ -739,8 +978,7 @@ export function planThoughtTopology(
   }
 
   const visiblePages = pages.filter((page) => {
-    const folder = folderById.get(page.folderId)
-    if (!folder || isHidden(folder)) return false
+    if (!folderById.has(page.folderId)) return false
     return keptPageIds ? keptPageIds.has(page.id) : true
   })
   const visiblePagesByFolder = new Map<string, TopologyPayloadNode[]>()
@@ -765,7 +1003,7 @@ export function planThoughtTopology(
   // meaningful sub-folders as small anchors carrying their own mini clusters.
   const childFolders = (folderId: string) =>
     folders
-      .filter((folder) => folder.parentId === folderId && folder.depth > 1 && !isHidden(folder))
+      .filter((folder) => folder.parentId === folderId && folder.depth > 1)
       .sort((left, right) => naturalCompare(left.path, right.path))
   const orderedPages = (folderId: string) =>
     [...(visiblePagesByFolder.get(folderId) ?? [])].sort(
@@ -790,6 +1028,8 @@ export function planThoughtTopology(
   ): PlannedNode => ({
     id: folder.id,
     kind: "folder",
+    contentKind: null,
+    sourceKind: null,
     title: folder.title,
     label: displayFolderTitle(folder.title),
     x,
@@ -822,6 +1062,8 @@ export function planThoughtTopology(
     return {
       id: page.id,
       kind: "page",
+      contentKind: page.kind ?? null,
+      sourceKind: topologySourceKind(page, folder?.path),
       title: page.title,
       label: page.title,
       x,
@@ -846,16 +1088,34 @@ export function planThoughtTopology(
     }
   }
 
+  // A sub-folder's own ring: its pages plus, folded in, any deeper pages.
+  const childItems = (childId: string): ClusterItem[] => [
+    ...orderedPages(childId).map((page) => ({ id: page.id, radius: PAGE_RADIUS })),
+    ...childFolders(childId).flatMap((grandchild) =>
+      orderedPages(grandchild.id).map((page) => ({ id: page.id, radius: PAGE_RADIUS })),
+    ),
+  ]
+  // The room a sub-folder needs on its parent's ring: the radius of its own
+  // mini cluster, or a small allowance for its name when it holds nothing.
+  const childFootprint = (childId: string): number => {
+    const items = childItems(childId)
+    if (items.length === 0) return EMPTY_SUBFOLDER_FOOTPRINT
+    return packCluster(items, { x: 0, y: 0 }, 0).clusterRadius
+  }
+
   // First pass: measure each sector's cluster so the anchor ring can be sized.
   for (let index = 0; index < sectorFolders.length; index += 1) {
     const folder = sectorFolders[index]
     const items: ClusterItem[] = [
       ...orderedPages(folder.id).map((page) => ({ id: page.id, radius: PAGE_RADIUS })),
-      ...childFolders(folder.id).map((child) => ({ id: child.id, radius: SUBFOLDER_RADIUS })),
+      ...childFolders(folder.id).map((child) => ({
+        id: child.id,
+        radius: SUBFOLDER_RADIUS,
+        footprint: childFootprint(child.id),
+      })),
     ]
     const measured = packCluster(items, { x: 0, y: 0 }, 0)
-    const childExtra = childFolders(folder.id).length > 0 ? 40 : 0
-    clusterRadii.push(measured.clusterRadius + childExtra)
+    clusterRadii.push(measured.clusterRadius)
     pendingSectorAnchors.push({ folder, angle: sectorAngles[index], items })
   }
   let anchorDistance = MIN_ANCHOR_DISTANCE
@@ -872,6 +1132,8 @@ export function planThoughtTopology(
   const garden: PlannedNode = {
     id: `garden:${payload.garden.slug}`,
     kind: "garden",
+    contentKind: null,
+    sourceKind: null,
     title: payload.garden.title,
     label: payload.garden.title,
     x: 0,
@@ -906,24 +1168,40 @@ export function planThoughtTopology(
       const outward = Math.atan2(position.y - anchor.y, position.x - anchor.x)
       const childNode = folderNode(child, folder.id, position.x, position.y, SUBFOLDER_RADIUS)
       nodes.push(childNode)
-      const childItems: ClusterItem[] = orderedPages(child.id).map((page) => ({
-        id: page.id,
-        radius: PAGE_RADIUS,
-      }))
-      const childPacked = packCluster(childItems, position, outward)
+      // The sub-folder's own ring, sized in the first pass so its neighbours
+      // on the parent ring already leave room for it. Deeper nesting is
+      // rare; its pages are folded into this ring.
+      const childPacked = packCluster(childItems(child.id), position, outward)
       for (const page of orderedPages(child.id)) {
         const childPosition = childPacked.positions.get(page.id)!
         nodes.push(pageNode(page, folder.id, childPosition.x, childPosition.y))
       }
-      // Deeper nesting is rare; fold its pages into the sub-folder's ring.
       for (const grandchild of childFolders(child.id)) {
         for (const page of orderedPages(grandchild.id)) {
           const slot = childPacked.positions.get(page.id) ?? position
-          nodes.push(pageNode(page, folder.id, slot.x + 14, slot.y + 14))
+          nodes.push(pageNode(page, folder.id, slot.x, slot.y))
         }
       }
     }
   })
+
+  // The worker owns the durable incremental layout. Its cached coordinates
+  // keep every existing page and folder fixed when a new Markdown page is
+  // inserted; the packing above remains the fallback for older artifacts.
+  const payloadNodes = new Map(payload.nodes.map((node) => [node.id, node]))
+  const payloadFolders = new Map(payload.folders.map((folder) => [folder.id, folder]))
+  for (const node of nodes) {
+    const durable =
+      node.kind === "page"
+        ? payloadNodes.get(node.id)
+        : node.kind === "folder"
+          ? payloadFolders.get(node.id)
+          : null
+    if (durable && Number.isFinite(durable.x) && Number.isFinite(durable.y)) {
+      node.x = durable.x!
+      node.y = durable.y!
+    }
+  }
 
   if (options.positionOverrides) {
     for (const node of nodes) {
@@ -960,6 +1238,10 @@ export function planThoughtTopology(
       }
     })
   const threshold = payload.build.threshold
+  const requestedMinStrength = options.minConnectionStrength ?? 0
+  const minStrength = Number.isFinite(requestedMinStrength)
+    ? Math.min(1, Math.max(0, requestedMinStrength))
+    : 0
   const edges: PlannedEdge[] = semanticEdges
     .filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target))
     .filter((edge) => (keptEdgeIds ? keptEdgeIds.has(edge.id) : true))
@@ -969,17 +1251,10 @@ export function planThoughtTopology(
       const edgeThreshold = edge.threshold ?? threshold
       const strength =
         origin === "inferred"
-          ? Math.min(
-              1,
-              Math.max(0, (score - edgeThreshold) / Math.max(0.000001, 1 - edgeThreshold)),
-            )
-          : 0.55
+          ? connectionStrength(score, edgeThreshold)
+          : AUTHORED_CONNECTION_STRENGTH
       const source = nodeById.get(edge.source)!
       const target = nodeById.get(edge.target)!
-      // Recompute a wider visual range from affinity so gardens produced with
-      // the older, compressed 0.8–5px scale gain the clearer weighting too.
-      const weightedWidth = origin === "inferred" ? 0.7 + 6.3 * strength ** 1.2 : 2.2
-      const weightedOpacity = origin === "inferred" ? 0.22 + 0.7 * strength : 0.68
       return {
         id: edge.id,
         source: edge.source,
@@ -995,11 +1270,14 @@ export function planThoughtTopology(
         evidence: edge.evidence ?? [],
         crossFolder: source.sectorId !== target.sectorId,
         strength,
-        width: Math.min(7, Math.max(0.7, edge.visual?.width ?? 0, weightedWidth)),
-        opacity: Math.min(0.92, Math.max(0.22, edge.visual?.opacity ?? 0, weightedOpacity)),
+        // Every line is the same hairline; strength shows as colour weight.
+        width: CONNECTION_STROKE_WIDTH,
+        opacity: connectionOpacity(strength),
       }
     })
+    .filter((edge) => minStrength <= 0 || edge.strength >= minStrength)
     .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+  const cappedEdges = capConnectionsPerNode(edges, options.maxConnectionsPerNode ?? 0)
 
   const bounds = boundsOf(nodes, 28)
   return {
@@ -1009,9 +1287,10 @@ export function planThoughtTopology(
       : null,
     nodes,
     hierarchyEdges,
-    edges,
+    edges: cappedEdges,
     sectors,
     hiddenFolders,
+    folderOptions,
     meaningfulFolderIds: topFolders.map((folder) => folder.id),
     visiblePageCount: visiblePages.length,
     totalPageCount: pages.length,
@@ -1037,6 +1316,45 @@ export function boundsOf(
     maxY = Math.max(maxY, node.y + radius)
   }
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding }
+}
+
+const LABEL_PROXIMITY_GAP = 10
+
+/**
+ * Approximate the node's visual footprint from the label Pixi actually
+ * measured. The force simulation uses circles, so half of the label diagonal
+ * is the conservative radius that keeps differently sized names from being
+ * treated like identical dots.
+ *
+ * `layoutScale` lets compact previews reserve less world space for labels that
+ * they intentionally hide, while the full map uses the complete footprint.
+ */
+export function labelClearanceRadius(
+  nodeRadius: number,
+  labelWidth: number,
+  labelHeight: number,
+  layoutScale = 1,
+): number {
+  const radius = Number.isFinite(nodeRadius) ? Math.max(0, nodeRadius) : 0
+  const width = Number.isFinite(labelWidth) ? Math.max(0, labelWidth) : 0
+  const height = Number.isFinite(labelHeight) ? Math.max(0, labelHeight) : 0
+  const scale = Number.isFinite(layoutScale) ? Math.max(1, layoutScale) : 1
+  return Math.max(
+    radius + LABEL_PROXIMITY_GAP,
+    Math.hypot(width, height) / (2 * scale) + LABEL_PROXIMITY_GAP,
+  )
+}
+
+/** Keep connected nodes at least one combined label footprint apart. */
+export function labelAwareLinkDistance(
+  homeDistance: number,
+  sourceClearance: number,
+  targetClearance: number,
+): number {
+  const authoredDistance = Number.isFinite(homeDistance) ? Math.max(0, homeDistance) : 0
+  const source = Number.isFinite(sourceClearance) ? Math.max(0, sourceClearance) : 0
+  const target = Number.isFinite(targetClearance) ? Math.max(0, targetClearance) : 0
+  return Math.max(44, authoredDistance, source + target + 12)
 }
 
 export interface Insets {
@@ -1074,28 +1392,28 @@ export function fitTransform(
   const usableHeight = Math.max(80, viewport.height - insets.top - insets.bottom)
   const centerX = insets.left + usableWidth / 2
   const centerY = insets.top + usableHeight / 2
+  const boundsWidth = Math.max(1, bounds.maxX - bounds.minX)
+  const boundsHeight = Math.max(1, bounds.maxY - bounds.minY)
+  const unpinnedScale = Math.min(usableWidth / boundsWidth, usableHeight / boundsHeight)
   if (focus) {
     const halfWidth = Math.max(1, Math.abs(bounds.minX - focus.x), Math.abs(bounds.maxX - focus.x))
     const halfHeight = Math.max(1, Math.abs(bounds.minY - focus.y), Math.abs(bounds.maxY - focus.y))
-    const k = Math.min(
-      limits.maxScale,
-      Math.max(
-        limits.minScale,
-        Math.min(usableWidth / (2 * halfWidth), usableHeight / (2 * halfHeight)),
-      ),
-    )
-    return {
-      k,
-      x: centerX - k * (focus.x + viewport.width / 2),
-      y: centerY - k * (focus.y + viewport.height / 2),
+    const pinnedScale = Math.min(usableWidth / (2 * halfWidth), usableHeight / (2 * halfHeight))
+    // Pinning the Garden to the centre is worth it while the map is roughly
+    // balanced around it. When one neighbourhood dwarfs the rest (a Concepts
+    // fan of forty sections against two small folders), centring on the
+    // Garden leaves half the viewport empty and clips the fan, so the frame
+    // centres on the map instead.
+    if (pinnedScale >= unpinnedScale * 0.8) {
+      const k = Math.min(limits.maxScale, Math.max(limits.minScale, pinnedScale))
+      return {
+        k,
+        x: centerX - k * (focus.x + viewport.width / 2),
+        y: centerY - k * (focus.y + viewport.height / 2),
+      }
     }
   }
-  const boundsWidth = Math.max(1, bounds.maxX - bounds.minX)
-  const boundsHeight = Math.max(1, bounds.maxY - bounds.minY)
-  const k = Math.min(
-    limits.maxScale,
-    Math.max(limits.minScale, Math.min(usableWidth / boundsWidth, usableHeight / boundsHeight)),
-  )
+  const k = Math.min(limits.maxScale, Math.max(limits.minScale, unpinnedScale))
   const boundsCenterX = (bounds.minX + bounds.maxX) / 2 + viewport.width / 2
   const boundsCenterY = (bounds.minY + bounds.maxY) / 2 + viewport.height / 2
   return { k, x: centerX - k * boundsCenterX, y: centerY - k * boundsCenterY }

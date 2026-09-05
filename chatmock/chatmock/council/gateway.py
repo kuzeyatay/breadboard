@@ -12,6 +12,7 @@ Response shape is the standard OpenAI chat completion, extended with:
 import json
 import hmac
 import re
+import sys
 import time
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -388,7 +389,16 @@ def _finalize_recoverable_result(
                 receipt_hash,
                 persisted_result,
             )
-    except Exception:
+    except Exception as exc:
+        # The answer already exists; a swallowed finalization error left this
+        # 500 undiagnosable for hours. Name the cause on stderr, never the
+        # answer or prompt.
+        print(
+            f"[council] receipt finalization failed for run {run.id} "
+            f"(receipt {receipt_id}): {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
         return _error_response(
             "Council result completed but its durable recovery receipt could not be finalized.",
             run,

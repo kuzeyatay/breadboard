@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import SpeechDictationButton from "@/app/components/speech-dictation-button";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useAssistantModels } from "@/app/components/use-assistant-models";
 import { CommandHub, type CommandHubHandle } from "./command-hub";
@@ -49,7 +50,10 @@ import {
 } from "@/lib/schedules/cron.ts";
 import { parseScheduleRequest } from "@/lib/schedules/natural-language.ts";
 import type { ScheduledChatJob, ScheduledChatSurface } from "@/lib/schedules/types.ts";
-import { scheduleTargetLabel } from "@/lib/schedules/types.ts";
+import {
+  scheduleConversationBehaviorLabel,
+  scheduleTargetLabel,
+} from "@/lib/schedules/types.ts";
 import {
   cronFromCadence,
   formatRelativeRunTime,
@@ -160,6 +164,7 @@ function CheckIcon() {
 }
 
 export default function TerminalScheduledPanel({ surface, gardenSlug = null }: Props) {
+  const { confirm: confirmDelete, confirmDialog } = useConfirmDialog();
   const [schedules, setSchedules] = useState<ScheduledChatJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -172,7 +177,6 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
   const [intelligenceOpen, setIntelligenceOpen] = useState(false);
   // The token under the caret, which is what the menu filters on.
   const [slashQuery, setSlashQuery] = useState("");
-  const [title, setTitle] = useState("");
 
   // Cadence controls, used only while the advanced panel is open.
   const [cadence, setCadence] = useState<ScheduleCadence>("daily");
@@ -267,10 +271,9 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
 
   function insertCapability(item: CommandHubItem) {
     if (item.kind === "prompt") {
-      // Keep the schedule pointed at the prompt it was built from, and borrow
-      // its name unless one was typed.
+      // Keep the schedule pointed at the prompt it was built from. The
+      // resulting sentence itself is the schedule's title.
       promptSlugRef.current = item.slug ?? null;
-      if (!title.trim()) setTitle(item.name);
     }
     const token = `/${item.token ?? item.slug ?? item.name}`;
     // A coding skill only means something behind a coding runtime, exactly as
@@ -288,7 +291,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: title.trim() || parsed.title,
+          title: prompt,
           prompt,
           cron,
           surface,
@@ -305,13 +308,12 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
       notifySchedulesChanged();
       await load();
       setText("");
-      setTitle("");
       promptSlugRef.current = null;
       setAdvancedOpen(false);
       setMessage(
         parsed.oneShot && parsed.runAt
           ? `Scheduled ${formatRelativeRunTime(parsed.runAt)}.`
-          : "Scheduled. Each run opens its own chat.",
+          : "Scheduled. Monitoring checks stay quiet until their objective is met.",
       );
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "This schedule could not be saved.");
@@ -341,17 +343,35 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
     setMessage(null);
     try {
       const response = await fetch(`/api/schedules/${job.id}/run`, { method: "POST" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        conversationOpened?: boolean;
+        objectiveDecision?: "met" | "pending" | null;
+        error?: string | null;
+      };
       if (!response.ok) throw new Error("This schedule could not be run.");
       notifySchedulesChanged();
       await load();
-      setMessage(`"${job.title}" is running now in its own chat.`);
+      setMessage(
+        payload.conversationOpened
+          ? `"${job.title}" opened a new chat.`
+          : payload.objectiveDecision === "pending"
+            ? "Checked. The objective is not met yet, so no chat was opened."
+            : payload.error ?? "The scheduled check finished without opening a chat.",
+      );
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "This schedule could not be run.");
     }
   }
 
   async function remove(job: ScheduledChatJob) {
-    if (!window.confirm(`Delete the schedule "${job.title}"? Chats it already opened are kept.`)) {
+    if (!(await confirmDelete({
+      title: "Delete scheduled task?",
+      subject: job.title,
+      body: "This removes the schedule and stops all future runs.",
+      detail: "Chats this task already opened are kept.",
+      confirmLabel: "Delete schedule",
+      tone: "danger",
+    }))) {
       return;
     }
     setMessage(null);
@@ -379,7 +399,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
     // The same paper surface the artifacts archive uses: these panels share one
     // slot beside the transcript and should read as one place.
     <section
-      aria-label="Scheduled chats"
+      aria-label="Scheduled tasks"
       className="flex h-full min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)]"
     >
       {/* The composer stays put and only the list below it scrolls, so the
@@ -405,8 +425,9 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
           </button>
         </div>
         <p className="mt-1 text-xs text-[var(--ink-muted)]">
-          Ask for a task, a reminder, or something to watch. Each run opens a new chat in{" "}
-          {scheduleTargetLabel({ surface, gardenSlug })} and sends the prompt as its first message.
+          Ask for a task, a reminder, or something to watch. Tasks open chats in{" "}
+          {scheduleTargetLabel({ surface, gardenSlug })}; monitoring checks stay quiet until
+          their objective is met.
         </p>
 
         <div className="neu-composer relative mt-5 rounded-[30px] p-2">
@@ -628,16 +649,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
 
           {advancedOpen ? (
             <div className="mt-2 border-t border-[var(--line)] pt-2">
-              <label className="block text-xs font-medium">
-                Name
-                <input
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  placeholder={parsed.title}
-                  className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
-                />
-              </label>
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1.5">
                 {SCHEDULE_CADENCES.map((item) => (
                   <button
                     key={item.id}
@@ -729,7 +741,6 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                 type="button"
                 onClick={() => {
                   setText(template.description);
-                  setTitle(template.name);
                   promptSlugRef.current = null;
                   inputRef.current?.focus();
                 }}
@@ -770,8 +781,8 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                 <li key={job.id} className="neu-surface-subtle rounded-xl border p-3">
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="flex items-center gap-2 truncate text-sm font-medium text-[var(--ink-heading)]">
-                        <span className="truncate">{job.title}</span>
+                      <p className="flex items-start gap-2 text-sm font-medium leading-5 text-[var(--ink-heading)]">
+                        <span className="line-clamp-3">{job.title}</span>
                         {job.running ? (
                           <ActiveChatIcon
                             label={`${job.title} is running`}
@@ -779,16 +790,21 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                           />
                         ) : null}
                       </p>
-                      <p className="mt-1 line-clamp-2 text-xs text-[var(--ink-muted)]">{job.prompt}</p>
                       <p className="mt-2 text-[10px] text-[var(--ink-muted)]">
-                        {job.cronDescription} · {scheduleTargetLabel(job)}
+                        {job.cronDescription} · {scheduleConversationBehaviorLabel(job)}
                       </p>
                       <p className="mt-1 text-[10px] text-[var(--ink-muted)]">
                         {job.enabled
                           ? `Next ${formatRunTime(job.nextRunAt)} (${formatRelativeRunTime(job.nextRunAt)})`
                           : "Paused"}
                         {job.lastRunAt
-                          ? ` · Last ${job.lastStatus === "failed" ? "failed" : "ran"} ${formatRunTime(job.lastRunAt)}`
+                          ? ` · Last ${
+                              job.lastStatus === "failed"
+                                ? "failed"
+                                : job.conversationPolicy === "open_when_objective_met"
+                                  ? "checked"
+                                  : "ran"
+                            } ${formatRunTime(job.lastRunAt)}`
                           : ""}
                       </p>
                       {job.lastStatus === "failed" && job.lastError ? (
@@ -835,6 +851,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
           )}
         </div>
       </div>
+      {confirmDialog}
     </section>
   );
 }

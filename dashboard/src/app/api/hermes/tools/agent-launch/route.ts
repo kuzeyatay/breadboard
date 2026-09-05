@@ -1,4 +1,5 @@
-// `agent_launch` — a super-agent turn starting one of the runtime agents.
+// `agent_launch` — a Super Agent or reviewed routed skill starting one of the
+// runtime agents under a turn-scoped capability decision.
 //
 // The runtime agents (`/agents:*`) each run as their own service and take a
 // whole turn. Until now only the user could start one, so the best a super-agent
@@ -35,7 +36,11 @@ import {
   parseRuntimeRunDispatch,
 } from "@/lib/hermes/run-store.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { getConversationById } from "@/lib/conversations/store.ts";
+import {
+  getConversationById,
+  getConversationMessageByClientId,
+  presentConversationMessage,
+} from "@/lib/conversations/store.ts";
 import { recordExternalAgentTurn } from "@/lib/conversations/external-agent-turns.ts";
 import {
   abortRun as abortMaxResearchRun,
@@ -256,6 +261,19 @@ export async function POST(request: Request) {
         );
       }
       const dispatch = parseRuntimeRunDispatch(run);
+      const originMessage = getConversationMessageByClientId(
+        conversation.id,
+        originClientMessageId,
+        "assistant",
+      );
+      const originMetadata = originMessage
+        ? presentConversationMessage(originMessage).metadata
+        : {};
+      const deliveryChannel =
+        originMetadata.deliveryChannel === "telegram" ||
+        originMetadata.deliveryChannel === "whatsapp"
+          ? originMetadata.deliveryChannel
+          : undefined;
       const maxRun = await startMaxResearchRun({
         userId: session.user_id,
         requestId: workerClientMessageId,
@@ -284,6 +302,7 @@ export async function POST(request: Request) {
           delegatedAgentRun: true,
           internalAgentContinuation: true,
           delegatedAgentReason: reason,
+          deliveryChannel,
         });
         observeMaxResearchConversationTurn({
           userId: session.user_id,

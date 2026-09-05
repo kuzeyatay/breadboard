@@ -97,6 +97,18 @@ test("without the activity the same empty row reads as already finished", () => 
   assert.doesNotMatch(html, /thinking-shimmer/);
 });
 
+test("progress updates start collapsed behind the thinking row", () => {
+  const hiddenUpdate = "I am checking the requested files.";
+  const html = panel({
+    activities: THINKING,
+    connection: "streaming",
+    progressNotes: [hiddenUpdate],
+  });
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /title="Show thinking updates"/);
+  assert.doesNotMatch(html, new RegExp(hiddenUpdate));
+});
+
 const workspaceClient = fs.readFileSync(
   path.join(dashboardRoot, "src/app/gardens/[clusterSlug]/workspace-client.tsx"),
   "utf8",

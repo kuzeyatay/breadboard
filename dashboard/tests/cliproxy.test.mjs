@@ -54,9 +54,22 @@ test("ChatGPT has exactly one sign-in, and it is ChatMock's", () => {
 });
 
 test("the sync never lists a model ChatMock already serves natively", () => {
+  // The sync itself lives in a library so the model picker can run it on a
+  // timer; the route only translates its errors.
+  const sync = source("src/lib/cliproxy/catalog-sync.ts");
   const route = source("src/app/api/cliproxy/sync/route.ts");
-  assert.match(route, /chatgptModels/);
-  assert.match(route, /native\.has\(model\)/);
+  assert.match(route, /syncSubscriptionCatalog\(request, userId\)/);
+  assert.match(sync, /chatgptModels/);
+  assert.match(sync, /native\.has\(model\)/);
+  // A Runtime V2 port belongs only to the current app session. ChatMock reads
+  // it from its supervised environment, so sync must remove any older value.
+  assert.match(sync, /apiKey: ""/);
+  assert.match(sync, /baseUrl: ""/);
+  assert.doesNotMatch(sync, /cliproxyApiKey|cliproxyBaseUrl/);
+  // Discovery: every read of the picker may schedule a background sync.
+  const models = source("src/app/api/models/route.ts");
+  assert.match(models, /scheduleSubscriptionCatalogAutoSync\(request, userId\)/);
+  assert.match(sync, /AUTO_SYNC_INTERVAL_MS/);
 });
 
 test("the ChatGPT badge follows the Account tab, not the credential store", async () => {

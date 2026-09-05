@@ -33,7 +33,6 @@ export interface VlmOcrStatus extends VlmOcrProbe {
 }
 
 const PROBE_TIMEOUT_MS = 2_500;
-const RUNTIME_READY_GRACE_MS = 30_000;
 const RUNTIME_READY_POLL_MS = 500;
 
 async function fetchWithTimeout(
@@ -108,6 +107,16 @@ export function buildVlmOcrServerArgs(config: VlmOcrConfig): string[] {
     String(config.contextSize),
     "--n-predict",
     String(config.maxTokens),
+    // Keep llama.cpp's slot allocation aligned with the page runner. Recent
+    // builds default to four slots, which multiplies the large vision context
+    // cache even when ingestion is intentionally sequential.
+    "--parallel",
+    String(config.concurrency),
+    // Every OCR image is unique, so llama.cpp's default 8 GiB prompt cache has
+    // no useful hit rate and can retain vision allocations across PDF pages.
+    "--cache-ram",
+    "0",
+    "--no-cache-prompt",
     // HunyuanOCR ships a chat template in the GGUF; the jinja engine is what
     // applies it (and the image placeholders) faithfully.
     "--jinja",
@@ -152,8 +161,11 @@ function delay(milliseconds: number): Promise<void> {
 /**
  * Confirm that the endpoint already assigned to this disposable worker is
  * ready. The Rust dispatcher acquires the conditional `vlm-ocr` dependency
- * before launching a managed worker, so this grace loop only covers a narrow
- * readiness race. It never starts, kills, or supervises a process.
+ * before launching a managed worker. The same lease also survives a supervised
+ * service restart, whose admission and model reload can legitimately take much
+ * longer than the initial readiness race. Honor the configured startup timeout
+ * for both cases so a recoverable service restart cannot fail the whole ingest.
+ * This adapter never starts, kills, or supervises a process itself.
  */
 export async function ensureVlmOcrServer(
   config: VlmOcrConfig,
@@ -173,7 +185,7 @@ export async function ensureVlmOcrServer(
   }
 
   onProgress?.("Waiting for the local OCR model server…");
-  const waitMs = Math.min(config.startupTimeoutMs, RUNTIME_READY_GRACE_MS);
+  const waitMs = config.startupTimeoutMs;
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     await delay(Math.min(RUNTIME_READY_POLL_MS, deadline - Date.now()));

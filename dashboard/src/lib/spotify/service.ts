@@ -29,7 +29,16 @@ export const SPOTIFY_REQUIRED_SCOPES = [
   "user-modify-playback-state",
   "user-library-read",
   "user-library-modify",
+  "playlist-read-private",
 ] as const;
+
+// Private-playlist discovery was added after the first Spotify connections
+// shipped. It enriches the dock, but it is not required for search, playback,
+// liked songs, or playlist creation. Keep those existing grants usable instead
+// of presenting a healthy, refreshable Spotify account as disconnected.
+const SPOTIFY_OPTIONAL_CONNECTION_SCOPES = new Set<string>([
+  "playlist-read-private",
+]);
 
 export interface SpotifyTrack {
   id: string;
@@ -65,6 +74,18 @@ export interface SpotifyPlaylist {
   isPublic: false;
 }
 
+export interface SpotifyLibraryPlaylist {
+  id: string;
+  uri: string;
+  name: string;
+  description: string;
+  imageUrl: string | null;
+  trackCount: number;
+  owner: string;
+  ownerId: string;
+  collaborative: boolean;
+}
+
 type PlaybackIntentRow = {
   revision: string;
   track_json: string;
@@ -86,17 +107,27 @@ export function spotifyConnectionStatus(userId: number): {
   configured: boolean;
   connected: boolean;
   status: "connected" | "needs_reauth" | "not_connected";
+  playlistAccess: boolean;
 } {
   const tokens = readConnectedAppTokens(userId, SPOTIFY_CONNECTION_SLUG);
   if (!tokens) {
-    return { configured: false, connected: false, status: "not_connected" };
+    return {
+      configured: false,
+      connected: false,
+      status: "not_connected",
+      playlistAccess: false,
+    };
   }
   const granted = scopes(tokens.scope);
-  const connected = SPOTIFY_REQUIRED_SCOPES.every((scope) => granted.has(scope));
+  const playlistAccess = granted.has("playlist-read-private");
+  const connected = SPOTIFY_REQUIRED_SCOPES.every(
+    (scope) => granted.has(scope) || SPOTIFY_OPTIONAL_CONNECTION_SCOPES.has(scope),
+  );
   return {
     configured: true,
     connected,
     status: connected ? "connected" : "needs_reauth",
+    playlistAccess,
   };
 }
 
@@ -216,6 +247,42 @@ function spotifyTrack(value: unknown): SpotifyTrack | null {
   };
 }
 
+function spotifyLibraryPlaylist(value: unknown): SpotifyLibraryPlaylist | null {
+  const playlist = objectRecord(value);
+  const owner = objectRecord(playlist?.owner);
+  const itemCollection = objectRecord(playlist?.items) ?? objectRecord(playlist?.tracks);
+  const images = Array.isArray(playlist?.images) ? playlist.images : [];
+  const imageUrl = images
+    .map(objectRecord)
+    .map((image) => safeImageUrl(image?.url))
+    .find(Boolean) ?? null;
+  const id = typeof playlist?.id === "string" ? playlist.id : "";
+  const uri = typeof playlist?.uri === "string" ? playlist.uri : "";
+  const name = typeof playlist?.name === "string" ? playlist.name.trim() : "";
+  const description =
+    typeof playlist?.description === "string" ? playlist.description.trim() : "";
+  const ownerName =
+    typeof owner?.display_name === "string" && owner.display_name.trim()
+      ? owner.display_name.trim()
+      : "Spotify";
+  const ownerId = typeof owner?.id === "string" ? owner.id : "";
+  const trackCount = Number(itemCollection?.total);
+  if (!/^[A-Za-z0-9]{10,64}$/.test(id) || uri !== `spotify:playlist:${id}` || !name) {
+    return null;
+  }
+  return {
+    id,
+    uri,
+    name: name.slice(0, 300),
+    description: description.slice(0, 500),
+    imageUrl,
+    trackCount: Number.isFinite(trackCount) ? Math.max(0, Math.round(trackCount)) : 0,
+    owner: ownerName.slice(0, 200),
+    ownerId,
+    collaborative: playlist?.collaborative === true,
+  };
+}
+
 export async function spotifyCurrentPlaybackState(
   userId: number,
 ): Promise<SpotifyPlaybackState | null> {
@@ -305,6 +372,87 @@ export async function searchSpotifyTracks(
   return (Array.isArray(tracks?.items) ? tracks.items : [])
     .map(spotifyTrack)
     .filter((track): track is SpotifyTrack => Boolean(track));
+}
+
+export async function spotifyUserPlaylists(
+  userId: number,
+  limit = 20,
+): Promise<SpotifyLibraryPlaylist[]> {
+  if (!spotifyConnectionStatus(userId).playlistAccess) {
+    throw new ApiError(
+      409,
+      "spotify_playlist_permission_required",
+      "Reconnect Spotify to show your playlists.",
+    );
+  }
+  try {
+    const [playlistPayload, profilePayload] = await Promise.all([
+      spotifyApiRequest({
+        userId,
+        method: "GET",
+        endpoint: "/v1/me/playlists",
+        query: { limit: Math.min(50, Math.max(1, limit)) },
+      }),
+      spotifyApiRequest({
+        userId,
+        method: "GET",
+        endpoint: "/v1/me",
+      }),
+    ]);
+    const payload = objectRecord(playlistPayload);
+    const profile = objectRecord(profilePayload);
+    const currentUserId = typeof profile?.id === "string" ? profile.id : "";
+    return (Array.isArray(payload?.items) ? payload.items : [])
+      .map(spotifyLibraryPlaylist)
+      .filter((playlist): playlist is SpotifyLibraryPlaylist => Boolean(playlist))
+      .filter(
+        (playlist) => playlist.ownerId === currentUserId || playlist.collaborative,
+      );
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "provider_request_forbidden") {
+      throw new ApiError(
+        409,
+        "spotify_playlist_permission_required",
+        "Reconnect Spotify to show your playlists.",
+      );
+    }
+    throw error;
+  }
+}
+
+export async function spotifyPlaylistTracks(
+  userId: number,
+  playlistId: string,
+  limit = 40,
+): Promise<{ playlist: SpotifyLibraryPlaylist; tracks: SpotifyTrack[] }> {
+  if (!/^[A-Za-z0-9]{10,64}$/.test(playlistId)) {
+    throw new ApiError(400, "invalid_spotify_playlist", "The Spotify playlist is invalid.");
+  }
+  const [playlistPayload, itemsPayload] = await Promise.all([
+    spotifyApiRequest({
+      userId,
+      method: "GET",
+      endpoint: `/v1/playlists/${playlistId}`,
+    }),
+    spotifyApiRequest({
+      userId,
+      method: "GET",
+      endpoint: `/v1/playlists/${playlistId}/items`,
+      query: { limit: Math.min(50, Math.max(1, limit)) },
+    }),
+  ]);
+  const playlist = spotifyLibraryPlaylist(playlistPayload);
+  if (!playlist) {
+    throw new ApiError(502, "spotify_playlist_invalid_response", "Spotify returned an invalid playlist.");
+  }
+  const items = objectRecord(itemsPayload);
+  const tracks = (Array.isArray(items?.items) ? items.items : [])
+    .map((value) => {
+      const item = objectRecord(value);
+      return spotifyTrack(item?.item ?? item?.track ?? value);
+    })
+    .filter((track): track is SpotifyTrack => Boolean(track));
+  return { playlist, tracks };
 }
 
 export async function createSpotifyPlaylist(input: {

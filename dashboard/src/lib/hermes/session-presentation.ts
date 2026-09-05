@@ -40,6 +40,10 @@ import {
   normalizeGenerativeUiResources,
 } from "../generative-ui/contracts.ts";
 import { normalizeScheduledChatReceipt } from "../schedules/types.ts";
+import {
+  normalizeFocusedDocumentNames,
+  normalizeFocusedDocumentSlugs,
+} from "../garden-document-focus.ts";
 
 // Creating a brand-new conversation and dispatching its first turn are two
 // requests. The durable placeholder between them is stored as aborted so a
@@ -235,8 +239,21 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       : !messagePending && Number.isFinite(timestampDuration)
         ? timestampDuration
         : undefined;
+    const responseCompletedAt =
+      typeof metadata.responseCompletedAt === "string" &&
+      Number.isFinite(Date.parse(metadata.responseCompletedAt))
+        ? metadata.responseCompletedAt
+        : !messagePending
+          ? presented.updatedAt
+          : undefined;
     const textSelection = normalizeChatTextSelectionReference(
       metadata.textSelection,
+    );
+    const focusedDocumentNames = normalizeFocusedDocumentNames(
+      metadata.focusedDocumentNames,
+    );
+    const focusedDocumentSlugs = normalizeFocusedDocumentSlugs(
+      metadata.focusedDocumentSlugs,
     );
     const scheduledChatReceipt = normalizeScheduledChatReceipt(
       metadata.scheduledChatReceipt,
@@ -333,6 +350,8 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(Array.isArray(metadata.attachments)
         ? { attachments: metadata.attachments }
         : {}),
+      ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
+      ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
       tools: calls.map((call, index) => ({
         toolCallId: String(call.toolCallId ?? `tool-${index}`),
@@ -389,8 +408,15 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(metadata.courseCorrection === true
         ? { courseCorrection: true }
         : {}),
+      ...(metadata.clarificationAnswer === true
+        ? { clarificationAnswer: true }
+        : {}),
       ...(metadata.internalAgentContinuation === true
         ? { internalAgentContinuation: true }
+        : {}),
+      ...(metadata.deliveryChannel === "telegram" ||
+      metadata.deliveryChannel === "whatsapp"
+        ? { deliveryChannel: metadata.deliveryChannel }
         : {}),
       ...(typeof metadata.courseCorrectionTargetClientMessageId === "string"
         ? {
@@ -405,6 +431,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(modelChangeAfter ? { modelChangeAfter } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(responseStartedAt ? { responseStartedAt } : {}),
+      ...(responseCompletedAt ? { responseCompletedAt } : {}),
       ...(uiResources.length ? { uiResources } : {}),
     };
   });

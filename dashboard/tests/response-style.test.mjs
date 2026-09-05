@@ -59,6 +59,16 @@ test("structure is allowed when it serves the reader", () => {
   assert.match(style, /every item is a complete thought with its reasoning inside it/);
 });
 
+test("requested tables are compact, screen-fitting, and written for natural wrapping", () => {
+  const style = responseStylePrompt();
+  assert.match(style, /When the user asks for a table, honor the requested table/);
+  assert.match(style, /fit the visible message width without horizontal scrolling/);
+  assert.match(style, /use no more than four columns/);
+  assert.match(style, /split it into two or more narrow tables/);
+  assert.match(style, /never insert HTML such as `<br>`/);
+  assert.match(style, /Never depend on a table scrollbar/);
+});
+
 test("minimal background is the default and is raised only on evidence", () => {
   const style = responseStylePrompt();
   assert.match(style, /Assume minimal background/);

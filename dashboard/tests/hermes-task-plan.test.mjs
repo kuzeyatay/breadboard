@@ -248,6 +248,47 @@ test("downloading and transcribing a video needs web, media and write", () => {
   assert.ok(!c.has("coding"));
 });
 
+test("mapping Garden recordings is media synthesis, not a Windows Videos-folder write", () => {
+  const p = plan(
+    "in video and audio there are 25 recordings from 2024 to 2025 can you make a table by placing when the lectures are and their contents, like a map of what was taught and when",
+  );
+  const c = new Set(p.requiredCapabilities);
+  assert.ok(!c.has("media_processing"));
+  assert.ok(!c.has("filesystem_read"));
+  assert.ok(!c.has("filesystem_write"));
+  assert.ok(
+    !p.requiredResources.some(
+      (resource) => resource.kind === "path" && resource.value === "videos",
+    ),
+  );
+});
+
+test("an explicit request to analyze media still selects media processing", () => {
+  for (const request of [
+    "Summarize this lecture recording.",
+    "Analyze the audio and describe the main argument.",
+    "Transcribe this video.",
+  ]) {
+    assert.ok(caps(request).has("media_processing"), request);
+  }
+});
+
+test("an explicitly named personal Videos folder remains a filesystem target", () => {
+  for (const request of [
+    "Summarize the recordings in my Videos.",
+    "Summarize the recordings in the Videos folder.",
+  ]) {
+    const p = plan(request);
+    assert.ok(p.requiredCapabilities.includes("filesystem_read"), request);
+    assert.ok(
+      p.requiredResources.some(
+        (resource) => resource.kind === "path" && resource.value === "videos",
+      ),
+      request,
+    );
+  }
+});
+
 test("downloading any URL plans an authorized destination and exact command execution", () => {
   const p = plan("Download https://example.com/releases/archive.unknown to my Downloads folder.");
   const c = new Set(p.requiredCapabilities);

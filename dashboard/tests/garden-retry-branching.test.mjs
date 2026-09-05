@@ -5,6 +5,7 @@ import {
   createConversationBranch,
   previousUserMessageIndex,
 } from "../src/app/components/hermes/conversation-branches.ts";
+import { normalizeFocusedDocumentSlugs } from "../src/lib/garden-document-focus.ts";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -99,4 +100,20 @@ test("a Garden branch variant carries only fields this transcript persists", () 
   assert.equal(branch.variant[1].content, "");
   assert.ok(!("tools" in branch.variant[1]));
   assert.equal(branch.variant[0].branchGroupId, branch.groupId);
+});
+
+test("a Garden retry carries the exact focused documents, not display names alone", () => {
+  assert.deepEqual(
+    normalizeFocusedDocumentSlugs(["lecture-2", " lecture-2 ", "textbook"]),
+    ["lecture-2", "textbook"],
+  );
+  assert.match(workspace, /focusedDocumentSlugs\?: string\[\]/);
+  assert.match(
+    workspace,
+    /previousUser\.focusedDocumentSlugs\?\.length[\s\S]*legacyFocusedNames\.has/,
+  );
+  assert.match(
+    workspace,
+    /selectedDocumentSlugs: focusedDocumentSlugs/,
+  );
 });

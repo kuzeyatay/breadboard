@@ -41,13 +41,24 @@ import {
   conversationTitleFor,
   senderIsAllowed,
 } from "./identity.ts";
-import { conversationIsWarm, messageText, HELP_TEXT, MAX_REPLY_CHARS } from "./inbound-policy.ts";
+import { conversationIsWarm, messageText, HELP_TEXT } from "./inbound-policy.ts";
+import {
+  deliverTelegramDelegatedFollowUps,
+  telegramDelegatedWorkers,
+  type TelegramDelegatedFollowUp,
+  type TelegramFollowUpMessage,
+} from "./delegated-follow-up.ts";
 import { handleInboundReview } from "../review/delivery.ts";
 import type { TelegramInboundMessage } from "./gateway.ts";
 import type { TelegramStore } from "./store.ts";
 
 export type TelegramRouteOutcome =
-  | { status: "replied"; reply: string; conversationId: string }
+  | {
+      status: "replied";
+      reply: string;
+      conversationId: string;
+      delegatedFollowUp?: TelegramDelegatedFollowUp;
+    }
   | { status: "ignored"; reason: string }
   | { status: "failed"; reply: string; reason: string };
 
@@ -65,7 +76,11 @@ async function awaitAssistantReply(
   conversationId: number,
   clientMessageId: string,
   timeoutMs: number,
-): Promise<{ status: "complete" | "failed" | "aborted" | "timeout"; content: string }> {
+): Promise<{
+  status: "complete" | "failed" | "aborted" | "timeout";
+  content: string;
+  orderIndex?: number;
+}> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const message = listConversationMessages(conversationId, { limit: 500 })
@@ -75,7 +90,11 @@ async function awaitAssistantReply(
           candidate.role === "assistant" && candidate.clientMessageId === clientMessageId,
       );
     if (message && message.status !== "pending") {
-      return { status: message.status, content: message.content };
+      return {
+        status: message.status,
+        content: message.content,
+        orderIndex: message.orderIndex,
+      };
     }
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
@@ -286,8 +305,22 @@ export async function routeTelegramMessage(
     if (reply.status === "complete" && reply.content.trim()) {
       return {
         status: "replied",
-        reply: reply.content.trim().slice(0, MAX_REPLY_CHARS),
+        reply: reply.content.trim(),
         conversationId: conversation.public_id,
+        ...(reply.orderIndex !== undefined &&
+        telegramDelegatedWorkers(
+          listConversationMessages(conversation.id, { limit: 500 }).map(
+            telegramFollowUpMessage,
+          ),
+          reply.orderIndex,
+        ).length > 0
+          ? {
+              delegatedFollowUp: {
+                conversationId: conversation.id,
+                afterOrder: reply.orderIndex,
+              },
+            }
+          : {}),
       };
     }
     if (reply.status === "timeout") {
@@ -302,7 +335,7 @@ export async function routeTelegramMessage(
       status: "failed",
       reason: reply.status,
       reply:
-        reply.content.trim().slice(0, MAX_REPLY_CHARS) ||
+        reply.content.trim() ||
         "That turn did not finish. Open the chat in Breadboard to see what happened.",
     };
   } catch (cause) {
@@ -340,4 +373,53 @@ export async function routeTelegramMessage(
           : "Breadboard could not answer that message.",
     };
   }
+}
+
+function telegramFollowUpMessage(
+  row: ReturnType<typeof listConversationMessages>[number],
+): TelegramFollowUpMessage {
+  const message = presentConversationMessage(row);
+  return {
+    clientMessageId: message.clientMessageId,
+    role: message.role,
+    content: message.content,
+    status: message.status,
+    orderIndex: message.orderIndex,
+    metadata: message.metadata,
+  };
+}
+
+/** Finish and emit every private delegated-agent hand-back owned by Telegram. */
+export async function deliverTelegramFollowUps(
+  followUp: TelegramDelegatedFollowUp,
+  onReply: (content: string) => Promise<void>,
+): Promise<void> {
+  const conversation = getConversationById(followUp.conversationId);
+  if (!conversation || conversation.surface !== "dashboard_terminal") return;
+
+  await deliverTelegramDelegatedFollowUps({
+    ...followUp,
+    listMessages: () =>
+      listConversationMessages(conversation.id, { limit: 500 }).map(
+        telegramFollowUpMessage,
+      ),
+    startContinuation: async ({ clientMessageId, text }) => {
+      const result = await startConversationTurn({
+        conversation,
+        clientMessageId,
+        text,
+        surface: "dashboard_terminal",
+        surfaceContext: { deliveryChannel: "telegram" },
+        internalAgentContinuation: true,
+        superAgent: true,
+      });
+      if (!result.accepted && !("replayed" in result)) {
+        throw new Error("The delegated Telegram follow-up was not accepted.");
+      }
+    },
+    onReply,
+    // Max Research is intentionally long-running. Keep the transport attached
+    // for up to two hours; its own runtime still owns cancellation and failure.
+    maxWaitMs: 2 * 60 * 60 * 1_000,
+  });
 }

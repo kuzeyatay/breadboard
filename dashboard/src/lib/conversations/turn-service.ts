@@ -57,6 +57,7 @@ import {
   isPreDispatchReservedAssistant,
   annotateConversationTurn,
   completeAssistantMessage,
+  conversationTurnWasCancelled,
   failAssistantMessage,
   updateConversation,
   conversationIsTemporary,
@@ -113,6 +114,7 @@ import {
 import { agentLoopCommandText } from "../hermes/agent-loop-intent.ts";
 import { messagingCommandText } from "../hermes/messaging-intent.ts";
 import { watchCommandText } from "../hermes/watch-intent.ts";
+import { textToCadCommandText } from "../hermes/text-to-cad-intent.ts";
 import {
   imageTo3dCommandText,
   IMAGE_TO_3D_SKILL,
@@ -122,10 +124,18 @@ import {
   DIAGRAM_DESIGN_SKILL,
 } from "../hermes/diagram-intent.ts";
 import {
+  asciiDiagramCommandText,
+  ASCII_ART_DIAGRAMS_SKILL,
+} from "../hermes/ascii-diagram-intent.ts";
+import {
   githubExplorerCommandText,
   GITHUB_EXPLORER_SKILL,
 } from "../hermes/github-explorer-intent.ts";
 import { humanizeCommandText } from "../hermes/humanize-intent.ts";
+import {
+  computerUseCommandText,
+  COMPUTER_USE_SKILL,
+} from "../hermes/computer-use-intent.ts";
 import {
   hasReconstructableAttachment,
   hasReconstructableImages,
@@ -172,9 +182,15 @@ import { connectedAppRegistryForTurn } from "../hermes/unified-tool-registry.ts"
 import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
 import {
   loadSuperAgentInventory,
+  openableSkills,
   renderSuperAgentDirective,
   type SuperAgentInventory,
 } from "../hermes/super-agent.ts";
+import {
+  renderSkillShortlistDirective,
+  shortlistSkillsForTurn,
+} from "../hermes/skill-shortlist.ts";
+import { listMcpConnections } from "../hermes/mcp-connections.ts";
 import {
   classifyResearch,
   researchPipelineApplies,
@@ -396,6 +412,9 @@ export async function startConversationTurn(
         ...(input.internalAgentContinuation
           ? { internalAgentContinuation: true }
           : {}),
+        ...(context.deliveryChannel
+          ? { deliveryChannel: context.deliveryChannel }
+          : {}),
         ...(input.scheduledChatReceipt
           ? { scheduledChatReceipt: input.scheduledChatReceipt }
           : {}),
@@ -433,6 +452,15 @@ export async function startConversationTurn(
       reservation = { ...reservation, conversation: titledConversation };
       input = { ...input, conversation: titledConversation };
     }
+  }
+
+  if (
+    conversationTurnWasCancelled(
+      input.conversation.id,
+      input.clientMessageId,
+    )
+  ) {
+    throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
   }
 
   if (!reservation.isNew) {
@@ -843,6 +871,16 @@ export async function startConversationTurn(
     hasVideoAttachment: turnVideos.length > 0,
     hasRecentVideoAttachment: Boolean(carriedVideo),
   });
+  // CAD is an artifact workflow, not a feature people should have to discover
+  // in a slash palette. Put the reviewed text-to-cad family ahead of generic
+  // image reconstruction so an image-backed request for a dimensioned STEP
+  // part reaches the parametric kernel rather than becoming an uneditable mesh.
+  const textToCadSelection = textToCadCommandText({
+    text: watchSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // A picture, unlike a video, is usually not the subject of the turn — people
   // paste screenshots to ask what is wrong with them. So this selection needs
   // the request to actually ask for a three-dimensional thing, and a picture
@@ -855,7 +893,7 @@ export async function startConversationTurn(
     (message) => message.client_message_id !== input.clientMessageId,
   );
   const imageTo3dSelection = imageTo3dCommandText({
-    text: watchSelection.text,
+    text: textToCadSelection.text,
     surface: input.surface,
     authenticated: true,
     hasImageAttachment: hasReconstructableAttachment(input.attachments),
@@ -883,11 +921,20 @@ export async function startConversationTurn(
     hasAudioAttachment: hasAnalyzableAttachment(input.attachments),
     hasRecentAudioAttachment: hasRecentAnalyzableAudio(earlierMessages),
   });
+  // Text-only intent is more specific than the normal rendered-diagram intent,
+  // so it gets first refusal. A slash selection is opaque to every later
+  // router, guaranteeing only one diagram skill can claim the turn.
+  const asciiDiagramSelection = asciiDiagramCommandText({
+    text: audioSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // After the attachment-driven selections, because a video, a picture or a
   // track is the subject of its turn and "diagram what happens in this clip"
   // needs Watch to see the clip first. Before messaging, which is an errand.
   const diagramSelection = diagramCommandText({
-    text: audioSelection.text,
+    text: asciiDiagramSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -910,11 +957,21 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // Desktop control comes after every purpose-built content capability. Its
+  // skill still checks for an API/service/browser route before it invokes the
+  // ambient Hermes tool, and Super Agent applies an even stricter last-resort
+  // rule in its system directive.
+  const computerUseSelection = computerUseCommandText({
+    text: humanizeSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // Last in the chain on purpose: "send this to my WhatsApp" is an errand
   // attached to whatever the turn was already about, so any skill that claimed
   // the turn on its own wording keeps it.
   const messagingSelection = messagingCommandText({
-    text: humanizeSelection.text,
+    text: computerUseSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -956,13 +1013,16 @@ export async function startConversationTurn(
   ).catch(async (error: unknown) => {
     if (
       !watchSelection.automatic &&
+      !textToCadSelection.automatic &&
       !patentDisclosureSelection.automatic &&
       !imageTo3dSelection.automatic &&
       !spotifySelection.automatic &&
       !audioSelection.automatic &&
+      !asciiDiagramSelection.automatic &&
       !diagramSelection.automatic &&
       !githubExplorerSelection.automatic &&
       !humanizeSelection.automatic &&
+      !computerUseSelection.automatic &&
       !goalSelection.automatic
     ) {
       throw error;
@@ -1005,6 +1065,11 @@ export async function startConversationTurn(
     resolved.invocations.some(
       (invocation) => invocation.kind === "skill" && invocation.slug === AUDIO_ANALYSIS_SKILL,
     );
+  const automaticAsciiDiagram = asciiDiagramSelection.automatic &&
+    resolved.invocations.some(
+      (invocation) =>
+        invocation.kind === "skill" && invocation.slug === ASCII_ART_DIAGRAMS_SKILL,
+    );
   const automaticDiagramDesign = diagramSelection.automatic &&
     resolved.invocations.some(
       (invocation) =>
@@ -1014,6 +1079,16 @@ export async function startConversationTurn(
     resolved.invocations.some(
       (invocation) =>
         invocation.kind === "skill" && invocation.slug === GITHUB_EXPLORER_SKILL,
+    );
+  const automaticTextToCad = textToCadSelection.automatic &&
+    resolved.invocations.some(
+      (invocation) =>
+        invocation.kind === "skill" && invocation.slug === textToCadSelection.skill,
+    );
+  const automaticComputerUse = computerUseSelection.automatic &&
+    resolved.invocations.some(
+      (invocation) =>
+        invocation.kind === "skill" && invocation.slug === COMPUTER_USE_SKILL,
     );
   // However the skill got here — typed as `/goal`, or selected from the
   // wording above — this is the turn that starts a goal.
@@ -1052,11 +1127,15 @@ export async function startConversationTurn(
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticMessaging: messagingSelection.automatic,
       automaticWatch,
+      automaticTextToCad,
+      automaticTextToCadSkill: automaticTextToCad ? textToCadSelection.skill : null,
       automaticImageTo3d,
       automaticMusicPlayback,
       automaticAudioAnalysis,
+      automaticAsciiDiagram,
       automaticDiagramDesign,
       automaticGithubExplorer,
+      automaticComputerUse,
       automaticGoal,
       activeAgencyAgentSlug: activeAgencyAgent?.slug ?? null,
     },
@@ -1078,6 +1157,14 @@ export async function startConversationTurn(
   decision.selectedConditionalSkills = resolved.invocations
     .filter((invocation) => invocation.kind === "skill")
     .map((invocation) => invocation.slug);
+  // The broad /cad workflow is deliberately implemented by Breadboard's
+  // isolated Parametric CAD worker. Make its launch tool available for both an
+  // innate selection and an explicit /cad command; narrower upstream skills
+  // continue to use their own validators and authoring workflows.
+  const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
+  if (parametricCadSelected) {
+    decision.allowedTools = [...new Set([...decision.allowedTools, "agent_launch"])];
+  }
   decision.selectedConnections = resolved.invocations
     .filter((invocation) => invocation.kind === "mcp")
     .map((invocation) => invocation.slug);
@@ -1090,6 +1177,9 @@ export async function startConversationTurn(
     ? await loadSuperAgentInventory({
         userId: input.conversation.user_id,
         surface: input.surface,
+        // The resolved text, so the listing is ordered by what the request
+        // says rather than by the slash tokens the selections prepended.
+        request: resolved.userText || input.text,
       })
     : null;
   // How exhaustive this request is, decided here rather than by the model, and
@@ -1123,6 +1213,38 @@ export async function startConversationTurn(
         ...superAgentInventory.connections,
       ]),
     ];
+  }
+  // Agent mode without Super agent, and no skill claimed the turn: the routers
+  // above recognise about a dozen subjects, and every other installed skill is
+  // unreachable unless the user types its slash command. Offer the few whose
+  // descriptions match this request behind `skill_open` — selected so the
+  // route will serve them, but not injected, so a wrong guess costs the model
+  // one line rather than the turn. Not on Quartz, which has no skill store of
+  // its own, and not on a model-to-model continuation, whose text is a report
+  // and not a request. See lib/hermes/skill-shortlist.ts.
+  const skillShortlist =
+    !superAgent &&
+    input.surface !== "quartz_ai" &&
+    input.internalAgentContinuation !== true &&
+    decision.selectedConditionalSkills.length === 0
+      ? shortlistSkillsForTurn({
+          request: resolved.userText || input.text,
+          skills: openableSkills(
+            input.surface,
+            listMcpConnections(input.conversation.user_id, true).map(
+              (connection) => connection.slug,
+            ),
+          ),
+        })
+      : [];
+  if (skillShortlist.length > 0) {
+    decision.selectedConditionalSkills = [
+      ...new Set([
+        ...decision.selectedConditionalSkills,
+        ...skillShortlist.map((skill) => skill.slug),
+      ]),
+    ];
+    decision.allowedTools = [...new Set([...decision.allowedTools, "skill_open"])];
   }
   // A goal reaches a turn one of two ways: the Goal skill was selected for it,
   // in which case the model writes the objective itself with create_goal and
@@ -1206,6 +1328,9 @@ export async function startConversationTurn(
             superAgentWorkflowCount: superAgentInventory.workflows.length,
           }
         : {}),
+      ...(skillShortlist.length > 0
+        ? { suggestedSkills: skillShortlist.map((skill) => skill.slug) }
+        : {}),
       ...(researchPlan
         ? {
             researchIntent: researchPlan.intent,
@@ -1220,6 +1345,8 @@ export async function startConversationTurn(
       automaticPatentDisclosure,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticWatch,
+      automaticTextToCad,
+      automaticTextToCadSkill: automaticTextToCad ? textToCadSelection.skill : null,
       automaticImageTo3d,
       allowedGardenIds: parseAllowedGardenIds(session.row.allowed_garden_ids),
       connectedAppToolCount: connectedApps.toolCount,
@@ -1360,7 +1487,12 @@ export async function startConversationTurn(
     ...resolved.tools,
     ...connectedApps.tools,
     ...(repository?.tools ?? {}),
+    ...(decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL)
+      ? { computer_use: true }
+      : {}),
+    ...(parametricCadSelected ? { agent_launch: true } : {}),
     ...(goalMode ? { mcp_call: true } : {}),
+    ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
   });
   // Whether this turn needs verified map data is decided here, before dispatch,
   // from the request and Breadboard's own geographic state — never from what the
@@ -1425,6 +1557,8 @@ export async function startConversationTurn(
           researchPipeline
           ? researchPipelineRule(researchPipeline)
           : "",
+      // Empty unless this agent-mode turn was offered a shortlist above.
+      renderSkillShortlistDirective(skillShortlist),
       composeMemoryContext(
         memory,
         input.branchHistory
@@ -1615,15 +1749,25 @@ export async function startConversationTurn(
                     : "The message linked a video.",
             },
           ]
+          : []),
+      ...(automaticTextToCad && textToCadSelection.skill
+        ? [
+            {
+              slug: textToCadSelection.skill,
+              reason: "The request named CAD, robot-description, fabrication, or manufacturing work handled by the reviewed text-to-cad suite.",
+            },
+          ]
         : []),
       ...(automaticImageTo3d ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
       ...(automaticMusicPlayback ? [{ slug: SPOTIFY_SKILL }] : []),
       ...(automaticAudioAnalysis ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
+      ...(automaticAsciiDiagram ? [{ slug: ASCII_ART_DIAGRAMS_SKILL }] : []),
       ...(automaticDiagramDesign ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
       ...(automaticPatentDisclosure
         ? [{ slug: PATENT_DISCLOSURE_SKILL }]
         : []),
       ...(automaticGithubExplorer ? [{ slug: GITHUB_EXPLORER_SKILL }] : []),
+      ...(automaticComputerUse ? [{ slug: COMPUTER_USE_SKILL }] : []),
       ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
       ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
       ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
@@ -1677,6 +1821,14 @@ export async function startConversationTurn(
         },
       )
     : [];
+  if (
+    conversationTurnWasCancelled(
+      input.conversation.id,
+      input.clientMessageId,
+    )
+  ) {
+    throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
+  }
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: resolved.userText || input.text,

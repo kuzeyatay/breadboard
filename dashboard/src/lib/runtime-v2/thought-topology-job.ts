@@ -93,7 +93,10 @@ export async function startThoughtTopologyRuntimeJob(
   const authority: RuntimeJobAuthority = { userId: input.userId, gardenId: input.gardenId, conversationId: null };
   const snapshot = await (input.control ?? DEFAULT_CONTROL).submit(authority, {
     jobType: "thought-topology",
-    idempotencyKey: `thought-topology-v1:${input.clusterId}:${input.revision}`,
+    // A queued row coalesces Markdown changes until its worker starts, so its
+    // durable queue identity—not a replaceable intermediate revision—is the
+    // stable Runtime idempotency boundary.
+    idempotencyKey: `thought-topology-v2:${input.clusterId}:queue:${input.queueJobId}`,
     requestPayload: {
       protocolVersion: 1,
       operation: "build-thought-topology",
@@ -120,7 +123,7 @@ export async function runThoughtTopologyViaRuntime(
   if (snapshot.state !== "succeeded") throw new ThoughtTopologyRuntimeError("build_failed", "Thought Topology worker did not complete.");
   const output = await control.readOutput(handle.authority, snapshot.jobId, "result");
   const result = validateThoughtTopologyRuntimeEnvelope(snapshot, output.content);
-  if (result.clusterId !== input.clusterId || result.revision !== input.revision) {
+  if (result.clusterId !== input.clusterId || result.revision < input.revision) {
     throw new ThoughtTopologyRuntimeError("invalid_result", "Runtime returned another Garden revision.");
   }
   return result;

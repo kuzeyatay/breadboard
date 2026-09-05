@@ -7,6 +7,7 @@ import {
   antigravityModelId,
   readGoogleUsageLimits,
 } from '@/lib/cliproxy/google-usage-limits';
+import { withCliproxyLease } from '@/lib/cliproxy/runtime-lease';
 import {
   CLAUDE_USAGE_PAGE,
   claudeSubscriptionModelId,
@@ -28,7 +29,11 @@ export async function GET(request: Request) {
   try {
     await requireUserId();
     if (googleModel) {
-      return NextResponse.json(await readGoogleUsageLimits(model), {
+      const usage = await withCliproxyLease(
+        'subscription-usage-limits',
+        () => readGoogleUsageLimits(model),
+      );
+      return NextResponse.json(usage, {
         headers: NO_STORE_HEADERS,
       });
     }

@@ -16,6 +16,10 @@ import {
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
 import {
+  normalizeFocusedDocumentNames,
+  normalizeFocusedDocumentSlugs,
+} from "@/lib/garden-document-focus";
+import {
   delegatedAgentPresentation,
   externalAgentMessageFields,
 } from "@/lib/conversations/external-agent-runs";
@@ -46,12 +50,16 @@ type ChatMessage = {
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
+  clarificationAnswer?: boolean;
   createdAt?: string;
   sources?: string[];
   attachmentNames?: string[];
   attachments?: ChatMessageAttachment[];
+  focusedDocumentNames?: string[];
+  focusedDocumentSlugs?: string[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  responseCompletedAt?: string;
   progressNotes?: string[];
   verification?: VerificationSummary;
   uiResources?: GenerativeUiResource[];
@@ -59,6 +67,8 @@ type ChatMessage = {
   inlineSelection?: QuartzInlineSelectionReference;
   /** Selected-text ("Ask in chat"/"Ask here") anchor for garden-chat turns. */
   textSelection?: ChatTextSelectionReference;
+  pendingPermissions?: Array<Record<string, unknown>>;
+  runtimeError?: string;
 } & ReturnType<typeof externalAgentMessageFields>;
 
 interface ChatSessionRow {
@@ -68,12 +78,14 @@ interface ChatSessionRow {
   created_at: string;
   updated_at: string;
   conversation_id?: number | null;
+  conversation_public_id?: string | null;
   owner_username?: string | null;
 }
 
 interface ChatMessageRow {
   session_id: number;
   canonical_message_id: number | null;
+  client_message_id: string | null;
   role: ChatRole;
   content: string;
   sources: string | null;
@@ -234,6 +246,34 @@ function parseProgressNotes(value: string | null): string[] {
   }
 }
 
+function parseResponseCompletedAt(value: string | null): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { responseCompletedAt?: unknown };
+    return typeof parsed.responseCompletedAt === "string" &&
+      Number.isFinite(Date.parse(parsed.responseCompletedAt))
+      ? parsed.responseCompletedAt
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parsePendingPermissions(value: string | null): Array<Record<string, unknown>> {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as { pendingPermissions?: unknown };
+    return Array.isArray(parsed?.pendingPermissions)
+      ? parsed.pendingPermissions.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item),
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function parseGenerativeUiResources(value: string | null): GenerativeUiResource[] {
   if (!value) return [];
   try {
@@ -249,6 +289,20 @@ function parseInternalAgentContinuation(value: string | null): boolean {
   try {
     const parsed = JSON.parse(value) as { internalAgentContinuation?: unknown };
     return parsed?.internalAgentContinuation === true;
+  } catch {
+    return false;
+  }
+}
+
+function parseClarificationAnswer(
+  value: string | null,
+  clientMessageId: string | null,
+): boolean {
+  if (clientMessageId?.startsWith("clarify:")) return true;
+  if (!value) return false;
+  try {
+    const parsed = JSON.parse(value) as { clarificationAnswer?: unknown };
+    return parsed?.clarificationAnswer === true;
   } catch {
     return false;
   }
@@ -330,7 +384,13 @@ function parseExternalAgentFields(
 
 function parseAttachmentFields(
   value: string | null,
-): Pick<ChatMessage, "attachmentNames" | "attachments"> {
+): Pick<
+  ChatMessage,
+  | "attachmentNames"
+  | "attachments"
+  | "focusedDocumentNames"
+  | "focusedDocumentSlugs"
+> {
   if (!value) return {};
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
@@ -346,9 +406,17 @@ function parseAttachmentFields(
           .slice(0, 12)
       : [];
     const attachments = normalizeChatMessageAttachments(parsed.attachments);
+    const focusedDocumentNames = normalizeFocusedDocumentNames(
+      parsed.focusedDocumentNames,
+    );
+    const focusedDocumentSlugs = normalizeFocusedDocumentSlugs(
+      parsed.focusedDocumentSlugs,
+    );
     return {
       ...(attachmentNames.length ? { attachmentNames } : {}),
       ...(attachments.length ? { attachments } : {}),
+      ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
+      ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
     };
   } catch {
     return {};
@@ -406,9 +474,11 @@ function readSessions(
     rows = db
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
-                cs.conversation_id, u.username AS owner_username
+                cs.conversation_id, c.public_id AS conversation_public_id,
+                u.username AS owner_username
          FROM chat_sessions cs
          JOIN users u ON u.id = cs.user_id
+         LEFT JOIN conversations c ON c.id = cs.conversation_id
          WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
@@ -421,8 +491,9 @@ function readSessions(
     rows = db
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
-                cs.conversation_id
+                cs.conversation_id, c.public_id AS conversation_public_id
          FROM chat_sessions cs
+         LEFT JOIN conversations c ON c.id = cs.conversation_id
          WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ?${sessionFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
@@ -435,8 +506,9 @@ function readSessions(
     rows = db
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
-                cs.conversation_id
+                cs.conversation_id, c.public_id AS conversation_public_id
          FROM chat_sessions cs
+         LEFT JOIN conversations c ON c.id = cs.conversation_id
          WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
@@ -454,11 +526,15 @@ function readSessions(
   reconcilePreDispatchTurns(ids);
   const messages = db
     .prepare(
-      `SELECT session_id, canonical_message_id, role, content, sources, token_usage,
-              tool_calls, runtime_status, runtime_error, created_at
-       FROM chat_messages
-       WHERE session_id IN (${placeholders})
-       ORDER BY session_id, order_index`,
+      `SELECT legacy.session_id, legacy.canonical_message_id,
+              canonical.client_message_id, legacy.role, legacy.content,
+              legacy.sources, legacy.token_usage, legacy.tool_calls,
+              legacy.runtime_status, legacy.runtime_error, legacy.created_at
+       FROM chat_messages legacy
+       LEFT JOIN conversation_messages canonical
+         ON canonical.id = legacy.canonical_message_id
+       WHERE legacy.session_id IN (${placeholders})
+       ORDER BY legacy.session_id, legacy.order_index`,
     )
     .all(...ids) as ChatMessageRow[];
 
@@ -468,11 +544,19 @@ function readSessions(
     const usage = parseTokenUsage(message.token_usage);
     const verification = parseVerification(message.tool_calls);
     const responseDurationMs = parseResponseDuration(message.tool_calls);
+    const responseCompletedAt = parseResponseCompletedAt(message.tool_calls);
     const progressNotes = parseProgressNotes(message.tool_calls);
+    const pendingPermissions = parsePendingPermissions(message.tool_calls);
     const uiResources = parseGenerativeUiResources(message.tool_calls);
     const internalAgentContinuation =
       message.role === "user" &&
       parseInternalAgentContinuation(message.tool_calls);
+    const clarificationAnswer =
+      message.role === "user" &&
+      parseClarificationAnswer(
+        message.tool_calls,
+        message.client_message_id,
+      );
     const selectedText =
       message.role === "user" ? parseSelectedText(message.tool_calls) : undefined;
     const inlineSelection = parseInlineSelection(message.tool_calls);
@@ -489,6 +573,7 @@ function readSessions(
       role: message.role,
       ...delegatedAgentPresentation(message.content, externalAgent),
       ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
+      ...(clarificationAnswer ? { clarificationAnswer: true } : {}),
       ...(selectedText ? { selectedText } : {}),
       ...(inlineSelection ? { inlineSelection } : {}),
       ...(textSelection ? { textSelection } : {}),
@@ -496,7 +581,14 @@ function readSessions(
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      ...(responseCompletedAt ? { responseCompletedAt } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
+      ...(message.role === "assistant" && pendingPermissions.length
+        ? { pendingPermissions }
+        : {}),
+      ...(message.role === "assistant" && message.runtime_error
+        ? { runtimeError: message.runtime_error }
+        : {}),
       ...(uiResources.length ? { uiResources } : {}),
       ...(verification ? { verification } : {}),
       ...attachmentFields,
@@ -530,8 +622,9 @@ function readSessions(
   );
   const latestAssistantVersions = readLatestAssistantVersions(ids);
 
-  return rows.map((row) => ({
+  return rows.map(({ conversation_public_id: conversationId, ...row }) => ({
     ...row,
+    conversationId: conversationId ?? null,
     ownerUsername: row.owner_username ?? undefined,
     isOwn: row.user_id === currentUserId,
     messages: bySession.get(row.id) ?? [],
@@ -743,11 +836,25 @@ export async function POST(request: Request) {
   );
   const session = db
     .prepare(
-      "SELECT id, user_id, title, created_at, updated_at, conversation_id FROM chat_sessions WHERE id = ?",
+      `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
+              cs.conversation_id, c.public_id AS conversation_public_id
+       FROM chat_sessions cs
+       LEFT JOIN conversations c ON c.id = cs.conversation_id
+       WHERE cs.id = ?`,
     )
     .get(result.lastInsertRowid) as ChatSessionRow;
 
+  const {
+    conversation_public_id: conversationId,
+    ...legacySession
+  } = session;
+
   return NextResponse.json({
-    session: { ...session, isOwn: true, messages: [] },
+    session: {
+      ...legacySession,
+      conversationId: conversationId ?? null,
+      isOwn: true,
+      messages: [],
+    },
   });
 }

@@ -12,7 +12,7 @@ from .app import create_app
 from .config import CLIENT_ID_DEFAULT
 from .limits import RateLimitWindow, compute_reset_at, load_rate_limit_snapshot
 from .oauth import OAuthHTTPServer, OAuthHandler, REQUIRED_PORT, URL_BASE
-from .serving import MemoryEfficientWSGIRequestHandler
+from .serving import run_memory_efficient_server
 from .utils import eprint, get_home_dir, load_chatgpt_tokens, parse_jwt_claims, read_auth_file
 
 
@@ -331,12 +331,10 @@ def cmd_serve(
         default_web_search=default_web_search,
     )
 
-    app.run(
+    run_memory_efficient_server(
+        app,
         host=host,
-        use_reloader=False,
         port=port,
-        threaded=True,
-        request_handler=MemoryEfficientWSGIRequestHandler,
     )
     return 0
 

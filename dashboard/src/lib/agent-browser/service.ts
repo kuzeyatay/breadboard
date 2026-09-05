@@ -112,6 +112,7 @@ export async function startRun(
   agentId: string,
   task: string,
   requestId?: string,
+  browserMode: "desktop" | "external" = "external",
 ): Promise<StartRunResult> {
   rateLimit(`run:${userId}`, 10, 60_000);
   const agent = requireAgent(userId, agentId);
@@ -133,13 +134,17 @@ export async function startRun(
     throw new AgentBrowserServiceError(400, "invalid_request_id");
   }
 
-  const availability = runtimeAvailability();
+  const availability = runtimeAvailability(process.env, {
+    browserRequired: browserMode === "external",
+  });
   if (!availability.available) throw new AgentBrowserServiceError(503, "runtime_unavailable");
   // Chromium allows one process per profile directory. Starting a run while the
   // sign-in window holds that profile would launch a browser that immediately
   // hands its arguments to the window and exits, and the run would die on a
   // connection error with nothing to say. Refuse it plainly instead.
-  if (signInWindowOpen()) throw new AgentBrowserServiceError(409, "sign_in_window_open");
+  if (browserMode === "external" && signInWindowOpen()) {
+    throw new AgentBrowserServiceError(409, "sign_in_window_open");
+  }
 
   try {
     return await managerStartRun({
@@ -148,6 +153,7 @@ export async function startRun(
       task: trimmed,
       requestId,
       config: parsed.value,
+      browserMode,
     });
   } catch (error) {
     throw new AgentBrowserServiceError(502, error instanceof Error ? error.message : "runtime_error");

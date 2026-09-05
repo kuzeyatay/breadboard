@@ -40,9 +40,20 @@ test("a burst types out over frames instead of appearing whole", () => {
   }
   assert.equal(shown, target, "the reveal must eventually catch up");
   // Readable, not instant: the burst must occupy roughly a second at minimum
-  // and still be finished within a few seconds.
+  // and still finish within the bounded, deliberately slower reveal window.
   assert.ok(frames > 60, `a 1000-char burst must take many frames, got ${frames}`);
-  assert.ok(frames < 420, `catch-up must stay under ~7s at 60fps, got ${frames}`);
+  assert.ok(frames < 540, `catch-up must stay under ~9s at 60fps, got ${frames}`);
+});
+
+test("a short live answer reveals at the slower readable floor", () => {
+  const target = "x".repeat(120);
+  let shown = "";
+  let frames = 0;
+  while (shown !== target && frames < 300) {
+    shown = advanceReveal(shown, target, 1 / 60, true);
+    frames += 1;
+  }
+  assert.ok(frames >= 100, `a 120-char answer rendered too quickly in ${frames} frames`);
 });
 
 test("shown text is always a prefix of the target and never moves backwards", () => {

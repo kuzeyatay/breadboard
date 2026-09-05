@@ -10,6 +10,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
 
 const navbar = read("src/app/components/navbar.tsx");
+const flowerWind = read("src/app/components/navbar-flower-wind.tsx");
 const workTimer = read("src/app/components/work-timer-shortcut.tsx");
 const page = read("src/app/profile/page.tsx");
 const client = read("src/app/profile/profile-client.tsx");
@@ -43,9 +44,17 @@ test("the page is behind auth and comes back to itself after signing in", () => 
   assert.doesNotMatch(client, /from "@\/lib\/db"/, "and never from the browser");
 });
 
-test("the page offers a back link, signing out, and inviting", () => {
+test("the page offers a back link, restarting, signing out, and inviting", () => {
   assert.match(client, /<BackLink[\s\S]*?fallbackHref="\/dashboard"/);
+  assert.match(client, /function RestartBreadboardButton\(\)/);
+  assert.match(client, /breadboardRestartControl\(\)/);
+  assert.match(client, />\{busy \? "Restarting…" : "Restart Breadboard"\}<\/span>/);
   assert.match(client, /signOut\(\{ callbackUrl: "\/auth\/login" \}\)/);
+  assert.ok(
+    client.indexOf("<RestartBreadboardButton />") <
+      client.indexOf('onClick={() => signOut({ callbackUrl: "/auth/login" })}'),
+    "restart sits to the left of sign out",
+  );
   assert.match(client, /fetch\("\/api\/invites", \{ method: "POST" \}\)/);
   assert.match(client, /fetch\("\/api\/invites"\)/, "and lists the codes already handed out");
   assert.match(navHistory, /\\\/profile\(\?:\\\/\|\$\)/, "and names itself as a back target");
@@ -82,6 +91,10 @@ test("the optional navbar entries obey their settings", () => {
   assert.ok(planGuardIndex > 0, "Plan is configurable too");
   assert.ok(planLinkIndex > planGuardIndex, "and its link sits inside the guard");
 
+  const clickyGuardIndex = navbar.indexOf("{shortcuts.clicky && <ClickyShortcut />}");
+  assert.ok(clickyGuardIndex > 0, "Clicky is configurable from the same profile panel");
+  assert.ok(clickyGuardIndex < planGuardIndex, "and sits beside Plan in the navbar");
+
   assert.match(
     navbar,
     /shortcuts = DEFAULT_NAVBAR_SHORTCUTS/,
@@ -112,6 +125,28 @@ test("the profile page owns the switches and reaches its own route", () => {
   assert.match(shortcutsRoute, /requireUserId/, "scoped to the caller");
 });
 
+test("the profile launches the native Clicky companion and explains prompt launch", () => {
+  assert.match(client, /function ClickyPanel\(\)/);
+  assert.match(client, /clickyDesktopControl\(\)/);
+  assert.match(client, /"Launch Clicky"/);
+  assert.match(client, /"Open in Xcode"/);
+  assert.match(client, /launch Clicky/);
+  assert.match(client, /<ClickyPanel \/>/);
+});
+
+test("the profile can hide navbar flowers without removing the grass animation", () => {
+  assert.match(page, /initialNavbarFlowers=\{getNavbarFlowers\(userId\)\}/);
+  assert.match(client, /label="Show flowers in the top navbar"/);
+  assert.match(client, /body: JSON\.stringify\(\{ flowers: optimistic \}\)/);
+  assert.match(client, /<NavbarFlowerWind showFlowers=\{showNavbarFlowers\} \/>/);
+  assert.match(navbar, /<NavbarFlowerWind showFlowers=\{showFlowers\} \/>/);
+  assert.match(flowerWind, /showFlower=\{showFlowers\}/);
+  assert.match(flowerWind, /\{showFlower && \(/);
+  assert.match(flowerWind, /<div className=\{styles\.grassBed\} \/>/);
+  assert.match(flowerWind, /\{INITIAL_PLANTS\.map\(/);
+  assert.match(shortcutsRoute, /updateNavbarFlowers/);
+});
+
 test("the profile exposes current-location availability without folding it into theme consent", () => {
   assert.match(client, /function LocationPanel\(\)/);
   assert.match(client, /title="Location"/);
@@ -129,7 +164,7 @@ test("the profile exposes current-location availability without folding it into 
   assert.match(client, /aria-live="polite"/);
   assert.match(client, /aria-busy=\{checking\}/);
   assert.match(client, /checked=\{preference\.useForAnswers\}/);
-  assert.match(client, /onChange=\{toggleLocation\}/);
+  assert.match(client, /onChange=\{\(\) => void toggleLocation\(\)\}/);
   assert.doesNotMatch(client, />\s*Turn off\s*<\/button>/);
   assert.match(client, /aria-label="Refresh location"/);
   assert.match(client, /<RefreshCw/);
@@ -151,8 +186,11 @@ test("the profile exposes current-location availability without folding it into 
   assert.match(client, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers/);
 });
 
-test("an enabled current location persists and refreshes throughout the session", () => {
+test("an enabled current location persists across restarts and refreshes throughout the session", () => {
   assert.match(rootLayout, /<CurrentLocationAutoRefresh \/>/);
+  assert.match(client, /persistCurrentLocationPreference\(true\)/);
+  assert.match(client, /persistCurrentLocationPreference\(false\)/);
+  assert.match(locationAutoRefresh, /hydrateCurrentLocationPreference\(\)\.then/);
   assert.match(locationAutoRefresh, /getStoredCurrentLocationPreference\(window\.localStorage\)/);
   assert.match(
     locationAutoRefresh,
@@ -173,7 +211,7 @@ test("an enabled current location persists and refreshes throughout the session"
   );
   assert.match(
     locationAutoRefresh,
-    /initializationRefresh \?\?= refreshCurrentLocationAtInitialization\(\)/,
+    /initializationRefresh \?\?= hydrateCurrentLocationPreference\(\)\.then\(\(\) =>\s*refreshCurrentLocationAtInitialization\(\)/,
     "React remount checks cannot duplicate the initialization request",
   );
   assert.match(client, /It refreshes automatically while enabled\./);
@@ -241,6 +279,9 @@ test("the stats shown are ones no other surface already answers", () => {
     assert.ok(client.includes(marker), `the page shows "${marker}"`);
   }
   assert.match(client, /Busiest gardens/);
+  assert.match(client, /garden\.conversations/, "garden rows show how many chats carry the work");
+  assert.match(client, /garden\.thinkingMs/, "garden rows show measured AI time");
+  assert.match(client, /Active \{relativeTime\(garden\.lastPromptAt\)\}/, "garden rows show recency");
   assert.match(client, /Settings → Memory/, "durable memory is pointed at, not duplicated");
 });
 

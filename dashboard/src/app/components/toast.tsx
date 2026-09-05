@@ -9,15 +9,20 @@ import {
 } from '@/lib/task-completion-notification';
 import {
   CHAT_NOTIFICATION_OPENED_EVENT,
+  LEARN_NOTIFICATION_ANY_JOB,
+  LEARN_NOTIFICATION_OPENED_EVENT,
   activeChatNotificationTarget,
+  activeLearnNotificationGarden,
   chatNotificationHref,
+  chatNotificationKind,
   chatNotificationTargetKey,
   isChatNotificationRecord,
-  queueChatNotificationReply,
   sameChatNotificationTarget,
+  sendChatNotificationReply,
   type ChatNotificationRecord,
   type ChatNotificationTarget,
 } from '@/lib/chat-notification-inbox';
+import { publishDesktopNotificationToast } from '@/lib/desktop-notification-overlay';
 
 export interface ToastItem {
   id: string;
@@ -28,6 +33,8 @@ export interface ToastItem {
   response?: string;
   notificationId?: string;
   target?: ChatNotificationTarget;
+  /** 0-100 for a notice that tracks a running pipeline; renders a status bar. */
+  progressPercent?: number;
 }
 
 interface ChatNotificationPollResponse {
@@ -44,8 +51,24 @@ const CHAT_NOTIFICATION_TOAST_PREFIX = 'chat-notification:';
  * between, without letting a much later answer to that chat go unannounced.
  */
 const SEEN_TARGET_GRACE_MS = 20_000;
+const OPEN_BUTTON_CLASS =
+  'neu-button-icon flex h-8 w-8 items-center justify-center rounded-md text-base font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)] active:scale-[0.97]';
 
 function notificationToast(record: ChatNotificationRecord): ToastItem {
+  if (chatNotificationKind(record) === 'learn') {
+    // A Learn notice is a status line about a Garden, not an answer to read:
+    // the Garden's name is the headline and the stage is the body.
+    const detail = record.message?.trim();
+    return {
+      id: `${CHAT_NOTIFICATION_TOAST_PREFIX}${record.id}`,
+      notificationId: record.id,
+      message: detail ? `${record.chatTitle} · ${detail}` : record.chatTitle,
+      title: record.title,
+      type: record.type,
+      target: record.target,
+      progressPercent: record.progressPercent,
+    };
+  }
   return {
     id: `${CHAT_NOTIFICATION_TOAST_PREFIX}${record.id}`,
     notificationId: record.id,
@@ -70,9 +93,38 @@ function sameNotificationList(
       record.id === other.id &&
       record.updatedAt === other.updatedAt &&
       record.response === other.response &&
-      record.chatTitle === other.chatTitle
+      record.chatTitle === other.chatTitle &&
+      record.message === other.message &&
+      record.progressPercent === other.progressPercent
     );
   });
+}
+
+/**
+ * Whether a target the page reported viewing covers a notice. A Garden's Learn
+ * panel covers every Learn notice of that Garden; a chat covers its own.
+ */
+function targetCoversRecord(
+  viewed: ChatNotificationTarget,
+  record: ChatNotificationRecord,
+): boolean {
+  if (viewed.surface === 'garden_learn') {
+    return (
+      record.target.surface === 'garden_learn' &&
+      record.target.gardenSlug === viewed.gardenSlug &&
+      (viewed.chatId === LEARN_NOTIFICATION_ANY_JOB ||
+        viewed.chatId === record.target.chatId)
+    );
+  }
+  return sameChatNotificationTarget(record.target, viewed);
+}
+
+function learnGardenTarget(gardenSlug: string): ChatNotificationTarget {
+  return {
+    surface: 'garden_learn',
+    gardenSlug,
+    chatId: LEARN_NOTIFICATION_ANY_JOB,
+  };
 }
 
 async function postChatNotificationDismissal(body: {
@@ -98,7 +150,8 @@ async function postChatNotificationDismissal(body: {
 /**
  * Corner notices.
  *
- * Plain notices (`addToast`) are local to this page and vanish when it does.
+ * Plain notices (`addToast`) stay local in the browser build. The desktop
+ * shell forwards them to its window-level overlay so no tab can cover them.
  * Chat-response notices are a different thing: they are read from the
  * account's server-side inbox, so the same list appears in every window and
  * survives restarts, and dismissing one anywhere dismisses it everywhere.
@@ -108,7 +161,7 @@ async function postChatNotificationDismissal(body: {
  * 2. An answer that lands in the chat already on screen is never announced.
  * 3. A dismissed notice never returns.
  */
-export function useToast() {
+export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean } = {}) {
   const [localToasts, setLocalToasts] = useState<ToastItem[]>([]);
   const [notifications, setNotifications] = useState<ChatNotificationRecord[]>([]);
   const notificationsRef = useRef<ChatNotificationRecord[]>([]);
@@ -151,17 +204,20 @@ export function useToast() {
     setLocalToasts((current) => current.filter((toast) => toast.id !== id));
   }, [hideNotifications]);
 
-  /** The person is looking at this chat: every notice for it is read. */
+  /** The person is looking at this chat (or Learn panel): every notice for it is read. */
   const dismissChatToasts = useCallback((target: ChatNotificationTarget) => {
     seenTargetsRef.current.set(
       chatNotificationTargetKey(target),
       Date.now() + SEEN_TARGET_GRACE_MS,
     );
-    hideNotifications((record) =>
-      sameChatNotificationTarget(record.target, target),
-    );
+    hideNotifications((record) => targetCoversRecord(target, record));
     void postChatNotificationDismissal({ seen: target });
   }, [hideNotifications]);
+
+  /** The Garden's Learn panel is on screen: its Learn notices are read. */
+  const dismissLearnToasts = useCallback((gardenSlug: string) => {
+    dismissChatToasts(learnGardenTarget(gardenSlug));
+  }, [dismissChatToasts]);
 
   const addToast = useCallback((
     message: string,
@@ -171,11 +227,17 @@ export function useToast() {
     response?: string,
   ) => {
     const id = `toast:${++nextToastId}`;
+    if (
+      !desktopOverlay &&
+      publishDesktopNotificationToast({ message, type, title, chatId, response })
+    ) {
+      return;
+    }
     setLocalToasts((current) => [
       ...current,
       { id, message, type, title, chatId, response },
     ]);
-  }, []);
+  }, [desktopOverlay]);
 
   const pollChatNotifications = useCallback(async () => {
     if (pollInFlightRef.current) return;
@@ -195,14 +257,21 @@ export function useToast() {
         if (until <= now) seenTargetsRef.current.delete(key);
       }
       const activeTarget = activeChatNotificationTarget();
+      const activeLearnGarden = activeLearnNotificationGarden();
       const visible: ChatNotificationRecord[] = [];
       const readAlready: string[] = [];
       for (const record of incoming) {
         if (hiddenIdsRef.current.has(record.id)) continue;
-        const onScreen =
-          (activeTarget !== null &&
-            sameChatNotificationTarget(record.target, activeTarget)) ||
-          seenTargetsRef.current.has(chatNotificationTargetKey(record.target));
+        const isLearn = record.target.surface === 'garden_learn';
+        const onScreen = isLearn
+          ? (activeLearnGarden !== null &&
+              activeLearnGarden === record.target.gardenSlug) ||
+            seenTargetsRef.current.has(
+              chatNotificationTargetKey(learnGardenTarget(record.target.gardenSlug ?? '')),
+            )
+          : (activeTarget !== null &&
+              sameChatNotificationTarget(record.target, activeTarget)) ||
+            seenTargetsRef.current.has(chatNotificationTargetKey(record.target));
         if (onScreen) {
           hiddenIdsRef.current.add(record.id);
           readAlready.push(record.id);
@@ -289,9 +358,11 @@ export function useToast() {
       dismissChatToasts(activeTarget);
     };
     window.addEventListener(CHAT_NOTIFICATION_OPENED_EVENT, opened);
+    window.addEventListener(LEARN_NOTIFICATION_OPENED_EVENT, opened);
     window.addEventListener(CHAT_RESPONSE_SEEN_EVENT, seen);
     return () => {
       window.removeEventListener(CHAT_NOTIFICATION_OPENED_EVENT, opened);
+      window.removeEventListener(LEARN_NOTIFICATION_OPENED_EVENT, opened);
       window.removeEventListener(CHAT_RESPONSE_SEEN_EVENT, seen);
     };
   }, [dismissChatToasts]);
@@ -301,28 +372,28 @@ export function useToast() {
     [localToasts, notifications],
   );
 
-  return { toasts, addToast, dismissToast, dismissChatToasts };
+  return { toasts, addToast, dismissToast, dismissChatToasts, dismissLearnToasts };
 }
 
 function ToastCard({
   toast,
   onDismiss,
   onOpenChat,
-  onReplyToChat,
 }: {
   toast: ToastItem;
   onDismiss: (id: string) => void;
   onOpenChat?: (target: ChatNotificationTarget) => boolean | void;
-  onReplyToChat?: (
-    target: ChatNotificationTarget,
-    message: string,
-  ) => boolean | void | Promise<boolean | void>;
 }) {
   const [reply, setReply] = useState('');
   const [sendingReply, setSendingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
   const hasAssistantResponse = Boolean(toast.response);
   const canReply = Boolean(hasAssistantResponse && toast.target);
+  const progressPercent =
+    typeof toast.progressPercent === 'number' && Number.isFinite(toast.progressPercent)
+      ? Math.max(0, Math.min(100, Math.round(toast.progressPercent)))
+      : null;
+  const opensLearnPanel = toast.target?.surface === 'garden_learn';
 
   function openChat() {
     if (!toast.target) return;
@@ -339,12 +410,8 @@ function ToastCard({
     setSendingReply(true);
     setReplyError(null);
     try {
-      const handled = await onReplyToChat?.(toast.target, message);
+      await sendChatNotificationReply(toast.target, message);
       onDismiss(toast.id);
-      if (handled !== true) {
-        queueChatNotificationReply(window.sessionStorage, toast.target, message);
-        window.location.assign(chatNotificationHref(toast.target));
-      }
     } catch (error) {
       setReplyError(
         error instanceof Error ? error.message : 'The reply could not be sent.',
@@ -386,13 +453,39 @@ function ToastCard({
               {toast.message}
             </span>
           ) : null}
+          {progressPercent !== null ? (
+            <span
+              className="mt-2 block h-1 w-full overflow-hidden rounded-full bg-[var(--paper-strong)]"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progressPercent}
+              aria-label="Learn progress"
+              data-testid="toast-progress"
+            >
+              <span
+                className="block h-full rounded-full bg-[var(--botanical)] transition-[width] duration-700 ease-out"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </span>
+          ) : null}
         </span>
         <span className="flex shrink-0 items-center gap-1">
-          {toast.target ? (
+          {toast.target && opensLearnPanel ? (
             <button
               type="button"
               onClick={openChat}
-              className="neu-button-icon flex h-8 w-8 items-center justify-center rounded-md text-base font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)] active:scale-[0.97]"
+              className={OPEN_BUTTON_CLASS}
+              aria-label="Open the Learn panel"
+              title="Open Learn panel"
+            >
+              <span aria-hidden>↗</span>
+            </button>
+          ) : toast.target ? (
+            <button
+              type="button"
+              onClick={openChat}
+              className={OPEN_BUTTON_CLASS}
               aria-label="Open this chat"
               title="Open chat"
             >
@@ -455,7 +548,7 @@ function ToastCard({
                 <button
                   type="submit"
                   disabled={!reply.trim() || sendingReply}
-                  className="min-h-16 self-stretch rounded-lg bg-[var(--botanical)] px-4 text-xs font-semibold text-white transition-[transform,opacity] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45"
+                  className="min-h-16 self-stretch rounded-lg bg-[var(--botanical)] px-4 text-xs font-semibold text-[#fff] transition-[transform,background-color] active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-[color-mix(in_srgb,var(--botanical)_48%,var(--paper-strong))] disabled:text-[#fff]"
                 >
                   {sendingReply ? 'Sending…' : 'Send'}
                 </button>
@@ -477,20 +570,47 @@ export function Toaster({
   toasts,
   onDismiss,
   onOpenChat,
-  onReplyToChat,
+  mode = 'page',
+  onSizeChange,
 }: {
   toasts: ToastItem[];
   onDismiss: (id: string) => void;
   onOpenChat?: (target: ChatNotificationTarget) => boolean | void;
-  onReplyToChat?: (
-    target: ChatNotificationTarget,
-    message: string,
-  ) => boolean | void | Promise<boolean | void>;
+  mode?: 'page' | 'desktop-overlay';
+  onSizeChange?: (width: number, height: number) => void;
 }) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!onSizeChange) return;
+    const host = hostRef.current;
+    if (!host || toasts.length === 0) {
+      onSizeChange(0, 0);
+      return;
+    }
+    const report = () => {
+      const bounds = host.getBoundingClientRect();
+      onSizeChange(Math.ceil(bounds.width), Math.ceil(bounds.height));
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(host);
+    window.addEventListener('resize', report);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', report);
+    };
+  }, [onSizeChange, toasts.length]);
+
   if (toasts.length === 0) return null;
   return (
     <div
-      className="pointer-events-none fixed bottom-4 right-4 z-[100] flex max-h-[calc(100vh-2rem)] flex-col items-end gap-2 overflow-y-auto [scrollbar-width:thin]"
+      ref={hostRef}
+      className={
+        mode === 'desktop-overlay'
+          ? 'bb-desktop-toast-host pointer-events-none inline-flex max-h-screen flex-col items-end gap-2 overflow-y-auto p-4 [scrollbar-width:thin]'
+          : 'bb-page-toast-host pointer-events-none fixed bottom-4 right-4 z-[10000] flex max-h-[calc(100vh-2rem)] flex-col items-end gap-2 overflow-y-auto [scrollbar-width:thin]'
+      }
       aria-live="polite"
       aria-atomic="false"
     >
@@ -500,7 +620,6 @@ export function Toaster({
           toast={toast}
           onDismiss={onDismiss}
           onOpenChat={onOpenChat}
-          onReplyToChat={onReplyToChat}
         />
       ))}
     </div>

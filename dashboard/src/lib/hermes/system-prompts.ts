@@ -196,6 +196,12 @@ export function composeHermesSystemPrompt(input: {
   if (decision.allowedTools.includes("chat_search")) {
     sections.push(readSystemPrompt("chat-search"));
   }
+  // "How is the upload going?" must be answered from the job tables, not from
+  // whatever the model remembers of the conversation. Ship the boundary with
+  // the tool so the model reads it alongside the tool description.
+  if (decision.allowedTools.includes("breadboard_process_status")) {
+    sections.push(readSystemPrompt("process-status"));
+  }
   sections.push(
     [
       "# server_capability_decision",

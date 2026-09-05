@@ -218,6 +218,47 @@ test("a managed worker only waits for its pre-acquired Runtime endpoint", async 
   ]);
 });
 
+test("a managed worker honors the configured timeout during a slow supervised restart", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousNow = Date.now;
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    globalThis.setTimeout = previousSetTimeout;
+    Date.now = previousNow;
+  });
+
+  let now = 1_000_000;
+  let probes = 0;
+  globalThis.setTimeout = (callback, milliseconds, ...args) => {
+    // Readiness polling waits for at most 500 ms. Fetch's independent 2.5 s
+    // safety timer must remain pending because the fake fetch settles itself.
+    if (milliseconds <= 500) {
+      now += milliseconds;
+      queueMicrotask(() => callback(...args));
+    }
+    return 0;
+  };
+  Date.now = () => now;
+  globalThis.fetch = async () => {
+    probes += 1;
+    if (probes <= 65) throw new Error("replacement still loading");
+    return new Response(JSON.stringify({ data: [{ id: "hunyuan-ocr" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await ensureVlmOcrServer(
+    { ...loadVlmOcrConfig({}), startupTimeoutMs: 40_000 },
+    undefined,
+    { VLM_OCR_RUNTIME_MANAGED: "1" },
+  );
+
+  assert.equal(probes, 66);
+  assert.ok(now - 1_000_000 > 30_000, "recovery continued beyond the old 30 s cap");
+});
+
 test("an unavailable external or manual endpoint fails without local fallback", async (t) => {
   const previousFetch = globalThis.fetch;
   t.after(() => {

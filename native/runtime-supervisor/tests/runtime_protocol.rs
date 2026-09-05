@@ -274,11 +274,14 @@ mod windows {
         assert!(blocked.trim().is_empty());
     }
 
+    const EXCESSIVE_STDOUT_SCRIPT: &str =
+        "$chunk = 'x' * 8192; 1..140 | ForEach-Object { [Console]::Out.Write($chunk) }; exit 0";
+
     #[test]
     fn excessive_stream_output_is_truncated_without_killing_the_service() {
-        let output = activated_output(helper().args(target(
-            "$chunk = 'x' * 8192; 1..140 | ForEach-Object { [Console]::Out.Write($chunk) }; exit 0",
-        )));
+        let mut arguments = vec!["--environment-profile".to_string(), "chatmock".to_string()];
+        arguments.extend(target(EXCESSIVE_STDOUT_SCRIPT));
+        let output = activated_output(helper().args(arguments));
         assert!(output.status.success());
         let parsed = events(&output.stdout);
         assert!(parsed.iter().any(|event| {
@@ -286,6 +289,30 @@ mod windows {
                 && event["stream"] == "stdout"
                 && event["limitBytes"] == 1024 * 1024
         }));
+        assert!(parsed.iter().any(|event| event["type"] == "exit"));
+    }
+
+    #[test]
+    fn worker_stdout_is_forwarded_for_the_whole_target_lifetime() {
+        // A worker's stdout is the fenced event stream the runtime owner
+        // parses. Heartbeats alone exceed the service lifetime bound after
+        // roughly two hours, so truncating it would fail every long job.
+        let output = activated_output(helper().args(target(EXCESSIVE_STDOUT_SCRIPT)));
+        assert!(output.status.success());
+        let parsed = events(&output.stdout);
+        assert!(!parsed
+            .iter()
+            .any(|event| event["type"] == "stream-truncated" && event["stream"] == "stdout"));
+        let forwarded: usize = parsed
+            .iter()
+            .filter(|event| event["type"] == "stdout")
+            .filter_map(|event| event["data"].as_str())
+            .map(str::len)
+            .sum();
+        assert!(
+            forwarded > 1024 * 1024,
+            "worker stdout must not stop at the service bound; forwarded {forwarded} bytes"
+        );
         assert!(parsed.iter().any(|event| event["type"] == "exit"));
     }
 

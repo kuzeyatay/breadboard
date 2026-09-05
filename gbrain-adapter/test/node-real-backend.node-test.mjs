@@ -81,6 +81,25 @@ test("Node initializes, serves, and reopens the real vendored GBrain backend", a
     assert.equal(reopened.backend, "gbrain");
     assert.equal(reopened.pages, 1);
     assert.ok(reopened.chunks > 0);
+
+    const removed = await request(origin, "/remove-source", {
+      sourceId: "node-real",
+    });
+    assert.equal(removed.status, 200);
+    assert.deepEqual((await removed.json()).data, {
+      sourceId: "node-real",
+      removed: true,
+      pagesDeleted: 1,
+    });
+    const empty = await (await fetch(`${origin}/health`)).json();
+    assert.equal(empty.sources, health.sources);
+    assert.equal(empty.pages, 0);
+    assert.equal(empty.chunks, 0);
+
+    const removedAgain = await request(origin, "/remove-source", {
+      sourceId: "node-real",
+    });
+    assert.equal((await removedAgain.json()).data.removed, false);
   } finally {
     if (server) await server.stop();
     fs.rmSync(pgDir, { recursive: true, force: true });

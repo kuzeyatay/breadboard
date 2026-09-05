@@ -14,6 +14,12 @@ import {
   type SkillRequirement,
 } from "./skill-compatibility.ts";
 import { isReviewedLocalSource } from "./local-skills-sources.ts";
+import {
+  isTextToCadSkill,
+  TEXT_TO_CAD_SKILLS,
+  TEXT_TO_CAD_SOURCE,
+  TEXT_TO_CAD_VERSION,
+} from "./text-to-cad.ts";
 
 const QUARANTINE_MANIFEST = ".breadboard-quarantine.json";
 const MAX_SKILL_FILES = 200;
@@ -30,6 +36,12 @@ const APPROVABLE_AGENTS = new Set([
 const CLASSIFIER_VERSION = "breadboard-skill-policy-v2";
 const SCIENTIFIC_SKILLS_REPOSITORY = "k-dense-ai/scientific-agent-skills";
 const REVERSE_SKILLS_REPOSITORY = "zhaoxuya520/reverse-skill";
+// Checked-in first-party skills are immutable for the lifetime of a server
+// process. Some text-to-cad skills include an offline viewer and geometry
+// runtime, so re-reading every binary to rediscover the same hash on each
+// command would turn intent routing into hundreds of milliseconds of I/O.
+// Environment-overridden roots remain uncached for tests and local review.
+const FIRST_PARTY_HASH_CACHE = new Map<string, string>();
 
 /**
  * True when a stable upstream id belongs to a reviewed, vendored local clone.
@@ -43,6 +55,11 @@ function isReviewedLocalUpstreamId(upstreamId: string | undefined): boolean {
   );
 }
 const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
+  // earthtojake/text-to-cad is artifact engineering, not repository software
+  // engineering. Its manifests necessarily contain Python/XML/CLI examples;
+  // classifying those examples as app coding would make the CAD procedures
+  // unavailable on the ordinary turns they are vendored to handle.
+  ...TEXT_TO_CAD_SKILLS,
   "interactive-visualizer",
   "interactive-visualizer-in-chat",
   "manim",
@@ -65,6 +82,11 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // classifier reads a manifest of markup as implementation work — which would
   // confine "draw me an architecture diagram" to scoped implementation mode.
   "diagram-design",
+  // An ASCII diagram is inline knowledge-work output, not repository code.
+  // The reviewed pack ships optional Python layout/verifier helpers, and those
+  // support scripts must not confine a plain-text drawing request to scoped
+  // implementation mode.
+  "ascii-art-diagrams",
   // A repository dossier is research, not repository coding. Its guidance is
   // full of api.github.com URL templates because that is where the facts live,
   // and a manifest of API endpoints must not confine "is this repo any good?"
@@ -82,6 +104,9 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // until the tests pass" to scoped implementation mode — leaving the one
   // sentence that most needs a goal unable to start one.
   "goal",
+  // Desktop operation runs through Hermes Agent's pinned cua-driver backend;
+  // the skill describes how to use that product runtime, not how to write code.
+  "computer-use",
 ]);
 
 export type SkillEligibility =
@@ -554,7 +579,15 @@ export function listFirstPartySkills(
     let contentHash = "";
     try {
       markdown = fs.readFileSync(manifestPath, "utf8");
-      contentHash = hashSkillDirectory(directory);
+      if (process.env.HERMES_FIRST_PARTY_SKILLS_ROOT) {
+        contentHash = hashSkillDirectory(directory);
+      } else {
+        contentHash = FIRST_PARTY_HASH_CACHE.get(directory) ?? "";
+        if (!contentHash) {
+          contentHash = hashSkillDirectory(directory);
+          FIRST_PARTY_HASH_CACHE.set(directory, contentHash);
+        }
+      }
     } catch {
       return [];
     }
@@ -594,15 +627,18 @@ export function listFirstPartySkills(
       surface,
       connectedMcpServers,
     });
+    const textToCad = isTextToCadSkill(entry.name);
     const summary: ApprovedSkillSummary = {
-      id: `breadboard:first-party/${entry.name}`,
+      id: textToCad
+        ? `${TEXT_TO_CAD_SOURCE}/${entry.name}`
+        : `breadboard:first-party/${entry.name}`,
       slug: entry.name,
       upstreamSlug: entry.name,
       storageKey: entry.name,
       name,
       description,
-      source: "Breadboard",
-      version: "1.0.0",
+      source: textToCad ? TEXT_TO_CAD_SOURCE : "Breadboard",
+      version: textToCad ? TEXT_TO_CAD_VERSION : "1.0.0",
       contentHash,
       enabled: true,
       healthy: true,
@@ -712,6 +748,8 @@ export interface QuarantineReport {
   slashCommand?: string;
   package: string;
   source: string;
+  description?: string;
+  repository?: string;
   exactVersion?: string;
   catalogRevision?: string;
   localHash: string;
@@ -911,7 +949,9 @@ function inspectFiles(
   saved?: QuarantineReport,
 ): QuarantineReport {
   const files = listFilesRecursive(dir)
-    .map((file) => path.relative(dir, file))
+    // Registry pins are portable metadata. Always store POSIX separators so a
+    // skill reviewed on Windows verifies identically when it is loaded later.
+    .map((file) => path.relative(dir, file).replace(/\\/g, "/"))
     .filter((file) => file !== QUARANTINE_MANIFEST);
   const fileHashes = Object.fromEntries(
     files.map((file) => [file, sha256(fs.readFileSync(path.join(dir, file)))]),
@@ -946,10 +986,12 @@ function inspectFiles(
     externalNetworkRequirements,
     candidate?.requestedPermissions ?? saved?.requestedPermissions ?? [],
   );
+  const description = candidate?.description ?? saved?.description;
+  const repository = candidate?.repository ?? saved?.repository;
   const classification = classifySkill({
     name: frontmatterName ?? name,
-    description: candidate?.description,
-    repository: candidate?.repository,
+    description,
+    repository,
     manifest: skillMarkdown,
     requestedPermissions,
   });
@@ -981,6 +1023,8 @@ function inspectFiles(
     slashCommand: candidate?.slashCommand ?? saved?.slashCommand ?? candidate?.name ?? saved?.slug ?? name,
     package: candidate?.package ?? saved?.package ?? name,
     source: candidate?.source ?? saved?.source ?? "unknown",
+    description,
+    repository,
     exactVersion: candidate?.version ?? saved?.exactVersion,
     catalogRevision: saved?.catalogRevision ?? candidate?.version,
     localHash: hashSkillDirectory(dir),

@@ -126,10 +126,13 @@ test("the catalogue makes launching nothing the default", () => {
   assert.match(superAgent, /what does this agent reach that I cannot\?/);
   assert.match(superAgent, /is \*about\* an agent's topic is not one of them/);
 
-  // One at a time, reconsidering on the way back — and a second agent only for
-  // a different job, because "more agents" otherwise reads as thoroughness.
+  // Independent jobs may run together, while a second agent still has to own a
+  // different job because "more agents" otherwise reads as thoroughness.
   assert.match(superAgent, /Then decide how many/);
   assert.match(superAgent, /one job done twice/);
+  assert.match(superAgent, /run concurrently/);
+  assert.match(superAgent, /whatever order the workers finish/);
+  assert.doesNotMatch(superAgent, /They run one at a time, in order/);
 
   // Outward actions are called out as a higher bar than reads.
   assert.match(superAgent, /what starting one commits the user to/);

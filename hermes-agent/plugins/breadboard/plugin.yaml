@@ -119,6 +119,7 @@ provides_tools:
   - image_search
   - product_search
   - chat_search
+  - breadboard_process_status
   - artifact_import
   - artifact_search
   - artifact_image_generate

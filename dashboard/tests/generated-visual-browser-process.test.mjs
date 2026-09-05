@@ -9,6 +9,7 @@ import {
   runObservedGeneratedVisualBrowserProcess,
 } from "../src/lib/generated-visual-browser-process.ts";
 import {
+  BROWSER_WRAPPER_EXIT_HOLD_MS,
   isCurrentOwnedWindowsRoot,
   PROCESS_SNAPSHOT_TIMEOUT_MS,
   terminateOwnedBrowserTree,
@@ -32,7 +33,11 @@ test("the attempt bound covers an in-flight initial snapshot at tiny deadlines",
       TREE_CLOSE_TIMEOUT_MS +
       1_000,
   );
-  assert.equal(generatedVisualBrowserAttemptDurationBoundMs(25_000), 48_000);
+  assert.equal(generatedVisualBrowserAttemptDurationBoundMs(25_000), 60_000);
+});
+
+test("the owned browser wrapper outlives the initial Windows ownership snapshot", () => {
+  assert.ok(BROWSER_WRAPPER_EXIT_HOLD_MS > PROCESS_SNAPSHOT_TIMEOUT_MS);
 });
 
 test("one large stdout chunk preserves DOM markers outside its trailing diagnostic window", async (t) => {
@@ -130,7 +135,7 @@ test("the first terminal cause remains authoritative while cleanup proof is pend
     {
       expected: "process_exit",
       script: exitScript,
-      timeoutMs: 5_000,
+      timeoutMs: BROWSER_WRAPPER_EXIT_HOLD_MS + 5_000,
       errorCode: undefined,
       timedOut: false,
     },

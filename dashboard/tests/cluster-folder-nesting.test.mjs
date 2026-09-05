@@ -607,10 +607,22 @@ describe("creating a garden inside a cluster", () => {
     assert.match(createCluster, /folder\?: string \| null/);
     assert.match(createCluster, /normalizeFolderPath\(folder\)/);
     assert.match(createCluster, /ensureFolderPath\(db, userId, cleanFolder\)/);
-    assert.match(createCluster, /INSERT INTO clusters \([^)]*folder\)/);
+    assert.match(createCluster, /INSERT INTO clusters \([^)]*folder/);
   });
 
   test("an empty cluster stores NULL rather than a blank path", () => {
     assert.match(createCluster, /cleanFolder \|\| null/);
+  });
+
+  test("creation returns before the full Quartz publication finishes", () => {
+    assert.match(actions, /import \{ after \} from "next\/server"/);
+    assert.match(
+      createCluster,
+      /after\(async \(\) => \{[\s\S]*await publishQuartzAfterMutation/,
+    );
+    assert.doesNotMatch(
+      createCluster,
+      /refreshPrivateQuartzIndex\(userId\);\s*await publishQuartzAfterMutation/,
+    );
   });
 });

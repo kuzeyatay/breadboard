@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
+import { Toaster, useToast } from '@/app/components/toast';
 import { quartzUrlFromBase, quartzUrlWithAppTheme } from '@/lib/quartz-url';
 import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
@@ -11,6 +12,10 @@ import {
   type QuartzInlineAnswerStopRequest,
   type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
+import {
+  quartzTopologyInvestigationRequest,
+  type QuartzTopologyInvestigationRequest,
+} from '@/lib/quartz-topology-investigation';
 import { useQuartzViewLease } from '../use-quartz-view-lease';
 
 interface Props {
@@ -22,6 +27,8 @@ interface Props {
    * Quartz on this launch, so the Server Component must pass the live value.
    */
   quartzBaseUrl: string;
+  /** View lease already held by the Server Component; null if it could not lease Quartz. */
+  quartzViewId?: string | null;
   note?: string;
   initialChatOpen?: boolean;
   trackPublicView?: boolean;
@@ -144,20 +151,24 @@ export default function GardenClient({
   clusterSlug,
   clusterName,
   quartzBaseUrl,
+  quartzViewId = null,
   note,
   initialChatOpen = false,
   trackPublicView = false,
 }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const { toasts, dismissToast } = useToast();
   const quartzDocumentReadyRef = useRef(false);
   const quartzLastMessageAtRef = useRef(0);
   const quartzRetryTimerRef = useRef<number | null>(null);
-  const quartzLease = useQuartzViewLease();
+  const quartzLease = useQuartzViewLease(true, quartzViewId);
   const [activeCluster, setActiveCluster] = useState(clusterSlug);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(() =>
     note ? { cluster: clusterSlug, slug: note, loading: true } : null,
   );
   const [assistantSelection, setAssistantSelection] = useState<QuartzAssistantSelectionRequest | null>(null);
+  const [topologyInvestigation, setTopologyInvestigation] =
+    useState<QuartzTopologyInvestigationRequest | null>(null);
   const [assistantInlineStop, setAssistantInlineStop] = useState<QuartzInlineAnswerStopRequest | null>(null);
   const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
   const activeMarkdownCluster = activeMarkdown?.cluster;
@@ -253,6 +264,16 @@ export default function GardenClient({
       if (selectionRequest) {
         if (event.source !== iframeRef.current?.contentWindow) return;
         setAssistantSelection(selectionRequest);
+        return;
+      }
+
+      const investigationRequest = quartzTopologyInvestigationRequest(data);
+      if (investigationRequest) {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        if (!quartzOrigin || event.origin !== quartzOrigin) return;
+        if (investigationRequest.clusterSlug !== clusterSlug) return;
+        setActiveCluster(investigationRequest.clusterSlug);
+        setTopologyInvestigation(investigationRequest);
         return;
       }
 
@@ -389,6 +410,8 @@ export default function GardenClient({
               folder,
               ok,
               error: body.error,
+              retryable: body.retryable === true,
+              retryAfterMs: body.retryAfterMs,
             });
             if (ok) reloadGarden();
           })
@@ -778,27 +801,20 @@ export default function GardenClient({
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden bg-gray-950">
-      {!quartzLease.ready && (
-        <div
-          className="absolute inset-0 z-10 grid place-items-center bg-gray-950"
-          role="status"
-          aria-live="polite"
-        >
+      {quartzLease.failed && (
+        <div className="absolute inset-0 z-10 grid place-items-center bg-gray-950" role="alert">
           <div className="flex flex-col items-center gap-4">
-            <div className="flex items-center gap-1.5" aria-hidden="true">
-              {[0, 1, 2].map((index) => (
-                <span
-                  key={index}
-                  className="h-1.5 w-1.5 animate-pulse bg-gray-600"
-                  style={{ animationDelay: `${index * 200}ms` }}
-                />
-              ))}
-            </div>
             <span className="text-xs uppercase tracking-widest text-gray-700">
-              {quartzLease.failed
-                ? 'Quartz did not respond — retrying'
-                : 'Preparing Quartz'}
+              Quartz did not respond
             </span>
+            <a
+              href={quartzUrlFromBase(quartzBaseUrl, clusterSlug)}
+              target="_blank"
+              rel="noreferrer"
+              className="neu-button rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
+            >
+              Open Quartz directly
+            </a>
           </div>
         </div>
       )}
@@ -822,11 +838,14 @@ export default function GardenClient({
         activeClusterName={activeCluster === clusterSlug ? clusterName : activeCluster}
         activeMarkdown={activeMarkdown}
         selectedTextRequest={assistantSelection}
+        topologyInvestigationRequest={topologyInvestigation}
         inlineAnswerStopRequest={assistantInlineStop}
         onInlineAnswerUpdate={postInlineAnswer}
         initialOpen={initialChatOpen}
         launcherHidden={markdownEditorOpen}
       />
+
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

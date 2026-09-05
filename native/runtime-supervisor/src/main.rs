@@ -1211,6 +1211,8 @@ const DEEP_RESEARCH_ENVIRONMENT_NAMES: &[&str] = &[
     "DEEP_RESEARCH_SECRET",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
+    "CHATMOCK_BASE_URL",
+    "CHATMOCK_API_KEY",
     "CHATMOCK_MODEL",
     "DEEP_RESEARCH_CONTEXT_SIZE",
     "DEEP_RESEARCH_STEP_TIMEOUT_MS",
@@ -1593,6 +1595,46 @@ enum EnvironmentProfile {
 }
 
 impl EnvironmentProfile {
+    /// Whether the target's stdout is the runtime's fenced worker event
+    /// stream (every worker profile) rather than persistent service logging.
+    fn forwards_worker_events(self) -> bool {
+        !matches!(
+            self,
+            Self::Chatmock
+                | Self::Comfyui
+                | Self::Dashboard
+                | Self::Gbrain
+                | Self::Hermes
+                | Self::TelegramGateway
+                | Self::WhatsappGateway
+                | Self::Openwork
+                | Self::Openscience
+                | Self::MoneyPrinter
+                | Self::Wardrobe
+                | Self::Penecho
+                | Self::VlmOcr
+                | Self::Recall
+                | Self::Mem0SemanticEngine
+                | Self::LocalMcpBroker
+                | Self::PostizCoordinator
+                | Self::InboxZeroStack
+                | Self::SpotifyPlayback
+                | Self::Cliproxy
+                | Self::Quartz
+                | Self::UiTars
+                | Self::Cad
+                | Self::Colpali
+                | Self::Humanizer
+                | Self::Voicebox
+                | Self::Scriberr
+                | Self::DeepResearch
+                | Self::DeerFlow
+                | Self::VibeTrading
+                | Self::StockAnalyst
+                | Self::SolidworksMcp
+        )
+    }
+
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "worker" => Ok(Self::Worker),
@@ -3814,12 +3856,24 @@ mod windows_runtime {
         stream: &'static str,
         pending: &mut Vec<u8>,
         end_of_stream: bool,
+        lossless: bool,
     ) -> Result<bool, SupervisorError> {
         let mut write_error = None;
         let mut fully_enqueued = true;
         drain_utf8(pending, end_of_stream, |data| {
             if write_error.is_none() {
-                match output.emit_log(json!({ "type": stream, "data": data })) {
+                let value = json!({ "type": stream, "data": data });
+                // A worker's stdout is its fenced NDJSON authority channel,
+                // not diagnostic output. Queue it as lifecycle data so a
+                // transient controller slowdown evicts best-effort memory or
+                // stderr records instead of dropping part of a worker event
+                // and poisoning an otherwise healthy long-running job.
+                let emitted = if lossless {
+                    output.emit_lifecycle(value).map(|()| true)
+                } else {
+                    output.emit_log(value)
+                };
+                match emitted {
                     Ok(enqueued) => fully_enqueued &= enqueued,
                     Err(error) => write_error = Some(error),
                 }
@@ -3857,15 +3911,31 @@ mod windows_runtime {
         pending: &mut Vec<u8>,
         end_of_stream: bool,
         pressure_reported: &mut bool,
+        lossless: bool,
     ) -> ForwardResult {
-        let fully_enqueued = emit_decoded_stream(output, stream, pending, end_of_stream)?;
+        let fully_enqueued = emit_decoded_stream(output, stream, pending, end_of_stream, lossless)?;
         report_stream_pressure(output, stream, pressure_reported, fully_enqueued)
+    }
+
+    /// Lifetime forwarding bound for one target stream. `None` forwards the
+    /// stream for the whole target lifetime: a worker's stdout is the fenced
+    /// event channel the runtime owner parses, so truncating it after a fixed
+    /// byte budget turns every long-running job (heartbeats alone reach the
+    /// 1 MiB bound in about two hours) into a worker protocol fault.
+    fn stream_lifetime_bound(profile: EnvironmentProfile, stream: &'static str) -> Option<u64> {
+        if stream == "stdout" && profile.forwards_worker_events() {
+            None
+        } else {
+            Some(MAX_FORWARDED_STREAM_BYTES)
+        }
     }
 
     fn forward(
         handle: Handle,
         stream: &'static str,
         output: ProtocolSink,
+        lifetime_bound: Option<u64>,
+        lossless: bool,
     ) -> Result<Forwarder, SupervisorError> {
         // Convert the raw HANDLE into a standard-library owner before moving it
         // across the thread boundary. `File` is Send; windows-sys HANDLE is a
@@ -3897,6 +3967,7 @@ mod windows_runtime {
                                 &mut pending,
                                 true,
                                 &mut pressure_reported,
+                                lossless,
                             )?;
                             return Ok(());
                         }
@@ -3907,8 +3978,8 @@ mod windows_runtime {
                                 // the lifetime forwarding bound.
                                 continue;
                             }
-                            let remaining =
-                                MAX_FORWARDED_STREAM_BYTES.saturating_sub(forwarded_bytes);
+                            let remaining = lifetime_bound
+                                .map_or(count as u64, |bound| bound.saturating_sub(forwarded_bytes));
                             let accepted =
                                 usize::try_from(remaining.min(count as u64)).unwrap_or(count);
                             if accepted > 0 {
@@ -3921,6 +3992,7 @@ mod windows_runtime {
                                 &mut pending,
                                 false,
                                 &mut pressure_reported,
+                                lossless,
                             )?;
                             if accepted != count {
                                 // Flush at most the three-byte partial UTF-8
@@ -3933,6 +4005,7 @@ mod windows_runtime {
                                     &mut pending,
                                     true,
                                     &mut pressure_reported,
+                                    lossless,
                                 )?;
                                 emit(
                                     &output,
@@ -3940,7 +4013,7 @@ mod windows_runtime {
                                         "type": "stream-truncated",
                                         "stream": stream,
                                         "forwardedBytes": forwarded_bytes,
-                                        "limitBytes": MAX_FORWARDED_STREAM_BYTES,
+                                        "limitBytes": lifetime_bound.unwrap_or(MAX_FORWARDED_STREAM_BYTES),
                                     }),
                                 )?;
                                 forwarding_enabled = false;
@@ -3956,6 +4029,7 @@ mod windows_runtime {
                                     &mut pending,
                                     true,
                                     &mut pressure_reported,
+                                    lossless,
                                 )?;
                                 return Ok(());
                             }
@@ -5184,11 +5258,23 @@ mod windows_runtime {
                 ) {
                     break 'supervision Err(error);
                 }
-                match forward(stdout_read, "stdout", output.clone()) {
+                match forward(
+                    stdout_read,
+                    "stdout",
+                    output.clone(),
+                    stream_lifetime_bound(options.environment_profile, "stdout"),
+                    options.environment_profile.forwards_worker_events(),
+                ) {
                     Ok(forwarder) => stdout_forward = Some(forwarder),
                     Err(error) => break 'supervision Err(error),
                 }
-                match forward(stderr_read, "stderr", output.clone()) {
+                match forward(
+                    stderr_read,
+                    "stderr",
+                    output.clone(),
+                    stream_lifetime_bound(options.environment_profile, "stderr"),
+                    false,
+                ) {
                     Ok(forwarder) => stderr_forward = Some(forwarder),
                     Err(error) => break 'supervision Err(error),
                 }
@@ -6241,6 +6327,29 @@ mod windows_runtime {
                 "soft-limit"
             );
             assert_eq!(event_type(queue.next_line().unwrap().unwrap()), "stdout");
+        }
+
+        #[test]
+        fn worker_stdout_evicts_best_effort_logs_instead_of_being_dropped() {
+            let queue = Arc::new(ProtocolQueue::new());
+            let sink = ProtocolSink {
+                queue: Arc::clone(&queue),
+            };
+            let payload = "x".repeat(8 * 1024);
+            while sink
+                .emit_log(json!({ "type": "memory", "data": payload.as_str() }))
+                .unwrap()
+            {}
+
+            let mut worker_event = br#"{"type":"heartbeat"}
+"#
+            .to_vec();
+            assert!(emit_decoded_stream(&sink, "stdout", &mut worker_event, false, true,).unwrap());
+            assert!(worker_event.is_empty());
+            assert_eq!(
+                event(queue.next_line().unwrap().unwrap()),
+                json!({ "type": "stdout", "data": "{\"type\":\"heartbeat\"}\n" }),
+            );
         }
 
         #[test]

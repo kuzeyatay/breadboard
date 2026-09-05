@@ -22,6 +22,7 @@ const gardenChat = source("../src/app/components/hermes/garden-agent-chat.tsx");
 const dock = source("../src/app/components/scheduled-chats-dock.tsx");
 const dashboard = source("../src/app/dashboard/dashboard-client.tsx");
 const runner = source("../src/lib/schedules/runner.ts");
+const scheduleSchema = source("../src/lib/schedules/schema.ts");
 const scheduler = source("../src/lib/schedules/scheduler.ts");
 const backgroundExecutor = source("../scripts/runtime-v2-background-executor.mjs");
 const eventStream = source("../src/lib/hermes/event-stream.ts");
@@ -157,8 +158,8 @@ test("countdowns stay readable at every distance", () => {
   assert.equal(formatRelativeRunTime(iso(3 * 24 * 3_600_000), now), "in 3 days");
 });
 
-test("the schedule form states where the chat will open and never guesses", () => {
-  assert.match(scheduledPanel, /Each run opens a new chat in/);
+test("the schedule form explains the objective gate and never guesses the target", () => {
+  assert.match(scheduledPanel, /monitoring checks stay quiet until/);
   assert.match(scheduledPanel, /scheduleTargetLabel\(\{ surface, gardenSlug \}\)/);
   // The target comes from the surface the panel belongs to — there is no picker.
   assert.doesNotMatch(scheduledPanel, /setSurface|<select[^>]*surface/);
@@ -168,9 +169,9 @@ test("the dashboard keeps a persistent top-left dialogue while anything is sched
   assert.match(dashboard, /<ScheduledChatsDock \/>/);
   assert.match(dock, /fixed left-4 top-20/);
   assert.match(dock, /if \(schedules\.length === 0\) return null;/);
-  // It must say what will happen, where, and when.
-  assert.match(dock, /scheduled chat\{schedules\.length === 1 \? "" : "s"\}/);
-  assert.match(dock, /New chat in \{scheduleTargetLabel\(job\)\}/);
+  // It must say what will happen and when.
+  assert.match(dock, /scheduled task\{schedules\.length === 1 \? "" : "s"\}/);
+  assert.match(dock, /scheduleConversationBehaviorLabel\(job\)/);
   assert.match(dock, /formatRunTime\(job\.nextRunAt\)/);
   assert.match(dock, /Last run failed/);
 });
@@ -190,13 +191,42 @@ test("a scheduled run goes through the same authenticated turn pipeline as a per
   assert.match(runner, /waitForSessionEventPump\(runtime\)/);
 });
 
+test("conditional schedules decide privately and publish only a met objective", () => {
+  assert.match(runner, /temporary: waitsForObjective/);
+  assert.match(runner, /scheduledObjectiveEvaluationPrompt\(job\.prompt\)/);
+  assert.match(runner, /objective\.decision === "pending"[\s\S]{0,220}deleteConversation\(conversation\)/);
+  assert.match(runner, /publishObjectiveConversation\(/);
+  assert.match(runner, /content: input\.job\.prompt/);
+  assert.match(runner, /content: objective\.visibleContent/);
+  assert.match(scheduleSchema, /inferScheduledChatConversationPolicy\(row\.prompt\)/);
+  assert.match(scheduler, /objectiveDecision: result\.objectiveDecision/);
+});
+
+test("schedule cards use the prompt as the title without repeating a description", () => {
+  assert.match(scheduledPanel, /title: prompt/);
+  assert.doesNotMatch(scheduledPanel, /\{job\.prompt\}<\/p>/);
+  assert.doesNotMatch(scheduledPanel, />\s*Name\s*<input/);
+});
+
+test("deleting a schedule uses the themed, non-blocking confirmation dialog", () => {
+  for (const surface of [scheduledPanel, dock]) {
+    assert.match(surface, /useConfirmDialog\(\)/);
+    assert.match(surface, /title: "Delete scheduled task\?"/);
+    assert.match(surface, /detail: "Chats this task already opened are kept\."/);
+    assert.match(surface, /\{confirmDialog\}/);
+    assert.doesNotMatch(surface, /window\.confirm\(/);
+  }
+});
+
 test("a messaging reminder is delivered directly without depending on an agent turn", () => {
-  assert.match(runner, /job\.delivery_channel && job\.delivery_mode === "reminder"/);
+  assert.match(runner, /job\.delivery_mode === "reminder"/);
   assert.match(runner, /sendOwnerText\(\{[\s\S]{0,180}kind: "reminder"/);
   assert.ok(
-    runner.indexOf("job.delivery_channel") < runner.indexOf("requireEnabled()"),
+    runner.indexOf('job.delivery_mode === "reminder"') < runner.indexOf("requireEnabled()"),
     "direct reminders must still fire while the agent runtime is stopped",
   );
+  assert.match(runner, /publishReminderConversation\(\{/);
+  assert.match(runner, /Phone delivery failed; reminder opened in chat/);
 });
 
 test("the pump can run without a browser attached, and the SSE route still uses it", () => {

@@ -58,13 +58,25 @@ interface SealedRuntimeV2QuartzPublishExecutor {
   }): Promise<QuartzBuildResult>;
 }
 
-interface QuartzPublishOptions {
+interface QuartzPublishBaseOptions {
   readonly requireSuccess?: boolean;
   /** Authenticated actor. Scope remains deliberately user-global. */
   readonly userId?: number;
-  /** Garden-scoped canonical mutation that invalidates derived topology. */
-  readonly gardenSlug?: string;
 }
+
+type QuartzPublishOptions = QuartzPublishBaseOptions & (
+  | {
+      /** Garden-scoped canonical mutation that invalidates derived topology. */
+      readonly gardenSlug: string;
+      readonly topologyImpact?: never;
+    }
+  | {
+      /** Explicit proof that this publication changes only aggregate/static
+       * output and cannot make one Garden's derived topology stale. */
+      readonly gardenSlug?: never;
+      readonly topologyImpact: "none";
+    }
+);
 
 interface PendingPublication {
   readonly reasons: string[];
@@ -379,7 +391,7 @@ export async function ensureQuartzPublicationForView(userId: number): Promise<vo
 
       await publishQuartzAfterMutation(
         "prepare Quartz for the first garden view",
-        { userId, requireSuccess: true },
+        { userId, requireSuccess: true, topologyImpact: "none" },
       );
     })().finally(() => {
       viewReadinessPublish = null;
@@ -390,8 +402,18 @@ export async function ensureQuartzPublicationForView(userId: number): Promise<vo
 
 export async function publishQuartzAfterMutation(
   reason: string,
-  options: QuartzPublishOptions = {},
+  options: QuartzPublishOptions,
 ): Promise<void> {
+  // `gardenSlug` used to be optional and silent. A new background writer could
+  // successfully publish changed Markdown while forgetting to invalidate the
+  // corresponding Thought Topology—the Runtime ingestion worker was one such
+  // path. Make every caller declare either the Garden or an intentional
+  // topology-neutral publication, and enforce it at runtime for JS workers.
+  if (!options.gardenSlug && options.topologyImpact !== "none") {
+    throw new TypeError(
+      "Quartz publication after a mutation requires a Garden slug or an explicit topology-neutral scope.",
+    );
+  }
   if (options.gardenSlug) {
     const { invalidateThoughtTopologyAfterMutation } = await import(
       "./thought-topology/state.ts"
@@ -423,4 +445,34 @@ export async function publishQuartzAfterMutation(
   } catch (error) {
     logPublishError(reason, error);
   }
+}
+
+/**
+ * Warm derived Quartz pages while the dashboard remains usable. Repeated
+ * Server Component renders must not enqueue another full-site publication
+ * behind one that is already running; the next render can retry if that build
+ * did not include the newly materialized source.
+ */
+export function publishQuartzIndexesIfIdle(reason: string, userId: number): void {
+  if (activePublish || currentPublish) return;
+  void publishQuartzAfterMutation(reason, {
+    userId,
+    topologyImpact: "none",
+  });
+}
+
+/**
+ * Wait for only the publication batch that is running right now. A route that
+ * needs a freshly materialized index can then check the output again instead
+ * of blindly queueing a duplicate full-site build behind the dashboard warmup.
+ */
+export async function waitForQuartzPublicationInFlight(): Promise<boolean> {
+  const publication = currentPublish ?? activePublish;
+  if (!publication) return false;
+  try {
+    await publication;
+  } catch {
+    // The caller rechecks its output and can submit one recovery build.
+  }
+  return true;
 }

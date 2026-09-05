@@ -3,11 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import AttachmentPreviewDialog, {
+  type AttachmentPreviewSource,
+} from "@/app/components/attachment-preview-dialog";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
-import {
-  ReclaimingAudio,
-  ReclaimingVideo,
-} from "@/app/components/reclaiming-media";
 import {
   chatAttachmentHref,
   type ChatMessageAttachment,
@@ -23,6 +22,8 @@ interface Props {
   attachments?: readonly ChatMessageAttachment[];
   /** Filename-only fallback for messages saved before image previews existed. */
   attachmentNames?: readonly string[];
+  /** Garden sources focused for this turn that still have previewable bytes. */
+  sourceAttachments?: readonly AttachmentPreviewSource[];
 }
 
 /** One attached-file chip, whether it links anywhere or not. */
@@ -55,6 +56,7 @@ function isPastedScreenshotName(name: string): boolean {
 export default function ChatMessageAttachments({
   attachments = [],
   attachmentNames = [],
+  sourceAttachments = [],
 }: Props) {
   const [openImageIndex, setOpenImageIndex] = useState<number | null>(null);
   const images = useMemo(
@@ -93,7 +95,13 @@ export default function ChatMessageAttachments({
     [attachments],
   );
   const fileEntries = useMemo(() => {
-    const retainedNames = new Set(attachments.map((attachment) => attachment.name));
+    const retainedNames = new Set([
+      ...attachments.map((attachment) => attachment.name),
+      ...sourceAttachments.flatMap((attachment) => [
+        attachment.name,
+        ...(attachment.aliases ?? []),
+      ]),
+    ]);
     return [
       ...attachments.filter(
         (attachment) =>
@@ -110,7 +118,7 @@ export default function ChatMessageAttachments({
         )
         .map((name) => ({ type: "file" as const, name })),
     ];
-  }, [attachmentNames, attachments]);
+  }, [attachmentNames, attachments, sourceAttachments]);
 
   useEffect(() => {
     if (openImageIndex === null) return;
@@ -142,6 +150,7 @@ export default function ChatMessageAttachments({
     videos.length === 0 &&
     tracks.length === 0 &&
     products.length === 0 &&
+    sourceAttachments.length === 0 &&
     fileEntries.length === 0
   ) {
     return null;
@@ -195,37 +204,39 @@ export default function ChatMessageAttachments({
         {videos.length ? (
           <div className="flex w-full flex-col items-end gap-1.5">
             {videos.map((attachment, index) => (
-              <div
+              <AttachmentPreviewDialog
                 key={`${attachment.blobId}-${index}`}
-                className="neu-surface-raised w-full max-w-[min(32rem,72vw)] overflow-hidden rounded-[22px] border border-[var(--line)] p-1"
+                source={{
+                  kind: "video",
+                  name: attachment.name,
+                  href: `/api/chat-attachments/videos/${attachment.blobId}`,
+                  playable: isPlayableVideoFormat(attachment.format),
+                }}
+                className="neu-surface-raised flex w-full max-w-[min(32rem,72vw)] items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-left text-xs text-[var(--ink-muted)] transition hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+                title={`Play ${attachment.name}`}
               >
-                {isPlayableVideoFormat(attachment.format) ? (
-                  <ReclaimingVideo
-                    controls
-                    // The file can be gigabytes; nothing is fetched until played.
-                    preload="metadata"
-                    src={`/api/chat-attachments/videos/${attachment.blobId}`}
-                    className="block max-h-80 w-full rounded-[18px] bg-black"
-                  />
-                ) : (
-                  // No browser plays Matroska or AVI. Watch reads them fine, so
-                  // the file is here and analyzable — just not previewable.
-                  <a
-                    href={`/api/chat-attachments/videos/${attachment.blobId}`}
-                    className="block rounded-[18px] px-3 py-2 text-xs text-[var(--ink-muted)] underline decoration-dotted underline-offset-2"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {videoFormatLabel(attachment.format)} · not playable in the browser · download
-                  </a>
-                )}
-                <span className="block truncate px-2 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]">
+                <svg
+                  aria-hidden
+                  className="h-4 w-4 shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.7}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h10.5v10.5H3.75zM14.25 10.5 20.25 7.5v9l-6-3z" />
+                </svg>
+                <span className="min-w-0 flex-1 truncate">
                   {attachment.name}
                   {formatVideoSize(attachment.sizeBytes)
                     ? ` · ${formatVideoSize(attachment.sizeBytes)}`
                     : ""}
                 </span>
-              </div>
+                <span className="shrink-0 text-[10px]">
+                  {isPlayableVideoFormat(attachment.format)
+                    ? "Open player"
+                    : videoFormatLabel(attachment.format)}
+                </span>
+              </AttachmentPreviewDialog>
             ))}
           </div>
         ) : null}
@@ -233,26 +244,34 @@ export default function ChatMessageAttachments({
         {tracks.length ? (
           <div className="flex w-full flex-col items-end gap-1.5">
             {tracks.map((attachment, index) => (
-              <div
+              <AttachmentPreviewDialog
                 key={`${attachment.blobId}-${index}`}
-                className="neu-surface-raised w-full max-w-[min(32rem,72vw)] overflow-hidden rounded-[22px] border border-[var(--line)] p-1"
+                source={{
+                  kind: "audio",
+                  name: attachment.name,
+                  href: `/api/chat-attachments/audio/${attachment.blobId}`,
+                }}
+                className="neu-surface-raised flex w-full max-w-[min(32rem,72vw)] items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-left text-xs text-[var(--ink-muted)] transition hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+                title={`Play ${attachment.name}`}
               >
-                {/* Every stored audio format plays in a browser, so unlike a
-                    video there is no unplayable branch. Nothing is fetched
-                    until the person presses play. */}
-                <ReclaimingAudio
-                  controls
-                  preload="metadata"
-                  src={`/api/chat-attachments/audio/${attachment.blobId}`}
-                  className="block w-full"
-                />
-                <span className="block truncate px-2 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]">
+                <svg
+                  aria-hidden
+                  className="h-4 w-4 shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.7}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 18V5.25l10.5-1.5V16.5M9 18a2.25 2.25 0 1 1-4.5 0A2.25 2.25 0 0 1 9 18Zm10.5-1.5a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" />
+                </svg>
+                <span className="min-w-0 flex-1 truncate">
                   {attachment.name}
                   {formatAudioSize(attachment.sizeBytes)
                     ? ` · ${formatAudioSize(attachment.sizeBytes)}`
                     : ""}
                 </span>
-              </div>
+                <span className="shrink-0 text-[10px]">Open player</span>
+              </AttachmentPreviewDialog>
             ))}
           </div>
         ) : null}
@@ -294,8 +313,19 @@ export default function ChatMessageAttachments({
           </div>
         ) : null}
 
-        {fileEntries.length ? (
+        {sourceAttachments.length || fileEntries.length ? (
           <div className="flex flex-wrap justify-end gap-1">
+            {sourceAttachments.map((source, index) => (
+              <AttachmentPreviewDialog
+                key={`${source.kind}:${source.href}:${index}`}
+                source={source}
+                className={`${FILE_CHIP_CLASS} cursor-pointer transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
+                title={`Open ${source.name}`}
+              >
+                <PaperclipIcon />
+                <span className="truncate">{source.name}</span>
+              </AttachmentPreviewDialog>
+            ))}
             {fileEntries.map((attachment, index) => {
               const key = `${attachment.name}-${index}`;
               // A stored document has a reader of its own, so its chip is a
@@ -308,6 +338,26 @@ export default function ChatMessageAttachments({
                     <PaperclipIcon />
                     <span className="truncate">{attachment.name}</span>
                   </span>
+                );
+              }
+              if (
+                attachment.type === "document" &&
+                attachment.format === "pdf"
+              ) {
+                return (
+                  <AttachmentPreviewDialog
+                    key={key}
+                    source={{
+                      kind: "pdf",
+                      name: attachment.name,
+                      href: viewerHref,
+                    }}
+                    className={`${FILE_CHIP_CLASS} cursor-pointer transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
+                    title={`Open ${attachment.name}`}
+                  >
+                    <PaperclipIcon />
+                    <span className="truncate">{attachment.name}</span>
+                  </AttachmentPreviewDialog>
                 );
               }
               return (

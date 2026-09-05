@@ -43,6 +43,40 @@ test("a created schedule is armed with its first future run", () => {
   assert.equal(presented.gardenSlug, null);
   assert.equal(presented.model, "gpt-5.6-sol");
   assert.equal(presented.reasoningEffort, "high");
+  assert.equal(presented.title, terminalJob.prompt);
+  assert.equal(presented.conversationPolicy, "always_open");
+});
+
+test("an availability watch uses the prompt as its title and waits to open a chat", () => {
+  const store = createStore();
+  const prompt = "notify me when 2027 Turkish GP tickets become available";
+  const row = store.create(1, {
+    ...terminalJob,
+    title: "Notify me when 2027 Turkish GP",
+    prompt,
+  });
+
+  assert.equal(row.title, prompt);
+  assert.equal(row.conversation_policy, "open_when_objective_met");
+  const presented = presentScheduledChatJob(row);
+  assert.equal(presented.title, prompt);
+  assert.equal(presented.conversationPolicy, "open_when_objective_met");
+});
+
+test("the additive migration repairs an existing summarized watch", () => {
+  const store = createStore();
+  const prompt = "notify me when 2027 Turkish GP tickets become available";
+  const row = store.create(1, { ...terminalJob, prompt });
+  store.rawDatabase.prepare(`
+    UPDATE scheduled_chat_jobs
+    SET title = 'Notify me when 2027 Turkish GP', conversation_policy = 'always_open'
+    WHERE id = ?
+  `).run(row.id);
+
+  const migrated = new ScheduledChatJobStore(store.rawDatabase, "migration-test")
+    .require(1, row.id);
+  assert.equal(migrated.title, prompt);
+  assert.equal(migrated.conversation_policy, "open_when_objective_met");
 });
 
 test("a one-time schedule fires once and disarms while its chat is running", () => {
@@ -115,6 +149,23 @@ test("a messaging reminder keeps its direct delivery contract", () => {
   );
 });
 
+test("a reminder can target Breadboard chat when no phone link is available", () => {
+  const store = createStore();
+  const row = store.create(1, {
+    ...terminalJob,
+    prompt: "Physics starts at 10:00",
+    deliveryMode: "reminder",
+    deliveryChannel: null,
+  });
+  assert.equal(row.delivery_channel, null);
+  assert.equal(row.delivery_mode, "reminder");
+  assert.equal(row.conversation_policy, "always_open");
+  assert.throws(
+    () => store.create(1, { ...terminalJob, deliveryChannel: "telegram" }),
+    /needs a delivery mode/,
+  );
+});
+
 test("a garden schedule keeps its garden and a terminal schedule cannot have one", () => {
   const store = createStore();
   const garden = store.create(1, { ...terminalJob, surface: "garden_chat", gardenSlug: "physics" });
@@ -136,9 +187,13 @@ test("invalid input is rejected as a 400, not stored", () => {
     assert.equal(error.status, 400);
     return true;
   });
-  assert.throws(() => store.create(1, { ...terminalJob, title: "  " }), ScheduleError);
+  assert.equal(
+    store.create(1, { ...terminalJob, title: "  " }).title,
+    terminalJob.prompt,
+    "legacy custom titles cannot replace the prompt",
+  );
   assert.throws(() => store.create(1, { ...terminalJob, prompt: "" }), ScheduleError);
-  assert.equal(store.list(1).length, 0);
+  assert.equal(store.list(1).length, 1);
 });
 
 test("schedules are per user and never leak across accounts", () => {
@@ -146,7 +201,7 @@ test("schedules are per user and never leak across accounts", () => {
   const mine = store.create(1, terminalJob);
   store.create(2, { ...terminalJob, title: "Someone else's" });
 
-  assert.deepEqual(store.list(1).map((row) => row.title), ["Morning briefing"]);
+  assert.deepEqual(store.list(1).map((row) => row.title), [terminalJob.prompt]);
   assert.equal(store.get(2, mine.id), null);
   assert.equal(store.delete(2, mine.id), false);
   assert.throws(() => store.require(2, mine.id), ScheduleError);
@@ -301,6 +356,28 @@ test("run outcomes are recorded for the dashboard dock", () => {
   assert.equal(presented.lastStatus, "failed");
   assert.equal(presented.lastError, "The agent runtime is unavailable.");
   assert.equal(presented.runCount, 2);
+});
+
+test("a watch disarms itself after its objective is met", () => {
+  const store = createStore();
+  const row = store.create(1, {
+    ...terminalJob,
+    prompt: "notify me when 2027 Turkish GP tickets become available",
+  });
+
+  store.recordRun(row.id, {
+    status: "ok",
+    conversationId: null,
+    objectiveDecision: "pending",
+  });
+  assert.equal(store.require(1, row.id).enabled, 1);
+
+  store.recordRun(row.id, {
+    status: "ok",
+    conversationId: "conv_tickets",
+    objectiveDecision: "met",
+  });
+  assert.equal(store.require(1, row.id).enabled, 0);
 });
 
 test("a corrupt expression is disabled rather than retried every tick", () => {

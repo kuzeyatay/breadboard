@@ -10,6 +10,9 @@ const read = (relative) => fs.readFileSync(path.join(repoRoot, relative), "utf8"
 const assistant = read("dashboard/src/app/garden/garden-assistant.tsx");
 const adapter = read("dashboard/src/lib/hermes/garden-chat-adapter.ts");
 const chatSessionsRoute = read("dashboard/src/app/api/chat-sessions/route.ts");
+const legacyActivity = read(
+  "dashboard/src/app/components/hermes/use-legacy-agent-activity.ts",
+);
 
 /* ------------------------------------------------------------------ */
 /* Session identity                                                    */
@@ -103,6 +106,59 @@ test("approving resumes the original task without the user restating it", () => 
   assert.match(approveBlock, /request\.history/);
   assert.match(approveBlock, /request\.selectedText/);
   assert.match(approveBlock, /request\.selectionContext/);
+  assert.match(approveBlock, /request\.attachments/);
+});
+
+test("Garden sends Super Agent and its automatic-approval mode with the turn", () => {
+  assert.match(assistant, /const superAgentEnabled = isSuperAgentEnabled\(\)/);
+  assert.match(assistant, /const yoloModeEnabled = superAgentEnabled \|\| isYoloModeEnabled\(\)/);
+  assert.match(assistant, /superAgent: superAgentEnabled/);
+  assert.match(assistant, /yoloMode: yoloModeEnabled/);
+  assert.match(adapter, /superAgent: payload\.superAgent === true|const superAgent = payload\.superAgent === true/);
+});
+
+test("the reported recordings request reaches Super Agent without a permission pause", async () => {
+  const { prepareTurn } = await import("../src/lib/hermes/dispatch-core.ts");
+  const prepared = prepareTurn({
+    request:
+      "in video and audio there are 25 recordings from 2024 to 2025 can you make a table by placing when the lectures are and their contents, like a map of what was taught and when",
+    surface: "garden_chat",
+    userId: 1,
+    grants: [],
+    workspaceRoot: "C:/tmp/breadboard-turn",
+    superAgent: true,
+  });
+  assert.equal(prepared.blocked, false);
+  assert.deepEqual(prepared.pendingPermissions, []);
+  assert.equal(prepared.grant.allowedTools.agent_launch, true);
+});
+
+test("Garden auto-grants YOLO preflight server-side before it can become a blank pause", () => {
+  assert.ok(
+    adapter.indexOf("if (prepared.blocked && yoloMode)") <
+      adapter.indexOf("if (prepared.blocked)"),
+  );
+  assert.match(adapter, /scope: "one_time"/);
+  assert.match(adapter, /const regranted = prepareTurn\(/);
+  assert.match(adapter, /revokeFilesystemGrant\(userId, grantId\)/);
+});
+
+test("a Garden preflight cannot be submitted to the cancelled run's permission endpoint", () => {
+  assert.match(adapter, /preflight: \{/);
+  assert.match(legacyActivity, /event\.preflight/);
+  const preflightGuard = legacyActivity.slice(
+    legacyActivity.indexOf('event.type === "permission" &&'),
+    legacyActivity.indexOf('if (event.type === "permission")', legacyActivity.indexOf('event.type === "permission" &&') + 1),
+  );
+  assert.match(preflightGuard, /return;/);
+});
+
+test("a supervised pause is durable and is not rewritten as a completed blank answer", () => {
+  assert.match(adapter, /metadata: \{ pendingPermissions: prepared\.pendingPermissions \}/);
+  assert.match(assistant, /if \(pendingApproval\)[\s\S]*publishInlineAnswer\('pending'/);
+  assert.match(assistant, /permissionRequestFromMessages/);
+  assert.match(chatSessionsRoute, /pendingPermissions/);
+  assert.match(chatSessionsRoute, /runtimeError/);
 });
 
 test("approval requests only the operations the paused turn needed", () => {

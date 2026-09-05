@@ -24,6 +24,30 @@ body .start-screen {
   background-color: #f5efe3;
 }
 
+/* The artifact preview (`?mode=preview`) is the document as paper: the same
+   paginated print layout the editor uses, with every editing surface removed.
+   GenOffice's own Read Mode is not used for this because it collapses the
+   page gaps into one continuous sheet. */
+body .app.read-only .ribbon,
+body .app.read-only .ai-dock,
+body .app.read-only .ai-panel,
+body .app.read-only .nav-pane,
+body .app.read-only .find-panel,
+body .app.read-only .comments-pane,
+body .app.read-only .split-pane,
+body .app.read-only .status-bar,
+body .app.read-only .read-exit {
+  display: none !important;
+}
+
+body .app.read-only .editor-scroll {
+  padding: 20px 16px 80px;
+}
+
+body .app.read-only .ProseMirror {
+  caret-color: transparent;
+}
+
 /* The document conversation is the same material as Terminal, Workspace, and
    Quartz AI. The Office ribbon already names the tool; this pane needs no
    second header or row of prompt badges. */
@@ -193,7 +217,190 @@ body .bread-ai-selection-context p {
   -webkit-line-clamp: 2;
 }
 
+/* Tool output is an audit receipt, not a success badge. Keep it compact until
+   someone asks for the detail, then show each operation as a readable row. */
+body .ai-work-group {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid #ded5c6;
+  border-radius: 10px;
+  background: #f7f2e8;
+  box-shadow:
+    inset 1px 1px 0 rgb(255 254 251 / 72%),
+    2px 3px 8px rgb(72 62 46 / 5%);
+}
+
+body .ai-work-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  color: #59625b;
+  cursor: pointer;
+  list-style: none;
+  font: 600 11.5px/1.35 var(--gs-font-sans);
+  user-select: none;
+}
+
+body .ai-work-summary::-webkit-details-marker {
+  display: none;
+}
+
+body .ai-work-summary::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  margin-left: 1px;
+  border-right: 1.5px solid #7a817a;
+  border-bottom: 1.5px solid #7a817a;
+  transform: rotate(45deg) translateY(-1px);
+}
+
+body .ai-work-group[open] > .ai-work-summary::after {
+  transform: rotate(225deg) translate(-1px, -1px);
+}
+
+body .ai-work-state {
+  margin-left: auto;
+  color: #6b756e;
+  font-weight: 500;
+}
+
+body .ai-work-list {
+  margin: 0;
+  padding: 8px 12px 10px 27px;
+  border-top: 1px solid #e4dccf;
+  color: #59625b;
+}
+
 body .ai-applied-tag {
-  color: #405d4a;
-  background: #e5eee6;
+  display: list-item;
+  padding: 2px 0;
+  border-radius: 0;
+  background: transparent;
+  color: #59625b;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+body .ai-applied-tag::before {
+  content: none;
+}
+
+:root[data-theme='dark'] body,
+:root[data-theme='dark'] .genoffice-host-state,
+:root[data-theme='dark'] body .workspace,
+:root[data-theme='dark'] body .editor-scroll,
+:root[data-theme='dark'] body .start-screen {
+  background-color: #171a18;
+  color: #e4e9e6;
+}
+
+:root[data-theme='dark'] body .ai-panel {
+  --color-bg-page: #1b1f1d;
+  --color-bg-subtle: #252b28;
+  --color-border-default: #343b37;
+  --color-border-strong: #4b554f;
+  --color-text-primary: #e8ece9;
+  --color-text-secondary: #adb7b1;
+  --color-text-tertiary: #87938c;
+  --color-btn-primary: #769187;
+  --color-btn-primary-hover: #88a397;
+  --bread-chat-user: color-mix(in srgb, #26322d 82%, #59756a);
+  --bread-chat-user-border: #4b655b;
+  --bread-composer-border: #405048;
+  --bread-composer-shadow: rgb(0 0 0 / 42%);
+  --bread-composer-highlight: rgb(255 255 255 / 5%);
+  background: #1b1f1d;
+  border-right-color: #343b37;
+  box-shadow: 4px 0 18px rgb(0 0 0 / 28%);
+}
+
+:root[data-theme='dark'] body .ai-composer,
+:root[data-theme='dark'] body .ai-input-box {
+  background: #1b1f1d;
+}
+
+:root[data-theme='dark'] body .ai-input-box {
+  box-shadow:
+    7px 8px 18px var(--bread-composer-shadow),
+    -4px -4px 14px var(--bread-composer-highlight),
+    inset 1px 1px 0 rgb(255 255 255 / 4%);
+}
+
+:root[data-theme='dark'] body .ai-input-box:focus-within {
+  border-color: #68877b;
+  box-shadow:
+    7px 8px 18px var(--bread-composer-shadow),
+    -4px -4px 14px var(--bread-composer-highlight),
+    inset 1px 1px 0 rgb(255 255 255 / 4%),
+    0 0 0 1px rgb(118 145 135 / 22%);
+}
+
+:root[data-theme='dark'] body .ai-input-box textarea {
+  color: #eef2ef;
+  caret-color: #fff;
+}
+
+:root[data-theme='dark'] body .ai-input-box textarea::placeholder {
+  color: #98a49d;
+}
+
+:root[data-theme='dark'] body .ai-input-footer .ai-send-btn,
+:root[data-theme='dark'] body .ai-input-footer .ai-send-btn.ai-stop-btn {
+  border-color: #6d8b80;
+  background: #769187;
+  color: #101512;
+}
+
+:root[data-theme='dark'] body .ai-input-footer .ai-send-btn:hover:not(:disabled) {
+  background: #88a397;
+}
+
+:root[data-theme='dark'] body .ai-input-footer .ai-send-btn:disabled {
+  border-color: #3d4943;
+  background: #3d4943;
+  color: #87938c;
+}
+
+:root[data-theme='dark'] body .bread-ai-selection-context {
+  border-color: #746b3f;
+  background: #3a351f;
+  color: #e8e4cf;
+}
+
+:root[data-theme='dark'] body .bread-ai-selection-context > span {
+  color: #b7b083;
+}
+
+:root[data-theme='dark'] body .ai-work-group {
+  border-color: #343b37;
+  background: #222724;
+  box-shadow:
+    inset 1px 1px 0 rgb(255 255 255 / 4%),
+    2px 3px 8px rgb(0 0 0 / 18%);
+}
+
+:root[data-theme='dark'] body .ai-work-summary,
+:root[data-theme='dark'] body .ai-work-list,
+:root[data-theme='dark'] body .ai-applied-tag {
+  color: #adb7b1;
+}
+
+:root[data-theme='dark'] body .ai-work-list {
+  border-top-color: #343b37;
+}
+
+:root[data-theme='dark'] body .ai-work-state {
+  color: #98a49d;
+}
+
+:root[data-theme='dark'] body .ai-work-summary::after {
+  border-color: #87938c;
 }

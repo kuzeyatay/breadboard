@@ -19,6 +19,7 @@ import {
   peekCachedSkillsCatalog,
   skillsCatalogUrl,
 } from "@/lib/hermes/skills-catalog-client-cache";
+import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
 
 type CatalogFilter =
   | "all"
@@ -949,7 +950,14 @@ export default function SkillsCatalogPanel({
           {catalogStatusText(status, pagination.total, query, refreshing, filter)}
           {status?.stale ? <span className="text-[#9a6b19]"> · Showing a stale last-known-good catalog{status.lastFailure ? ` · ${status.lastFailure}` : ""}</span> : null}
         </p>
-        {error ? <p className="mt-2 rounded-md bg-[var(--paper-surface)] px-2 py-1.5 text-xs text-[#9a4438]">{error}</p> : null}
+        {error ? (
+          <ReloadableFetchError
+            message={error}
+            onReload={() => void loadCatalog(true)}
+            label="Reload skills"
+            className="mt-2 justify-start rounded-md bg-[var(--paper-surface)] px-2 py-1.5 text-xs"
+          />
+        ) : null}
       </div>
       <div onKeyDown={onRowsKeyDown}>
         {loading ? <p className="px-3 py-8 text-center text-sm text-[var(--ink-muted)]">Loading skills…</p> : skills.length ? (

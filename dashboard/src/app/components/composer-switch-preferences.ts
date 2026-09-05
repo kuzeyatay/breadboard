@@ -1,8 +1,9 @@
 "use client";
 
-// Keeps the composer's switches on the account, not just in this origin's
-// localStorage. See lib/hermes/composer-switches.ts for why the browser copy
-// alone does not survive a Breadboard restart.
+// Keeps browser switches on the account, not just in this origin's
+// localStorage. This includes the composer's controls and the Profile theme
+// and location-consent controls. See lib/hermes/composer-switches.ts for why
+// the browser copy alone does not survive a Breadboard restart.
 //
 // Each switch store registers how to apply a remote value silently (memory +
 // localStorage + change event, no write-back), and calls `persistComposerSwitch`

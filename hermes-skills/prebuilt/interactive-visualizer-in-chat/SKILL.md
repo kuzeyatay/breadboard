@@ -122,6 +122,10 @@ gradients, imports, and URLs.
 `main.js` owns the real interaction and may use DOM APIs, SVG, Canvas 2D,
 `requestAnimationFrame`, pointer/keyboard events, ResizeObserver, and the
 supplied global `THREE`. Keep physics and geometry finite and deterministic.
+The manifest `mode` describes the concept being shown, not the rendering API:
+a projected 3D SVG remains `mode: "3d"` and omits `runtime.threeVersion`.
+Include `threeVersion: "0.185.1"` exactly when `main.js` references the supplied
+`THREE` global; that opt-in loads Three.js and enables the WebGL release gate.
 Use `matchMedia("(prefers-reduced-motion: reduce)")` to start motion paused for
 reduced-motion users. Pause work while the document is hidden. Listen for the
 `breadboard:themechange` event and repaint any Canvas or WebGL scene from the

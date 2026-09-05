@@ -20,6 +20,7 @@ import ChatImageResults from './chat-image-results';
 import ChatWeatherResults from './chat-weather-results';
 import type { ChatHighlightColor } from '@/lib/chat-highlights';
 import { resolveChatTextSelectionAnchor } from '@/lib/chat-text-selection';
+import { repairDamagedLatex } from '@/lib/markdown-safety';
 
 interface Props {
   content: string;
@@ -71,20 +72,93 @@ function outsideCode(content: string, transform: (prose: string) => string): str
  *
  * `remark-math` reads a `$...$` pair as inline math, so "Helsing at $18B,
  * Hadrian at $7.87B" parsed as the formula "18B, Hadrian at" and rendered in
- * italic serif with both amounts swallowed. In a chat answer a dollar followed
- * by a digit is overwhelmingly money; inline math opening on a bare digit is
- * rare, and both `\(...\)` and `$$...$$` still reach KaTeX — the first is
- * normalized just below, and neither is matched here.
+ * italic serif with both amounts swallowed. A dollar followed by a digit is
+ * usually money, but it can also open valid number-led maths such as
+ * `$0 < x < 1$`. Those pairs are identified before the remaining currency
+ * dollars are escaped.
  */
 const CURRENCY_DOLLAR = /(?<![\\$])\$(?=\d)/g;
+
+function opensNumberLedMath(content: string, openingIndex: number): boolean {
+  const tail = content.slice(openingIndex + 1);
+  const closingMatch = /(?<![\\$])\$(?!\$)/u.exec(tail);
+  if (!closingMatch) return false;
+
+  const candidate = tail.slice(0, closingMatch.index);
+  if (!candidate || candidate.includes('\n')) return false;
+
+  // A matched `$5$` is unambiguously delimited math; prose currency has no
+  // trailing dollar. For longer expressions, require actual math syntax so
+  // separate prices such as "$18B, Hadrian at $7.87B" are not paired up.
+  if (/^\s*\d+(?:[.,]\d+)?\s*$/u.test(candidate)) return true;
+  return (
+    /\\[A-Za-z]+|[_^=<>]/u.test(candidate) ||
+    /\d\s*[+*/-]\s*\d/u.test(candidate)
+  );
+}
 
 function normalizeMathDelimiters(content: string): string {
   return outsideCode(content, (prose) =>
     prose
       .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math.trim()}\n$$`)
       .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
-      .replace(CURRENCY_DOLLAR, "\\$&"),
+      .replace(CURRENCY_DOLLAR, (dollar, offset: number, source: string) =>
+        opensNumberLedMath(source, offset) ? dollar : `\\${dollar}`,
+      ),
   );
+}
+
+/**
+ * Remove HTML break tags from GFM table cells without enabling raw HTML.
+ *
+ * Models commonly use `<br>` to force two lines into one Markdown cell. Raw
+ * HTML is intentionally disabled, so the tag used to be shown as text. Tables
+ * now own wrapping in CSS; turning the tag into a space preserves both pieces
+ * of content and lets the browser choose the line break that fits the screen.
+ */
+function normalizeTableCellBreaks(content: string): string {
+  const lines = content.split('\n');
+  const codeLines = new Set<number>();
+  let activeFence: { marker: string; length: number } | null = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const fence = lines[index].match(/^\s*(`{3,}|~{3,})/u)?.[1];
+    if (activeFence) {
+      codeLines.add(index);
+      if (fence?.[0] === activeFence.marker && fence.length >= activeFence.length) {
+        activeFence = null;
+      }
+    } else if (fence) {
+      codeLines.add(index);
+      activeFence = { marker: fence[0], length: fence.length };
+    } else if (/^(?: {4}|\t)/u.test(lines[index])) {
+      codeLines.add(index);
+    }
+  }
+
+  const delimiterRow = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+  const tableRow = /^\s*\|?.*\|.*\|?\s*$/;
+  const removeBreaks = (line: string) =>
+    outsideCode(line, (prose) => prose.replace(/<br\s*\/?>/gi, ' '));
+
+  for (let delimiterIndex = 1; delimiterIndex < lines.length; delimiterIndex += 1) {
+    if (
+      codeLines.has(delimiterIndex) ||
+      codeLines.has(delimiterIndex - 1) ||
+      !delimiterRow.test(lines[delimiterIndex]) ||
+      !tableRow.test(lines[delimiterIndex - 1])
+    ) {
+      continue;
+    }
+
+    lines[delimiterIndex - 1] = removeBreaks(lines[delimiterIndex - 1]);
+    for (let rowIndex = delimiterIndex + 1; rowIndex < lines.length; rowIndex += 1) {
+      if (codeLines.has(rowIndex) || !tableRow.test(lines[rowIndex])) break;
+      lines[rowIndex] = removeBreaks(lines[rowIndex]);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 const remarkPlugins = [remarkGfm, remarkMath];
@@ -346,13 +420,12 @@ function CopyableBlockquote({
 type MarkdownTableProps = ComponentProps<'table'> & { node?: unknown };
 
 function MarkdownTable({ node, ...props }: MarkdownTableProps) {
-  // Keep the table semantic and let its full-width wrapper own horizontal
-  // overflow. Making the table itself a block prevents the browser's table
-  // layout algorithm from expanding it to the width of the chat message.
+  // Keep the table semantic. The frame is a styling boundary, while the table
+  // and its cells are responsible for fitting and wrapping inside the message.
   void node;
 
   return (
-    <div className="chat-table-scroll">
+    <div className="chat-table-frame">
       <table {...props} />
     </div>
   );
@@ -519,7 +592,12 @@ function ChatMarkdown({
   // Parse it at the shared Markdown boundary as a fallback for synthesized or
   // legacy messages that lost their dedicated run-card descriptor.
   const normalizedContent = useMemo(
-    () => normalizeMathDelimiters(parseGodsEyeResult(content).content),
+    () =>
+      normalizeMathDelimiters(
+        normalizeTableCellBreaks(
+          repairDamagedLatex(parseGodsEyeResult(content).content),
+        ),
+      ),
     [content],
   );
   const annotatedRehypePlugins = useMemo(

@@ -3,6 +3,11 @@ import fs from "node:fs";
 import test from "node:test";
 
 import { splitForTelegram, TELEGRAM_MESSAGE_LIMIT } from "../src/lib/telegram/client.ts";
+import {
+  deliverTelegramDelegatedFollowUps,
+  telegramContinuationClientMessageId,
+  telegramDelegatedWorkers,
+} from "../src/lib/telegram/delegated-follow-up.ts";
 import { normalizeInbound } from "../src/lib/telegram/gateway.ts";
 import {
   conversationIsWarm,
@@ -203,6 +208,129 @@ test("replies are split to Telegram's limit rather than truncated", () => {
   const split = splitForTelegram(unbroken);
   assert.equal(split.length, 3);
   assert.deepEqual(splitForTelegram("   "), []);
+  assert.doesNotMatch(inbound, /MAX_REPLY_CHARS|\.slice\(0,\s*12_000\)/);
+});
+
+test("a Telegram delegation delivers the later synthesized reply in full", async () => {
+  let clock = 0;
+  const workerId = "agent-launch-max-research-1";
+  const longFinal = "Final evidence.\n".repeat(1_000);
+  const messages = [
+    {
+      clientMessageId: workerId,
+      role: "assistant",
+      content: "",
+      status: "complete",
+      orderIndex: 3,
+      metadata: {
+        delegatedAgentRun: true,
+        deliveryChannel: "telegram",
+        delegatedAgentReason: "A full scientific review was requested.",
+        externalAgentRun: {
+          kind: "max_research",
+          runId: "job-research-1",
+          query: "Greek yoghurt in the morning",
+        },
+        externalAgentOutcome: "running",
+      },
+    },
+  ];
+  const replies = [];
+  const starts = [];
+
+  await deliverTelegramDelegatedFollowUps({
+    conversationId: 1,
+    afterOrder: 1,
+    listMessages: () => messages,
+    startContinuation: async ({ clientMessageId, text }) => {
+      starts.push({ clientMessageId, text });
+      messages.push(
+        {
+          clientMessageId,
+          role: "user",
+          content: text,
+          status: "complete",
+          orderIndex: 4,
+          metadata: { internalAgentContinuation: true, deliveryChannel: "telegram" },
+        },
+        {
+          clientMessageId,
+          role: "assistant",
+          content: longFinal,
+          status: "complete",
+          orderIndex: 5,
+          metadata: { internalAgentContinuation: true, deliveryChannel: "telegram" },
+        },
+      );
+    },
+    onReply: async (reply) => replies.push(reply),
+    maxWaitMs: 10,
+    pollMs: 1,
+    now: () => clock,
+    sleep: async () => {
+      clock += 1;
+      messages[0].metadata = {
+        ...messages[0].metadata,
+        externalAgentOutcome: "completed",
+        externalAgentResult: "The research worker's complete report.",
+      };
+    },
+  });
+
+  assert.equal(starts.length, 1);
+  assert.equal(
+    starts[0].clientMessageId,
+    telegramContinuationClientMessageId(workerId),
+  );
+  assert.match(starts[0].text, /agent-launch-result:agent-launch-max-research-1/);
+  assert.deepEqual(replies, [longFinal.trim()]);
+  assert.ok(replies[0].length > 12_000, "the former aggregate cap must not return");
+});
+
+test("a failed Telegram synthesis falls back to the complete worker result", async () => {
+  let clock = 0;
+  const report = "Research finding with evidence.\n".repeat(700);
+  const messages = [
+    {
+      clientMessageId: "agent-launch-fallback",
+      role: "assistant",
+      content: "",
+      status: "complete",
+      orderIndex: 3,
+      metadata: {
+        delegatedAgentRun: true,
+        deliveryChannel: "telegram",
+        externalAgentRun: {
+          kind: "max_research",
+          runId: "job-research-2",
+          query: "A complete report",
+        },
+        externalAgentOutcome: "completed",
+        externalAgentResult: report,
+      },
+    },
+  ];
+  const replies = [];
+
+  await deliverTelegramDelegatedFollowUps({
+    conversationId: 1,
+    afterOrder: 1,
+    listMessages: () => messages,
+    startContinuation: async () => {
+      throw new Error("synthesis unavailable");
+    },
+    onReply: async (reply) => replies.push(reply),
+    maxWaitMs: 2,
+    pollMs: 1,
+    now: () => clock,
+    sleep: async () => {
+      clock += 1;
+    },
+  });
+
+  assert.deepEqual(replies, [report.trim()]);
+  assert.ok(replies[0].length > 12_000);
+  assert.equal(telegramDelegatedWorkers(messages, 3).length, 0);
 });
 
 test("chats reuse a warm thread and open a new one after a quiet spell", () => {

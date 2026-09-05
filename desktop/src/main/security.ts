@@ -1,9 +1,17 @@
-import { app, shell, session, type BrowserWindow, type Session } from "electron";
+import {
+  app,
+  shell,
+  session,
+  type BrowserWindow,
+  type Event as ElectronEvent,
+  type Session,
+  type WebContents,
+} from "electron";
 
 /**
  * Renderer lockdown:
  *  - navigation restricted to the local service origins we own;
- *  - window.open denied — external links go to the OS browser;
+ *  - window.open denied — web links may be handed to the built-in browser;
  *  - permission requests denied by default;
  *  - no arbitrary web content is ever loaded in the shell.
  */
@@ -14,6 +22,7 @@ export interface AllowedOrigins {
 }
 
 const themeLocationAllowedWebContents = new Set<number>();
+const externalBrowserWebContents = new Set<number>();
 
 export function allowThemeLocationFor(webContentsId: number): boolean {
   const added = !themeLocationAllowedWebContents.has(webContentsId);
@@ -23,6 +32,25 @@ export function allowThemeLocationFor(webContentsId: number): boolean {
 
 export function revokeThemeLocationFor(webContentsId: number): void {
   themeLocationAllowedWebContents.delete(webContentsId);
+}
+
+/**
+ * Mark a sandboxed WebContentsView as the in-app browser's untrusted page.
+ *
+ * The process-wide navigation guard protects product renderers by default. A
+ * browser page is the one deliberate exception: it has no preload, no Node
+ * integration, a separate session partition, and its own http(s)-only guard.
+ */
+export function allowExternalBrowserNavigationFor(webContentsId: number): void {
+  externalBrowserWebContents.add(webContentsId);
+}
+
+export function revokeExternalBrowserNavigationFor(webContentsId: number): void {
+  externalBrowserWebContents.delete(webContentsId);
+}
+
+export function isExternalBrowserWebContents(webContentsId: number): boolean {
+  return externalBrowserWebContents.has(webContentsId);
 }
 
 export function allowedOriginsFor(urls: string[]): AllowedOrigins {
@@ -71,6 +99,60 @@ export function isSafeExternalUrl(targetUrl: string): boolean {
   }
 }
 
+/** The embedded browser deliberately supports only ordinary web pages. */
+export function isSafeBrowserUrl(targetUrl: string): boolean {
+  try {
+    const url = new URL(targetUrl);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+export interface ExternalBrowserHandlers {
+  onOpenUrl: (url: string, background: boolean) => void;
+  /** One inert shell-owned document used to identify an automation target. */
+  isTrustedBootstrapUrl?: (url: string) => boolean;
+}
+
+/**
+ * Lock down an untrusted page shown by Breadboard's embedded Chromium browser.
+ * Product pages use {@link hardenWebContents}; browser pages intentionally
+ * navigate across origins but never receive the product preload bridge.
+ */
+export function hardenExternalBrowserWebContents(
+  contents: WebContents,
+  handlers: ExternalBrowserHandlers,
+): void {
+  allowExternalBrowserNavigationFor(contents.id);
+  contents.once("destroyed", () => revokeExternalBrowserNavigationFor(contents.id));
+  const guardWebUrl = (event: ElectronEvent, targetUrl: string) => {
+    if (
+      !isSafeBrowserUrl(targetUrl) &&
+      handlers.isTrustedBootstrapUrl?.(targetUrl) !== true
+    ) {
+      event.preventDefault();
+    }
+  };
+  contents.on("will-navigate", guardWebUrl);
+  contents.on("will-redirect", guardWebUrl);
+  contents.setWindowOpenHandler(({ url, disposition }) => {
+    if (isSafeBrowserUrl(url)) {
+      handlers.onOpenUrl(url, disposition === "background-tab");
+    }
+    return { action: "deny" };
+  });
+  contents.on("will-attach-webview", (event) => event.preventDefault());
+
+  // The browser partition is separate from Breadboard's authenticated local
+  // renderer. Permissions can be surfaced through trusted chrome later; until
+  // then an arbitrary site cannot silently gain device access.
+  contents.session.setPermissionCheckHandler(() => false);
+  contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+}
+
 export function isRendererPermissionAllowed(
   allowed: AllowedOrigins,
   permission: string,
@@ -96,29 +178,70 @@ export function isRendererPermissionAllowed(
   return permission === "clipboard-sanitized-write" || permission === "fullscreen";
 }
 
+export interface LocalOpenHandlers {
+  /** A new hardened Breadboard window. Without it the page navigates in place. */
+  onOpenLocalWindow?: (url: string) => void;
+  /**
+   * A tab beside the page that asked, for the gesture a browser answers that
+   * way (a Ctrl- or middle-click). Returns false when tabs are switched off,
+   * in which case the request falls through to a window.
+   */
+  onOpenLocalTab?: (url: string) => boolean;
+  /** A sandboxed Breadboard browser tab for an ordinary external web page. */
+  onOpenExternalTab?: (url: string, background: boolean) => void;
+}
+
+export function hardenWebContents(
+  contents: WebContents,
+  allowed: AllowedOrigins,
+  handlers: LocalOpenHandlers = {},
+): void {
+  const openExternal = (url: string, background: boolean) => {
+    if (isSafeBrowserUrl(url) && handlers.onOpenExternalTab) {
+      handlers.onOpenExternalTab(url, background);
+      return;
+    }
+    void shell.openExternal(url);
+  };
+  contents.on("will-navigate", (event, targetUrl) => {
+    if (isNavigationAllowed(allowed, targetUrl)) return;
+    event.preventDefault();
+    if (isSafeExternalUrl(targetUrl)) openExternal(targetUrl, false);
+  });
+  contents.setWindowOpenHandler(({ url, disposition }) => {
+    // External http(s) URLs go to Breadboard's sandboxed browser when the page
+    // belongs to a tab-capable window. Protocols such as mailto still belong to
+    // the operating system. A local `target="_blank"` opens a new hardened
+    // Breadboard window when a handler is provided (so features like the Work
+    // timer get their own instance), otherwise it navigates in-window. A Ctrl-
+    // or middle-click is Chromium's background-tab disposition.
+    if (isSafeExternalUrl(url) && !isNavigationAllowed(allowed, url)) {
+      openExternal(url, disposition === "background-tab");
+    } else if (isNavigationAllowed(allowed, url)) {
+      const inTab =
+        disposition === "background-tab" && handlers.onOpenLocalTab?.(url) === true;
+      if (!inTab) {
+        if (handlers.onOpenLocalWindow) handlers.onOpenLocalWindow(url);
+        else void contents.loadURL(url);
+      }
+    }
+    return { action: "deny" };
+  });
+  contents.on("will-attach-webview", (event) => event.preventDefault());
+}
+
 export function hardenWindow(
   window: BrowserWindow,
   allowed: AllowedOrigins,
   onOpenLocalWindow?: (url: string) => void,
+  onOpenLocalTab?: (url: string) => boolean,
+  onOpenExternalTab?: (url: string, background: boolean) => void,
 ): void {
-  window.webContents.on("will-navigate", (event, targetUrl) => {
-    if (isNavigationAllowed(allowed, targetUrl)) return;
-    event.preventDefault();
-    if (isSafeExternalUrl(targetUrl)) void shell.openExternal(targetUrl);
+  hardenWebContents(window.webContents, allowed, {
+    onOpenLocalWindow,
+    onOpenLocalTab,
+    onOpenExternalTab,
   });
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    // External URLs go to the OS browser. A local `target="_blank"` opens a new
-    // hardened Breadboard window when a handler is provided (so features like the
-    // Work timer get their own instance), otherwise it navigates in-window.
-    if (isSafeExternalUrl(url) && !isNavigationAllowed(allowed, url)) {
-      void shell.openExternal(url);
-    } else if (isNavigationAllowed(allowed, url)) {
-      if (onOpenLocalWindow) onOpenLocalWindow(url);
-      else void window.loadURL(url);
-    }
-    return { action: "deny" };
-  });
-  window.webContents.on("will-attach-webview", (event) => event.preventDefault());
 }
 
 export function hardenSession(targetSession: Session, allowed: AllowedOrigins): void {
@@ -165,9 +288,11 @@ export function hardenSession(targetSession: Session, allowed: AllowedOrigins): 
 export function installGlobalSecurity(allowed: AllowedOrigins): void {
   app.on("web-contents-created", (_event, contents) => {
     contents.on("will-navigate", (event, targetUrl) => {
+      if (isExternalBrowserWebContents(contents.id)) return;
       if (!isNavigationAllowed(allowed, targetUrl)) event.preventDefault();
     });
     contents.setWindowOpenHandler(({ url }) => {
+      if (isExternalBrowserWebContents(contents.id)) return { action: "deny" };
       if (isSafeExternalUrl(url) && !isNavigationAllowed(allowed, url)) {
         void shell.openExternal(url);
       }

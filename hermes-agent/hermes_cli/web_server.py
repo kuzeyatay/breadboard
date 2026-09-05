@@ -3012,6 +3012,16 @@ async def get_ssh_ownership(request: Request):
     return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
+from hermes_cli.runtime_identity import RUNTIME_SOURCE
+
+
+@app.get("/api/runtime/source")
+async def get_runtime_source(request: Request):
+    """Authenticated source identity, distinct from public process liveness."""
+    _require_token(request)
+    return dict(RUNTIME_SOURCE)
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None

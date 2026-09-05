@@ -74,6 +74,26 @@ test("real inline maths still renders", () => {
   assert.match(markup, /katex/);
 });
 
+test("number-led inline maths is not mistaken for currency", () => {
+  const markup = render(
+    String.raw`The boundaries are distinct, so normally $0<\phi_2-\phi_1<2\pi$.`,
+  );
+  assert.match(markup, /katex/);
+  assert.doesNotMatch(markup, /\$0/);
+});
+
+test("an isolated number with two delimiters still renders as maths", () => {
+  const markup = render(String.raw`The result is $5$.`);
+  assert.match(markup, /katex/);
+});
+
+test("currency before number-led maths does not steal its opening delimiter", () => {
+  const markup = render(String.raw`It costs $5; the domain is $0<x<1$.`);
+  assert.match(markup, /katex/);
+  assert.match(markup, /\$5/);
+  assert.doesNotMatch(markup, /\$0/);
+});
+
 test("display maths still renders", () => {
   const markup = render("Result:\n\n$$\nx^2 + y^2 = z^2\n$$\n");
   assert.match(markup, /katex/);
@@ -93,4 +113,17 @@ test("a single amount on its own is untouched", () => {
   const markup = render("It costs $5 today.");
   assert.doesNotMatch(markup, /katex/);
   assert.match(markup, /\$5/);
+});
+
+test("a JSON-decoded form feed cannot break a LaTeX fraction", () => {
+  const markup = render("Result:\n\n$$\nE = \u000crac{1}{R^2}\n$$\n");
+  assert.match(markup, /katex/);
+  assert.doesNotMatch(markup, /katex-error/);
+  assert.doesNotMatch(markup, /\u000c/);
+});
+
+test("a lossy replacement marker before rac is repaired before KaTeX", () => {
+  const markup = render("Result:\n\n$$\nE = �rac{h}{\\sqrt{b^2+h^2}}\n$$\n");
+  assert.match(markup, /katex/);
+  assert.doesNotMatch(markup, /katex-error|�rac/);
 });

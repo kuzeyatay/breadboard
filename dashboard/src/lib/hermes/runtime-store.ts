@@ -245,10 +245,10 @@ export interface HermesUserSettings {
    */
   humanizerAuto: boolean;
   /**
-   * The composer's Intelligence-menu switches, kept on the account because the
-   * browser copy is keyed by origin and the desktop dashboard moves to a new
-   * loopback port on every launch. Partial: an absent key means the browser
-   * keeps its own default. See lib/hermes/composer-switches.ts.
+   * Browser switches, kept on the account because the browser copy is keyed by
+   * origin and the desktop dashboard moves to a new loopback port on every
+   * launch. Partial: an absent key means the browser keeps its own default.
+   * Location coordinates themselves remain device-local.
    */
   composerSwitches: ComposerSwitches;
 }

@@ -401,10 +401,19 @@ test("editing changes only an active memory owned by the current user", () => {
   );
 });
 
-test("chats appear in the working-memory list only once they hold compacted state", () => {
+test("chats stay visible before compaction and after their summary is cleared", () => {
   const conversation = store.createConversation({ userId: 1, title: "Long thread" });
   memory.loadConversationMemoryState(conversation.id);
-  assert.equal(inspection.listConversationMemoryStates(1).length, 0);
+  const [initial] = inspection.listConversationMemoryStates(1);
+  assert.equal(initial.conversationId, conversation.id);
+  assert.equal(initial.hasSavedMemory, false);
+  assert.equal(initial.memoryUpdatedAt, null);
+  store.reserveConversationTurn({
+    conversation,
+    clientMessageId: "kept-message",
+    surface: "dashboard_terminal",
+    content: "Help finish the report",
+  });
 
   db.prepare(
     `UPDATE conversation_memory_state
@@ -429,11 +438,18 @@ test("chats appear in the working-memory list only once they hold compacted stat
   const [state] = inspection.listConversationMemoryStates(1);
   assert.equal(state.conversationId, conversation.id);
   assert.equal(state.title, "Long thread");
+  assert.equal(state.hasSavedMemory, true);
+  assert.ok(state.memoryUpdatedAt);
+  assert.equal(state.messageCount, 1, "the pending reply is not counted");
   assert.deepEqual(state.workingState.decisions, ["Use the 2026 dataset"]);
   assert.deepEqual(state.workingState.referencedFiles, ["C:/tmp/report.md"]);
 
   assert.equal(inspection.clearConversationMemoryState(1, conversation.id), true);
-  assert.equal(inspection.listConversationMemoryStates(1).length, 0);
+  const [cleared] = inspection.listConversationMemoryStates(1);
+  assert.equal(cleared.hasSavedMemory, false);
+  assert.equal(cleared.memoryUpdatedAt, null);
+  assert.equal(cleared.messageCount, 1, "clearing memory preserves the transcript");
+  assert.equal(cleared.summary, "");
   assert.equal(
     inspection.clearConversationMemoryState(2, conversation.id),
     false,
@@ -452,6 +468,40 @@ test("malformed working state degrades to an empty structure", () => {
   const [state] = inspection.listConversationMemoryStates(1);
   assert.deepEqual(state.workingState.decisions, []);
   assert.deepEqual(state.workingState.referencedPages, []);
+});
+
+test("old chats get their first summary without restoring cleared memory or touching private and active chats", () => {
+  function legacyChat(options = {}, messageCount = 30) {
+    const chat = store.createConversation({ userId: 1, title: "Legacy chat", ...options });
+    const insert = db.prepare(`INSERT INTO conversation_messages
+      (conversation_id, client_message_id, role, surface, content, status, order_index)
+      VALUES (?, ?, ?, ?, ?, 'complete', ?)`);
+    for (let index = 0; index < messageCount; index += 1) {
+      insert.run(chat.id, `legacy-${index}`, index % 2 ? "assistant" : "user",
+        chat.surface, index % 2 ? "The report is ready." : "Help with the report.", index);
+    }
+    return chat;
+  }
+  const old = legacyChat({ surface: "garden_chat" });
+  db.prepare("DELETE FROM conversation_memory_state WHERE conversation_id = ?").run(old.id);
+  const cleared = legacyChat();
+  memory.loadConversationMemoryState(cleared.id);
+  inspection.clearConversationMemoryState(1, cleared.id);
+  const otherUser = legacyChat({ userId: 2 });
+  const temporary = legacyChat({ temporary: true });
+  const short = legacyChat({}, 2);
+  const active = legacyChat();
+  db.prepare("UPDATE conversation_messages SET status = 'pending' WHERE conversation_id = ? AND order_index = 29")
+    .run(active.id);
+
+  const transcriptBefore = db.prepare("SELECT * FROM conversation_messages ORDER BY id").all();
+  assert.equal(memory.backfillUninitializedConversationMemory(1), 1);
+  assert.ok(memory.loadConversationMemoryState(old.id).summary);
+  for (const chat of [cleared, otherUser, temporary, short, active]) {
+    assert.equal(memory.loadConversationMemoryState(chat.id).summary, "");
+  }
+  assert.equal(memory.backfillUninitializedConversationMemory(1), 0, "reopening settings is idempotent");
+  assert.deepEqual(db.prepare("SELECT * FROM conversation_messages ORDER BY id").all(), transcriptBefore);
 });
 
 // --- wiring ------------------------------------------------------------------
@@ -516,6 +566,32 @@ test("accounts from the same provider share one chronological group", () => {
   assert.match(accountPanel, /subscriptionGroups\.map\(\(\{ provider, accounts \}\)/);
   assert.match(accountPanel, /accounts\.map\(\(subscription\)/);
   assert.match(accountPanel, /chronologicalChatgptRows\.map/);
+});
+
+test("memory inspection includes every saved chat across surfaces, even without a memory row", () => {
+  const ids = [];
+  for (let index = 0; index < 45; index += 1) {
+    const chat = store.createConversation({
+      userId: 1,
+      title: `Chat ${index}`,
+      surface: index % 2 ? "garden_chat" : "dashboard_terminal",
+    });
+    ids.push(chat.id);
+  }
+  db.prepare("DELETE FROM conversation_memory_state WHERE conversation_id = ?").run(ids[0]);
+  store.createConversation({ userId: 2, title: "Someone else's chat" });
+  const temporary = store.createConversation({ userId: 1, title: "Off the record", temporary: true });
+  memory.loadConversationMemoryState(temporary.id);
+  db.prepare("UPDATE conversation_memory_state SET rolling_summary = 'Private summary' WHERE conversation_id = ?")
+    .run(temporary.id);
+
+  const rows = inspection.listConversationMemoryStates(1);
+  assert.equal(rows.length, 45, "older chats must not disappear behind the previous forty-chat cap");
+  assert.deepEqual(rows.map((row) => row.conversationId), ids.toReversed());
+  assert.ok(rows.every((row) => !row.hasSavedMemory));
+  assert.deepEqual(rows.at(-1).workingState.decisions, []);
+  assert.equal(rows.at(-1).summary, "");
+  assert.equal(inspection.listConversationMemoryStates(1, 10).length, 10);
 });
 
 test("provider actions live in the provider header, not on an account row", () => {

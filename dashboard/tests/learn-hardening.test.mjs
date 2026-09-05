@@ -332,7 +332,7 @@ describe("fallback + commentary detectors", () => {
     );
     assert.match(
       ordinaryLegacyBoundary,
-      /exactLineage\.filter\([\s\S]*?!hasCompletedNativePlanningCheckpoint\(db, origin\.id\)/,
+      /exactLineage\.filter\([\s\S]*?!hasCompletedNativePlanningCheckpoint\(db, origin\.id\)[\s\S]*?!hasNativeLearnCouncilCheckpoint\(db, origin\.id\)/,
     );
     assert.match(
       ordinaryLegacyBoundary,
@@ -342,6 +342,7 @@ describe("fallback + commentary detectors", () => {
       ordinaryLegacyBoundary,
       /learn_council_strict_predecessors_excluded_from_legacy_fallback/,
     );
+    assert.match(ordinaryLegacyBoundary, /Generation-only retries/);
     assert.match(ordinaryLegacyBoundary, /Pre-migration jobs/);
   });
 

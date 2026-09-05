@@ -173,10 +173,12 @@ button.desktop-explorer {
       }
 
       &.source-document {
+        --source-node-color: var(--source-node-color-light, #15803d);
+
         margin: 0.1rem 0 0.35rem -0.15rem;
         padding: 0.25rem 0.35rem 0.3rem 0.25rem;
-        border: 1px solid color-mix(in srgb, var(--tertiary) 42%, transparent);
-        background: color-mix(in srgb, var(--tertiary) 10%, transparent);
+        border: 1px solid color-mix(in srgb, var(--source-node-color) 52%, transparent);
+        background: color-mix(in srgb, var(--source-node-color) 12%, transparent);
 
         & > a {
           color: var(--dark);
@@ -185,7 +187,7 @@ button.desktop-explorer {
         }
 
         & > a.active {
-          color: var(--tertiary);
+          color: var(--source-node-color);
           font-weight: $semiBoldWeight;
         }
       }
@@ -230,6 +232,10 @@ button.desktop-explorer {
     padding-left: 0.8rem;
     border-left: 1px solid var(--lightgray);
   }
+}
+
+:root[saved-theme="dark"] .explorer-content ul li.explorer-file.source-document {
+  --source-node-color: var(--source-node-color-dark, #4ade80);
 }
 
 .explorer-flag-menu {
@@ -603,6 +609,10 @@ html.explorer-modal-open {
   margin: 0.1rem 0 0;
   color: #b84d47;
   font-size: 0.8rem;
+}
+
+.explorer-folder-error[data-waiting="true"] {
+  color: var(--darkgray);
 }
 
 .explorer-folder-actions {

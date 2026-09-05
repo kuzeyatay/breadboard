@@ -172,6 +172,1395 @@
       },
       "reviewedAt": "2026-08-17T00:00:00.000Z",
       "approvedAt": "2026-08-17T00:00:00.000Z"
+    },
+    "contract-and-proposal-writer": {
+      "name": "contract-and-proposal-writer",
+      "slug": "contract-and-proposal-writer",
+      "upstreamId": "alirezarezvani/claude-skills/contract-and-proposal-writer",
+      "slashCommand": "contract-and-proposal-writer",
+      "package": "alirezarezvani/claude-skills@contract-and-proposal-writer",
+      "source": "https://github.com/alirezarezvani/claude-skills",
+      "description": "Writing skill for drafting professional contracts, proposals, statements of work, NDAs, and service agreements in Word, with jurisdiction and legal-review caveats.",
+      "repository": "alirezarezvani/claude-skills",
+      "exactVersion": "19392f7a08264ed00486a251f5b2098321771f94",
+      "catalogRevision": "19392f7a08264ed00486a251f5b2098321771f94",
+      "localHash": "27dcd3b5fdac351c7742d42dd81a658bc0460ca8adbd4acfb3f08f03c62cb5c9",
+      "files": [
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "SKILL.md": "a92cdbb79c691731dc017b5cbc18370a88f081cb6e54872282678c00cae4a097",
+        "UPSTREAM_LICENSE": "a20126646f93d32a8989c3cf4772d59194f405034f7babe7daebeac22b8ab151",
+        "UPSTREAM_SOURCE.md": "74791337ba8ebcbc332221800635b67cbd096d20036c08cf37bf6c9544a9ab86"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "\"contract-and-proposal-writer\"",
+      "requestedPermissions": [
+        "network"
+      ],
+      "discoveredScripts": [],
+      "externalNetworkRequirements": [
+        "https://github.com/alirezarezvani/claude-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.039Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "2 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:12.467Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:12.480Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:12.485Z"
+    },
+    "copy-editing": {
+      "name": "copy-editing",
+      "slug": "copy-editing",
+      "upstreamId": "alirezarezvani/claude-skills/copy-editing",
+      "slashCommand": "copy-editing",
+      "package": "alirezarezvani/claude-skills@copy-editing",
+      "source": "https://github.com/alirezarezvani/claude-skills",
+      "description": "Writing skill for systematic copy editing that improves clarity, correctness, tone, structure, and polish without changing the author’s intent.",
+      "repository": "alirezarezvani/claude-skills",
+      "exactVersion": "19392f7a08264ed00486a251f5b2098321771f94",
+      "catalogRevision": "19392f7a08264ed00486a251f5b2098321771f94",
+      "localHash": "65dafc5b5a3cd5db3105f6d92ee80b96251cacbedc46c57da2495c187d31d51f",
+      "files": [
+        "references/ai-detection-patterns.md",
+        "references/plain-english-alternatives.md",
+        "scripts/ai_content_detector.py",
+        "scripts/readability_scorer.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/ai-detection-patterns.md": "125af481709a59e571184b667d8a2ed108517601c66ce5657060440d0adc78bd",
+        "references/plain-english-alternatives.md": "491c34b011de82617613a558ce609ff7ba8fd92554ac90b4c5b4db2ab0aef62e",
+        "scripts/ai_content_detector.py": "2c8a4cfdf527089f2d6b7548575a8e879ef7bf906ccee3596db8aca31fda626b",
+        "scripts/readability_scorer.py": "4a43bc05dabe7e9acd28fdf0c151a158b3d57a2a633eb09675a3c4a67d16b0ce",
+        "SKILL.md": "ecdbe7a6ff18422470eb277f5e9a307e76601c2fb54d4b6bf7ba7cb76caabeb1",
+        "UPSTREAM_LICENSE": "a20126646f93d32a8989c3cf4772d59194f405034f7babe7daebeac22b8ab151",
+        "UPSTREAM_SOURCE.md": "1269aef22349fb12298fda3e57cf569d2ac723d64b2f5b3e5249a001065a8bd3"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "\"copy-editing\"",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/ai_content_detector.py",
+        "scripts/readability_scorer.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://github.com/alirezarezvani/claude-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.062Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/ai_content_detector.py, scripts/readability_scorer.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:12.494Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.471Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.473Z"
+    },
+    "copywriting": {
+      "name": "copywriting",
+      "slug": "copywriting",
+      "upstreamId": "alirezarezvani/claude-skills/copywriting",
+      "slashCommand": "copywriting",
+      "package": "alirezarezvani/claude-skills@copywriting",
+      "source": "https://github.com/alirezarezvani/claude-skills",
+      "description": "Writing skill for drafting persuasive, audience-aware copy for documents and marketing materials.",
+      "repository": "alirezarezvani/claude-skills",
+      "exactVersion": "19392f7a08264ed00486a251f5b2098321771f94",
+      "catalogRevision": "19392f7a08264ed00486a251f5b2098321771f94",
+      "localHash": "96181b38bfddecc97d6ee06cdb112f9103e5d53e05a22e09a3cef1773c858472",
+      "files": [
+        "references/copy-frameworks.md",
+        "references/natural-transitions.md",
+        "scripts/headline_scorer.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/copy-frameworks.md": "a96c5290cd5ec24b82b9ac1dfaebbcb7111cb9e6495d5b6d1b1a5daa6332f739",
+        "references/natural-transitions.md": "83bd937ed92ca9b4ca461a8c30c81402b3dc866340f7f957f58ae73cae4cd541",
+        "scripts/headline_scorer.py": "8e1f3532b0bb72ac2c8bb8b179f4ec2424e8dcd6942683d709f9a8dd5ea26199",
+        "SKILL.md": "f6415e5e3f1a2e0e62b112bb29566e8050c087f5aa6b674e5712805f2633c9b8",
+        "UPSTREAM_LICENSE": "a20126646f93d32a8989c3cf4772d59194f405034f7babe7daebeac22b8ab151",
+        "UPSTREAM_SOURCE.md": "7e415534f539d6a7d4a46582c334ef31a291b25b235838c3c3a9893fef6d2d7b"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "\"copywriting\"",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/headline_scorer.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://github.com/alirezarezvani/claude-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.081Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/headline_scorer.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.485Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.497Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.501Z"
+    },
+    "draft-related-work": {
+      "name": "draft-related-work",
+      "slug": "draft-related-work",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/draft-related-work",
+      "slashCommand": "draft-related-work",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@draft-related-work",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for drafting a related-work section from supplied paper context and verified source notes.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "484820d5c5de5188f6d4c05769b161cfc1474e7a3ead400f681763248914045b",
+      "files": [
+        "references/clustering-and-deltas.md",
+        "references/placement-conventions.md",
+        "scripts/audit_bib.py",
+        "scripts/check_coverage.py",
+        "scripts/gather_candidates.py",
+        "scripts/polite_http.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/clustering-and-deltas.md": "f6aa103dea13a7b35a6b2f27131426d5f724843ae7e349c4b08cb8ce6fb6697d",
+        "references/placement-conventions.md": "f0f2c5760cff967228ef8c083a0a8ee325fe282aa4d3848f668f9f0d2eacf31d",
+        "scripts/audit_bib.py": "7ec08a5cb0ca0a279d99efadfb2ba5708cbb3d0fda40a3dbcb802c63766fbb00",
+        "scripts/check_coverage.py": "6b50588ebbed032a0d2bc0aab27eb95287b5b8639b8dfc75f52820cac94a12e4",
+        "scripts/gather_candidates.py": "590db60b5a08d559cc9c70b10d4ea321f6ed564be65c11c6889185b513797365",
+        "scripts/polite_http.py": "a2db7e42d3be06cfd613c24e317497046b86c4b99b3749e657cc82c910b4fe4d",
+        "SKILL.md": "becbca5b0b6685b08885c3a4d6b5a689f2b70d54169912469ba05033dfdeeec4",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "93edc3769751b129a61f9f0005ad70770b9b23898dcbe0fca08107dc3a4c7eff"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "draft-related-work",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read",
+        "filesystem-write"
+      ],
+      "discoveredScripts": [
+        "scripts/audit_bib.py",
+        "scripts/check_coverage.py",
+        "scripts/gather_candidates.py",
+        "scripts/polite_http.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://api.semanticscholar.org/graph/v1",
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.102Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/audit_bib.py, scripts/check_coverage.py, scripts/gather_candidates.py, scripts/polite_http.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.511Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.531Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.535Z"
+    },
+    "draft-survey": {
+      "name": "draft-survey",
+      "slug": "draft-survey",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/draft-survey",
+      "slashCommand": "draft-survey",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@draft-survey",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for drafting a literature survey from supplied research context and verified source notes.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "e98a1beb4c9ca6b2522545328488ecf9545b6cb2900921d7f18a28e545b2d42b",
+      "files": [
+        "references/ranking-criteria.md",
+        "scripts/rank_papers.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/ranking-criteria.md": "ca1e408d9b8d05701febbc2323eaa3f98c355e15f07184f1c95c395e9fa81cf3",
+        "scripts/rank_papers.py": "dc194893a857e0b552db3b020036e343800daa681b369585ee2fc4043ce89730",
+        "SKILL.md": "64e9db25b1cc98f25b1cf1c6910711bbcc7430f4406df3a3b0ddacff1755603d",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "96ff49c78b6a315b4ce50cbf16d5976edbfe752b1eb72a922d735b4d2ceb2a37"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "draft-survey",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/rank_papers.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.122Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/rank_papers.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.544Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.559Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.563Z"
+    },
+    "fit-page-limit": {
+      "name": "fit-page-limit",
+      "slug": "fit-page-limit",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/fit-page-limit",
+      "slashCommand": "fit-page-limit",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@fit-page-limit",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for shortening or expanding a paper to fit a target page or length limit while preserving substance.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "db9d3ec38648c000e85d3a854a7a63247d8db657dd5d41313c4ce0c81e658d7c",
+      "files": [
+        "references/resize-tactics.md",
+        "scripts/section_budget.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/resize-tactics.md": "c02a92fb27cc65e940cf78aa5bd9434df794005e341713afd18384f033de18b4",
+        "scripts/section_budget.py": "67c217f1c5b8112bfb739a9a9b26b9c297d1ea8bd9377978cf6aee92754b6397",
+        "SKILL.md": "7b77384860089717552e035c8a83de6562fcabb26804583455a60c2684b20254",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "020b8f7c7ca7fd35f05c726998feb94c591f86cde3b66fabd9778dba9790a337"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "fit-page-limit",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/section_budget.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.139Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/section_budget.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.571Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.583Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.586Z"
+    },
+    "match-style": {
+      "name": "match-style",
+      "slug": "match-style",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/match-style",
+      "slashCommand": "match-style",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@match-style",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Writing skill for revising document text to match an established scholarly or editorial style.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "5e8ba44d4042a27bad512cd75032660dbbca76d97c25258d5e9885b35bc49e9d",
+      "files": [
+        "references/style-dimensions.md",
+        "scripts/style_signature.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/style-dimensions.md": "e433c3cea4fe3290c9f835d8e5a737ba5bff6c180e5b07a3d124a0794b6d6f50",
+        "scripts/style_signature.py": "ff59ee07839047b1073471d1166187dcfccb549959759fa986913af27117c5fc",
+        "SKILL.md": "e49d18af91d887b378e2454c55423d3d84bb192ccf6496074caddd25cb109e33",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "a21b273c6c703ce1867c91b988f5d477e2a9ccf64548460fd76bcb0821539a93"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "match-style",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read"
+      ],
+      "discoveredScripts": [
+        "scripts/style_signature.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.156Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/style_signature.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.594Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.607Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.610Z"
+    },
+    "polish-prose": {
+      "name": "polish-prose",
+      "slug": "polish-prose",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/polish-prose",
+      "slashCommand": "polish-prose",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@polish-prose",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for polishing and humanizing prose while preserving technical meaning and citations.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "3228f2bb2ffdcead2973561d0ed3582a722f1bea31c48b0ebf45f29083606e6a",
+      "files": [
+        "references/hedging-and-claims.md",
+        "references/llm-tells.md",
+        "references/venue-register.md",
+        "scripts/prose_lint.py",
+        "scripts/terminology_check.py",
+        "scripts/texprose.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/hedging-and-claims.md": "6660c3ddb7f84f0b9875696724b24b9b16ddf208727799a11495cc22197dfc0f",
+        "references/llm-tells.md": "db035dc05377b33236fac7417813350694b88486461bac3ab859b5c0d05d2910",
+        "references/venue-register.md": "8bdbd12374130c97e216a48a84122b3a479a60d0d9758609b2c2d5b7b89956cf",
+        "scripts/prose_lint.py": "2a174f274dcb3188f2fe4e031d8aafe2a8c7e61a417704ccf59351a305944a30",
+        "scripts/terminology_check.py": "8f917b7a95726fbd256fe23b285575c6b875c10f4db5c48cad16ea16392ad484",
+        "scripts/texprose.py": "bc706a51d26913ad8e6a14bdc3572b7516111824f44a45def88a489db12767ef",
+        "SKILL.md": "ca156a4f3f2733b543b857fa0dfad10ee974e98d6f9daed98675c3b858ce8e2e",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "f6d95b2f0df68081e619cc7537e5a61836246f5de4e4a5c114f4ee15f1357432"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "polish-prose",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read"
+      ],
+      "discoveredScripts": [
+        "scripts/prose_lint.py",
+        "scripts/terminology_check.py",
+        "scripts/texprose.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.180Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/prose_lint.py, scripts/terminology_check.py, scripts/texprose.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.623Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.640Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.644Z"
+    },
+    "polish-tables-figures": {
+      "name": "polish-tables-figures",
+      "slug": "polish-tables-figures",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/polish-tables-figures",
+      "slashCommand": "polish-tables-figures",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@polish-tables-figures",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for improving table and figure captions, references, consistency, and explanatory text.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "55d69592d8034a664813aa7a8970468b8aab8bd72bb402a70903b2db66088e6c",
+      "files": [
+        "references/captions-crossrefs.md",
+        "references/color-accessibility.md",
+        "references/figures.md",
+        "references/tables.md",
+        "scripts/check_floats.py",
+        "scripts/palettes.py",
+        "scripts/venueyaml.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/captions-crossrefs.md": "4ca3784f43daf4857ca43398dd8171e3bfbb3744d836e3aee7a3e53b633256ad",
+        "references/color-accessibility.md": "bba7e5e8c41734eddb28f82b829f8f1be51aee982690740de7d7f58539fd3b2b",
+        "references/figures.md": "9b80d2cd9aaa93704527da0fe25411c5ff7fcc7217c50327b305e525d5666c06",
+        "references/tables.md": "7bc829f7ab2bcf1a5a9f3b628cabcf05d670d4fe97ea724736fe2dd0695ea54f",
+        "scripts/check_floats.py": "63febaea5fde1d5da1c4dd52b67ccefcc8d5d285c66a3d70d9bd771bd80ef659",
+        "scripts/palettes.py": "0fc6918e20fa4f9f288c065366ec8168c5f598d3bb4ae2c0ab1314f3dca2a48f",
+        "scripts/venueyaml.py": "851fba5f3e864520697b95ef99221a533cd25a517538657bf072f18961fb03f5",
+        "SKILL.md": "1a459a81da1069c2b6b92cb2063374b742e6d83a5210bb95543f6f52126d69f5",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "293f5e121ca9b28b1a95d1e5654ed76b2fc3822534212570746a07e27b083d3e"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "polish-tables-figures",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/check_floats.py",
+        "scripts/palettes.py",
+        "scripts/venueyaml.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://sronpersonalpages.nl/~pault/",
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.203Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/check_floats.py, scripts/palettes.py, scripts/venueyaml.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.656Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.674Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.678Z"
+    },
+    "restructure-paper": {
+      "name": "restructure-paper",
+      "slug": "restructure-paper",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/restructure-paper",
+      "slashCommand": "restructure-paper",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@restructure-paper",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for diagnosing and improving a paper’s argument structure, section order, and narrative flow.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "b86179c0e13f75725afed18859f8e72ca44f39cc3c14d4df6ace8f26727343ac",
+      "files": [
+        "references/architecture-checklist.md",
+        "references/diagnosis-patterns.md",
+        "scripts/outline_extract.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/architecture-checklist.md": "09affa97273b456b34b67c535d70f5d42742632189a5773c1c8866c0974e016c",
+        "references/diagnosis-patterns.md": "68975842dcdb287eb7103ab3c41fd6dd793b68897f152ebaeab81f92e70b04f3",
+        "scripts/outline_extract.py": "e7c7788a25805ddd1b1171453e9864db0556de511a7376a7075e30d1927ca279",
+        "SKILL.md": "531adef81fd52285c6d4fe415e8715d763f98779986767b0b5c75d2e012c2767",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "c22c83c1475c3795cdc243126009310dac2b22d4e6ba2d779ef3ea044937a33e"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "restructure-paper",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read"
+      ],
+      "discoveredScripts": [
+        "scripts/outline_extract.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.231Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/outline_extract.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.692Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.704Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.707Z"
+    },
+    "write-abstract": {
+      "name": "write-abstract",
+      "slug": "write-abstract",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/write-abstract",
+      "slashCommand": "write-abstract",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@write-abstract",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for drafting and revising a concise research-paper abstract from the document’s evidence.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "8e91ff7e66b1b44267cb05743e01498385b387f465cf06b453cc2fe54d5d75dc",
+      "files": [
+        "references/abstract-structure.md",
+        "references/keywords-blocks.md",
+        "references/venue-norms.md",
+        "scripts/abstract_check.py",
+        "scripts/abstract_registration.py",
+        "scripts/keywords_block.py",
+        "scripts/venueyaml.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/abstract-structure.md": "9bf5369791d89b2ff05b016ebdb9c8fc042dd00e44ff33389439a94bd8e91944",
+        "references/keywords-blocks.md": "025ea591ab30caed43246f45f6426c709c30851aef4e93fc3cf4a2d2df2895a5",
+        "references/venue-norms.md": "c67d19beec7c7484cd517a7724acddacd4b8193aeca9de034bc8fc7f103072f4",
+        "scripts/abstract_check.py": "22bd70744223e33748b05f762fed933edd4b97761cfdfc4a6c66cc630ba4de60",
+        "scripts/abstract_registration.py": "ac79b16152f3c91468ca6037409c8dbd57ef68627b6340657ab57f44a2f2361e",
+        "scripts/keywords_block.py": "50d296b57ac28b224c924f4e0fe2cba782c72daccea6cae17354c406f6fd9300",
+        "scripts/venueyaml.py": "851fba5f3e864520697b95ef99221a533cd25a517538657bf072f18961fb03f5",
+        "SKILL.md": "421d8d6d9f989f39656d55cfd66147f70125439de70e59f1a6beaa8f1a94f1c3",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "0696bddc8f6e67121338c1e8eeb69509c1f0323cb7c57444f91e658db7675b3e"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "write-abstract",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/abstract_check.py",
+        "scripts/abstract_registration.py",
+        "scripts/keywords_block.py",
+        "scripts/venueyaml.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://dl.acm.org/ccs>,",
+        "https://dl.acm.org/ccs",
+        "https://dl.acm.org/ccs>",
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.285Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/abstract_check.py, scripts/abstract_registration.py, scripts/keywords_block.py, scripts/venueyaml.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.718Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.739Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.742Z"
+    },
+    "write-rebuttal": {
+      "name": "write-rebuttal",
+      "slug": "write-rebuttal",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/write-rebuttal",
+      "slashCommand": "write-rebuttal",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@write-rebuttal",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for drafting a clear, evidence-grounded response to reviewer comments.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "8af12ea06f0b17425192cb5753fe926c04ca0b76aaacfccdfedd30caac70d0f7",
+      "files": [
+        "assets/rebuttal-template.tex",
+        "references/cvpr-one-page.md",
+        "references/openreview-threads.md",
+        "references/response-patterns.md",
+        "references/revise-and-resubmit.md",
+        "scripts/check_budget.py",
+        "scripts/check_coverage.py",
+        "scripts/venueyaml.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "assets/rebuttal-template.tex": "2273137bfc0b88a6b6f305aaadbc48b6fc196ed3ba7def7844943547e1da7fc6",
+        "references/cvpr-one-page.md": "f9e91f055479fab2390e356df306dc839e9812f793d59207b49a8e416c0b32a2",
+        "references/openreview-threads.md": "533969621da266f217d5d8d6210069df102778dc5eda6b6221002a7de8d68023",
+        "references/response-patterns.md": "3e2817c0251595caa85255e953cafe4074469f473e7955d6e04fcd7b3df230eb",
+        "references/revise-and-resubmit.md": "4d9deb80e2009a657ee081aea1949a57e1e54e9f152aeb16e7bdc40883262395",
+        "scripts/check_budget.py": "8477b4a72f765733a5341153b4e72c845baade7fb27c03c2178689566d0d3f28",
+        "scripts/check_coverage.py": "04cb39d236f32cb660a1b212816a0f6c856ff9eebc2fcea11f08524bb1001c4b",
+        "scripts/venueyaml.py": "851fba5f3e864520697b95ef99221a533cd25a517538657bf072f18961fb03f5",
+        "SKILL.md": "8bed62e308b697574e4e7cdd267b23af956acfec0763515a82c5883f3a20dc3b",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "4f47d02413942616c1d2291101a5a53aed0f493c3c3b7adc37eeaa88418e3a30"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "write-rebuttal",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read",
+        "filesystem-write"
+      ],
+      "discoveredScripts": [
+        "scripts/check_budget.py",
+        "scripts/check_coverage.py",
+        "scripts/venueyaml.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.381Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/check_budget.py, scripts/check_coverage.py, scripts/venueyaml.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.755Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.773Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.776Z"
+    },
+    "write-talk-script": {
+      "name": "write-talk-script",
+      "slug": "write-talk-script",
+      "upstreamId": "ShaishavMaisuria/research-paper-lifecycle-skills/write-talk-script",
+      "slashCommand": "write-talk-script",
+      "package": "ShaishavMaisuria/research-paper-lifecycle-skills@write-talk-script",
+      "source": "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills",
+      "description": "Academic writing skill for drafting a spoken presentation script from a paper or document.",
+      "repository": "ShaishavMaisuria/research-paper-lifecycle-skills",
+      "exactVersion": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "catalogRevision": "f9a0ed8f0f1770fb0321c5b022d55ed34c939927",
+      "localHash": "7431b95450b49aad7ff06f0a09a9255057693feda39503f57cafc51c3e5398b9",
+      "files": [
+        "references/script-craft.md",
+        "references/timing-and-cuts.md",
+        "scripts/script_timer.py",
+        "scripts/word_budget.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_NOTICE",
+        "UPSTREAM_SOURCE.md"
+      ],
+      "fileHashes": {
+        "references/script-craft.md": "b837a8ec5ae45cb6ebb9e3f44a011e56e0b55aeab06af78b6010491960442df0",
+        "references/timing-and-cuts.md": "bf67c2129183e970d73fa0bcda794898e5050b9fd3500ec471cc9af63c71860d",
+        "scripts/script_timer.py": "e7cd3c4c18f13ea3e49f6a02cfd6714226d4c996dbfd04be00cf30bbbae5ec62",
+        "scripts/word_budget.py": "28429298b18b6e61c589a2c9a8ab4fd6cf40f84eb78fb49d2cf26b31127ae6ae",
+        "SKILL.md": "1fbce6ccea2cff6c3c524235c8884e3e5292ee28fc20acd157c137675862ae64",
+        "UPSTREAM_LICENSE": "b86e218eca4d67c3cc99cce3ef0f69db0a826df8f4b987ff28079b54e7a45584",
+        "UPSTREAM_NOTICE": "8a4d45831be00ed5ab6be52f217d7c791037a5e0c21990e1ab2e48ab0fcec7a7",
+        "UPSTREAM_SOURCE.md": "3795c473f0b7ca1586e7765af041d6c9ad0c5911ab50f57332c76511dbc4421b"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "write-talk-script",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [
+        "scripts/script_timer.py",
+        "scripts/word_budget.py"
+      ],
+      "externalNetworkRequirements": [
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/ShaishavMaisuria/research-paper-lifecycle-skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.410Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/script_timer.py, scripts/word_budget.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.791Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.805Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.808Z"
+    },
+    "iflytek-text-proofread": {
+      "name": "iflytek-text-proofread",
+      "slug": "iflytek-text-proofread",
+      "upstreamId": "iflytek/iFly-Skills/iflytek-text-proofread",
+      "slashCommand": "iflytek-text-proofread",
+      "package": "iflytek/iFly-Skills@iflytek-text-proofread",
+      "source": "https://github.com/iflytek/iFly-Skills",
+      "description": "Writing skill for proofreading document text for grammar, spelling, punctuation, wording, and consistency.",
+      "repository": "iflytek/iFly-Skills",
+      "exactVersion": "062da188ac91ef11047e430d4ab90bbed296b97c",
+      "catalogRevision": "062da188ac91ef11047e430d4ab90bbed296b97c",
+      "localHash": "91f482868d48232953745ce6b46254d2ad8b56d128e9e901c2dd454d06435b82",
+      "files": [
+        "README.md",
+        "scripts/text_proofread.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_SOURCE.md",
+        "_meta.json"
+      ],
+      "fileHashes": {
+        "README.md": "f95ae44d6e2445f4c50e2fe33a3132b44569d46c32209c6ef2454070ec316aa0",
+        "scripts/text_proofread.py": "e3c0be217e585b569220e0c70d415a4c0e281fef84e4a67217f17b7b78ad980b",
+        "SKILL.md": "fe4d98023bbed91d0f2613ce9a53f9ed672ee0743a2e9f93710496c9f62da7f2",
+        "UPSTREAM_LICENSE": "649fc6df7e4c6f379ae2a212bc9fa289163f1dbc06ad7eb3ca7ef949ad1c5d84",
+        "UPSTREAM_SOURCE.md": "7cf8a0a5d006224c5524ccf3ffd0443cbe020f6d4e1b91556ca56040008b1adb",
+        "_meta.json": "cc6ef4bace88508b7c0771f4c321253ce561d6a237c285395c629e599c2cf6cf"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "iflytek-text-proofread",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read"
+      ],
+      "discoveredScripts": [
+        "scripts/text_proofread.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://www.xfyun.cn/services/textCorrectionOfficial",
+        "https://console.xfyun.cn/services/s37b42a45",
+        "https://www.xfyun.cn/services/textCorrectionOfficial?target=price",
+        "https://cn-huadong-1.xf-yun.com/v1/private/s37b42a45",
+        "https://www.xfyun.cn/services/text_proofread",
+        "https://console.xfyun.cn",
+        "https://cn-huadong-1.xf-yun.com/v1/private/s37b42a45`",
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/iflytek/iFly-Skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.430Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/text_proofread.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.819Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.865Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.890Z"
+    },
+    "iflytek-translate": {
+      "name": "iflytek-translate",
+      "slug": "iflytek-translate",
+      "upstreamId": "iflytek/iFly-Skills/iflytek-translate",
+      "slashCommand": "iflytek-translate",
+      "package": "iflytek/iFly-Skills@iflytek-translate",
+      "source": "https://github.com/iflytek/iFly-Skills",
+      "description": "Writing and translation skill for translating document text while preserving meaning, tone, terminology, and structure.",
+      "repository": "iflytek/iFly-Skills",
+      "exactVersion": "062da188ac91ef11047e430d4ab90bbed296b97c",
+      "catalogRevision": "062da188ac91ef11047e430d4ab90bbed296b97c",
+      "localHash": "ad40932f25d353fdd5113984f3899f48389e72bbb5ed362188cd7d75fff738fc",
+      "files": [
+        "README.md",
+        "scripts/translate.py",
+        "SKILL.md",
+        "UPSTREAM_LICENSE",
+        "UPSTREAM_SOURCE.md",
+        "_meta.json"
+      ],
+      "fileHashes": {
+        "README.md": "857ee2610b456bd05fac5daacca35ca6885ecbb117a136256e61aafbd4a43312",
+        "scripts/translate.py": "1a99f73a48f8350c2aee83ae65c25f589b64753e617422ae0bee9da8934943ca",
+        "SKILL.md": "0d5b4e1d85c8fc7688337cccb71a39bc6c876101f6aac6db7989f83a332a8d71",
+        "UPSTREAM_LICENSE": "649fc6df7e4c6f379ae2a212bc9fa289163f1dbc06ad7eb3ca7ef949ad1c5d84",
+        "UPSTREAM_SOURCE.md": "ac722b8e32a971b0a907a9e28ca8682a37679831a31205db028ba9a80b33f8fb",
+        "_meta.json": "df01cb01e7530a0943978839868964fc478ecbefcc3671b32268cec2bb305a6e"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "iflytek-translate",
+      "requestedPermissions": [
+        "shell",
+        "network",
+        "filesystem-read"
+      ],
+      "discoveredScripts": [
+        "scripts/translate.py"
+      ],
+      "externalNetworkRequirements": [
+        "https://www.xfyun.cn/doc/nlp/xftrans/API.html",
+        "https://console.xfyun.cn/services/its",
+        "https://www.xfyun.cn/services/xftrans?target=price",
+        "https://www.xfyun.cn/services/machine_translation",
+        "https://console.xfyun.cn",
+        "https://www.xfyun.cn/doc/nlp/xftrans/API.html>",
+        "https://itrans.xfyun.cn/v2/its`",
+        "http://www.apache.org/licenses/",
+        "http://www.apache.org/licenses/LICENSE-2.0",
+        "https://github.com/iflytek/iFly-Skills"
+      ],
+      "installedAt": "2026-09-03T09:14:12.461Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "Contains script files: scripts/translate.py",
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "3 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-document"
+      ],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "The primary purpose is compatible with research, learning, writing, analysis, or productivity."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "repository",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden",
+          "quartz",
+          "document"
+        ],
+        "classifiedAt": "2026-09-03T09:14:13.925Z"
+      },
+      "reviewedAt": "2026-09-03T09:14:13.954Z",
+      "approvedPermissions": [],
+      "approvedAt": "2026-09-03T09:14:13.961Z"
     }
   }
 }

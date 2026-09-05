@@ -134,6 +134,10 @@ export interface GardenUse {
   slug: string;
   name: string;
   prompts: number;
+  /** Chats with at least one prompt in this garden. */
+  conversations: number;
+  /** Measured assistant generation time across those chats. */
+  thinkingMs: number;
   lastPromptAt: string | null;
 }
 
@@ -698,21 +702,48 @@ function readSurfaceUse(database: Database.Database, userId: number): SurfaceUse
 function readGardenUse(database: Database.Database, userId: number): GardenUse[] {
   const rows = database
     .prepare(
-      `SELECT g.slug AS slug, g.name AS name, COUNT(m.id) AS n, MAX(m.created_at) AS last_at
-       FROM clusters g
-       JOIN conversations c ON c.default_garden_id = g.id
-       JOIN conversation_messages m ON m.conversation_id = c.id AND m.role = 'user'
-       WHERE g.user_id = ?
-       GROUP BY g.id
-       ORDER BY n DESC, last_at DESC
+      `WITH garden_activity AS (
+         SELECT
+           g.id AS id,
+           g.slug AS slug,
+           g.name AS name,
+           COUNT(CASE WHEN m.role = 'user' THEN 1 END) AS prompts,
+           COUNT(DISTINCT CASE WHEN m.role = 'user' THEN c.id END) AS conversations,
+           COALESCE(SUM(
+             CASE
+               WHEN m.role = 'assistant' AND ${UNIQUE_REPORTED_USAGE}
+                 THEN COALESCE(${REPLY_DURATION_MS}, 0)
+               ELSE 0
+             END
+           ), 0) AS thinking_ms,
+           MAX(CASE WHEN m.role = 'user' THEN m.created_at END) AS last_at
+         FROM clusters g
+         JOIN conversations c ON c.default_garden_id = g.id
+         JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE g.user_id = ?
+         GROUP BY g.id
+       )
+       SELECT slug, name, prompts, conversations, thinking_ms, last_at
+       FROM garden_activity
+       WHERE prompts > 0
+       ORDER BY prompts DESC, last_at DESC
        LIMIT 6`,
     )
-    .all(userId) as Array<{ slug: string; name: string; n: number; last_at: string | null }>;
+    .all(userId) as Array<{
+      slug: string;
+      name: string;
+      prompts: number;
+      conversations: number;
+      thinking_ms: number;
+      last_at: string | null;
+    }>;
 
   return rows.map((row) => ({
     slug: row.slug,
     name: row.name,
-    prompts: Number(row.n),
+    prompts: Number(row.prompts),
+    conversations: Number(row.conversations),
+    thinkingMs: Number(row.thinking_ms),
     lastPromptAt: row.last_at,
   }));
 }

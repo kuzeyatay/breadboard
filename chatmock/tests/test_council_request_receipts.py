@@ -605,15 +605,35 @@ class StrictCouncilReceiptStoreTests(unittest.TestCase):
                 with self.assertRaises(CouncilReceiptCorrupt):
                     self.store.read(request_id, self.request_hash)
 
+    def test_completed_sanitizer_accepts_reasoning_above_output(self) -> None:
+        # Gemini-style providers report thinking tokens separately from output
+        # tokens, so a short answer after long reasoning is a valid completion.
+        request_id = "lrq_fixture_reasoning_heavy_0001"
+        self.store.reserve(request_id, self.request_hash, dispatch_mode="direct_council")
+        answer = '{"ok":true}'
+        result = {
+            **receipt_accounting("crun_reasoning_heavy", answer=answer),
+            "finalAnswer": answer,
+        }
+        result["usage"]["reasoningTokens"] = result["usage"]["outputTokens"] * 8
+        result["usage"]["totalTokens"] = (
+            result["usage"]["inputTokens"]
+            + result["usage"]["outputTokens"]
+            + result["usage"]["reasoningTokens"]
+        )
+        completed = self.store.complete(request_id, self.request_hash, result)
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(
+            self.store.read(request_id, self.request_hash)["result"]["usage"]["reasoningTokens"],
+            result["usage"]["reasoningTokens"],
+        )
+
     def test_completed_sanitizer_rejects_unsafe_numbers_types_and_times(self) -> None:
         def total_underflow(result: dict[str, object]) -> None:
             result["usage"]["totalTokens"] = 14
 
         def cached_over_input(result: dict[str, object]) -> None:
             result["usage"]["cachedInputTokens"] = 11
-
-        def reasoning_over_output(result: dict[str, object]) -> None:
-            result["usage"]["reasoningTokens"] = 6
 
         def unsafe_integer(result: dict[str, object]) -> None:
             result["usage"]["callCount"] = 9_007_199_254_740_992
@@ -636,7 +656,6 @@ class StrictCouncilReceiptStoreTests(unittest.TestCase):
         mutations = (
             total_underflow,
             cached_over_input,
-            reasoning_over_output,
             unsafe_integer,
             reported_over_calls,
             false_provenance,

@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { childProcessPath } from "./child-process-path.mjs";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
 import { createStatusWriter } from "./voicebox-status.mjs";
 import { exitIfAlreadyRunning } from "./service-probe.mjs";
@@ -22,13 +23,18 @@ const windows = process.platform === "win32";
 const port = /^\d+$/.test(process.env.VOICEBOX_PORT || "")
   ? process.env.VOICEBOX_PORT
   : "17493";
-const dataDir =
-  process.env.VOICEBOX_DATA_DIR?.trim() || path.join(repoRoot, ".runtime", "voicebox");
-const modelsDir = process.env.VOICEBOX_MODELS_DIR?.trim() || path.join(dataDir, "models");
-const environment =
-  process.env.VOICEBOX_ENV_DIR?.trim() || path.join(repoRoot, ".runtime", "voicebox-venv");
-const statusPath =
-  process.env.VOICEBOX_STATUS_PATH?.trim() || path.join(dataDir, "startup-status.json");
+const dataDir = childProcessPath(
+  process.env.VOICEBOX_DATA_DIR?.trim() || path.join(repoRoot, ".runtime", "voicebox"),
+);
+const modelsDir = childProcessPath(
+  process.env.VOICEBOX_MODELS_DIR?.trim() || path.join(dataDir, "models"),
+);
+const environment = childProcessPath(
+  process.env.VOICEBOX_ENV_DIR?.trim() || path.join(repoRoot, ".runtime", "voicebox-venv"),
+);
+const statusPath = childProcessPath(
+  process.env.VOICEBOX_STATUS_PATH?.trim() || path.join(dataDir, "startup-status.json"),
+);
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(modelsDir, { recursive: true });
 
@@ -44,7 +50,9 @@ const writeStatus = status.write;
 const stopHeartbeat = status.stopHeartbeat;
 
 const candidates = [
-  process.env.VOICEBOX_PYTHON?.trim(),
+  process.env.VOICEBOX_PYTHON?.trim()
+    ? childProcessPath(process.env.VOICEBOX_PYTHON.trim())
+    : null,
   path.join(environment, windows ? "Scripts/python.exe" : "bin/python"),
   path.join(voiceboxRoot, "backend", "venv", windows ? "Scripts/python.exe" : "bin/python"),
   path.join(voiceboxRoot, "backend", ".venv", windows ? "Scripts/python.exe" : "bin/python"),

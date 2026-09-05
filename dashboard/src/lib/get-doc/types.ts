@@ -17,6 +17,12 @@ export interface DocumentHit {
   abstract: string | null;
   /** One or two sentences on what this is and why it matched. */
   description: string;
+  /**
+   * How the paper bears on what was asked, judged from its metadata and
+   * abstract: `direct` answers it, `adjacent` informs it, `none` merely shares
+   * words with it. Absent when the describe pass did not run.
+   */
+  bearing?: "direct" | "adjacent" | "none";
   /** True when a legal, free full text was found for it. */
   openAccess: boolean;
   citationCount: number | null;

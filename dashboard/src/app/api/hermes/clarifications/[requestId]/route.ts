@@ -79,6 +79,7 @@ export async function POST(
           clientMessageId: `clarify:${requestId}`,
           surface: session.row.surface,
           content: answer,
+          clarificationAnswer: true,
           targetClientMessageId: courseCorrectionTargetClientMessageId,
           assistantContentOffset,
         });

@@ -17,7 +17,10 @@ import {
   SPOTIFY_CONNECTION_SLUG,
   spotifyConnectionStatus,
 } from "@/lib/spotify/service.ts";
-import { spotifyOAuthCallbackUrl } from "@/lib/spotify/config.ts";
+import {
+  SPOTIFY_OAUTH_CALLBACK_PATH,
+  spotifyOAuthCallbackOrigin,
+} from "@/lib/spotify/config.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -52,13 +55,17 @@ export async function POST(request: Request) {
         )
         .catch(() => false);
     }
+    const requestOrigin = new URL(request.url).origin;
+    const callbackOrigin = spotifyOAuthCallbackOrigin(requestOrigin);
     const { authorizationUrl } = beginEmbeddedOAuth({
       userId,
       integrationValue: SPOTIFY_CONNECTION_SLUG,
-      requestOrigin: new URL(request.url).origin,
-      // Already registered in the user's Spotify developer application.
-      callbackPath: "/api/hermes/mcp/oauth/callback",
-      callbackOrigin: new URL(spotifyOAuthCallbackUrl()).origin,
+      requestOrigin,
+      // The desktop dashboard can move off port 3000 when that port is busy.
+      // Spotify permits dynamic ports for an allowlisted loopback IP callback,
+      // so always return to the live dashboard that started this request.
+      callbackPath: SPOTIFY_OAUTH_CALLBACK_PATH,
+      callbackOrigin,
     });
     recordAuditEvent({
       eventType: "connected_app.oauth_started",

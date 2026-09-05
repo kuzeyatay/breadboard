@@ -152,6 +152,9 @@ test("the workflows page is a native canvas, not an embedded third-party editor"
   assert.doesNotMatch(client, /<iframe/);
   assert.match(client, /CanvasEditor/);
   assert.match(editor, /ReactFlow/);
+  assert.match(editor, /new ResizeObserver/);
+  assert.match(editor, /CanvasViewportResizeSync containerRef=\{wrapperRef\}/);
+  assert.match(editor, /requestAnimationFrame\(\(\) => \{\s*fitFrame = null;\s*void fitView/s);
   assert.match(editor, /style: \{ width: BLOCK_DIMENSIONS\.FIXED_WIDTH \}/);
   assert.match(node, /typeLabel=\{config\.canvasPresentation\?\.typeLabel\}/);
   assert.doesNotMatch(node, /typeLabel=\{config\.canvasPresentation\?\.typeLabel \?\? config\.name\}/);

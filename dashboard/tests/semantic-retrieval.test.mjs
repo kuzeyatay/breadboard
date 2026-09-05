@@ -222,6 +222,50 @@ $$`, { targetWords: 8, maxWords: 12, overlapWords: 0 });
     assert.match(result.context, /Evidence anchors: S1\.P4/);
   });
 
+  test("indexes only visible pages and uses their full nested path for navigation", async (t) => {
+    const { root, garden } = makeRetrievalGarden();
+    const database = new Database(":memory:");
+    t.after(() => {
+      database.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const visible = knowledgeNode({
+      relPath: "Concepts/1. Fields/vector-fields.md",
+      title: "Vector fields",
+      primaryConcepts: [],
+      content:
+        '---\ntitle: "Vector fields"\nsource_file: "lecture.pdf"\n---\n\n# Definition\n\nA vector field assigns a vector to each point.',
+    });
+    visible.generated_by = "document_ingestion";
+    const hidden = knowledgeNode({
+      relPath: "1. Legacy/hidden-vector-fields.md",
+      title: "Hidden vector fields",
+      primaryConcepts: [],
+      content: "# Hidden\n\nInternal ingestion scaffolding.",
+    });
+    hidden.internal = "true";
+    garden.knowledge.nodes = [visible, hidden];
+
+    const indexed = await indexRetrievalGarden({
+      garden,
+      database,
+      embeddingProvider: null,
+    });
+    assert.equal(indexed.changedPages, 1);
+    const rows = database
+      .prepare(
+        "SELECT DISTINCT page_slug, page_rel_path, section_title, content FROM semantic_chunks ORDER BY page_rel_path",
+      )
+      .all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].page_slug, "Concepts/1. Fields/vector-fields");
+    assert.equal(rows[0].page_rel_path, "Concepts/1. Fields/vector-fields.md");
+    assert.equal(rows[0].section_title, "1. Fields");
+    assert.doesNotMatch(rows[0].content, /source_file|title:/);
+    assert.match(rows[0].content, /A vector field assigns a vector/);
+  });
+
   test("clears only scoped learner chunks, removing FTS rows before base rows", async (t) => {
     const { root, garden } = makeRetrievalGarden();
     const database = new Database(":memory:");

@@ -346,11 +346,15 @@ def _safe_attempt_usage(value: Any) -> Optional[Dict[str, int]]:
     input_tokens = value["inputTokens"]
     output_tokens = value["outputTokens"]
     token_sum = input_tokens + output_tokens
+    # reasoningTokens is deliberately not bounded by outputTokens: OpenAI folds
+    # reasoning into output_tokens, but Gemini-style providers (cliproxy) report
+    # thinking separately, so a short answer after long thinking legitimately
+    # carries more reasoning than output tokens. Rejecting that here turned every
+    # completed reasoning-heavy Council run into a 500 after its answer existed.
     if (
         token_sum > _JS_MAX_SAFE_INTEGER
         or value["totalTokens"] < token_sum
         or value["cachedInputTokens"] > input_tokens
-        or value["reasoningTokens"] > output_tokens
         or value["reportedCallCount"] > value["callCount"]
     ):
         return None

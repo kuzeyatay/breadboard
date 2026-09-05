@@ -1569,12 +1569,15 @@ log("staging finite-worker production dependency closures");
     }
   };
   for (const dependency of [
+    "@cantoo/pdf-lib",
     "@embedpdf/pdfium",
     "@firecrawl/anydoc",
     "@modelcontextprotocol/sdk",
     "adm-zip",
     "bidi-js",
     "fast-xml-parser",
+    // The ingestion worker embeds OCR text layers with pdf-lib + fontkit.
+    "fontkit",
     "jszip",
     "katex",
     "mathjax-full",
@@ -2235,6 +2238,7 @@ for (const entry of [
   "runtime-v2-dashboard.mjs",
   "runtime-v2-learn-worker.mjs",
   "runtime-v2-document-ingestion-worker.mjs",
+  "runtime-v2-anydoc-pdf-worker.mjs",
   "runtime-v2-office-artifact-worker.mjs",
   "runtime-v2-agent-browser-worker.mjs",
   "runtime-v2-agent-browser-executor.mjs",
@@ -2888,6 +2892,7 @@ await stagePinnedTrackedSourceClosure({
     );
   }
   const rootModules = [
+    "breadboard_runtime.py",
     "run_agent.py",
     "model_tools.py",
     "toolsets.py",

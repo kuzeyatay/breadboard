@@ -47,7 +47,7 @@ test("the palette keeps accessible keyboard behavior and leaves MCP setup to Set
   const palette = read("dashboard/src/app/components/hermes/command-hub.tsx");
   const cache = read("dashboard/src/lib/hermes/command-client-cache.ts");
   const settings = read("dashboard/src/app/components/settings-dialog.tsx");
-  for (const text of ["Use a capability", "Skills", "Prompts", "ArrowDown", "ArrowUp", "Escape", "role=\"dialog\"", "role=\"tablist\"", "Try again", "No matching capabilities", "motion-reduce:animate-none"]) {
+  for (const text of ["Use a capability", "Skills", "Prompts", "ArrowDown", "ArrowUp", "Escape", "role=\"dialog\"", "role=\"tablist\"", "Reload capabilities", "No matching capabilities", "motion-reduce:animate-none"]) {
     assert.match(palette, new RegExp(text));
   }
   assert.doesNotMatch(palette, /\{ id: "mcp", label: "MCP" \}/);
@@ -70,6 +70,21 @@ test("the palette keeps accessible keyboard behavior and leaves MCP setup to Set
   assert.match(cache, /outcome\.slice\(0, 4_000\)/);
   assert.match(palette, /requiredCapabilityMode === "scoped_implementation"/);
   assert.match(palette, /if \(taskScoped \|\| conditional\) return/);
+});
+
+test("every capability-picker fetch failure has the shared reload icon", () => {
+  const reloadableError = read("dashboard/src/app/components/reloadable-fetch-error.tsx");
+  const palette = read("dashboard/src/app/components/hermes/command-hub.tsx");
+  const references = read("dashboard/src/app/components/hermes/reference-chats-panel.tsx");
+  const skills = read("dashboard/src/app/components/hermes/skills-catalog-panel.tsx");
+  const workflows = read("dashboard/src/app/components/hermes/workflow-templates-panel.tsx");
+
+  assert.match(reloadableError, /RefreshCw/);
+  assert.match(reloadableError, /aria-label=\{label\}/);
+  assert.match(palette, /label="Reload capabilities"/);
+  assert.match(references, /label="Reload chats"/);
+  assert.match(skills, /label="Reload skills"/);
+  assert.match(workflows, /label="Reload workflows"/);
 });
 
 test("agent search filters built-in and Agency agents with consistent catalog rows", () => {

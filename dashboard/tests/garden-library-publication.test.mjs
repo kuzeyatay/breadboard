@@ -14,6 +14,14 @@ const index = fs.readFileSync(
   new URL("../src/lib/quartz-garden-index.ts", import.meta.url),
   "utf8",
 );
+const dashboard = fs.readFileSync(
+  new URL("../src/app/dashboard/dashboard-page-shell.tsx", import.meta.url),
+  "utf8",
+);
+const loading = fs.readFileSync(
+  new URL("../src/app/garden/loading.tsx", import.meta.url),
+  "utf8",
+);
 
 test("library routes publish a stale account index before resolving navigation", () => {
   assert.match(page, /preparePrivateQuartzIndex\(userId\)/);
@@ -21,7 +29,7 @@ test("library routes publish a stale account index before resolving navigation",
   assert.match(page, /prepareOrganizationQuartzIndex\(userId\)/);
   assert.match(
     page,
-    /if \(preparedIndex\?\.publishRequired\) \{[\s\S]*await publishQuartzAfterMutation\([\s\S]*requireSuccess: true/,
+    /if \(preparedIndex\?\.publishRequired\) \{[\s\S]*await waitForQuartzPublicationInFlight\(\)[\s\S]*prepareRequestedIndex\(\)[\s\S]*await publishQuartzAfterMutation\([\s\S]*requireSuccess: true/,
   );
   assert.match(index, /writeIndexIfChanged\(sourcePath, content\)/);
   assert.match(index, /output\.mtimeMs >= sourceModifiedAt/);
@@ -35,6 +43,22 @@ test("a dashboard cluster gets its own subtree-scoped Quartz index", () => {
   assert.match(index, /export function preparePrivateClusterQuartzIndex/);
   assert.match(index, /isInSubtree\(row\.folder, cleanFolder\)/);
   assert.match(index, /cluster-\$\{scopeToken\}/);
+});
+
+test("dashboard publication materializes every cluster view before navigation", () => {
+  assert.match(index, /export function preparePrivateQuartzIndexes/);
+  assert.match(index, /for \(const folder of listFolders\(db, userId\)\)/);
+  assert.match(
+    index,
+    /refreshPrivateQuartzIndex\(userId: number\)[\s\S]*preparePrivateQuartzIndexes\(userId\)/,
+  );
+  assert.match(dashboard, /preparePrivateQuartzIndexes\(userId\)/);
+  assert.match(dashboard, /publishQuartzIndexesIfIdle\("prepare dashboard cluster garden indexes", userId\)/);
+});
+
+test("garden navigation has an interruptible route fallback during a cold publish", () => {
+  assert.match(loading, /<RouteLoading/);
+  assert.match(loading, /Opening the garden/);
 });
 
 test("My garden delegates pending navigation feedback to the global blue bar", () => {

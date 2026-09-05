@@ -22,6 +22,8 @@ import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 
 export const dynamic = "force-dynamic";
 
+const SAVE_PAGE_FOLDER = "Generated";
+
 interface GeneratedNote {
   title: string;
   slug: string;
@@ -649,7 +651,8 @@ export async function POST(request: Request) {
         excludeSlugs: [finalSlug],
       });
 
-      const newNotePath = path.join(clusterDir, `${finalSlug}.md`);
+      const generatedDir = path.join(clusterDir, SAVE_PAGE_FOLDER);
+      const newNotePath = path.join(generatedDir, `${finalSlug}.md`);
       const newNoteContent =
         frontmatter({
           title,
@@ -664,7 +667,7 @@ export async function POST(request: Request) {
         }) + buildNoteBody(title, sourceContent, related);
       const lease = acquireGardenMutationLease(clusterDir, "save-chat-page");
       try {
-        fs.mkdirSync(clusterDir, { recursive: true });
+        fs.mkdirSync(generatedDir, { recursive: true });
         if (fs.existsSync(newNotePath)) {
           return NextResponse.json(
             {

@@ -11,8 +11,12 @@ import {
   vlmOcrServerPort,
 } from '../src/lib/vlm-ocr/config.ts';
 import { buildVlmOcrServerArgs, vlmOcrWeightsSource } from '../src/lib/vlm-ocr/server.ts';
-import { streamDeltaText } from '../src/lib/vlm-ocr/client.ts';
-import { parsePagesWithVlm } from '../src/lib/vlm-ocr/parse.ts';
+import { runVlmOcrPage, streamDeltaText } from '../src/lib/vlm-ocr/client.ts';
+import { VlmOcrRequestError } from '../src/lib/vlm-ocr/errors.ts';
+import {
+  parsePageBatchesWithVlm,
+  parsePagesWithVlm,
+} from '../src/lib/vlm-ocr/parse.ts';
 import { VLM_OCR_TASK_PROMPTS } from '../src/lib/vlm-ocr/prompts.ts';
 
 const noopEnsure = async () => {};
@@ -90,6 +94,9 @@ test('llama-server is launched with the model and its vision projector', () => {
     '--alias', 'hunyuan-ocr',
     '--ctx-size', '10240',
     '--n-predict', '4096',
+    '--parallel', '1',
+    '--cache-ram', '0',
+    '--no-cache-prompt',
     '--jinja',
     '-hf', 'ggml-org/HunyuanOCR-GGUF:Q8_0',
   ]);
@@ -100,12 +107,14 @@ test('explicit GGUF paths replace the Hugging Face download', () => {
     VLM_OCR_MODEL_PATH: '/models/hyocr.gguf',
     VLM_OCR_MMPROJ_PATH: '/models/mmproj-hyocr.gguf',
     VLM_OCR_GPU_LAYERS: '99',
+    VLM_OCR_CONCURRENCY: '3',
   });
   const args = buildVlmOcrServerArgs(config);
   assert.ok(!args.includes('-hf'));
   assert.equal(args[args.indexOf('--model') + 1], '/models/hyocr.gguf');
   assert.equal(args[args.indexOf('--mmproj') + 1], '/models/mmproj-hyocr.gguf');
   assert.equal(args[args.indexOf('--n-gpu-layers') + 1], '99');
+  assert.equal(args[args.indexOf('--parallel') + 1], '3');
   assert.match(vlmOcrWeightsSource(config), /hyocr\.gguf \+ .*mmproj/);
 });
 
@@ -119,6 +128,47 @@ test('stream deltas are read and terminators ignored', () => {
   assert.equal(streamDeltaText('[DONE]'), '');
   assert.equal(streamDeltaText('not json'), '');
   assert.equal(streamDeltaText(JSON.stringify({ choices: [] })), '');
+});
+
+test('a half-open SSE body cannot outlive the VLM page deadline', async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\n`,
+            ),
+          );
+          // Deliberately never close: this models llama-server ending its slot
+          // without completing the HTTP response body.
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      runVlmOcrPage({
+        config: {
+          ...loadVlmOcrConfig({}),
+          model: 'hunyuan-ocr',
+          requestTimeoutMs: 25,
+        },
+        dataUrl: 'data:image/jpeg;base64,page',
+        prompt: VLM_OCR_TASK_PROMPTS.doc_parse,
+      }),
+      (error) =>
+        error instanceof VlmOcrRequestError &&
+        /did not answer within 0s/.test(error.message),
+    );
+    assert.ok(Date.now() - startedAt < 1_000, 'the stalled body should be bounded');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // ── Page pipeline ───────────────────────────────────────────────────────────
@@ -143,6 +193,40 @@ test('each page is sent the official prompt and lands under its own heading', as
   assert.ok(result.markdown.includes('### Heading 1'));
   assert.equal(result.failedPages, 0);
   assert.deepEqual(result.warnings, []);
+});
+
+test('large documents consume one rendered VLM page batch at a time', async () => {
+  const progress = [];
+  const consumedBatches = [];
+  let activeBatch = null;
+
+  async function* batches() {
+    for (const numbers of [[1, 2, 3, 4], [5, 6, 7, 8], [9]]) {
+      assert.equal(activeBatch, null, 'the prior image batch must be released first');
+      activeBatch = numbers;
+      yield numbers.map(fakePage);
+      consumedBatches.push(numbers);
+      activeBatch = null;
+    }
+  }
+
+  const result = await parsePageBatchesWithVlm({
+    config: loadVlmOcrConfig({}),
+    batches: batches(),
+    totalPages: 9,
+    ensureServer: noopEnsure,
+    onProgress: (step) => progress.push(step),
+    runner: async ({ dataUrl }) => {
+      const pageNumber = Number(dataUrl.slice(-1));
+      assert.ok(activeBatch.includes(pageNumber));
+      return { text: `Content ${pageNumber}.`, earlyStopped: false };
+    },
+  });
+
+  assert.deepEqual(consumedBatches, [[1, 2, 3, 4], [5, 6, 7, 8], [9]]);
+  assert.equal(result.pages.length, 9);
+  assert.match(result.markdown, /## Page 9/);
+  assert.equal(progress.at(-1), 'Parsing with the VLM (9/9 pages)…');
 });
 
 test('a task other than doc_parse sends that task\'s official prompt', async () => {
@@ -176,6 +260,31 @@ test('one failing page does not lose the rest of the document', async () => {
   assert.ok(result.markdown.includes('## Page 1'));
   assert.ok(result.markdown.includes('## Page 3'));
   assert.match(result.warnings.join(' '), /Page 2.*server said no/);
+});
+
+test('a transient model transport loss waits for recovery and retries the interrupted page', async () => {
+  let runs = 0;
+  let ensured = 0;
+  const progress = [];
+  const result = await parsePagesWithVlm({
+    config: loadVlmOcrConfig({}),
+    pages: [fakePage(1)],
+    ensureServer: async () => {
+      ensured += 1;
+    },
+    onProgress: (step) => progress.push(step),
+    runner: async () => {
+      runs += 1;
+      if (runs === 1) throw new VlmOcrRequestError('connection closed');
+      return { text: 'Recovered content.', earlyStopped: false };
+    },
+  });
+
+  assert.equal(runs, 2);
+  assert.equal(ensured, 2, 'initial readiness plus recovery readiness');
+  assert.equal(result.failedPages, 0);
+  assert.match(result.markdown, /Recovered content/);
+  assert.ok(progress.some((step) => step.includes('Recovering the local OCR model server')));
 });
 
 test('a page cut short by repetition is reported, not silently truncated', async () => {

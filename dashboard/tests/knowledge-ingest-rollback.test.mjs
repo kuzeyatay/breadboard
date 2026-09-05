@@ -16,12 +16,55 @@ process.env.BREADBOARD_LEARN_SOURCE_ROOT = sourceRoot;
 await import("../scripts/learn-worker-import-hook.mjs");
 const {
   createKnowledgeWriteTransaction,
+  migrateLegacyIngestSectionsToConcepts,
   recoverCommittedKnowledgeWriteTransaction,
   recoverKnowledgeWriteTransactions,
   writeDocumentKnowledge,
 } = await import(
   pathToFileURL(path.join(sourceRoot, "lib", "knowledge.ts")).href
 );
+
+function writeLegacyIngestSection(clusterDir) {
+  const sectionDir = path.join(clusterDir, "1. legacy-source-material");
+  fs.mkdirSync(sectionDir, { recursive: true });
+  const files = new Map([
+    [
+      "_index.md",
+      `---
+title: "1. Legacy Source Material"
+date: "2026-08-01T00:00:00.000Z"
+knowledge_type: "learning-section"
+breadboardType: "learning_section"
+internal: "true"
+source_document: "legacy-source"
+---
+
+# 1. Legacy Source Material
+`,
+    ],
+    [
+      "legacy-concept.md",
+      `---
+title: "1.1 Legacy Concept"
+date: "2026-08-01T00:00:00.000Z"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+internal: "true"
+source_document: "legacy-source"
+source_file: "legacy.pdf"
+---
+
+# 1.1 Legacy Concept
+
+Grounded legacy concept body.
+`,
+    ],
+  ]);
+  for (const [name, content] of files) {
+    fs.writeFileSync(path.join(sectionDir, name), content, "utf8");
+  }
+  return { sectionDir, files };
+}
 const { runIngest } = await import(
   pathToFileURL(
     path.join(sourceRoot, "lib", "runtime-v2", "ingest-executor.ts"),
@@ -132,7 +175,7 @@ async function writeFixtureKnowledge(fixture, options = {}) {
   });
 }
 
-test("an uncommitted ingestion transaction restores merged and singleton knowledge files", async () => {
+test("an uncommitted ingestion transaction restores public Concepts output atomically", async () => {
   const fixture = createGardenFixture();
   const previousPublish = process.env.QUARTZ_AUTO_PUBLISH;
   process.env.QUARTZ_AUTO_PUBLISH = "0";
@@ -145,20 +188,33 @@ test("an uncommitted ingestion transaction restores merged and singleton knowled
       knowledgeWriteTransaction: transaction,
     });
 
-    assert.equal(saved.topics[0]?.action, "merged");
-    assert.notEqual(
+    assert.equal(saved.topics[0]?.action, "created");
+    const conceptRelPath = listFiles(fixture.clusterDir).find(
+      (relativePath) =>
+        relativePath.startsWith("Concepts/") &&
+        relativePath.endsWith(`/${saved.topics[0].slug}.md`),
+    );
+    assert.ok(conceptRelPath, "ingestion should create a nested Concepts page");
+    const conceptPath = path.join(
+      fixture.clusterDir,
+      ...conceptRelPath.split("/"),
+    );
+    const concept = fs.readFileSync(conceptPath, "utf8");
+    assert.match(concept, /generated_by: "document_ingestion"/);
+    assert.doesNotMatch(concept, /^internal:/m);
+    assert.match(
+      fs.readFileSync(
+        path.join(fixture.clusterDir, "Concepts", "_index.md"),
+        "utf8",
+      ),
+      /# Concepts/,
+    );
+    assert.equal(
       fs.readFileSync(
         path.join(fixture.clusterDir, "learning", "shared-concept.md"),
         "utf8",
       ),
       ORIGINAL_FILES.get("learning/shared-concept.md"),
-    );
-    assert.notEqual(
-      fs.readFileSync(
-        path.join(fixture.clusterDir, "learning", "Topic Overview.md"),
-        "utf8",
-      ),
-      ORIGINAL_FILES.get("learning/Topic Overview.md"),
     );
 
     transaction.rollback();
@@ -166,6 +222,132 @@ test("an uncommitted ingestion transaction restores merged and singleton knowled
   } finally {
     if (previousPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;
     else process.env.QUARTZ_AUTO_PUBLISH = previousPublish;
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("legacy hidden ingestion sections migrate into Concepts and roll back atomically", async () => {
+  const fixture = createGardenFixture();
+  const legacy = writeLegacyIngestSection(fixture.clusterDir);
+  const before = new Map(
+    [...legacy.files].map(([name, content]) => [
+      path.join(legacy.sectionDir, name),
+      content,
+    ]),
+  );
+  try {
+    const inspection = migrateLegacyIngestSectionsToConcepts(
+      fixture.contentPath,
+      fixture.clusterSlug,
+      { apply: false },
+    );
+    assert.equal(inspection.detectedSections, 1);
+    assert.equal(inspection.detectedPages, 1);
+    assert.equal(fs.existsSync(legacy.sectionDir), true);
+
+    const transaction = createKnowledgeWriteTransaction(
+      fixture.contentPath,
+      fixture.clusterSlug,
+    );
+    const migration = migrateLegacyIngestSectionsToConcepts(
+      fixture.contentPath,
+      fixture.clusterSlug,
+      { transaction },
+    );
+    assert.equal(migration.migratedSections, 1);
+    assert.equal(migration.migratedPages, 1);
+    assert.equal(fs.existsSync(legacy.sectionDir), false);
+
+    const migratedPath = path.join(
+      fixture.clusterDir,
+      "Concepts",
+      "1. legacy-source-material",
+      "legacy-concept.md",
+    );
+    const migrated = fs.readFileSync(migratedPath, "utf8");
+    assert.match(migrated, /generated_by: "document_ingestion"/u);
+    assert.match(migrated, /collection: "Concepts"/u);
+    assert.doesNotMatch(migrated, /^internal:/mu);
+    assert.match(
+      fs.readFileSync(
+        path.join(
+          fixture.clusterDir,
+          "Concepts",
+          "1. legacy-source-material",
+          "_index.md",
+        ),
+        "utf8",
+      ),
+      /\[\[Concepts\/1\. legacy-source-material\/legacy-concept\|1\.1 Legacy Concept\]\]/u,
+    );
+
+    const secondInspection = migrateLegacyIngestSectionsToConcepts(
+      fixture.contentPath,
+      fixture.clusterSlug,
+      { apply: false },
+    );
+    assert.equal(secondInspection.detectedSections, 0);
+
+    transaction.rollback();
+    for (const [filePath, content] of before) {
+      assert.equal(fs.readFileSync(filePath, "utf8"), content);
+    }
+    assert.equal(
+      fs.existsSync(path.join(fixture.clusterDir, "Concepts")),
+      false,
+    );
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("document ingestion migrates legacy sections before choosing its next Concepts number", async () => {
+  const fixture = createGardenFixture();
+  const legacy = writeLegacyIngestSection(fixture.clusterDir);
+  const beforeFiles = listFiles(fixture.clusterDir);
+  const beforeContent = new Map(
+    beforeFiles.map((relativePath) => [
+      relativePath,
+      fs.readFileSync(
+        path.join(fixture.clusterDir, ...relativePath.split("/")),
+        "utf8",
+      ),
+    ]),
+  );
+  try {
+    const transaction = createKnowledgeWriteTransaction(
+      fixture.contentPath,
+      fixture.clusterSlug,
+    );
+    await writeFixtureKnowledge(fixture, {
+      knowledgeWriteTransaction: transaction,
+    });
+
+    assert.equal(fs.existsSync(legacy.sectionDir), false);
+    const conceptSections = fs
+      .readdirSync(path.join(fixture.clusterDir, "Concepts"), {
+        withFileTypes: true,
+      })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    assert.deepEqual(conceptSections, [
+      "1. legacy-source-material",
+      "2. new-course-material",
+    ]);
+
+    transaction.rollback();
+    assert.deepEqual(listFiles(fixture.clusterDir), beforeFiles);
+    for (const [relativePath, content] of beforeContent) {
+      assert.equal(
+        fs.readFileSync(
+          path.join(fixture.clusterDir, ...relativePath.split("/")),
+          "utf8",
+        ),
+        content,
+      );
+    }
+  } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
 });
@@ -186,10 +368,7 @@ test("captured URL figures are written and rolled back with their source", async
       sourceAssets: [{ relativePath, bytes }],
     });
 
-    const assetPath = path.join(
-      fixture.clusterDir,
-      ...relativePath.split("/"),
-    );
+    const assetPath = path.join(fixture.clusterDir, ...relativePath.split("/"));
     assert.deepEqual(fs.readFileSync(assetPath), bytes);
 
     transaction.rollback();
@@ -380,7 +559,7 @@ test("a failure after knowledge writes rolls back before it escapes", async () =
       writeFixtureKnowledge(fixture, {
         abortSignal: controller.signal,
         onProgress(step) {
-          if (step.startsWith("Merging textbook page")) controller.abort();
+          if (step.startsWith("Writing concept page")) controller.abort();
         },
       }),
       (error) => error instanceof Error && error.name === "AbortError",
@@ -971,6 +1150,68 @@ test("recover-all never rolls back a live same-garden transaction", () => {
     assert.equal(fs.readFileSync(targetPath, "utf8"), "live mutation\n");
     first.rollback();
     assertGardenRestored(fixture.clusterDir);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("recover-all clears an expired ingestion lease when its registry is gone", () => {
+  const fixture = createGardenFixture();
+  const registryRoot = path.join(fixture.root, "missing-transaction-registry");
+  const runtimeJobsRoot = path.join(fixture.root, "runtime", "jobs");
+  const stableLockPath = path.join(
+    path.dirname(fixture.clusterDir),
+    `.${path.basename(fixture.clusterDir)}.learn-build.lock.json`,
+  );
+  const expiredAt = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(
+    stableLockPath,
+    `${JSON.stringify(
+      {
+        gardenSlug: fixture.clusterSlug,
+        jobId: "mutation:document-ingestion:job_orphaned",
+        buildId: "mutation-orphaned",
+        acquiredAt: expiredAt,
+        heartbeatAt: expiredAt,
+        leaseId: "orphaned-lease",
+        processId: process.pid,
+        hostname: os.hostname(),
+        processBoundExpiresAt: expiredAt,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  try {
+    assert.equal(fs.existsSync(registryRoot), false);
+    assert.deepEqual(
+      recoverKnowledgeWriteTransactions(
+        fixture.contentPath,
+        fixture.clusterSlug,
+        registryRoot,
+        runtimeJobsRoot,
+      ),
+      [],
+    );
+    assert.equal(fs.existsSync(stableLockPath), false);
+
+    const transactionId = "job_after_orphan_recovery";
+    fs.mkdirSync(path.join(runtimeJobsRoot, transactionId), {
+      recursive: true,
+    });
+    const transaction = createKnowledgeWriteTransaction(
+      fixture.contentPath,
+      fixture.clusterSlug,
+      {
+        registryRoot,
+        transactionId,
+        resultPath: path.join(runtimeJobsRoot, transactionId, "result.json"),
+        retainCommittedJournal: true,
+      },
+    );
+    transaction.rollback();
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

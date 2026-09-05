@@ -10,41 +10,45 @@ const ingestWorker = source('../src/lib/runtime-v2/ingest-executor.ts');
 const statusRoute = source('../src/app/api/anydoc/status/route.ts');
 const option = source('../src/app/components/anydoc-parse-option.tsx');
 const workspace = source('../src/app/gardens/[clusterSlug]/workspace-client.tsx');
+const gardenUploadStore = source('../src/lib/garden-upload-store.ts');
 const dashboard = source('../src/app/dashboard/dashboard-client.tsx');
 const nextConfig = source('../next.config.ts');
 const envExample = source('../.env.example');
 const packageJson = JSON.parse(source('../package.json'));
 
 test('both upload panels offer the option and post it to the ingest route', () => {
-  for (const [name, client] of [
-    ['garden workspace', workspace],
-    ['dashboard', dashboard],
+  for (const [name, client, uploader] of [
+    ['garden workspace', workspace, gardenUploadStore],
+    ['dashboard', dashboard, dashboard],
   ]) {
     assert.match(client, /from "@\/app\/components\/anydoc-parse-option"/, name);
     assert.match(client, /<AnydocParseOption/, name);
     assert.match(
-      client,
+      uploader,
       /formData\.append\("parseWithAnydoc", String\(usesAnydoc\)\)/,
       name,
     );
     // The option only applies to files anydoc can convert.
-    assert.match(client, /ANYDOC_PARSE_FILE_RE\.test\(file\.name\)/, name);
+    assert.match(uploader, /ANYDOC_PARSE_FILE_RE\.test\(file\.name\)/, name);
     // It is not offered when the converter cannot be loaded.
     assert.match(client, /anydocStatus\.available/, name);
   }
 });
 
-test('one reader claims each file, most specific first', () => {
-  for (const client of [workspace, dashboard]) {
-    // The VLM reads pixels and outranks anydoc on the PDFs they both accept.
+test('compatible PDFs can use both readers while handwriting remains a fallback', () => {
+  for (const client of [gardenUploadStore, dashboard]) {
     assert.match(
       client,
-      /const usesAnydoc =\s*!usesVlm &&\s*parseWithAnydoc/,
+      /const usesAnydoc =\s*(?:options\.)?parseWithAnydoc &&/,
+    );
+    assert.doesNotMatch(
+      client,
+      /const usesAnydoc =\s*!usesVlm &&/,
     );
     // Handwriting OCR is the fallback for the pages neither was asked for.
     assert.match(
       client,
-      /const usesHandwriting =\s*!usesVlm &&\s*!usesAnydoc &&\s*isHandwriting/,
+      /const usesHandwriting =\s*!usesVlm &&\s*!usesAnydoc &&\s*(?:isHandwriting|options\.handwriting)/,
     );
   }
 });
@@ -55,11 +59,22 @@ test('the ingest route reads the flag and converts the formats anydoc knows', ()
   assert.match(ingestRoute, /jobType: "document-ingestion"/);
   assert.match(
     ingestWorker,
-    /const useAnydoc = Boolean\(anydocFormat\) && !useVlm/,
+    /const useAnydoc = Boolean\(anydocFormat\)/,
   );
+  assert.match(ingestWorker, /if \(useAnydoc && !useVlm\)/);
   assert.match(ingestWorker, /convertWithAnydoc\(\{/);
   // Anything else is read the normal way, with a note saying so.
   assert.match(ingestWorker, /is not a format anydoc converts/);
+});
+
+test('a PDF can be cross-checked by both the VLM and anydoc', () => {
+  assert.match(ingestWorker, /Cross-checking PDF text with anydoc/);
+  assert.match(ingestWorker, /## AnyDoc cross-check/);
+  assert.match(ingestWorker, /parse_mode: "vlm\+anydoc"/);
+  assert.match(
+    ingestWorker,
+    /extraction_method: `hunyuan-ocr-gguf\+anydoc-\$\{ANYDOC_VERSION\}`/,
+  );
 });
 
 test('an anydoc-parsed PDF keeps its original beside the note', () => {

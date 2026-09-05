@@ -53,6 +53,27 @@ describe("RemoveDrafts", () => {
     assert.equal(shouldPublish({ knowledge_type: "knowledge-topic" }, "course/amplitude.md"), true)
   })
 
+  test("publishes document-ingestion concepts only inside Concepts", () => {
+    const frontmatter = {
+      knowledge_type: "learning-page",
+      breadboardType: "learning_page",
+      generated_by: "document_ingestion",
+    }
+    assert.equal(shouldPublish(frontmatter, "course/Concepts/1. Fields/vector-fields.md"), true)
+    assert.equal(shouldPublish(frontmatter, "course/1. Fields/vector-fields.md"), false)
+    assert.equal(
+      shouldPublish(
+        {
+          knowledge_type: "concept-section",
+          breadboardType: "concept_section",
+          generated_by: "document_ingestion",
+        },
+        "course/Concepts/1. Fields/_index.md",
+      ),
+      true,
+    )
+  })
+
   test("hides draft and internal ConceptNode pages", () => {
     assert.equal(shouldPublish({ draft: "true" }, "course/page.md"), false)
     assert.equal(

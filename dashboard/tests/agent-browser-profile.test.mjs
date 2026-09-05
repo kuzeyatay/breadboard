@@ -41,7 +41,7 @@ test("a run inherits the profile only once someone has signed into it", () => {
 
 test("the run manager hands that profile to the CLI, and only when there is one", () => {
   const manager = source("src/lib/agent-browser/run-manager.ts");
-  assert.match(manager, /profilePath: activeProfileDir\(\)/);
+  assert.match(manager, /browserMode === "external" \? activeProfileDir\(\) : null/);
   const executor = source("scripts/runtime-v2-agent-browser-executor.mjs");
   assert.match(executor, /current\.request\.profilePath/);
   assert.match(executor, /AGENT_BROWSER_PROFILE: current\.request\.profilePath/);
@@ -99,7 +99,7 @@ test("a run and the sign-in window never hold the same browser profile", () => {
   const service = source("src/lib/agent-browser/service.ts");
   assert.match(
     service,
-    /if \(signInWindowOpen\(\)\) throw new AgentBrowserServiceError\(409, "sign_in_window_open"\)/,
+    /if \(browserMode === "external" && signInWindowOpen\(\)\)/,
   );
 
   const route = source("src/app/api/agent-browser/browser-profile/route.ts");

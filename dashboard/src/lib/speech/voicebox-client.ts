@@ -143,7 +143,7 @@ async function fetchVoicebox(
       timedOut
         ? "Voicebox took too long to respond. It may still be loading a speech model."
         : startupFailureMessage() ||
-          "Voicebox is not ready yet. Breadboard starts it with the other local services.",
+          "Voicebox could not be started automatically. Try again, or open Voice settings for its startup status.",
     );
   }
 }

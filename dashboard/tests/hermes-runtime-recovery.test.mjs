@@ -213,6 +213,120 @@ test("the picked model becomes what ChatMock's `default` sentinel resolves to", 
   }
 });
 
+test("a subscription-backed turn leases CLIProxy before submitting its prompt", async () => {
+  const previousUrl = process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+  const previousToken = process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+  const previousTransports = globalThis.__breadboardRuntimeControlTransportsV1;
+  const timeline = [];
+  const json = (value) => new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = "http://127.0.0.1:49876";
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = "t".repeat(32);
+  globalThis.__breadboardRuntimeControlTransportsV1 = {
+    async job() {
+      throw new Error("job control is not used by this test");
+    },
+    async service(input, init) {
+      const pathname = new URL(String(input)).pathname;
+      const method = init?.method ?? "GET";
+      timeline.push(`${method} ${pathname}`);
+      const contract = /^\/v1\/services\/([^/]+)\/lease-contract$/.exec(pathname);
+      if (contract) {
+        return json({
+          protocolVersion: 1,
+          serviceId: contract[1],
+          acquireTimeoutMs: 20_000,
+        });
+      }
+      const acquire = /^\/v1\/services\/([^/]+)\/lease$/.exec(pathname);
+      if (acquire) {
+        return json({ leaseId: `lease-${acquire[1]}`, serviceId: acquire[1] });
+      }
+      if (/^\/v1\/leases\/lease-[^/]+\/release$/.test(pathname)) {
+        return json({ released: true });
+      }
+      throw new Error(`unexpected supervisor request: ${method} ${pathname}`);
+    },
+  };
+
+  let adapter;
+  try {
+    const fakeClient = {
+      async request(method) {
+        timeline.push(`rpc ${method}`);
+        if (method === "session.create") {
+          return { session_id: "live-gemini", stored_session_id: "stored-gemini" };
+        }
+        return { status: "streaming" };
+      },
+      async *events(_liveSessionId, _signal, onConnected) {
+        onConnected?.();
+        yield {
+          type: "message.complete",
+          session_id: "live-gemini",
+          payload: {
+            turn_id: "msg_gemini",
+            text: "Gemini answered.",
+            status: "complete",
+          },
+        };
+      },
+      clearSession() {},
+      close() {},
+    };
+    adapter = new HermesRuntimeAdapter({
+      baseUrl: "http://127.0.0.1:9119",
+      sessionToken: "test",
+      requestTimeoutMs: 5_000,
+    });
+    adapter.client = fakeClient;
+    const session = await adapter.createSession({
+      surface: "garden_chat",
+      sessionKey: "gemini-lease-test",
+      model: "cliproxy/gemini-3.7-flash-high",
+    });
+    await adapter.startRun({
+      ...session,
+      agentName: session.agentName,
+      text: "explain DMT",
+      messageId: "msg_gemini",
+      model: {
+        providerID: "chatmock",
+        modelID: "cliproxy/gemini-3.7-flash-high",
+      },
+    });
+    for await (const _event of adapter.streamSession({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.directory,
+      messageId: "msg_gemini",
+      instruction: "explain DMT",
+    })) {
+      // Drain through terminal completion so both leases are released.
+    }
+
+    const cliproxyLease = timeline.indexOf("POST /v1/services/cliproxy/lease");
+    const promptSubmit = timeline.indexOf("rpc prompt.submit");
+    assert.ok(cliproxyLease >= 0, "the proxied model must acquire CLIProxy");
+    assert.ok(cliproxyLease < promptSubmit, "CLIProxy must be ready before prompt.submit");
+    assert.ok(timeline.includes("POST /v1/leases/lease-cliproxy/release"));
+  } finally {
+    adapter?.dispose();
+    if (previousUrl === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = previousUrl;
+    if (previousToken === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = previousToken;
+    if (previousTransports === undefined) {
+      delete globalThis.__breadboardRuntimeControlTransportsV1;
+    } else {
+      globalThis.__breadboardRuntimeControlTransportsV1 = previousTransports;
+    }
+  }
+});
+
 test("a turn that carries no choice leaves the stored background model alone", async () => {
   const requests = [];
   const chatmockCalls = [];
@@ -582,6 +696,107 @@ test("a terminal tool journal does not duplicate lifecycle frames already seen l
     events.filter((event) => event.type === "tool.completed").length,
     1,
   );
+});
+
+test("a detached stream ignores completion frames from a different turn", async () => {
+  let releaseFrames;
+  const framesReleased = new Promise((resolve) => {
+    releaseFrames = resolve;
+  });
+  let markConnected;
+  const connected = new Promise((resolve) => {
+    markConnected = resolve;
+  });
+  const fakeClient = {
+    async request(method) {
+      if (method === "session.create") {
+        return { session_id: "live-correlated", stored_session_id: "stored-correlated" };
+      }
+      return { status: "streaming" };
+    },
+    async *events(_liveSessionId, _signal, onConnected) {
+      onConnected?.();
+      markConnected();
+      await framesReleased;
+      yield {
+        type: "message.delta",
+        session_id: "live-correlated",
+        payload: { turn_id: "msg_later", text: "wrong turn" },
+      };
+      yield {
+        type: "message.complete",
+        session_id: "live-correlated",
+        payload: {
+          turn_id: "msg_later",
+          text: "wrong answer",
+          status: "complete",
+        },
+      };
+      yield {
+        type: "message.complete",
+        session_id: "live-correlated",
+        payload: {
+          turn_id: "msg_current",
+          text: "right answer",
+          status: "complete",
+        },
+      };
+    },
+    clearSession() {},
+  };
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:9119",
+    sessionToken: "test",
+    requestTimeoutMs: 5_000,
+  });
+  adapter.client = fakeClient;
+  const session = await adapter.createSession({
+    surface: "garden_chat",
+    sessionKey: "turn-correlation-test",
+  });
+  await adapter.startRun({
+    ...session,
+    agentName: session.agentName,
+    text: "current request",
+    messageId: "msg_current",
+  });
+
+  const iterator = adapter.streamSession({
+    externalSessionId: session.externalSessionId,
+    liveSessionId: session.liveSessionId,
+    workspaceKey: session.workspaceKey,
+    directory: session.directory,
+    messageId: "msg_current",
+    instruction: "current request",
+  })[Symbol.asyncIterator]();
+  const firstEvent = iterator.next();
+  await connected;
+  // Mutate the shared live session to a later turn while the first turn's
+  // detached iterator is still awaiting frames. Its correlation must remain
+  // pinned to msg_current rather than following this mutable session field.
+  await adapter.startRun({
+    ...session,
+    agentName: session.agentName,
+    text: "later request",
+    messageId: "msg_later",
+  });
+  releaseFrames();
+
+  const events = [];
+  for (
+    let next = await firstEvent;
+    !next.done;
+    next = await iterator.next()
+  ) {
+    events.push(next.value);
+  }
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["assistant.delta", "assistant.completed", "session.status"],
+  );
+  assert.equal(events[0].payload.text, "right answer");
+  assert.equal(events[0].messageId, "msg_current");
 });
 
 test("Hermes recovers a pending permission when its live approval frame is lost", async () => {

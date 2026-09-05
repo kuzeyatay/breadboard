@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
+  resolveGeneratedVisualSandboxRuntimePath,
   runGeneratedVisualDeterministicTests,
   validateGeneratedVisualizationDefinition,
 } from "../src/lib/generated-visuals.ts";
@@ -1371,4 +1373,41 @@ test("the sandbox keeps select labels in the UI but exposes option indices to ex
   assert.match(runtime, /state\[control\.id\] = input\.selectedIndex/);
   assert.match(runtime, /readout\.textContent = input\.value/);
   assert.doesNotMatch(runtime, /state\[control\.id\] = input\.value/);
+});
+
+test("the visual runtime resolver prefers current repository source over a stale installed copy", () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "visual-runtime-resolution-"));
+  const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+  const sourceRuntime = path.join(
+    repositoryRoot,
+    "quartz",
+    "quartz",
+    "components",
+    "scripts",
+    "generatedVisualSandbox.inline.js",
+  );
+  const contentPath = path.join(temporaryRoot, "quartz", "content");
+  const installedRuntime = path.join(
+    temporaryRoot,
+    "quartz",
+    "quartz",
+    "components",
+    "scripts",
+    "generatedVisualSandbox.inline.js",
+  );
+  fs.mkdirSync(path.dirname(installedRuntime), { recursive: true });
+  fs.writeFileSync(installedRuntime, "stale runtime", "utf8");
+  const previousRepositoryRoot = process.env.BREADBOARD_REPO_ROOT;
+  const previousContentPath = process.env.QUARTZ_CONTENT_PATH;
+  process.env.BREADBOARD_REPO_ROOT = repositoryRoot;
+  process.env.QUARTZ_CONTENT_PATH = contentPath;
+  try {
+    assert.equal(resolveGeneratedVisualSandboxRuntimePath(), sourceRuntime);
+  } finally {
+    if (previousRepositoryRoot === undefined) delete process.env.BREADBOARD_REPO_ROOT;
+    else process.env.BREADBOARD_REPO_ROOT = previousRepositoryRoot;
+    if (previousContentPath === undefined) delete process.env.QUARTZ_CONTENT_PATH;
+    else process.env.QUARTZ_CONTENT_PATH = previousContentPath;
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });

@@ -11,6 +11,13 @@ import {
 export const APP_THEME_STORAGE_KEY = "breadboard:theme";
 export const APP_THEME_MODE_STORAGE_KEY = "breadboard:theme-mode";
 export const APP_THEME_LOCATION_STORAGE_KEY = "breadboard:theme-location";
+/**
+ * While "Sunrise to sunset" is on, a Light/Dark pick from the pencil is an
+ * override of the sun's answer, not a change of mode. It is honoured until the
+ * next sunrise or sunset, whose instant (epoch milliseconds) is stored here;
+ * after that the sun takes over again. Absent or in the past means no override.
+ */
+export const APP_THEME_OVERRIDE_STORAGE_KEY = "breadboard:theme-override-until";
 export const APP_THEME_CHANGE_EVENT = "breadboard:theme-change";
 export const APP_THEME_MODE_CHANGE_EVENT = "breadboard:theme-mode-change";
 export const APP_THEME_MESSAGE = "breadboard:theme";
@@ -83,6 +90,53 @@ export function getStoredAppThemeLocation(
   } catch {
     return null;
   }
+}
+
+export function getStoredAppThemeOverrideUntil(
+  storage: Pick<Storage, "getItem">,
+): number | null {
+  try {
+    const stored = storage.getItem(APP_THEME_OVERRIDE_STORAGE_KEY);
+    if (stored === null) return null;
+    const until = Number(stored);
+    return Number.isFinite(until) && until > 0 ? until : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ResolvedAppTheme {
+  theme: AppTheme;
+  mode: AppThemeMode;
+  /** True while a manual pick is standing in for the sun's answer. */
+  overridden: boolean;
+}
+
+/**
+ * The theme the stored preference calls for at `now`.
+ *
+ * Manual mode is the remembered theme. Sun mode is the sun's answer, unless a
+ * manual pick made since the last transition is still standing, in which case
+ * it is that pick until the next sunrise or sunset. The override never turns
+ * sun mode off: once its instant passes the schedule resumes on its own.
+ */
+export function resolveAppTheme(
+  storage: Pick<Storage, "getItem">,
+  now: Date = new Date(),
+): ResolvedAppTheme {
+  const mode = getStoredAppThemeMode(storage);
+  if (mode !== "sun") {
+    return { theme: getStoredAppTheme(storage), mode, overridden: false };
+  }
+  const until = getStoredAppThemeOverrideUntil(storage);
+  if (until !== null && now.getTime() < until) {
+    return { theme: getStoredAppTheme(storage), mode, overridden: true };
+  }
+  return {
+    theme: appThemeForMoment(now, getStoredAppThemeLocation(storage)),
+    mode,
+    overridden: false,
+  };
 }
 
 function normalizeDegrees(value: number): number {
@@ -261,6 +315,19 @@ function writeStorage(key: string, value: string): void {
   }
 }
 
+function removeStorage(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // See writeStorage.
+  }
+}
+
+/** Forget a standing manual override so the sun's answer applies again. */
+export function clearAppThemeOverride(): void {
+  removeStorage(APP_THEME_OVERRIDE_STORAGE_KEY);
+}
+
 let activeThemeTransition: ViewTransition | null = null;
 let pendingAppTheme: AppTheme | null = null;
 let themeTransitionSequence = 0;
@@ -337,7 +404,13 @@ export function applyAppThemeMode(
   options: { persist?: boolean } = {},
 ): void {
   writeStorage(APP_THEME_MODE_STORAGE_KEY, mode);
-  if (options.persist !== false) persistComposerSwitch("sunTheme", mode === "sun");
+  if (options.persist !== false) {
+    persistComposerSwitch("sunTheme", mode === "sun");
+    // Flipping the switch is a fresh decision: the sun answers at once, and a
+    // pick made under the old mode no longer stands in for it. A replay from
+    // the account on page load is not a decision and leaves the override be.
+    clearAppThemeOverride();
+  }
   window.dispatchEvent(
     new CustomEvent<AppThemeMode>(APP_THEME_MODE_CHANGE_EVENT, { detail: mode }),
   );
@@ -382,8 +455,19 @@ export function rememberAppThemeLocation(location: AppThemeLocation): void {
 }
 
 export function applyAppTheme(theme: AppTheme): void {
-  // Choosing Light or Dark is an explicit return to manual mode.
-  applyAppThemeMode("manual");
+  // Light and Dark are appearance choices, not controls for the separate
+  // "Sunrise to sunset" preference. When automatic mode is enabled it stays
+  // enabled and remains responsible for later scheduled changes: the pick
+  // holds until the next sunrise or sunset, then the schedule resumes.
+  // Without this the minute tick would put the sun's answer back within
+  // sixty seconds of the pick.
+  if (getStoredAppThemeMode(window.localStorage) === "sun") {
+    const until = nextAppThemeTransition(
+      new Date(),
+      getStoredAppThemeLocation(window.localStorage),
+    );
+    writeStorage(APP_THEME_OVERRIDE_STORAGE_KEY, String(until.getTime()));
+  }
   rememberEffectiveAppTheme(theme);
   window.dispatchEvent(
     new CustomEvent<AppTheme>(APP_THEME_CHANGE_EVENT, { detail: theme }),

@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import CalendarClient from "./calendar/calendar-client";
 import type { DueTaskChip } from "./calendar/calendar-views";
 import PlanBoard from "./plan-board";
@@ -47,6 +48,7 @@ interface Props {
   initialCalendarView: CalendarView;
   initialToday: string;
   initialAnchor: string;
+  showNavbarFlowers: boolean;
 }
 
 interface TaskDetail {
@@ -106,6 +108,7 @@ export default function PlanClient({
   initialCalendarView,
   initialToday,
   initialAnchor,
+  showNavbarFlowers,
 }: Props) {
   const [projects, setProjects] = useState(initialProjects);
   const [board, setBoard] = useState(initialBoard);
@@ -402,10 +405,11 @@ export default function PlanClient({
 
   return (
     <main className="bb-calendar-shell flex min-h-0 flex-col bg-gray-950 text-gray-300">
-      <header className="bb-neu-toolbar breadboard-flower-navbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5">
+      <header className="bb-neu-toolbar breadboard-flower-navbar relative flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5">
+        <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <a
           href="/dashboard"
-          className="flex items-center gap-2 text-sm font-medium text-white"
+          className="relative z-10 flex items-center gap-2 text-sm font-medium text-white"
           title="Back to breadboard"
         >
           <PlanIcon className="h-4 w-4" />
@@ -415,7 +419,7 @@ export default function PlanClient({
         <button
           type="button"
           onClick={() => setProjectsNavOpen((open) => !open)}
-          className="neu-button-icon hidden size-8 items-center justify-center rounded-lg border text-gray-500 hover:text-white lg:flex"
+          className="neu-button-icon relative z-10 hidden size-8 items-center justify-center rounded-lg border text-gray-500 hover:text-white lg:flex"
           aria-controls="plan-projects-navigation"
           aria-expanded={projectsNavOpen}
           aria-label={projectsNavOpen ? "Close projects navigation" : "Open projects navigation"}
@@ -424,7 +428,7 @@ export default function PlanClient({
           <ProjectsNavIcon open={projectsNavOpen} className="size-4" />
         </button>
 
-        <div className="neu-segmented flex items-center gap-0.5 rounded-lg border">
+        <div className="neu-segmented relative z-10 flex items-center gap-0.5 rounded-lg border">
           {(["board", "calendar"] as const).map((option) => (
             <button
               key={option}
@@ -441,12 +445,12 @@ export default function PlanClient({
         </div>
 
         {board && (
-          <h1 className="min-w-0 truncate text-base font-medium text-white">
+          <h1 className="relative z-10 min-w-0 truncate text-base font-medium text-white">
             {board.project.name}
           </h1>
         )}
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="relative z-10 ml-auto flex items-center gap-3">
           {error && (
             <span className="max-w-xs truncate text-xs text-red-400" title={error}>
               {error}
@@ -595,6 +599,7 @@ export default function PlanClient({
           ) : (
             <CalendarClient
               embedded
+              showNavbarFlowers={showNavbarFlowers}
               initialCalendars={initialCalendars}
               initialToday={initialToday}
               initialView={initialCalendarView}

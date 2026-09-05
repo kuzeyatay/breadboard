@@ -261,6 +261,12 @@ export const PRODUCT_SEARCH_TOOLS = ["product_search"] as const;
 // temporary conversations, and returns navigation-only UI resources.
 export const CHAT_SEARCH_TOOLS = ["chat_search"] as const;
 
+// What Breadboard is doing for the signed-in person right now: document
+// uploads, Learn runs, transcriptions, agent runs, schedules and the rest.
+// A read over the same job tables the product's own panels poll, scoped to
+// the user (and the active Garden on Garden Chat); it changes nothing.
+export const PROCESS_STATUS_TOOLS = ["breadboard_process_status"] as const;
+
 // The map at /map, and the geographic state behind it. Every one of these is a
 // read of an external open-data service (Photon, Nominatim, Valhalla, Overpass)
 // plus a write to Breadboard's own conversation-scoped geographic state — the
@@ -383,6 +389,12 @@ export const WATERMARK_WRITE_TOOLS: readonly string[] = ["watermark_clean"];
 // does not grant the tool a write capability.
 export const HUMANIZER_TOOLS = ["humanize_text", "humanize_status"] as const;
 
+// Hermes Agent's own cross-platform, background-only cua-driver surface. It is
+// listed here so the first-party skill has a declared executable path; the
+// immutable Hermes session toolset and the computer-use guidance provide the
+// runtime and last-resort gates.
+export const COMPUTER_USE_TOOLS = ["computer_use"] as const;
+
 // The build loop: read a file, change it, look for the next thing to change.
 // Hermes ships its own `file` toolset and it stays off — those tools take
 // absolute paths and enforce no root, so they would reach the whole filesystem
@@ -474,6 +486,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...IMAGE_SEARCH_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
       ...CHAT_SEARCH_TOOLS,
+      ...PROCESS_STATUS_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -483,6 +496,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...WATERMARK_TOOLS,
     ...HUMANIZER_TOOLS,
       ...HUMANIZER_TOOLS,
+      ...COMPUTER_USE_TOOLS,
       ...WORKSPACE_TOOLS,
       ...SUPER_AGENT_TOOLS,
       ...gbrain,
@@ -516,6 +530,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...IMAGE_SEARCH_TOOLS,
     ...PRODUCT_SEARCH_TOOLS,
     ...CHAT_SEARCH_TOOLS,
+    ...PROCESS_STATUS_TOOLS,
     ...MAP_TOOLS,
     ...SPOTIFY_TOOLS,
     ...CALENDAR_TOOLS,
@@ -524,6 +539,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...DOCUMENT_TOOLS,
     ...WATERMARK_TOOLS,
     ...HUMANIZER_TOOLS,
+    ...COMPUTER_USE_TOOLS,
     ...WORKSPACE_TOOLS,
     ...SUPER_AGENT_TOOLS,
     ...gbrain,

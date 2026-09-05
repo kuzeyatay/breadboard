@@ -2,6 +2,7 @@
 
 import { ArrowUpRight, BookOpen, Sprout } from "lucide-react";
 
+import LinkContextMenu from "@/app/components/link-context-menu";
 import type { GardenNavigationResource } from "@/lib/generative-ui/contracts.ts";
 
 interface Props {
@@ -53,13 +54,18 @@ export default function GardenNavigator({ resource }: Props) {
                 </p>
               </div>
               {canOpenGarden ? (
-                <a
+                <LinkContextMenu
                   href={gardenHref(garden.slug)}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-[var(--botanical)] transition-[background-color,transform] duration-150 hover:bg-[color-mix(in_srgb,var(--botanical)_10%,transparent)] active:scale-[0.97]"
+                  label={`Open ${garden.name}`}
                 >
-                  Open Garden
-                  <ArrowUpRight className="size-3.5" aria-hidden />
-                </a>
+                  <a
+                    href={gardenHref(garden.slug)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-[var(--botanical)] transition-[background-color,transform] duration-150 hover:bg-[color-mix(in_srgb,var(--botanical)_10%,transparent)] active:scale-[0.97]"
+                  >
+                    Open Garden
+                    <ArrowUpRight className="size-3.5" aria-hidden />
+                  </a>
+                </LinkContextMenu>
               ) : null}
             </div>
 
@@ -67,22 +73,27 @@ export default function GardenNavigator({ resource }: Props) {
               {garden.results.map((result) => (
                 <li key={result.pageSlug}>
                   {canOpenPage ? (
-                    <a
+                    <LinkContextMenu
                       href={pageHref(garden.slug, result.pageSlug)}
-                      className="group flex min-w-0 items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors duration-150 hover:bg-[var(--paper-strong)]"
+                      label={`Open ${result.title}`}
                     >
-                      <BookOpen className="mt-0.5 size-3.5 shrink-0 text-[var(--ink-muted)] transition-colors group-hover:text-[var(--botanical)]" aria-hidden />
-                      <span className="min-w-0">
-                        <span className="block truncate text-[12px] font-medium text-[var(--ink)]">
-                          {result.title}
-                        </span>
-                        {result.heading || result.excerpt ? (
-                          <span className="mt-0.5 block line-clamp-2 text-[11px] leading-4 text-[var(--ink-muted)]">
-                            {result.heading ?? result.excerpt}
+                      <a
+                        href={pageHref(garden.slug, result.pageSlug)}
+                        className="group flex min-w-0 items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors duration-150 hover:bg-[var(--paper-strong)]"
+                      >
+                        <BookOpen className="mt-0.5 size-3.5 shrink-0 text-[var(--ink-muted)] transition-colors group-hover:text-[var(--botanical)]" aria-hidden />
+                        <span className="min-w-0">
+                          <span className="block truncate text-[12px] font-medium text-[var(--ink)]">
+                            {result.title}
                           </span>
-                        ) : null}
-                      </span>
-                    </a>
+                          {result.heading || result.excerpt ? (
+                            <span className="mt-0.5 block line-clamp-2 text-[11px] leading-4 text-[var(--ink-muted)]">
+                              {result.heading ?? result.excerpt}
+                            </span>
+                          ) : null}
+                        </span>
+                      </a>
+                    </LinkContextMenu>
                   ) : (
                     <span className="block px-2 py-1.5 text-[12px] text-[var(--ink)]">
                       {result.title}

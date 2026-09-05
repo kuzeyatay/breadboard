@@ -12,3 +12,13 @@ declare module "mem0ai/oss" {
     [key: string]: unknown;
   }
 }
+
+declare module "bidi-js" {
+  const createBidi: () => {
+    getEmbeddingLevels(text: string, baseDirection?: "ltr" | "rtl"): {
+      levels: Uint8Array;
+      paragraphs: Array<{ start: number; end: number; level: number }>;
+    };
+  };
+  export default createBidi;
+}

@@ -151,7 +151,7 @@ test("a channel is only called closed when nothing from it was read", async () =
         limitations: [{ name: "exa_search", detail: "no key" }],
       },
     ]),
-    ["exa_search"],
+    [],
   );
 });
 

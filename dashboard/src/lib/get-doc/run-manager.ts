@@ -43,6 +43,8 @@ interface RunState {
   sequence: number;
   events: GetDocEvent[];
   documents: DocumentHit[];
+  /** Catalog hits the describe pass judged to be on another subject. */
+  setAside: DocumentHit[];
   saved: Map<string, SavedDocument>;
   aborted: boolean;
   summary: string;
@@ -113,11 +115,18 @@ export function summarizeDocuments(input: {
   documents: DocumentHit[];
   reports: SourceReport[];
   saved: Map<string, SavedDocument>;
+  /** Catalog hits the describe pass judged to be on another subject. */
+  setAside?: number;
 }): string {
+  const setAsideNote = input.setAside
+    ? `${input.setAside} catalog hit${input.setAside === 1 ? "" : "s"} set aside as being on another subject.`
+    : "";
   if (!input.documents.length) {
     const failures = input.reports.filter((report) => report.status === "error");
     return [
-      `No documents matched “${input.request.query}”.`,
+      input.setAside
+        ? `No documents on this subject matched “${input.request.query}”; ${setAsideNote.replace(/\.$/, "")} — the literature search found nothing on point.`
+        : `No documents matched “${input.request.query}”.`,
       failures.length
         ? `These catalogs did not answer: ${failures
             .map((report) => `${report.source} (${report.note ?? "error"})`)
@@ -149,7 +158,7 @@ export function summarizeDocuments(input: {
 
   const downloadable = input.documents.filter((document) => document.pdfUrl).length;
   return [
-    `${input.documents.length} document${input.documents.length === 1 ? "" : "s"} for “${input.request.query}” — ${downloadable} with a free PDF.`,
+    `${input.documents.length} document${input.documents.length === 1 ? "" : "s"} for “${input.request.query}” — ${downloadable} with a free PDF.${setAsideNote ? ` ${setAsideNote}` : ""}`,
     "",
     ...lines,
   ].join("\n");
@@ -181,6 +190,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     sequence: 0,
     events: [],
     documents: [],
+    setAside: [],
     saved: new Map(),
     aborted: false,
     summary: "",
@@ -294,13 +304,23 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     usage.inputTokens += described.usage.inputTokens;
     usage.outputTokens += described.usage.outputTokens;
     if (described.usage.inputTokens || described.usage.outputTokens) usage.calls += 1;
-    run.documents = described.documents;
+    // Catalog keyword matches on the wrong subject are set aside here rather
+    // than reported. A live search for heat-pump economics returned papers on
+    // a multi-agent competition, wurtzite magnetism and "Is Winter Coming?",
+    // and every one of them reached the answer's source list as literature
+    // "with a free PDF". The describe pass has read the abstracts, so it is
+    // the one place that can tell a match from a hit.
+    run.setAside = described.documents.filter((document) => document.bearing === "none");
+    run.documents = described.documents
+      .filter((document) => document.bearing !== "none")
+      .map((document, index) => ({ ...document, id: `doc_${index + 1}` }));
   } else {
     run.documents = documents;
   }
 
   emit(run, "documents.ready", {
     documents: run.documents,
+    setAside: run.setAside.map((document) => ({ title: document.title, year: document.year })),
     reports,
     unpaywallSkipped,
     contactConfigured: Boolean(contactEmail()),
@@ -312,6 +332,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     documents: run.documents,
     reports,
     saved: run.saved,
+    setAside: run.setAside.length,
   });
   run.status = "completed";
   emit(run, "run.completed", {

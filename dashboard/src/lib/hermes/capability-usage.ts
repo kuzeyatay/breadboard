@@ -96,6 +96,11 @@ interface ToolOwner {
  * skill having been selected.
  */
 const TOOL_OWNERS: Record<string, ToolOwner> = {
+  computer_use: {
+    kind: "skill",
+    id: "computer-use",
+    label: "Computer use",
+  },
   watch_run: { kind: "skill", id: "watch", label: "Watch" },
   factcheck_run: { kind: "skill", id: "bullshit-detector", label: "Fact check" },
   patent_disclosure_guide: {
@@ -179,6 +184,21 @@ const INTEGRATION_PREFIXES: Array<{ prefix: string; id: string; label: string }>
   { prefix: "research_", id: "research", label: "Research pipeline" },
 ];
 
+/**
+ * Every skill whose selection unlocks a first-party tool. Each of those tool
+ * routes refuses unless its own skill is selected for the turn, so a selector
+ * that adds a skill to the turn for any other reason — a relevance shortlist
+ * offered behind `skill_open`, say — must leave these out, or the shortlist
+ * becomes a grant.
+ */
+export function skillsOwningTools(): ReadonlySet<string> {
+  return new Set(
+    Object.values(TOOL_OWNERS)
+      .filter((owner) => owner.kind === "skill")
+      .map((owner) => owner.id),
+  );
+}
+
 /** The capability a completed tool call belongs to, or null for a plain tool. */
 export function capabilityForTool(toolName: string): ToolOwner | null {
   const name = toolName.trim().toLowerCase();
@@ -214,7 +234,11 @@ export const AUTOMATIC_SELECTION_REASONS: Record<string, string> = {
   "send-to-my-phone": "The message asked for this to be sent to your phone.",
   "image-to-3d": "The message asked for a 3D model of an attached picture.",
   "audio-analysis": "The message was about an attached track.",
+  "ascii-art-diagrams":
+    "The message asked for an ASCII or plain-text diagram.",
   "diagram-design": "The message asked for a diagram.",
+  "computer-use":
+    "The message asked to operate a graphical desktop application.",
   goal: "The message set an objective to keep working toward.",
 };
 

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { ensureChatNotificationSchema } from "../chat-notifications/store.ts";
+import { ensureLearnNotificationSchema } from "../chat-notifications/learn.ts";
 import { backfillGenerativeUiResources } from "../generative-ui/backfill.ts";
 
 /**
@@ -179,6 +180,18 @@ export function ensureConversationSchema(database: Database.Database): void {
   // the row rather than a place in the list, and is not activity either.
   ensureColumn(database, "conversations", "pinned_at", "pinned_at TEXT");
   ensureColumn(database, "conversations", "highlight", "highlight TEXT");
+  // Use is evidence. A memory that keeps reaching prompts is one the user's
+  // questions keep needing, and ranking treats that as the same kind of signal
+  // as a fresh confirmation: retrieval stamps the rows it selected, and the
+  // recency factor reads the later of the two dates. Additive, so a database
+  // from before this column ranks exactly as it did until the first turn.
+  ensureColumn(database, "durable_memories", "last_retrieved_at", "last_retrieved_at TEXT");
+  ensureColumn(
+    database,
+    "durable_memories",
+    "retrieval_count",
+    "retrieval_count INTEGER NOT NULL DEFAULT 0",
+  );
   // A temporary chat is off the record: it never appears in history or search,
   // it reads no cross-chat memory, and nothing it says can become memory. The
   // flag is set once at creation and never edited afterwards, so a chat cannot
@@ -234,6 +247,7 @@ export function ensureConversationSchema(database: Database.Database): void {
   `);
 
   ensureChatNotificationSchema(database);
+  ensureLearnNotificationSchema(database);
 }
 
 function ensureColumn(

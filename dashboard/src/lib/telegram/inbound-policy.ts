@@ -8,9 +8,6 @@
 import { telegramNewChatAfterMs } from "./config.ts";
 import type { TelegramInboundMessage } from "./gateway.ts";
 
-/** Ceiling on one reply before it is trimmed; client.ts splits it into messages. */
-export const MAX_REPLY_CHARS = 12_000;
-
 export const HELP_TEXT = [
   "You are talking to Breadboard.",
   "",

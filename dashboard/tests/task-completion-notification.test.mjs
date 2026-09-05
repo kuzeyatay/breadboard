@@ -191,7 +191,10 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /max-h-\[min\(42vh,24rem\)\] overflow-y-auto/);
   assert.match(toast, /whitespace-pre-wrap break-words/);
   assert.match(toast, /Reply to this chat/);
-  assert.match(toast, /onReplyToChat/);
+  assert.match(toast, /sendChatNotificationReply\(toast\.target, message\)/);
+  const replyHandler =
+    toast.match(/async function handleReply[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert.doesNotMatch(replyHandler, /window\.location|sessionStorage|queueChatNotificationReply/);
   assert.match(toast, /aria-label="Dismiss message"/);
   assert.match(toast, /<span aria-hidden>\u00d7<\/span>/);
   assert.doesNotMatch(toast, />\s*Dismiss\s*</);
@@ -202,7 +205,6 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /keepalive: true/);
   // Dismissals live on the account, never in a browser's storage.
   assert.doesNotMatch(toast, /localStorage/);
-  assert.match(toast, /window\.sessionStorage/);
   assert.match(toast, /chatNotificationHref/);
   assert.match(toast, /CHAT_NOTIFICATION_OPENED_EVENT/);
   assert.match(toast, /CHAT_RESPONSE_SEEN_EVENT/);
@@ -220,9 +222,7 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(garden, /latestAssistantResponse/);
   assert.match(garden, /dismissChatToasts\(target\)/);
   assert.match(garden, /onOpenChat=\{openChatFromNotification\}/);
-  assert.match(garden, /onReplyToChat=\{replyToChatFromNotification\}/);
-  assert.match(garden, /pendingNotificationReplyRef/);
-  assert.match(garden, /takeChatNotificationReply\(window\.sessionStorage/);
+  assert.doesNotMatch(garden, /onReplyToChat=/);
   assert.match(
     garden,
     /notifyChatResponseReady\(displayText,\s*\{[\s\S]*?response: assistantMsg\.content/,

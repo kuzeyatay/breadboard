@@ -51,3 +51,47 @@ test("ignores missing models and clamps malformed fractions", () => {
     null,
   );
 });
+
+test("maps public Gemini Flash aliases to Antigravity's tiered quota key", () => {
+  const payload = {
+    models: {
+      "gemini-3.7-flash-tiered": {
+        quotaInfo: {
+          remainingFraction: 0.75,
+          resetTime: "2026-09-03T18:00:00.000Z",
+        },
+      },
+    },
+  };
+  for (const model of ["gemini-3.7-flash-high", "gemini-3.8-flash-high"]) {
+    assert.deepEqual(
+      googleLimitWindowFromModels(
+        payload,
+        model,
+        new Date("2026-09-03T17:00:00.000Z"),
+      ),
+      { used_percent: 25, resets_in_seconds: 3600 },
+    );
+  }
+});
+
+test("prefers a model's exact quota when Antigravity starts reporting it", () => {
+  const payload = {
+    models: {
+      "gemini-3.7-flash-tiered": {
+        quotaInfo: { remainingFraction: 0.75 },
+      },
+      "gemini-3.8-flash-high": {
+        quotaInfo: { remainingFraction: 0.5 },
+      },
+    },
+  };
+  assert.deepEqual(
+    googleLimitWindowFromModels(
+      payload,
+      "gemini-3.8-flash-high",
+      new Date("2026-09-03T17:00:00.000Z"),
+    ),
+    { used_percent: 50 },
+  );
+});

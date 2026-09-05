@@ -61,9 +61,7 @@ function isInternalPath(relativePath = ""): boolean {
   return parts.some((part) => {
     const lower = part.toLowerCase()
     return (
-      lower === "internal" ||
-      lower === ".breadboard" ||
-      /^\d+\.\s*source-snapshots$/.test(lower)
+      lower === "internal" || lower === ".breadboard" || /^\d+\.\s*source-snapshots$/.test(lower)
     )
   })
 }
@@ -99,10 +97,21 @@ function isRawFileArtifactPage(fm: Record<string, unknown> | undefined): boolean
 }
 
 // Lesson sections/pages. The Learn pipeline stamps generated_by: learn_button
-// and writes them under Learning/. Ingest-era sections/pages carry the same
-// knowledge_type but no learn_button stamp, so they are internal scaffolding.
-const LESSON_KNOWLEDGE_TYPES = new Set(["learning-page", "learning-section", "textbook-page", "textbook-section"])
-const LESSON_BREADBOARD_TYPES = new Set(["learning_page", "learning_section", "textbook_page", "textbook_section"])
+// and writes them under Learning/. New document ingestion deliberately exposes
+// source-derived pages only under Concepts/ with its own ownership stamp;
+// unstamped ingest-era pages remain hidden scaffolding.
+const LESSON_KNOWLEDGE_TYPES = new Set([
+  "learning-page",
+  "learning-section",
+  "textbook-page",
+  "textbook-section",
+])
+const LESSON_BREADBOARD_TYPES = new Set([
+  "learning_page",
+  "learning_section",
+  "textbook_page",
+  "textbook_section",
+])
 
 function isLearnAuthored(fm: Record<string, unknown> | undefined): boolean {
   return (
@@ -111,16 +120,27 @@ function isLearnAuthored(fm: Record<string, unknown> | undefined): boolean {
   )
 }
 
-/** An ingest-produced lesson section/page (not authored by the Learn pipeline).
- * These are internal scaffolding and never learner-facing. Legacy flat
- * `knowledge-topic` gardens are a different type and stay visible. */
+function isDocumentIngestConcept(
+  fm: Record<string, unknown> | undefined,
+  relativePath = "",
+): boolean {
+  const generatedBy = frontmatterString(fm, "generated_by") || frontmatterString(fm, "generatedBy")
+  const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase().split("/")
+  return generatedBy === "document_ingestion" && parts.includes("concepts")
+}
+
+/** An unstamped ingest-produced lesson section/page. These are internal
+ * scaffolding and never learner-facing. Explicit document_ingestion pages
+ * under Concepts/ are the public replacement. */
 function isIngestLessonArtifact(
   fm: Record<string, unknown> | undefined,
   knowledgeType: string,
   breadboardType: string,
+  relativePath = "",
 ): boolean {
-  const isLesson = LESSON_KNOWLEDGE_TYPES.has(knowledgeType) || LESSON_BREADBOARD_TYPES.has(breadboardType)
-  return isLesson && !isLearnAuthored(fm)
+  const isLesson =
+    LESSON_KNOWLEDGE_TYPES.has(knowledgeType) || LESSON_BREADBOARD_TYPES.has(breadboardType)
+  return isLesson && !isLearnAuthored(fm) && !isDocumentIngestConcept(fm, relativePath)
 }
 
 export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {}) => ({
@@ -150,7 +170,7 @@ export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {})
       isInternalPath(relativePath) ||
       isInternalLearningArtifact(relativePath) ||
       isRawFileArtifactPage(fm) ||
-      isIngestLessonArtifact(fm, knowledgeType, breadboardType)
+      isIngestLessonArtifact(fm, knowledgeType, breadboardType, relativePath)
     ) {
       return false
     }

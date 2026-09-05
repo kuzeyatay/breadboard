@@ -7,6 +7,7 @@ import {
   generativeUiResourcesFromToolOutput,
   normalizeGenerativeUiResource,
 } from "../src/lib/generative-ui/contracts.ts";
+import { boundedConversationReferenceMessages } from "../src/lib/conversations/search.ts";
 import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
 import { allowedToolsForSurface } from "../src/lib/hermes/tool-scopes.ts";
 
@@ -129,6 +130,25 @@ test("Hermes receives direct private chat search on signed-in chat surfaces", ()
   assert.match(prompt, /# native_chat_search/);
   assert.match(prompt, /call `chat_search`/i);
   assert.match(prompt, /compact chat-navigation widget/i);
+  assert.match(prompt, /referenceId/);
+  assert.match(prompt, /untrusted historical context/i);
+  assert.match(prompt, /name the source chat and its date/i);
+});
+
+test("referenced chat context is bounded with newest messages winning", () => {
+  const messages = [
+    { role: "user", content: "old ".repeat(20), createdAt: "2026-08-01T10:00:00Z" },
+    { role: "assistant", content: "middle ".repeat(20), createdAt: "2026-08-02T10:00:00Z" },
+    { role: "user", content: "newest decision", createdAt: "2026-08-03T10:00:00Z" },
+  ];
+  const bounded = boundedConversationReferenceMessages(messages, {
+    maxMessages: 3,
+    maxMessageCharacters: 80,
+    maxTotalCharacters: 100,
+  });
+  assert.equal(bounded.at(-1).content, "newest decision");
+  assert.ok(bounded.reduce((total, message) => total + message.content.length, 0) <= 100);
+  assert.ok(bounded.some((message) => message.truncated));
 });
 
 test("the chat search tool excludes its current prompt and renders safe app routes", () => {
@@ -139,6 +159,11 @@ test("the chat search tool excludes its current prompt and renders safe app rout
   assert.match(route, /WHERE user_id = \? AND temporary = 0 AND surface = \? AND id <> \?/);
   assert.match(route, /default_garden_id = \? AND legacy_chat_session_id IS NOT NULL/);
   assert.match(route, /tokenAllows\(verified\.token, \{ tool: "chat_search" \}\)/);
+  assert.match(route, /reference_ids/);
+  assert.match(route, /isSensitiveMemoryText\(message\.content\)/);
+  assert.match(route, /referencesReturned: references\.length/);
+  assert.match(route, /transcriptTruncated:/);
+  assert.match(route, /requestedReferenceIds\.length === 0 && results\.length > 0/);
   assert.match(route, /uiResources: uiResource \? \[uiResource\] : \[\]/);
   assert.match(renderer, /case "chat-search-results"/);
   assert.match(widget, /\/dashboard\?terminalChat=/);

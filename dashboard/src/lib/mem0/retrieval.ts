@@ -20,10 +20,14 @@ import db from "../db.ts";
 import {
   DURABLE_CANDIDATE_STATE_WEIGHT,
   DURABLE_SCORE_CUTOFF,
+  expandRetrievalQuery,
   loadConversationMemoryBundle,
+  memoryRecencyAnchor,
   memoryScopeWeight,
+  mergeStandingMemories,
   recencyFactor,
   retrieveDurableMemories,
+  touchDurableMemories,
   type ConversationMemoryBundle,
   type DurableMemoryRow,
   type RankedDurableMemory,
@@ -144,7 +148,7 @@ function scoreSemanticHits(
     const similarity = similarityByMem0Id.get(row.mirror_mem0_id) ?? 0;
     const stateWeight = row.state === "confirmed" ? 1 : DURABLE_CANDIDATE_STATE_WEIGHT;
     const score = similarity * memoryScopeWeight(row, input) * row.confidence *
-      row.salience * stateWeight * recencyFactor(row.last_confirmed_at ?? row.created_at, now);
+      row.salience * stateWeight * recencyFactor(memoryRecencyAnchor(row), now);
     if (score < DURABLE_SCORE_CUTOFF) return [];
     return [{
       id: row.id,
@@ -171,7 +175,9 @@ export async function loadConversationMemoryBundleHybrid(input: {
   /** Personalize, as it stood when the message was sent. Absent means on. */
   personalize?: boolean;
 }, database: Database.Database = db): Promise<ConversationMemoryBundle> {
-  const bundle = loadConversationMemoryBundle(input, database);
+  // The lexical bundle is provisional here: the fused ranking may replace it,
+  // so the rows it selected are not stamped as used until the set is final.
+  const bundle = loadConversationMemoryBundle({ ...input, touch: false }, database);
   // A temporary chat gets no cross-chat memory through either channel. The
   // lexical half already returned nothing; the semantic half is not asked.
   if (conversationIsTemporary(input.conversation)) return bundle;
@@ -179,17 +185,30 @@ export async function loadConversationMemoryBundleHybrid(input: {
   // the lexical half while the semantic half still reached for the user's
   // memories would make the switch a suggestion rather than a gate.
   if (bundle.depersonalized) return bundle;
+  const limit = 6;
   const hybrid = await hybridDurableMemories({
     userId: input.conversation.user_id,
     currentConversationId: input.conversation.id,
-    query: input.query,
+    // The same widened query the lexical half ran with: a short follow-up
+    // embeds as vaguely as it tokenizes.
+    query: expandRetrievalQuery(input.query, bundle.recentMessages),
     gardenScopeId: input.activeGardenId === null || input.activeGardenId === undefined
       ? null
       : String(input.activeGardenId),
     projectScopeId: input.projectScopeId ?? null,
-    limit: 6,
+    limit,
   }, database).catch(() => null);
-  if (hybrid?.length) bundle.durableMemories = hybrid;
+  // The fused ranking replaces the lexical one, but the standing set is not a
+  // ranking: it was included for being confirmed, and it survives the swap.
+  if (hybrid?.length) {
+    bundle.durableMemories = mergeStandingMemories(
+      hybrid,
+      bundle.durableMemories.filter((memory) => memory.standing),
+      limit,
+    );
+  }
+  // Whichever channel decided it, this is the set that reaches the prompt.
+  touchDurableMemories(bundle.durableMemories.map((memory) => memory.id), database);
   return bundle;
 }
 

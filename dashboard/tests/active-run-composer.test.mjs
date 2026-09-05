@@ -36,6 +36,13 @@ const gardenAdapter = source(
 const steerRoute = source(
   "../src/app/api/hermes/sessions/[sessionId]/steer/route.ts",
 );
+const hermesRuntimeAdapter = source(
+  "../src/lib/agent-runtime/adapters/hermes.ts",
+);
+const conversationStore = source(
+  "../src/lib/conversations/store.ts",
+);
+const gateway = source("../../hermes-agent/tui_gateway/server.py");
 const abortRoute = source(
   "../src/app/api/hermes/sessions/[sessionId]/abort/route.ts",
 );
@@ -70,7 +77,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   );
   assert.match(
     composer,
-    /queueHeld &&\s*!queueDisabled &&\s*Boolean\(value\.trim\(\)\)/,
+    /queueHeld &&\s*!queueDisabled &&\s*Boolean\(value\.trim\(\) \|\| attachments\.length > 0\)/,
   );
   const textarea = composer.slice(
     composer.indexOf("<textarea"),
@@ -81,7 +88,10 @@ test("the shared composer keeps its controls stable during an active run", () =>
   // Nothing can be sent without something to send. `canSend` is `canSubmit` for
   // every agent that takes a message, and the request's validity for the one
   // that takes a form instead.
-  assert.match(composer, /queueHeld\s*\? !canQueueFollowUp\s*:\s*disabled \|\| isSending/);
+  assert.match(
+    composer,
+    /queueHeld\s*\? canSubmitDuringRun\s*\? false\s*:\s*!canQueueFollowUp\s*:\s*disabled \|\| isSending/,
+  );
   // Two agents take a form instead of a message — Trading Agent and Shorts —
   // so the rule is written once, against whichever of them is selected.
   assert.match(composer, /const canSend = formAgent \? formRequestReady : canSubmit/);
@@ -92,7 +102,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(composer, /Boolean\(tradingAgentsRequest\)/);
   assert.match(composer, /Boolean\(shortsRequest\)/);
   assert.match(composer, /activeRun && permissionPending/);
-  assert.match(composer, /onQueueSteer\?\.\(text\)/);
+  assert.match(composer, /onQueueSteer\?\.\(text, attachments\)/);
   assert.doesNotMatch(composer, /pendingSteer|applyingSteer|steerError/);
   assert.match(composer, /headerContent/);
   assert.doesNotMatch(composer, /steerQueued/);
@@ -101,11 +111,17 @@ test("the shared composer keeps its controls stable during an active run", () =>
   // The queue itself is shared: every chat surface renders the same list with
   // the same edit, reorder, steer, and delete affordances.
   assert.match(queuedFollowUpsModule, /visibleQueued\.map/);
-  assert.match(queuedFollowUpsModule, /await onSteer\(item\.text\)/);
+  assert.match(
+    queuedFollowUpsModule,
+    /await onSteer\(item\.text, item\.attachments\)/,
+  );
   assert.match(queuedFollowUpsModule, /Steer the active response with:/);
   assert.match(queuedFollowUpsModule, /Delete queued message:/);
   assert.match(queuedFollowUpsModule, /Edit queued message:/);
-  assert.match(queuedFollowUpsModule, /onRestoreDraft\(item\.text\)/);
+  assert.match(
+    queuedFollowUpsModule,
+    /onRestoreDraft\(item\.text, item\.attachments\)/,
+  );
   assert.match(queuedFollowUpsModule, /textarea\.focus\(\)/);
   assert.match(
     queuedFollowUpsModule,
@@ -117,7 +133,26 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(queuedFollowUpsModule, /event\.key === "ArrowUp"/);
   assert.match(queuedFollowUpsModule, /event\.key === "ArrowDown"/);
   assert.match(queuedFollowUpsModule, /reorderQueuedFollowUps\(current, draggedQueuedId, targetId\)/);
-  assert.match(queuedFollowUpsModule, /onSendQueued\(next\.text\)/);
+  assert.match(
+    queuedFollowUpsModule,
+    /onSendQueued\(next\.text, next\.attachments\)/,
+  );
+  // Images are first-class queued content: image-only sends are valid, render
+  // as compact thumbnails, and expand in a portal without losing their bytes.
+  assert.match(composer, /value\.trim\(\) \|\| attachments\.length > 0/);
+  assert.match(queuedFollowUpsModule, /if \(!trimmed && attachments\.length === 0\) return/);
+  assert.match(queuedFollowUpsModule, /h-7 w-7 cursor-zoom-in/);
+  assert.match(queuedFollowUpsModule, /Enlarge attached image/);
+  assert.match(queuedFollowUpsModule, /createPortal\(/);
+  assert.match(queuedFollowUpsModule, /aria-label="Close image preview"/);
+  // The image does not stop at the UI: it is parsed by the route, persisted in
+  // the correction message, staged on the live runtime, and consumed by steer.
+  assert.match(steerRoute, /parseChatAttachments\(body\.attachments\)/);
+  assert.match(steerRoute, /attachments: chatMessageAttachments\(attachments\)/);
+  assert.match(sessionHook, /attachmentOnlyMessageText\(attachments\)/);
+  assert.match(hermesRuntimeAdapter, /steerRun[\s\S]*?image\.attach_bytes/);
+  assert.match(conversationStore, /attachmentNames: input\.attachments\.map/);
+  assert.match(gateway, /session\.steer[\s\S]*?attached_images[\s\S]*?_enrich_with_attached_images/);
   assert.doesNotMatch(composer, /Run status:/);
   assert.doesNotMatch(sessionHook, /Course correction applied/);
   assert.doesNotMatch(sessionHook, /steerFeedback/);
@@ -134,7 +169,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(runtimePanel, /disabled=\{conversationLocked\}/);
   assert.match(
     runtimePanel,
-    /placeholder=\{\s*runInFlight \? "Follow up\." : \(placeholder \?\? "Ask the agent…"\)\s*\}/,
+    /placeholder=\{\s*runInFlight && !respondingToInlineSelection\s*\? "Follow up\."\s*: \(placeholder \?\? "Ask the agent…"\)\s*\}/,
   );
   // A live durable run outlasts a disconnected browser stream. It must keep
   // the same Stop affordance and present-tense transcript state as a locally
@@ -181,7 +216,10 @@ test("a working external agent holds the composer and the queue", () => {
     queuedFollowUpsModule,
     /if \(runInFlight \|\| applyingSteerId \|\| sendingQueuedId\) return/,
   );
-  assert.match(runtimePanel, /externalRunActive=\{externalRunActive\}/);
+  assert.match(
+    runtimePanel,
+    /externalRunActive=\{externalRunActive \|\| respondingToInlineSelection\}/,
+  );
   // The dispatch window, before the launched turn reaches the transcript.
   for (const surface of [terminal, garden]) {
     assert.match(surface, /const externalRunLaunching =/);
@@ -202,7 +240,10 @@ test("a working external agent holds the composer and the queue", () => {
   // Stopping, though, is not a chat-turn affordance. A run card can be
   // suppressed (a quiet run) or never arrive, and then nothing on screen could
   // stop a working conversation — so the composer's square covers both.
-  assert.match(composer, /runInFlight && onStop && !canQueueFollowUp \? \(/);
+  assert.match(
+    composer,
+    /runInFlight && onStop && !canQueueFollowUp && !canSubmitDuringRun \? \(/,
+  );
   assert.match(
     runtimePanel,
     /onStop=\{canStop && !respondingToInlineSelection \? stopEverything : undefined\}/,
@@ -210,7 +251,7 @@ test("a working external agent holds the composer and the queue", () => {
   // An "Ask here" turn is the exception: it never enters the transcript, so the
   // composer's square would be stopping something it is not showing. That run
   // is stopped from the popover it belongs to.
-  assert.match(runtimePanel, /onStop=\{openThread\.pending \? stopInlineAnswer : undefined\}/);
+  assert.match(runtimePanel, /onStop=\{thread\.pending \? stopInlineAnswer : undefined\}/);
   assert.match(runtimePanel, /stopPending=\{stopRequestPending\}/);
   assert.match(runtimePanel, /if \(stopRequestPendingRef\.current\) return/);
   assert.match(runtimePanel, /stopRequestPendingRef\.current = true/);
@@ -276,7 +317,7 @@ test("Dashboard terminal and Garden Chat share real steering controls", () => {
   for (const surface of [terminal, garden]) {
     assert.match(surface, /runState=\{session\.runState\}/);
     assert.doesNotMatch(surface, /activeInstruction=\{session\.activeInstruction\}/);
-    assert.match(surface, /return session\.steer\(trimmed\)/);
+    assert.match(surface, /return session\.steer\(trimmed(?:, attachments)?\)/);
     assert.match(surface, /onSteer=\{steer\}/);
     assert.match(surface, /onSendQueued=\{sendQueued\}/);
     assert.match(surface, /onEditMessage=\{editMessage\}/);
@@ -305,9 +346,12 @@ test("the garden workspace stays editable and steers its active Hermes run", () 
   // the run's own stop control.
   assert.match(
     composerBlock,
-    /onStop=\{steerableTurnActive \? agentActivity\.abort : undefined\}/,
+    /onStop=\{\s*steerableTurnActive && !respondingToInlineSelection\s*\? agentActivity\.abort\s*: undefined/,
   );
-  assert.match(composerBlock, /externalRunActive=\{externalRunHoldsQueue\}/);
+  assert.match(
+    composerBlock,
+    /externalRunActive=\{\s*externalRunHoldsQueue \|\| respondingToInlineSelection\s*\}/,
+  );
   // Everything that occupies the conversation — a running agent card, a queued
   // or in-flight launch — holds the queue rather than dropping the message.
   assert.match(
@@ -339,7 +383,7 @@ test("the garden assistant and knowledge terminal queue and steer like the termi
   // messages can steer the streaming turn and the correction joins the
   // transcript the same way the workspace's does.
   assert.match(gardenAssistant, /onSteer: steerActiveResponse/);
-  assert.match(gardenAssistant, /agentActivity\.steer\(correction\)/);
+  assert.match(gardenAssistant, /agentActivity\.steer\(correction, attachments\)/);
   assert.match(gardenAssistant, /context\.messages\.push\(correctionMessage\)/);
   assert.match(gardenAssistant, /\.\.\.steerContext\.messages/);
   // The knowledge terminal has no runtime session behind it: queued messages
@@ -365,7 +409,7 @@ test("steering reuses the active session and only falls back on run_not_active",
   assert.match(block, /clientRequestId = crypto\.randomUUID\(\)/);
   assert.match(block, /sessions\/\$\{activeSessionId\}\/steer/);
   assert.match(block, /response\.status === 409 && body\.code === "run_not_active"/);
-  assert.match(block, /void send\(trimmed, latestSendOptionsRef\.current\)/);
+  assert.match(block, /void send\(trimmed, \{[\s\S]*attachments: \[\.\.\.attachments\]/);
   assert.doesNotMatch(block, /\/events/);
   assert.doesNotMatch(block, /ensureSession\(/);
 });

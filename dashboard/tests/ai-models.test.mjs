@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assistantModelGroup,
   assistantModelVendor,
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
@@ -133,8 +134,8 @@ test('the model picker groups by vendor in first-appearance order', () => {
         models: ['gpt-5.6-sol', 'gpt-5.5'],
       },
       {
-        // Both routes to Claude land in one section: the vendor is the same,
-        // which is what the heading names.
+        // The vendor's own API and its subscription land in one section:
+        // both are Anthropic's account, which is what the heading names.
         vendorId: 'anthropic',
         vendorLabel: 'Anthropic',
         models: [
@@ -148,6 +149,41 @@ test('the model picker groups by vendor in first-appearance order', () => {
         vendorLabel: 'Google',
         models: ['cliproxy/gemini-2.5-pro'],
       },
+    ],
+  );
+});
+
+test('a model resold by a pay-per-token gateway is filed under the gateway', () => {
+  // "Claude Sonnet 4.5 via OpenRouter" runs out of OpenRouter credits, not
+  // Anthropic's, so the menu must say where it comes from.
+  assert.deepEqual(assistantModelGroup('openrouter/anthropic/claude-sonnet-4.5'), {
+    id: 'openrouter',
+    label: 'OpenRouter',
+  });
+  assert.deepEqual(assistantModelGroup('groq/llama-3.3-70b-versatile'), {
+    id: 'groq',
+    label: 'Groq',
+  });
+  // The vendor helper is unchanged: it still names who built the model.
+  assert.deepEqual(assistantModelVendor('openrouter/anthropic/claude-sonnet-4.5'), {
+    id: 'anthropic',
+    label: 'Anthropic',
+  });
+  assert.deepEqual(
+    groupAssistantModels([
+      'cliproxy/claude-opus-5',
+      'openrouter/anthropic/claude-sonnet-4.5',
+      'openrouter/google/gemini-2.5-pro',
+      'cliproxy/gemini-2.5-pro',
+    ]),
+    [
+      { vendorId: 'anthropic', vendorLabel: 'Anthropic', models: ['cliproxy/claude-opus-5'] },
+      {
+        vendorId: 'openrouter',
+        vendorLabel: 'OpenRouter',
+        models: ['openrouter/anthropic/claude-sonnet-4.5', 'openrouter/google/gemini-2.5-pro'],
+      },
+      { vendorId: 'google', vendorLabel: 'Google', models: ['cliproxy/gemini-2.5-pro'] },
     ],
   );
 });

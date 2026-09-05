@@ -400,9 +400,12 @@ test("a participant that produced nothing is named, not quietly dropped", () => 
       },
     ],
   });
-  assert.match(prompt, /Say so in the answer, in one line/);
+  assert.match(prompt, /Say so in the answer in one plain sentence near the end/);
   assert.match(prompt, /an answer that simply omits the gap reads as though everything was searched/);
-  assert.match(prompt, /get_doc \(unavailable: no source configured\)/);
+  assert.match(prompt, /the primary literature/);
+  // Setup reasons — an unconfigured source, an uninstalled tool, a licence —
+  // are about this machine, and a live answer repeated them to the reader.
+  assert.ok(!/no source configured/.test(prompt), "setup reasons must not reach the reader");
 });
 
 test("ARIS supplies method and is barred from being cited as evidence", () => {
@@ -867,7 +870,10 @@ test("a participant's evidence may not vanish from the answer without a word", (
   });
   assert.match(prompt, /Use what each participant found/);
   assert.match(prompt, /has been wasted/);
-  assert.match(prompt, /say so in a clause rather than dropping it silently/);
+  assert.match(prompt, /at most one clause noting that the literature search found nothing on point/);
+  assert.match(prompt, /never entries for them in the source list/);
+  assert.match(prompt, /in the voice of the researcher who did the work/);
+  assert.match(prompt, /show the arithmetic/);
 });
 
 /* ---------------------------------------------------------------- */
@@ -962,7 +968,7 @@ test("a closed source is named at the end so the reader is told", () => {
     !/agent_reach could not reach/.test(prompt),
     "the closed-source line must not attribute to an internal participant name",
   );
-  assert.match(prompt, /End the answer with a short line naming these/);
+  assert.match(prompt, /Mention this in one short sentence at the end/);
   assert.match(prompt, /a subject nobody discusses from a source that was simply shut/);
 });
 
@@ -977,7 +983,9 @@ test("the untraceable-claim repair applies to evidence, not to the run's own rep
     draft: "A draft.",
     results: [{ participant: "get_doc", status: "completed", output: "a paper" }],
   });
-  assert.match(prompt, /a claim \*about the world\*/);
+  assert.match(prompt, /causal claim \*about the world\* that a reader might act on/);
+  assert.match(prompt, /the repair is to remove them/);
+  assert.match(prompt, /researcher's own first-person voice/);
   assert.match(prompt, /Statements about the run itself/);
   assert.match(prompt, /Leave them as plain statements/);
 });

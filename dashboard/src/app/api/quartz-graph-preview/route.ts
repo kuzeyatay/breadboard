@@ -307,6 +307,51 @@ function filterContentIndex(contentIndexText: string, clusterSlug: string): stri
   return JSON.stringify(filtered);
 }
 
+function textFingerprint(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length.toString(36)}-${(hash >>> 0).toString(36)}`;
+}
+
+async function publishedQuartzRevision(clusterSlug: string): Promise<{
+  ok: true;
+  revision: string;
+} | {
+  ok: false;
+  status: number;
+}> {
+  const publicPath = localQuartzPublicPath();
+  if (publicPath) {
+    // In the desktop runtime Quartz publishes these files atomically. Stats
+    // make the five-second freshness check cheap even for very large gardens;
+    // the embedded frame still fetches all assets with no-store after a change.
+    const files = [
+      path.join(publicPath, 'static', 'contentIndex.json'),
+      path.join(publicPath, clusterSlug, 'index.html'),
+      path.join(publicPath, 'postscript.js'),
+    ];
+    const revision = files.map((file) => {
+      try {
+        const stat = fs.statSync(file);
+        return `${stat.size}:${Math.round(stat.mtimeMs)}`;
+      } catch {
+        return 'missing';
+      }
+    }).join('|');
+    return { ok: true, revision: `local:${revision}` };
+  }
+
+  const contentIndex = await readQuartzContentIndex();
+  if (!contentIndex.ok) return contentIndex;
+  return {
+    ok: true,
+    revision: `remote:${textFingerprint(filterContentIndex(contentIndex.text, clusterSlug))}`,
+  };
+}
+
 async function readQuartzContentIndex(): Promise<{
   ok: true;
   text: string;
@@ -360,6 +405,20 @@ export async function GET(request: NextRequest) {
           'Cache-Control': 'no-store',
         },
       });
+    }
+
+    if (asset === 'revision') {
+      const published = await publishedQuartzRevision(cluster.slug);
+      if (!published.ok) {
+        return NextResponse.json(
+          { error: 'Quartz publication state is not available.' },
+          { status: published.status },
+        );
+      }
+      return NextResponse.json(
+        { revision: published.revision },
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      );
     }
 
     const refresh = searchParams.get('refresh') ?? Date.now().toString();

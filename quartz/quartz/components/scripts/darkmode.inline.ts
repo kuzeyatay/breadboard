@@ -6,6 +6,17 @@ const currentTheme =
     : (localStorage.getItem("theme") ?? userPref)
 document.documentElement.setAttribute("saved-theme", currentTheme)
 
+// The dashboard seeds an embedded Quartz page with `?theme=...` so its first
+// paint matches the surrounding app. Internal Markdown links do not carry that
+// query parameter, so remember a valid launch hint for the next full-page
+// navigation as well. Storage can be unavailable in a restricted iframe; the
+// correctly themed first paint should still survive in that case.
+if (requestedTheme === "light" || requestedTheme === "dark") {
+  try {
+    localStorage.setItem("theme", requestedTheme)
+  } catch {}
+}
+
 const emitThemeChangeEvent = (theme: "light" | "dark") => {
   const event: CustomEventMap["themechange"] = new CustomEvent("themechange", {
     detail: { theme },

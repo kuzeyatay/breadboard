@@ -548,7 +548,7 @@ function InlineArtifactFileCard({
         <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
           {fileContent}
         </a>
-      ) : artifact.previewAvailable ? (
+      ) : artifact.previewAvailable || artifact.downloadAvailable ? (
         <button
           type="button"
           onClick={() => void context.openArtifact(artifact.id)}

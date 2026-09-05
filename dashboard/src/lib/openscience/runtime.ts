@@ -102,9 +102,27 @@ export function targetCliVersion(env: NodeJS.ProcessEnv = process.env): string {
  * run data so removing it is a directory delete.
  */
 export function managedCliRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    configured(env.OPENSCIENCE_CLI_ROOT) ?? path.join(dashboardDataDir(), "openscience-cli")
+  return plainPath(
+    configured(env.OPENSCIENCE_CLI_ROOT) ?? path.join(dashboardDataDir(), "openscience-cli"),
   );
+}
+
+/**
+ * A Windows path in the spelling child processes accept.
+ *
+ * Runtime V2 hands its services extended-length paths (`\\?\C:\...`) — for
+ * `process.execPath`, and for the CLI root in `OPENSCIENCE_CLI_ROOT`.
+ * `spawnSync` answers an extended-length executable with ENOENT, and Node's
+ * module loader refuses an extended-length script path, so the version probe
+ * failed both ways and reported an installed CLI as "not installed yet";
+ * every Max Research drive lost its workspace participant to that line.
+ */
+function plainPath(value: string): string {
+  return value.replace(/^\\\\\?\\/u, "");
+}
+
+function nodeExecutable(): string {
+  return plainPath(process.execPath);
 }
 
 function probeVersion(command: string, baseArgs: readonly string[]): string | null {
@@ -114,18 +132,39 @@ function probeVersion(command: string, baseArgs: readonly string[]): string | nu
     timeout: VERSION_TIMEOUT_MS,
     env: { ...process.env, NO_COLOR: "1", OPENSCIENCE_DISABLE_AUTOUPDATE: "1" },
   });
-  if (probe.error || probe.status !== 0) return null;
+  if (probe.error || probe.status !== 0) {
+    lastProbeFailure = `${command} ${baseArgs.join(" ")} --version: ${
+      probe.error
+        ? `${(probe.error as NodeJS.ErrnoException).code ?? probe.error.name}: ${probe.error.message}`
+        : `exit ${probe.status}${probe.signal ? ` (${probe.signal})` : ""}`
+    } ${`${probe.stdout ?? ""}${probe.stderr ?? ""}`.trim().slice(0, 300)}`.trim();
+    return null;
+  }
   const output = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.trim();
   return output ? output.split(/\r?\n/)[0].slice(0, 120) : "openscience";
 }
+
+/**
+ * Why the last launcher probe failed, for the availability report.
+ *
+ * "The OpenScience CLI is not installed yet" was the only thing a failed
+ * probe could say, and it said it for an installed CLI whose launcher could
+ * not be spawned. The reason is a fact this process already had.
+ */
+let lastProbeFailure: string | null = null;
+
+/** The managed entry's own probe failure, kept apart from the PATH fallback's. */
+let managedProbeFailure: string | null = null;
 
 function nodeLauncher(
   entry: string,
   source: OpenscienceLauncher["source"],
 ): OpenscienceLauncher | null {
   if (!fs.existsSync(entry)) return null;
-  const version = probeVersion(process.execPath, [entry]);
-  return version ? { command: process.execPath, baseArgs: [entry], version, source } : null;
+  const node = nodeExecutable();
+  const version = probeVersion(node, [entry]);
+  if (!version && source === "managed") managedProbeFailure = lastProbeFailure;
+  return version ? { command: node, baseArgs: [entry], version, source } : null;
 }
 
 /** The entry point inside the managed npm prefix. */
@@ -176,7 +215,19 @@ export function runtimeAvailability(
   const launcher = resolveLauncher(env);
   const missing: string[] = [];
   if (!root) missing.push("The OpenScience clone was not found next to Breadboard.");
-  if (!launcher) missing.push("The OpenScience CLI is not installed yet.");
+  // An installed launcher that could not be probed is a different problem
+  // from an absent one, and the report says which.
+  const installedButUnprobed =
+    !launcher && fs.existsSync(managedEntry(env))
+      ? managedProbeFailure ?? lastProbeFailure
+      : null;
+  if (!launcher) {
+    missing.push(
+      installedButUnprobed
+        ? `The OpenScience CLI is installed but did not answer its version probe (${installedButUnprobed}).`
+        : "The OpenScience CLI is not installed yet.",
+    );
+  }
   return {
     available: Boolean(launcher),
     cloned: Boolean(root),
@@ -186,6 +237,8 @@ export function runtimeAvailability(
     missing,
     reason: launcher
       ? undefined
-      : "OpenScience is not installed yet. Open its settings and install it once.",
+      : installedButUnprobed
+        ? `The OpenScience CLI is installed but could not be started: ${installedButUnprobed}`
+        : "OpenScience is not installed yet. Open its settings and install it once.",
   };
 }

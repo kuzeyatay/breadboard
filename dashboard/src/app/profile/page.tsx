@@ -5,7 +5,10 @@ import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import db from "@/lib/db";
 import { browserProfileState } from "@/lib/agent-browser/service.ts";
-import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
+import {
+  getNavbarFlowers,
+  getNavbarShortcuts,
+} from "@/lib/profile/navbar-shortcuts-store.ts";
 import { readProfileStats } from "@/lib/profile/stats.ts";
 import { getContactStore } from "@/lib/contacts/instance.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
@@ -62,16 +65,15 @@ export default async function ProfilePage({
     ? requested.organization[0]
     : requested.organization;
   const initialBrainScope =
-    rawScope === "all"
-      ? "all"
-      : rawScope === "organization" && rawOrganization
+    rawScope === "organization" && rawOrganization
         ? rawOrganization.slice(0, 320)
-        : "personal";
+        : "all";
 
   return (
     <ProfileClient
       stats={stats}
       initialShortcuts={getNavbarShortcuts(userId)}
+      initialNavbarFlowers={getNavbarFlowers(userId)}
       browserProfile={await browserProfileState()}
       contacts={contacts.listContacts(userId, { limit: 200 })}
       contactTotal={contacts.countContacts(userId)}
