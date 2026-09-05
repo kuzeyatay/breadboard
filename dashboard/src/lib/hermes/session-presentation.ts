@@ -1,4 +1,5 @@
 import type { ConversationRow } from "../conversations/store.ts";
+import { conversationOrigin } from "./session-surface.ts";
 import {
   listConversationMessages,
   presentConversation,
@@ -146,10 +147,12 @@ function presentActiveRun(runtimeSessionId: number | null) {
 
 function presentSessionBase(conversation: ConversationRow) {
   const runtime = getRuntimeSessionByConversation(conversation.id);
+  const origin = conversationOrigin(conversation);
   return {
     ...presentConversation(conversation),
-    surface: runtime?.surface ?? null,
-    gardenId: runtime?.garden_id ?? null,
+    surface: conversation.surface,
+    originLabel: origin.originLabel,
+    gardenId: runtime?.garden_id ?? origin.gardenSlug,
     pageSlug: runtime?.page_slug ?? null,
     status: runtime?.last_runtime_status ?? "idle",
     activeDirectory: runtime?.active_directory ?? null,
@@ -162,11 +165,13 @@ function presentSessionBase(conversation: ConversationRow) {
 /** Small row used by history rails and restore selection. Never embeds a transcript. */
 export function presentHermesSessionSummary(
   conversation: ConversationRow,
-  activity: { messageCount?: number; externalAgentActive?: boolean } = {},
+  activity: { messageCount?: number; externalAgentActive?: boolean; transcriptVersion?: string; pendingMessageCount?: number } = {},
 ) {
   return {
     ...presentSessionBase(conversation),
     messageCount: activity.messageCount ?? 0,
+    transcriptVersion: activity.transcriptVersion ?? "",
+    pendingMessageCount: activity.pendingMessageCount ?? 0,
     externalAgentActive: activity.externalAgentActive === true,
   };
 }
@@ -353,6 +358,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
       ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
+      ...(typeof metadata.reasoning === "string" && metadata.reasoning.trim()
+        ? { reasoning: metadata.reasoning }
+        : {}),
       tools: calls.map((call, index) => ({
         toolCallId: String(call.toolCallId ?? `tool-${index}`),
         toolName: String(call.toolName ?? "tool"),

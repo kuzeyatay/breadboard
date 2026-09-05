@@ -1,4 +1,5 @@
 import db from "@/lib/db";
+import { SPEECH_PROVIDERS, OPENAI_SPEECH_VOICES, type SpeechProvider, type OpenAISpeechVoice } from "./providers.ts";
 
 export const SPEECH_LANGUAGES = [
   "en",
@@ -46,6 +47,8 @@ export type SpeechModelSize = (typeof SPEECH_MODEL_SIZES)[number];
 export type TranscriptionModel = (typeof TRANSCRIPTION_MODELS)[number];
 
 export interface SpeechSettings {
+  speechProvider: SpeechProvider;
+  openaiVoice: OpenAISpeechVoice;
   enabled: boolean;
   profileId: string | null;
   language: SpeechLanguage;
@@ -56,6 +59,8 @@ export interface SpeechSettings {
 }
 
 const DEFAULT_SETTINGS: SpeechSettings = {
+  speechProvider: "local",
+  openaiVoice: "cove",
   enabled: true,
   profileId: null,
   language: "en",
@@ -79,7 +84,20 @@ db.exec(`
   );
 `);
 
+// Preserve existing local profiles and preferences when upgrading an old database.
+db.transaction(() => {
+  const columns = db.prepare("PRAGMA table_info(speech_user_settings)").all() as { name: string }[];
+  if (!columns.some((column) => column.name === "speech_provider")) {
+    db.exec("ALTER TABLE speech_user_settings ADD COLUMN speech_provider TEXT NOT NULL DEFAULT 'local'");
+  }
+  if (!columns.some((column) => column.name === "openai_voice")) {
+    db.exec("ALTER TABLE speech_user_settings ADD COLUMN openai_voice TEXT NOT NULL DEFAULT 'marin'");
+  }
+}).immediate();
+
 type SpeechSettingsRow = {
+  speech_provider: string;
+  openai_voice: string;
   enabled: number;
   profile_id: string | null;
   language: string;
@@ -96,6 +114,9 @@ function includes<T extends readonly string[]>(values: T, value: string): value 
 function rowToSettings(row: SpeechSettingsRow | undefined): SpeechSettings {
   if (!row) return { ...DEFAULT_SETTINGS };
   return {
+    // Upgrade the earlier API-key selection without activating any billed API.
+    speechProvider: row.speech_provider === "openai" ? "chatgpt" : includes(SPEECH_PROVIDERS, row.speech_provider) ? row.speech_provider : "local",
+    openaiVoice: includes(OPENAI_SPEECH_VOICES, row.openai_voice) ? row.openai_voice : "cove",
     enabled: row.enabled === 1,
     profileId: row.profile_id,
     language: includes(SPEECH_LANGUAGES, row.language) ? row.language : DEFAULT_SETTINGS.language,
@@ -117,7 +138,7 @@ export function getSpeechSettings(userId: number): SpeechSettings {
   const row = db
     .prepare(
       `SELECT enabled, profile_id, language, engine, model_size,
-              transcription_language, transcription_model
+              transcription_language, transcription_model, speech_provider, openai_voice
        FROM speech_user_settings
        WHERE user_id = ?`,
     )
@@ -131,6 +152,10 @@ export function updateSpeechSettings(
 ): SpeechSettings {
   const current = getSpeechSettings(userId);
   const next: SpeechSettings = {
+    speechProvider: typeof input.speechProvider === "string" && includes(SPEECH_PROVIDERS, input.speechProvider)
+      ? input.speechProvider : current.speechProvider,
+    openaiVoice: typeof input.openaiVoice === "string" && includes(OPENAI_SPEECH_VOICES, input.openaiVoice)
+      ? input.openaiVoice : current.openaiVoice,
     enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
     profileId:
       input.profileId === null || typeof input.profileId === "string"
@@ -164,8 +189,8 @@ export function updateSpeechSettings(
   db.prepare(
     `INSERT INTO speech_user_settings (
        user_id, enabled, profile_id, language, engine, model_size,
-       transcription_language, transcription_model, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       transcription_language, transcription_model, speech_provider, openai_voice, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        enabled = excluded.enabled,
        profile_id = excluded.profile_id,
@@ -174,6 +199,8 @@ export function updateSpeechSettings(
        model_size = excluded.model_size,
        transcription_language = excluded.transcription_language,
        transcription_model = excluded.transcription_model,
+       speech_provider = excluded.speech_provider,
+       openai_voice = excluded.openai_voice,
        updated_at = excluded.updated_at`,
   ).run(
     userId,
@@ -184,7 +211,8 @@ export function updateSpeechSettings(
     next.modelSize,
     next.transcriptionLanguage,
     next.transcriptionModel,
+    next.speechProvider,
+    next.openaiVoice,
   );
   return next;
 }
-

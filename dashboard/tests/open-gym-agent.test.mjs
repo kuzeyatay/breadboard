@@ -82,6 +82,68 @@ test("Super Agent routing is deterministic across exercise phrasing", async () =
   }
 });
 
+test("fitness keywords do not override an explicitly requested research agent", async () => {
+  for (const task of [
+    "do max research on muscle hypertrophy, then give me a gym program and diet",
+    "Use deep research to investigate hypertrophy and design a training plan",
+    "/agents:max-research build a strength program from the evidence",
+  ]) {
+    assert.equal(isOpenGymSuperAgentRoutingCandidate(task), false);
+    assert.equal((await resolveOpenGymSuperAgentRoute(task)).route, false);
+  }
+});
+
+test("legacy program notices explain the result without exposing runtime jargon", () => {
+  const result = parseOpenGymResult("# Saved plan\n\n_This program is saved in openGym's persistent state; this launch had no artifact-capable conversation context._");
+  assert.match(result.content, /Your program is saved in openGym, but couldn’t be added to this chat/);
+  assert.doesNotMatch(result.content, /persistent state|artifact-capable|conversation context/);
+});
+
+test("only a completed model answer can be saved as a training program", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-open-gym-completion-"));
+  const previous = process.env.OPEN_GYM_AGENT_DATA_DIR;
+  const originalFetch = globalThis.fetch;
+  process.env.OPEN_GYM_AGENT_DATA_DIR = root;
+  const progress = "The target is clear. I’m finishing the four-day template and dosage.";
+  const toolCall = { id: "state", type: "function", function: { name: "get_training_state", arguments: "{}" } };
+  const plan = "# Four-day plan\n\nTrain Monday, Tuesday, Thursday and Friday.\n\nDumbbell biceps curl: 3 sets of 10 reps, 90 seconds rest.";
+  try {
+    const manager = await import("../src/lib/open-gym/run-manager.ts");
+    for (const [index, scenario] of [
+      { answers: [{ content: progress, tool_calls: [toolCall] }], finish: "tool_calls", success: false },
+      { answers: [{ content: "" }], finish: "stop", success: false },
+      { answers: [{ content: plan }], finish: "length", success: false },
+      { answers: [{ content: progress, tool_calls: [toolCall] }, { content: plan }], finish: "stop", success: true },
+    ].entries()) {
+      let call = 0;
+      globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{
+        message: { role: "assistant", ...scenario.answers[call++] }, finish_reason: scenario.finish,
+      }] }), { status: 200, headers: { "content-type": "application/json" } });
+      const userId = 910 + index;
+      const run = manager.startRuntimeWorkerRun({
+        userId, task: "Build a four-day gym program", model: "fixture", reasoningEffort: "medium",
+        baseUrl: "http://fixture.invalid/v1", apiKey: "fixture", maxSteps: scenario.answers.length,
+      });
+      let terminal;
+      for (let attempt = 0; attempt < 200 && !terminal; attempt++) {
+        terminal = manager.getRuntimeWorkerEventsSince(userId, run.runId).find((event) => ["run.completed", "run.failed"].includes(event.type));
+        if (!terminal) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(terminal, "run must settle");
+      assert.equal(terminal.type, scenario.success ? "run.completed" : "run.failed");
+      const state = await readOpenGymState(userId);
+      assert.equal(state.programs.length, scenario.success ? 1 : 0);
+      assert.doesNotMatch(String(terminal.payload.summary), /finishing the four-day|artifact-capable/);
+      if (scenario.success) assert.equal(state.programs[0].markdown, plan);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previous === undefined) delete process.env.OPEN_GYM_AGENT_DATA_DIR;
+    else process.env.OPEN_GYM_AGENT_DATA_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("animation references survive transcript persistence", () => {
   const stored = attachOpenGymAnimations("## Bench press\n\nDo it with control.", [{
     id: "0025",

@@ -2,7 +2,6 @@
 
 import dynamic from "next/dynamic";
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -15,6 +14,7 @@ import {
 import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
+import { usePageLoading } from "@/app/components/use-page-loading";
 import {
   browserBookmarksControl,
   openBrowserInDesktop,
@@ -23,7 +23,6 @@ import {
 } from "@/lib/desktop-browser-tabs";
 import {
   AnimatedBrowserGreeting,
-  BrowserDock,
   BrowserQuickLinks,
   BrowserSiteIcon,
   BrowserSketchOutline,
@@ -31,18 +30,18 @@ import {
   SearchGlyph,
   websiteIconUrl,
 } from "./browser-home-widgets";
-import {
-  looksLikeBrowserAddress,
-  normalizeRecentSearches,
-  recentSearchFromInput,
-} from "./browser-recent-searches";
-import {
-  BrowserDailyQuote,
-  BrowserWallpaperPicker,
-  useBrowserWallpaper,
-} from "./browser-personalization";
+import { looksLikeBrowserAddress } from "./browser-recent-searches";
+import PageAppearance from "@/app/components/page-appearance";
+import { usePageAppearance } from "@/app/components/use-page-appearance";
+import BrowserHomeAccessories from "./browser-home-accessories";
 import { browserAddressDisplayValue } from "./browser-address-display";
 import { useBrowserSavedItems } from "./use-browser-saved-items";
+import { useBrowserRecentSearches } from "./use-browser-recent-searches";
+import { BrowserHistoryPanel } from "./browser-history-panel";
+import BrowserDownloadsPanel from "./browser-downloads";
+import BrowserMenuControls from "./browser-menu-controls";
+import BrowserTranslationControls from "./browser-translation-controls";
+import { useBrowserBookmarkReorder } from "./use-browser-bookmark-reorder";
 
 const DashboardAgentTerminal = dynamic(
   () => import("@/app/components/hermes/dashboard-agent-terminal"),
@@ -51,10 +50,6 @@ const DashboardAgentTerminal = dynamic(
     loading: () => <div className="browser-tool-loading"><span className="bb-tab-spinner" aria-hidden="true" />Loading Terminal…</div>,
   },
 );
-
-const SettingsDialog = dynamic(() => import("@/app/components/settings-dialog"), {
-  ssr: false,
-});
 
 const STROKE = {
   fill: "none",
@@ -77,7 +72,7 @@ interface BrowserBookmark {
   iconUrl: string;
 }
 
-type BrowserToolPanel = "terminal" | "history" | "starred";
+type BrowserToolPanel = "terminal" | "history" | "starred" | "downloads";
 
 const TERMINAL_DEFAULT_WIDTH = 640;
 const TERMINAL_MIN_WIDTH = 420;
@@ -85,15 +80,6 @@ const TERMINAL_MAX_VIEWPORT_SHARE = 0.5;
 const TERMINAL_SIDEBAR_EXPAND_WIDTH = 660;
 const BROWSER_MIN_CONTENT_WIDTH = 320;
 const MAX_BOOKMARKS = 40;
-const MAX_RECENT_SEARCHES = 80;
-
-function searchesKey(ownerKey: string): string {
-  return `breadboard:browser-searches:${ownerKey}`;
-}
-
-function legacyHistoryKey(ownerKey: string): string {
-  return `breadboard:browser-history:${ownerKey}`;
-}
 
 function bookmarksKey(ownerKey: string): string {
   return `breadboard:browser-bookmarks:${ownerKey}`;
@@ -348,8 +334,13 @@ export default function BrowserClient({
   restoreOwnerKey: string;
 }) {
   const tabs = useDesktopTabs();
-  const active = tabs?.tabs.find((tab) => tab.id === tabs.activeId);
-  const browser = active?.browser;
+  // The outgoing page stays visible while a cold tab loads. Its navbar must
+  // keep describing this page, not the newly selected (possibly non-browser) tab.
+  const pageTab = tabs?.tabs.find((tab) => tab.id === (
+    tabs.selfId === undefined ? tabs.activeId : tabs.selfId
+  ));
+  const browser = pageTab?.browser;
+  const isActive = Boolean(pageTab && pageTab.id === tabs?.activeId);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const searchFrameRef = useRef<HTMLFormElement | null>(null);
@@ -365,7 +356,8 @@ export default function BrowserClient({
   const browserRepairAttemptedRef = useRef(false);
   const [draftAddress, setDraftAddress] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const recentSearchStore = useBrowserRecentSearches(restoreOwnerKey, browser?.address);
+  const recentSearches = recentSearchStore.items;
   const bookmarkStore = useBrowserSavedItems(
     restoreOwnerKey,
     bookmarksKey(restoreOwnerKey),
@@ -373,6 +365,12 @@ export default function BrowserClient({
     normalizeBookmarks,
   );
   const bookmarks = bookmarkStore.items;
+  const bookmarkReorder = useBrowserBookmarkReorder(
+    restoreOwnerKey,
+    bookmarks,
+    bookmarkStore.ready && !bookmarkStore.saving,
+    bookmarkStore.save,
+  );
   const [searchFocused, setSearchFocused] = useState(false);
   const [highlightedSuggestion, setHighlightedSuggestion] = useState(-1);
   const [addressFocused, setAddressFocused] = useState(false);
@@ -383,11 +381,9 @@ export default function BrowserClient({
   );
   const [terminalResizing, setTerminalResizing] = useState(false);
   const [activePanel, setActivePanel] = useState<BrowserToolPanel>("terminal");
-  const [historyFilter, setHistoryFilter] = useState("");
-  const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [terminalLoaded, setTerminalLoaded] = useState(false);
-  const [browserRecoverySlow, setBrowserRecoverySlow] = useState(false);
   const [browserRecoveryFailed, setBrowserRecoveryFailed] = useState(false);
+  usePageLoading(browser ? pageTab?.loading === true || browser.translation?.status === "translating" : !browserRecoveryFailed);
   const [extensionsOpen, setExtensionsOpen] = useState(false);
   const [extensionAction, setExtensionAction] = useState<string | null>(null);
   const [extensionError, setExtensionError] = useState<string | null>(null);
@@ -396,7 +392,7 @@ export default function BrowserClient({
   const extensions = tabs?.extensions ?? [];
   const addressLookupQuery = addressFocused && address === browser?.address ? "" : address;
   const chatGreeting = useChatGreeting({ scope: "mine", temporary: false });
-  const personalization = useBrowserWallpaper(restoreOwnerKey);
+  const personalization = usePageAppearance(restoreOwnerKey, "browser");
   const terminalOpen = browser?.terminalOpen ?? false;
   const selectionKey = browser?.selection
     ? `${browser.selection.url}\n${browser.selection.text}`
@@ -411,24 +407,6 @@ export default function BrowserClient({
     () => searchSuggestions(addressLookupQuery, recentSearches, googleAddressSuggestions),
     [addressLookupQuery, googleAddressSuggestions, recentSearches],
   );
-  const visibleHistory = useMemo(() => {
-    const filter = historyFilter.trim().toLocaleLowerCase();
-    return filter
-      ? recentSearches.filter((entry) => entry.toLocaleLowerCase().includes(filter))
-      : recentSearches;
-  }, [historyFilter, recentSearches]);
-  const rememberSearch = useCallback((value: string) => {
-    const search = recentSearchFromInput(value);
-    if (!search) return;
-    setRecentSearches((current) => {
-      const next = [search, ...current.filter((entry) => entry !== search)].slice(0, MAX_RECENT_SEARCHES);
-      window.localStorage.setItem(
-        searchesKey(restoreOwnerKey),
-        JSON.stringify(next),
-      );
-      return next;
-    });
-  }, [restoreOwnerKey]);
 
   function setTerminalWidth(value: number) {
     const next = clampTerminalWidth(value, window.innerWidth);
@@ -455,18 +433,6 @@ export default function BrowserClient({
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      try {
-        const stored = JSON.parse(
-          window.localStorage.getItem(searchesKey(restoreOwnerKey)) ??
-            window.localStorage.getItem(legacyHistoryKey(restoreOwnerKey)) ?? "[]",
-        );
-        const searches = normalizeRecentSearches(stored, MAX_RECENT_SEARCHES);
-        setRecentSearches(searches);
-        window.localStorage.setItem(searchesKey(restoreOwnerKey), JSON.stringify(searches));
-        window.localStorage.removeItem(legacyHistoryKey(restoreOwnerKey));
-      } catch {
-        setRecentSearches([]);
-      }
       const storedWidthValue = window.localStorage.getItem(
         `breadboard:browser-terminal-width:${restoreOwnerKey}`,
       );
@@ -477,22 +443,6 @@ export default function BrowserClient({
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [restoreOwnerKey]);
-
-  useEffect(() => {
-    const storedSearchesKey = searchesKey(restoreOwnerKey);
-    const syncBrowserLibrary = (event: StorageEvent) => {
-      if (event.key === storedSearchesKey) {
-        try {
-          const stored = JSON.parse(event.newValue ?? "[]");
-          setRecentSearches(normalizeRecentSearches(stored, MAX_RECENT_SEARCHES));
-        } catch {
-          setRecentSearches([]);
-        }
-      }
-    };
-    window.addEventListener("storage", syncBrowserLibrary);
-    return () => window.removeEventListener("storage", syncBrowserLibrary);
   }, [restoreOwnerKey]);
 
   useEffect(() => {
@@ -539,9 +489,9 @@ export default function BrowserClient({
       inputRef.current?.select();
     };
     window.addEventListener("breadboard:focus-browser-address", focusAddress);
-    if (browser && !browser.address) requestAnimationFrame(() => searchRef.current?.focus());
+    if (isActive && browser && !browser.address) requestAnimationFrame(() => searchRef.current?.focus());
     return () => window.removeEventListener("breadboard:focus-browser-address", focusAddress);
-  }, [browser, browser?.address]);
+  }, [browser, browser?.address, isActive]);
 
   useEffect(() => {
     if (!selectionKey) {
@@ -561,16 +511,10 @@ export default function BrowserClient({
   }, [activePanel, terminalLoaded, terminalOpen]);
 
   useEffect(() => {
-    if (browser) return;
-    const timer = window.setTimeout(() => setBrowserRecoverySlow(true), 1_200);
-    return () => window.clearTimeout(timer);
-  }, [browser]);
-
-  useEffect(() => {
-    if (browser || !tabs?.enabled || !active || browserRepairAttemptedRef.current) return;
+    if (browser || !tabs?.enabled || !pageTab || !isActive || browserRepairAttemptedRef.current) return;
     let isPlainBrowserRoute = false;
     try {
-      isPlainBrowserRoute = new URL(active.url, window.location.href).pathname === "/browser";
+      isPlainBrowserRoute = new URL(pageTab.url, window.location.href).pathname === "/browser";
     } catch {
       // An invalid tab address cannot be the recoverable browser shell.
     }
@@ -588,12 +532,13 @@ export default function BrowserClient({
       live = false;
       window.cancelAnimationFrame(frame);
     };
-  }, [active, browser, tabs?.enabled]);
+  }, [pageTab, browser, isActive, tabs?.enabled]);
 
-  function navigate(input: string) {
+  async function navigate(input: string) {
     const value = input.trim();
     if (!value) return;
-    rememberSearch(value);
+    // Finish the durable save before handing the search to the browser.
+    await recentSearchStore.remember(value);
     setDraftAddress(null);
     setSearchQuery("");
     setSearchFocused(false);
@@ -602,7 +547,13 @@ export default function BrowserClient({
     setExtensionsOpen(false);
     setHighlightedAddressSuggestion(-1);
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    void sendDesktopTabsCommand({ type: "browser-navigate", input: value });
+    if (browser) {
+      void sendDesktopTabsCommand({ type: "browser-navigate", input: value });
+    } else {
+      setBrowserRecoveryFailed(false);
+      const opened = await openBrowserInDesktop({ url: value, replaceCurrent: true });
+      if (!opened) setBrowserRecoveryFailed(true);
+    }
   }
 
   function navigateFromAddress(event: FormEvent<HTMLFormElement>) {
@@ -651,7 +602,7 @@ export default function BrowserClient({
       ...bookmarks,
       {
         url: normalizedUrl,
-        title: pageBookmarkTitle(active?.title, normalizedUrl),
+        title: pageBookmarkTitle(pageTab?.title, normalizedUrl),
         iconUrl: safeBookmarkIcon(browser?.favicon, normalizedUrl),
       },
     ]);
@@ -683,14 +634,8 @@ export default function BrowserClient({
     setExtensionAction(null);
   }
 
-  function saveRecentSearches(next: string[]) {
-    const bounded = normalizeRecentSearches(next, MAX_RECENT_SEARCHES);
-    setRecentSearches(bounded);
-    window.localStorage.setItem(searchesKey(restoreOwnerKey), JSON.stringify(bounded));
-  }
-
   function removeHistoryEntry(value: string) {
-    saveRecentSearches(recentSearches.filter((entry) => entry !== value));
+    void recentSearchStore.remove(value);
   }
 
   function handleSearchKeys(event: KeyboardEvent<HTMLInputElement>) {
@@ -803,43 +748,22 @@ export default function BrowserClient({
     );
   }
 
-  if (!browser) {
-    const retryBrowser = () => {
-      setBrowserRecoveryFailed(false);
-      browserRepairAttemptedRef.current = false;
-      void refreshDesktopTabsState().then(() =>
-        openBrowserInDesktop({ replaceCurrent: true }),
-      ).then((opened) => {
-        if (!opened) setBrowserRecoveryFailed(true);
-      });
-    };
-    return (
-      <main className="browser-unavailable" aria-live="polite" data-recovering={!browserRecoveryFailed}>
-        <div className="browser-recovery-card">
-          <span className="bb-tab-spinner" aria-hidden="true" />
-          <strong>{browserRecoveryFailed ? "Browser did not attach" : "Starting Browser…"}</strong>
-          <p>
-            {browserRecoveryFailed
-              ? "Breadboard could not connect this page to its secure browser view."
-              : "Connecting the address bar and secure page view."}
-          </p>
-          {browserRecoverySlow || browserRecoveryFailed ? (
-            <div className="browser-recovery-actions">
-              <button type="button" onClick={retryBrowser}>Try again</button>
-              <a href="/dashboard">Back to dashboard</a>
-            </div>
-          ) : null}
-        </div>
-      </main>
-    );
+  function retryBrowser() {
+    setBrowserRecoveryFailed(false);
+    browserRepairAttemptedRef.current = false;
+    void refreshDesktopTabsState().then(() =>
+      openBrowserInDesktop({ replaceCurrent: true }),
+    ).then((opened) => {
+      if (!opened) setBrowserRecoveryFailed(true);
+    });
   }
 
-  const selectionDraft = browser.selection
+  const selectionDraft = browser?.selection
     ? `Ask about this selection from ${browser.selection.title}:\n\n“${browser.selection.text}”\n\n`
     : null;
   const normalizedAddress = (() => {
     try {
-      return browser.address ? new URL(browser.address).toString() : "";
+      return browser?.address ? new URL(browser.address).toString() : "";
     } catch {
       return "";
     }
@@ -847,33 +771,39 @@ export default function BrowserClient({
   const currentBookmarked = Boolean(
     normalizedAddress && bookmarks.some((bookmark) => bookmark.url === normalizedAddress),
   );
+  const closePanelButton = (
+    <button type="button" className="browser-terminal-close" onClick={() => setBrowserPanelOpen(false)} aria-label={`Close ${activePanel === "terminal" ? "Terminal" : activePanel === "history" ? "history" : activePanel === "downloads" ? "downloads" : "starred pages"}`} title="Close panel">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8m0-8-8 8" {...STROKE} /></svg>
+    </button>
+  );
 
   return (
     <>
       <div className="browser-toolbar" role="toolbar" aria-label="Browser navigation">
         <NavbarFlowerWind showFlowers={showFlowers} />
         <div className="browser-navigation-controls">
-          <button type="button" className="browser-toolbar-button" aria-label="Back" title="Back (Alt+Left)" disabled={!browser.canGoBack} onClick={() => void sendDesktopTabsCommand({ type: "back" })}>
+          <button type="button" className="browser-toolbar-button" aria-label="Back" title="Back (Alt+Left)" disabled={!browser?.canGoBack} onClick={() => void sendDesktopTabsCommand({ type: "back" })}>
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10H4m5-5-5 5 5 5" {...STROKE} /></svg>
           </button>
-          <button type="button" className="browser-toolbar-button" aria-label="Forward" title="Forward (Alt+Right)" disabled={!browser.canGoForward} onClick={() => void sendDesktopTabsCommand({ type: "forward" })}>
+          <button type="button" className="browser-toolbar-button" aria-label="Forward" title="Forward (Alt+Right)" disabled={!browser?.canGoForward} onClick={() => void sendDesktopTabsCommand({ type: "forward" })}>
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" {...STROKE} /></svg>
           </button>
           <button
             type="button"
             className="browser-toolbar-button"
-            aria-label={active?.loading ? "Stop loading" : "Reload"}
-            title={active?.loading ? "Stop loading" : "Reload (Ctrl+R)"}
-            onClick={() => void sendDesktopTabsCommand(active?.loading ? { type: "browser-stop" } : { type: "reload" })}
+            aria-label={pageTab?.loading ? "Stop loading" : "Reload"}
+            title={pageTab?.loading ? "Stop loading" : "Reload (Ctrl+R)"}
+            disabled={!browser}
+            onClick={() => void sendDesktopTabsCommand(pageTab?.loading ? { type: "browser-stop" } : { type: "reload" })}
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
-              {active?.loading ? <rect x="6" y="6" width="8" height="8" rx="1" fill="currentColor" /> : <path d="M15.2 7A6 6 0 1 0 16 11m-.8-4V3.8M15.2 7H12" {...STROKE} />}
+              {pageTab?.loading ? <rect x="6" y="6" width="8" height="8" rx="1" fill="currentColor" /> : <path d="M15.2 7A6 6 0 1 0 16 11m-.8-4V3.8M15.2 7H12" {...STROKE} />}
             </svg>
           </button>
         </div>
         <form className="browser-address-form" onSubmit={navigateFromAddress}>
           <span className="browser-address-security" aria-hidden="true">
-            {browser.address ? (
+            {browser?.address ? (
               <BrowserSiteIcon
                 src={browser.favicon}
                 pageUrl={browser.address}
@@ -897,7 +827,7 @@ export default function BrowserClient({
             placeholder="Search with Google or enter an address"
             value={addressDisplay}
             onFocus={(event) => {
-              setDraftAddress(browser.address);
+              setDraftAddress(browser?.address ?? "");
               setHighlightedAddressSuggestion(-1);
               event.currentTarget.select();
             }}
@@ -916,13 +846,14 @@ export default function BrowserClient({
             }}
           />
           <div className="browser-address-actions">
+            <BrowserTranslationControls browser={browser} />
             <button
               type="button"
               className="browser-bookmark-toggle"
               aria-label={currentBookmarked ? "Remove bookmark" : "Bookmark this page"}
               aria-pressed={currentBookmarked}
               title={currentBookmarked ? "Remove bookmark" : "Bookmark this page"}
-              disabled={!browser.address || !bookmarkStore.ready || bookmarkStore.saving}
+              disabled={!browser?.address || !bookmarkStore.ready || bookmarkStore.saving}
               onClick={toggleCurrentBookmark}
             >
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.7 2.1 4.35 4.8.7-3.47 3.38.82 4.77L10 13.65 5.75 15.9l.82-4.77L3.1 7.75l4.8-.7L10 2.7Z" {...STROKE} /></svg>
@@ -1000,7 +931,9 @@ export default function BrowserClient({
                     )}
                     Load unpacked
                   </button>
-                  <p className="browser-extensions-note">Choose an unpacked Chromium extension folder containing manifest.json.</p>
+                  <p className="browser-extensions-note">
+                    Install from a Chrome Web Store listing with “Add to Breadboard,” or choose an unpacked extension folder. Compatibility varies by extension.
+                  </p>
                 </section>
               ) : null}
             </div>
@@ -1020,19 +953,41 @@ export default function BrowserClient({
             />
           ) : null}
         </form>
+        <BrowserMenuControls profileLabel={restoreOwnerKey} address={browser?.address ?? ""} matches={browser?.find} onPanel={panel => {
+          setActivePanel(panel);
+          setBrowserPanelOpen(true);
+        }} />
       </div>
 
-      <nav className="browser-bookmarks-bar" aria-label="Bookmarks" data-loading={active?.loading === true}>
+      <nav className="browser-bookmarks-bar" aria-label="Bookmarks">
         {bookmarkStore.error && (
           <span role="alert" className="browser-bookmarks-empty">
             {bookmarkStore.error}{" "}
             {!bookmarkStore.ready && <button type="button" onClick={bookmarkStore.retry}>Retry</button>}
           </span>
         )}
-        <div className="browser-bookmarks-list">
+        <span id="browser-bookmark-reorder-help" className="sr-only">Drag to reorder. You can also use Alt+Shift and the left or right arrow key.</span>
+        <span className="sr-only" role="status">{bookmarkReorder.announcement}</span>
+        <div
+          className="browser-bookmarks-list"
+          data-reordering={Boolean(bookmarkReorder.drag)}
+          onDragOver={bookmarkReorder.over}
+          onDrop={bookmarkReorder.drop}
+        >
           {bookmarks.length ? bookmarks.map((bookmark) => (
-            <span key={bookmark.url} className="browser-bookmark-item" data-current={bookmark.url === normalizedAddress}>
-              <button type="button" className="browser-bookmark-link" title={bookmark.title} onClick={() => navigate(bookmark.url)}>
+            <span
+              key={bookmark.url}
+              className="browser-bookmark-item"
+              data-bookmark-url={bookmark.url}
+              data-current={bookmark.url === normalizedAddress}
+              data-dragging={bookmarkReorder.drag?.url === bookmark.url}
+              data-drop-before={bookmarkReorder.drag?.beforeUrl === bookmark.url && bookmarkReorder.drag.url !== bookmark.url}
+              data-drop-after={bookmarkReorder.drag?.beforeUrl === null && bookmark === bookmarks.at(-1)}
+              draggable={bookmarkStore.ready && !bookmarkStore.saving && bookmarks.length > 1}
+              onDragStart={(event) => bookmarkReorder.start(event, bookmark.url)}
+              onDragEnd={bookmarkReorder.end}
+            >
+              <button type="button" className="browser-bookmark-link" title={bookmark.title} aria-describedby="browser-bookmark-reorder-help" aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight" onKeyDown={(event) => bookmarkReorder.keyDown(event, bookmark.url)} onClick={() => navigate(bookmark.url)}>
                 <BrowserSiteIcon src={bookmark.iconUrl} pageUrl={bookmark.url} fallback={bookmark.title.slice(0, 1).toUpperCase()} />
                 <span className="browser-bookmark-label">{bookmark.title}</span>
               </button>
@@ -1046,8 +1001,16 @@ export default function BrowserClient({
         </div>
       </nav>
 
+      {!browser && browserRecoveryFailed ? (
+        <div className="browser-recovery-error" role="alert">
+          <span>Couldn’t open the browser.</span>
+          <button type="button" onClick={retryBrowser}>Try again</button>
+          <a href="/dashboard">Back to dashboard</a>
+        </div>
+      ) : null}
+
       <main
-        className="browser-start-page"
+        className="browser-start-page browser-home-widget-surface"
         aria-live="polite"
         data-wallpaper-ready={personalization.ready}
         data-has-wallpaper={personalization.hasWallpaper}
@@ -1056,7 +1019,8 @@ export default function BrowserClient({
           "--browser-wallpaper-image": `url("${personalization.wallpaper.src}")`,
         } as CSSProperties : undefined}
       >
-        {!browser.address ? (
+        {!browser?.address && <PageAppearance page="browser" ownerKey={restoreOwnerKey} />}
+        {!browser?.address ? (
           <div className="browser-start-copy">
             <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />
             <form ref={searchFrameRef} className="browser-home-search" onSubmit={searchWeb}>
@@ -1103,18 +1067,11 @@ export default function BrowserClient({
             </form>
             <BrowserQuickLinks navigate={navigate} ownerKey={restoreOwnerKey} />
           </div>
-        ) : active?.loading ? (
-          <div className="browser-start-status"><span className="bb-tab-spinner" aria-hidden="true" />Opening {address || browser.address}…</div>
         ) : null}
-        {!browser.address ? (
+        {!browser?.address ? (
           <>
-            <BrowserDailyQuote ownerKey={restoreOwnerKey} />
-            <BrowserDock openConnections={() => setConnectionsOpen(true)} />
-            <BrowserWallpaperPicker
-              currentTheme={personalization.theme}
-              selections={personalization.selections}
-              onSelect={personalization.select}
-            />
+            <BrowserHomeAccessories ownerKey={restoreOwnerKey} />
+
           </>
         ) : null}
       </main>
@@ -1134,9 +1091,9 @@ export default function BrowserClient({
           <button
             type="button"
             className="browser-terminal-launcher"
-            aria-label={terminalOpen && activePanel === "history" ? "Close recent searches" : "Open recent searches"}
+            aria-label={terminalOpen && activePanel === "history" ? "Close history" : "Open history"}
             aria-pressed={terminalOpen && activePanel === "history"}
-            title="Recent searches"
+            title="Browsing history"
             onClick={() => toggleToolPanel("history")}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.2" {...STROKE} /><path d="M12 8v4.4l3 1.7M5.2 6.8 3.8 9.5" {...STROKE} /></svg>
@@ -1150,6 +1107,16 @@ export default function BrowserClient({
             onClick={() => toggleToolPanel("starred")}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.6 2.5 5.05 5.57.81-4.03 3.93.95 5.55L12 16.32l-4.99 2.62.95-5.55L3.93 9.46l5.57-.81L12 3.6Z" {...STROKE} /></svg>
+          </button>
+          <button
+            type="button"
+            className="browser-terminal-launcher"
+            aria-label={terminalOpen && activePanel === "downloads" ? "Close downloads" : "Open downloads"}
+            aria-pressed={terminalOpen && activePanel === "downloads"}
+            title="Downloads"
+            onClick={() => toggleToolPanel("downloads")}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" {...STROKE} /></svg>
           </button>
         </div>
         <svg className="browser-rail-sketch" viewBox="0 0 18 600" preserveAspectRatio="none" aria-hidden="true">
@@ -1167,9 +1134,7 @@ export default function BrowserClient({
         data-panel={activePanel}
         style={{ "--browser-terminal-width": `${terminalWidth}px` } as CSSProperties}
       >
-        <button type="button" className="browser-terminal-close" onClick={() => setBrowserPanelOpen(false)} aria-label={`Close ${activePanel === "terminal" ? "Terminal" : activePanel === "history" ? "history" : "starred pages"}`} title="Close panel">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8m0-8-8 8" {...STROKE} /></svg>
-        </button>
+        {activePanel === "terminal" ? closePanelButton : null}
         <div className="browser-tool-panel browser-tool-panel-terminal" data-active={activePanel === "terminal"} aria-hidden={activePanel !== "terminal"} inert={activePanel !== "terminal" ? true : undefined}>
           {terminalLoaded ? (
             <DashboardAgentTerminal
@@ -1181,36 +1146,12 @@ export default function BrowserClient({
             />
           ) : null}
         </div>
-        <section className="browser-tool-panel browser-library-panel" data-active={activePanel === "history"} aria-hidden={activePanel !== "history"} inert={activePanel !== "history" ? true : undefined} aria-label="Recent searches">
-          <header className="browser-library-panel-header">
-            <span className="browser-library-panel-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.2" {...STROKE} /><path d="M12 8v4.4l3 1.7M5.2 6.8 3.8 9.5" {...STROKE} /></svg></span>
-            <span><strong>Recent searches</strong><small>{recentSearches.length} recent {recentSearches.length === 1 ? "search" : "searches"}</small></span>
-            {recentSearches.length ? <button type="button" className="browser-library-clear" onClick={() => saveRecentSearches([])}>Clear</button> : null}
-          </header>
-          <label className="browser-library-filter">
-            <SearchGlyph />
-            <span className="sr-only">Filter recent searches</span>
-            <input type="search" value={historyFilter} onChange={(event) => setHistoryFilter(event.currentTarget.value)} placeholder="Filter recent searches" />
-            {historyFilter ? <button type="button" aria-label="Clear recent search filter" onClick={() => setHistoryFilter("")}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6m0-6-6 6" {...STROKE} /></svg></button> : null}
-          </label>
-          <div className="browser-library-list">
-            {visibleHistory.length ? visibleHistory.map((entry) => {
-              return (
-                <div key={entry} className="browser-library-row">
-                  <button type="button" className="browser-library-link" onClick={() => navigate(entry)} title={entry}>
-                    <span className="browser-library-icon"><SearchGlyph /></span>
-                    <span><strong>{entry}</strong><small>Search with Google</small></span>
-                  </button>
-                  <button type="button" className="browser-library-remove" onClick={() => removeHistoryEntry(entry)} aria-label={`Remove ${entry} from recent searches`} title="Remove from recent searches"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6m0-6-6 6" {...STROKE} /></svg></button>
-                </div>
-              );
-            }) : <div className="browser-library-empty"><span aria-hidden="true">↺</span><strong>{historyFilter ? "No matching searches" : "No recent searches"}</strong><small>{historyFilter ? "Try another term." : "Things you search for will appear here."}</small></div>}
-          </div>
-        </section>
+        <BrowserHistoryPanel active={activePanel === "history"} searches={recentSearchStore} navigate={navigate} closeButton={closePanelButton} />
         <section className="browser-tool-panel browser-library-panel" data-active={activePanel === "starred"} aria-hidden={activePanel !== "starred"} inert={activePanel !== "starred" ? true : undefined} aria-label="Starred pages">
           <header className="browser-library-panel-header">
             <span className="browser-library-panel-mark browser-library-panel-star" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3.6 2.5 5.05 5.57.81-4.03 3.93.95 5.55L12 16.32l-4.99 2.62.95-5.55L3.93 9.46l5.57-.81L12 3.6Z" {...STROKE} /></svg></span>
             <span><strong>Starred</strong><small>{bookmarks.length} saved {bookmarks.length === 1 ? "page" : "pages"}</small></span>
+            <div className="browser-library-panel-actions">{closePanelButton}</div>
           </header>
           <div className="browser-library-list browser-starred-list">
             {bookmarks.length ? bookmarks.map((bookmark) => (
@@ -1224,6 +1165,7 @@ export default function BrowserClient({
             )) : <div className="browser-library-empty"><span aria-hidden="true">☆</span><strong>No starred pages yet</strong><small>Use the star in the address bar to save this page.</small></div>}
           </div>
         </section>
+        <BrowserDownloadsPanel active={terminalOpen && activePanel === "downloads"} closeButton={closePanelButton} />
         <div
           className="browser-terminal-resizer"
           role="separator"
@@ -1241,9 +1183,6 @@ export default function BrowserClient({
           onPointerCancel={finishTerminalResize}
         />
       </aside>
-      {connectionsOpen ? (
-        <SettingsDialog initialTab="connections" onClose={() => setConnectionsOpen(false)} />
-      ) : null}
     </>
   );
 }

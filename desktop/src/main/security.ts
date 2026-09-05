@@ -4,8 +4,10 @@ import {
   session,
   type BrowserWindow,
   type Event as ElectronEvent,
+  type HandlerDetails,
   type Session,
   type WebContents,
+  type WindowOpenHandlerResponse,
 } from "electron";
 
 /**
@@ -110,7 +112,9 @@ export function isSafeBrowserUrl(targetUrl: string): boolean {
 }
 
 export interface ExternalBrowserHandlers {
-  onOpenUrl: (url: string, background: boolean) => void;
+  /** Install the shared browser profile's narrow notification policy. */
+  configurePermissions?: (session: Session) => void;
+  onOpenWindow: (details: HandlerDetails) => WindowOpenHandlerResponse;
   /** One inert shell-owned document used to identify an automation target. */
   isTrustedBootstrapUrl?: (url: string) => boolean;
 }
@@ -136,21 +140,22 @@ export function hardenExternalBrowserWebContents(
   };
   contents.on("will-navigate", guardWebUrl);
   contents.on("will-redirect", guardWebUrl);
-  contents.setWindowOpenHandler(({ url, disposition }) => {
-    if (isSafeBrowserUrl(url)) {
-      handlers.onOpenUrl(url, disposition === "background-tab");
+  contents.setWindowOpenHandler((details) => {
+    // Auth providers also open an empty named window before assigning its URL.
+    // Preserve Chromium's Window/opener relationship instead of opening an
+    // unrelated URL and reporting the popup as blocked to the calling page.
+    if (isSafeBrowserUrl(details.url) || details.url === "about:blank") {
+      return handlers.onOpenWindow(details);
     }
     return { action: "deny" };
   });
   contents.on("will-attach-webview", (event) => event.preventDefault());
 
-  // The browser partition is separate from Breadboard's authenticated local
-  // renderer. Permissions can be surfaced through trusted chrome later; until
-  // then an arbitrary site cannot silently gain device access.
-  contents.session.setPermissionCheckHandler(() => false);
-  contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
-  });
+  if (handlers.configurePermissions) handlers.configurePermissions(contents.session);
+  else {
+    contents.session.setPermissionCheckHandler(() => false);
+    contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  }
 }
 
 export function isRendererPermissionAllowed(

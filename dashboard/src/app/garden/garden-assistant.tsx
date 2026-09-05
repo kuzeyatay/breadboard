@@ -1,5 +1,7 @@
 'use client';
 
+import { handleGardenSourceImportResult } from '@/lib/hermes/garden-source-import-client';
+
 import {
   type ChangeEvent,
   memo,
@@ -34,6 +36,7 @@ import { useAssistantIntelligence } from '@/app/components/use-assistant-intelli
 import { isSuperAgentEnabled } from '@/app/components/use-agent-mode';
 import { isYoloModeEnabled } from '@/app/components/use-yolo-mode';
 import ActivityPanel from '@/app/components/hermes/activity-panel';
+import AssistantResponseNotice from '@/app/components/assistant-response-notice';
 import { UserMessageText } from '@/app/components/hermes/command-text';
 import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
 import { useLegacyAgentActivity } from '@/app/components/hermes/use-legacy-agent-activity';
@@ -55,6 +58,7 @@ import {
 import { distillAttachments } from '@/lib/document-skills/client';
 import { type ChatTokenUsage, normalizeChatTokenUsage } from '@/lib/chat-token-usage';
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
+import { isClarificationAnswerMessage } from '@/lib/steered-response';
 import type { VerificationSummary } from '@/lib/hermes/evidence';
 import { applyGardenStableTextEvent } from '@/lib/hermes/garden-stable-stream';
 import { assistantVisibleContent } from '@/lib/hermes/assistant-visible-content';
@@ -76,6 +80,7 @@ interface QuartzInlineSelectionReference {
 interface ChatMessage {
   id?: string;
   clientMessageId?: string;
+  clarificationAnswer?: boolean;
   role: 'user' | 'assistant';
   content: string;
   createdAt?: string;
@@ -127,6 +132,9 @@ function visibleGardenChatMessages(messages: ChatMessage[]): ChatMessage[] {
   const visibleMessages: ChatMessage[] = [];
 
   for (const message of messages) {
+    if (message.role === 'user' && isClarificationAnswerMessage(message)) {
+      continue;
+    }
     if (message.inlineSelection) {
       if (message.role === 'user') {
         pendingInlineAnswers += 1;
@@ -521,6 +529,8 @@ const TranscriptRow = memo(function TranscriptRow({
               <ActivityPanel
                 activities={activities}
                 progressNotes={message.progressNotes}
+                reasoning={message.thinking}
+                answerContent={message.content}
                 connection={connection}
                 pendingPermission={pendingPermission}
                 pendingClarification={pendingClarification}
@@ -531,6 +541,7 @@ const TranscriptRow = memo(function TranscriptRow({
                 completedLabel={delegatedAgentCompletedLabelForMessage(message)}
               />
               {visibleAssistantContent ? <ChatMarkdown content={visibleAssistantContent} compact /> : null}
+              {!visibleAssistantContent && showActions && onRetry ? <AssistantResponseNotice kind="empty" onRetry={onRetry} /> : null}
             </>
           ) : (
             <>
@@ -558,7 +569,7 @@ const TranscriptRow = memo(function TranscriptRow({
             <ChatMessageAttachments attachments={message.attachments} attachmentNames={message.attachmentNames} />
           ) : null}
         </div>
-        {message.role === 'assistant' && showActions ? (
+        {message.role === 'assistant' && showActions && visibleAssistantContent ? (
           <AssistantMessageActions
             content={visibleAssistantContent || 'Response unavailable'}
             responseStartedAt={message.createdAt}
@@ -1478,6 +1489,9 @@ export default function GardenAssistant({
           try {
             const event = JSON.parse(payload);
             agentActivity.handleEvent(event as Record<string, unknown>);
+            if (event.type === 'tool' && event.status === 'completed' && event.toolName === 'garden_import_source') {
+              handleGardenSourceImportResult(event.details);
+            }
             if (event.type === 'sources' && Array.isArray(event.sources)) {
               assistantMessage = {
                 ...assistantMessage,
@@ -1497,6 +1511,14 @@ export default function GardenAssistant({
                 ...assistantMessage,
                 thinking: `${assistantMessage.thinking ?? ''}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`,
               };
+              updateAssistant();
+            }
+            if (event.type === 'thinking' && typeof event.text === 'string') {
+              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+                type: 'thinking',
+                text: event.text,
+                detailMode: event.detailMode,
+              });
               updateAssistant();
             }
             if (event.type === 'delta' && typeof event.text === 'string') {

@@ -75,6 +75,8 @@ const KNOWLEDGE_TOOLS = [
   "websearch",
   "garden_list",
   "garden_search",
+  "garden_discover_sources",
+  "garden_import_source",
   "garden_get_page",
   "garden_get_page_context",
   "garden_get_source_excerpt",

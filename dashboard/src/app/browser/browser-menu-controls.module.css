@@ -1,0 +1,11 @@
+.trigger { flex: none; border-radius: 10px; }
+.trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--ink-muted) 16%, transparent); }
+.trigger:active { transform: scale(.97); }
+.find { position: absolute; top: 100%; right: 8px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(390px, calc(100vw - 56px)); height: 34px; box-sizing: border-box; padding: 2px 5px 2px 10px; color: var(--ink-heading); background: var(--paper-raised); border: 1px solid var(--line-strong); border-radius: 7px; box-shadow: 0 2px 6px rgb(0 0 0 / 10%); }
+.find input { flex: 1; min-width: 0; height: 26px; font-size: 12px; background: transparent; outline: none; }
+.find button { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 5px; }
+.find button:disabled { opacity: .4; }
+.find button:hover:not(:disabled) { background: color-mix(in srgb, var(--ink-muted) 12%, transparent); }
+.find button:focus-visible, .trigger:focus-visible { outline: 2px solid var(--botanical); outline-offset: 1px; }
+.count { min-width: 37px; font-size: 11px; color: var(--ink-muted); white-space: nowrap; font-variant-numeric: tabular-nums; text-align: center; }
+.error { position: absolute; right: 8px; top: 100%; z-index: 30; display: flex; align-items: center; gap: 6px; height: 32px; padding: 3px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper-raised); color: var(--ink-heading); font-size: 11px; }

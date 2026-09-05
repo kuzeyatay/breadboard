@@ -1,11 +1,27 @@
+.surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--ink);
+}
+
 .launcher {
   position: relative;
   z-index: 1;
   width: 100%;
   max-width: 760px;
+  height: 100%;
   margin: 0 auto;
-  padding: clamp(48px, 11vh, 112px) 24px 48px;
+  padding: clamp(96px, 11vh, 112px) 24px 156px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  box-sizing: border-box;
   color: var(--ink);
+}
+
+.launcher::-webkit-scrollbar {
+  display: none;
 }
 
 .heading {
@@ -26,6 +42,21 @@
 
 .addressee {
   color: var(--botanical);
+}
+
+.greeting {
+  display: grid;
+}
+
+.greetingSizer,
+.greetingText {
+  grid-area: 1 / 1;
+}
+
+/* Reserve the complete message's lines while the visible text is retyped. */
+.greetingSizer {
+  visibility: hidden;
+  user-select: none;
 }
 
 .search {
@@ -285,9 +316,16 @@
   transform: scale(0.97);
 }
 
+@media (max-width: 940px) {
+  .launcher {
+    height: calc(100% - 2 * var(--browser-dock-height) - 48px);
+    padding-bottom: 24px;
+  }
+}
+
 @media (max-width: 540px) {
   .launcher {
-    padding: 44px 20px 32px;
+    padding: 104px 20px 24px;
   }
 
   .heading h1 {

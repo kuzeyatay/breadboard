@@ -6,15 +6,10 @@ export type GardenStableTextState = {
 
 export type GardenStableTextEvent =
   | { type: "delta"; text: string }
+  | { type: "thinking"; text: string; detailMode?: "append" | "replace" }
   | { type: "provisional"; text: string }
   | { type: "replace"; text: string }
   | { type: "segment"; text: string; streamed: boolean };
-
-function appendThinking(current: string | undefined, text: string): string {
-  const next = text.trim();
-  if (!next) return current ?? "";
-  return [current?.trim(), next].filter(Boolean).join("\n");
-}
 
 function appendProgressNote(current: string[] | undefined, text: string): string[] {
   const next = text.trim();
@@ -36,6 +31,14 @@ export function applyGardenStableTextEvent<T extends GardenStableTextState>(
   state: T,
   event: GardenStableTextEvent,
 ): T {
+  if (event.type === "thinking") {
+    return {
+      ...state,
+      thinking: event.detailMode === "replace"
+        ? event.text
+        : (state.thinking ?? "") + event.text,
+    } as T;
+  }
   if (event.type === "delta") {
     return { ...state, content: `${state.content}${event.text}` } as T;
   }
@@ -45,13 +48,11 @@ export function applyGardenStableTextEvent<T extends GardenStableTextState>(
   if (event.type === "provisional") {
     return {
       ...state,
-      thinking: appendThinking(state.thinking, event.text),
       progressNotes: appendProgressNote(state.progressNotes, event.text),
     } as T;
   }
   return {
     ...state,
-    thinking: appendThinking(state.thinking, event.text),
     progressNotes: appendProgressNote(state.progressNotes, event.text),
   } as T;
 }

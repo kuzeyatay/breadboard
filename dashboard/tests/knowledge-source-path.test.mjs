@@ -209,9 +209,13 @@ describe("source document ingest path", () => {
   });
 
   test("saved links are converted into source documents", () => {
-    const linksRoute = fs.readFileSync(
+    const route = fs.readFileSync(
       path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "links", "route.ts"),
       "utf8",
+    );
+    assert.match(route, /importGardenLink\(\{/);
+    const linksRoute = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "garden-link-import.ts"), "utf8",
     );
     const knowledgeSource = fs.readFileSync(
       path.join(repoRoot, "src", "lib", "knowledge.ts"),

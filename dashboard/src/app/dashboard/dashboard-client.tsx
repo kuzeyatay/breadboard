@@ -83,13 +83,8 @@ import {
   runtimeIngestRecoveries,
   runtimeIngestRecoveryRecord,
 } from "@/lib/runtime-v2/ingest-recovery-client";
-import {
-  APP_THEME_CHANGE_EVENT,
-  applyAppTheme,
-  getStoredAppTheme,
-  isAppTheme,
-  type AppTheme,
-} from "@/lib/app-theme";
+import { usePageAppearance } from "@/app/components/use-page-appearance";
+import PageAppearance from "@/app/components/page-appearance";
 
 interface Props {
   userEmail: string;
@@ -314,9 +309,8 @@ export default function DashboardClient({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
-  const [bgImage, setBgImage] = useState<string | null>(null);
-  const [showBgModal, setShowBgModal] = useState(false);
-  const [appTheme, setAppTheme] = useState<AppTheme>("light");
+  const appearance = usePageAppearance(userEmail.trim().toLowerCase(), "dashboard");
+  const bgImage = appearance.wallpaper?.src ?? null;
   // Whoever shared a garden with you, opened over the dashboard rather than
   // instead of it.
   const [openPerson, setOpenPerson] = useState<string | null>(null);
@@ -349,7 +343,6 @@ export default function DashboardClient({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const transferInputRef = useRef<HTMLInputElement>(null);
-  const bgFileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const uploadRuntimeJobIdsRef = useRef<Set<string>>(new Set());
   const uploadRecoveryRequestIdsRef = useRef<Set<string>>(new Set());
@@ -409,26 +402,6 @@ export default function DashboardClient({
     return () => controller.abort();
   }, [addToast, router]);
 
-  useEffect(() => {
-    const stored = localStorage.getItem("dashboard:bg-image");
-    if (stored) setBgImage(stored);
-    setAppTheme(getStoredAppTheme(localStorage));
-
-    const handleThemeChange = (event: Event) => {
-      const theme = (event as CustomEvent<unknown>).detail;
-      if (isAppTheme(theme)) setAppTheme(theme);
-    };
-    window.addEventListener(APP_THEME_CHANGE_EVENT, handleThemeChange);
-    return () => {
-      window.removeEventListener(APP_THEME_CHANGE_EVENT, handleThemeChange);
-    };
-  }, []);
-
-  function selectAppTheme(theme: AppTheme) {
-    setAppTheme(theme);
-    applyAppTheme(theme);
-  }
-
   // The terminal dock is fixed to the bottom of the viewport, so it covers the
   // end of the page rather than pushing it. Tracking its height keeps the last
   // row of cards scrollable into view however far the dock is dragged open.
@@ -458,26 +431,6 @@ export default function DashboardClient({
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
   }, [isUploading]);
-
-  function handleBgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const result = ev.target?.result as string;
-      setBgImage(result);
-      localStorage.setItem("dashboard:bg-image", result);
-      setShowBgModal(false);
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
-  }
-
-  function removeBgImage() {
-    setBgImage(null);
-    localStorage.removeItem("dashboard:bg-image");
-    setShowBgModal(false);
-  }
 
   useEffect(() => {
     setMyClusters(initialClusters);
@@ -2310,6 +2263,7 @@ export default function DashboardClient({
     <div
       // Marks the pixels the terminal dock's glass bar refracts.
       data-glass-scene-root
+      data-dashboard-page
       className="dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col"
       style={{
         // Clear the fixed dock, then a screenful of slack so the bottom of the
@@ -2317,7 +2271,7 @@ export default function DashboardClient({
         paddingBottom: "calc(var(--bb-dock-height, 0px) + 40vh)",
         ...(bgImage
           ? {
-              backgroundImage: `url(${bgImage})`,
+              backgroundImage: `url("${bgImage}")`,
               backgroundSize: "cover",
               backgroundPosition: "center",
               backgroundAttachment: "fixed",
@@ -2332,41 +2286,10 @@ export default function DashboardClient({
         showFlowers={showNavbarFlowers}
       />
 
+      <PageAppearance page="dashboard" ownerKey={userEmail.trim().toLowerCase()} />
+
       {/* Persistent, top-left: what is scheduled to run on its own. */}
       <ScheduledChatsDock />
-
-      {/* Dashboard appearance pencil button */}
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setShowBgModal(true)}
-          title="Customize dashboard appearance"
-          aria-label="Customize dashboard appearance"
-          className="neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:text-gray-300"
-        >
-          <svg
-            className="h-4 w-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={1.8}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
-            />
-          </svg>
-        </button>
-      </div>
-
-      <input
-        ref={bgFileInputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={handleBgFileChange}
-      />
 
       <input
         ref={transferInputRef}
@@ -3838,76 +3761,6 @@ export default function DashboardClient({
                 )}
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {showBgModal && (
-        <div
-          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowBgModal(false);
-          }}
-        >
-          <div className="bb-modal-panel neu-dialog w-full max-w-sm rounded-2xl border p-6">
-            <h2 className="text-base font-semibold mb-1">
-              Dashboard appearance
-            </h2>
-            <p className="text-sm text-gray-500 mb-5">
-              Choose a theme and optionally add a background image.
-            </p>
-            <div className="flex flex-col gap-3">
-              <fieldset>
-                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                  Theme
-                </legend>
-                <div className="neu-segmented grid grid-cols-2 gap-1 rounded-xl" role="radiogroup">
-                  {(["light", "dark"] as const).map((theme) => (
-                    <button
-                      key={theme}
-                      type="button"
-                      role="radio"
-                      aria-checked={appTheme === theme}
-                      onClick={() => selectAppTheme(theme)}
-                      className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                        appTheme === theme
-                          ? "is-selected text-white"
-                          : "text-gray-500 hover:text-white"
-                      }`}
-                    >
-                      {theme === "light" ? "Light" : "Dark"}
-                    </button>
-                  ))}
-                </div>
-              </fieldset>
-              <div className="my-1 border-t border-gray-800" />
-              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                Background image
-              </p>
-              <button
-                type="button"
-                onClick={() => bgFileInputRef.current?.click()}
-                className="neu-button-primary w-full py-2.5 text-sm"
-              >
-                {bgImage ? "Replace image" : "Upload image"}
-              </button>
-              {bgImage && (
-                <button
-                  type="button"
-                  onClick={removeBgImage}
-                  className="neu-button-destructive w-full py-2.5 text-sm"
-                >
-                  Remove — restore original
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowBgModal(false)}
-                className="neu-button w-full py-2.5 text-sm"
-              >
-                Cancel
-              </button>
-            </div>
           </div>
         </div>
       )}

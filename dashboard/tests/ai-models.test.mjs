@@ -13,17 +13,19 @@ import {
 
 test('GPT-5.6 Sol is the default for every assistant surface', () => {
   assert.equal(DEFAULT_MODEL, 'gpt-5.6-sol');
-  assert.equal(DEFAULT_ASSISTANT_MODELS[0], DEFAULT_MODEL);
+  assert.ok(DEFAULT_ASSISTANT_MODELS.includes(DEFAULT_MODEL));
 });
 
-test('assistant model lists keep all GPT-5.6 variants first and remove duplicates', () => {
+test('assistant model lists put Astra first and remove duplicates', () => {
   assert.deepEqual(
-    mergeAssistantModels(['gpt-5.4', 'gpt-5.6-sol', 'gpt-5.6-luna', ' custom-model ', '', null]),
-    ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'custom-model'],
+    mergeAssistantModels(['gpt-5.4', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna', ' custom-model ', '', null]),
+    ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'custom-model'],
   );
 });
 
 test('assistant model names use a readable label in the composer', () => {
+  assert.equal(formatAssistantModelName('gpt-6-astra'), 'GPT-6 Astra');
+  assert.equal(formatAssistantModelName('chatgpt/gpt-6-astra'), 'GPT-6 Astra');
   assert.equal(formatAssistantModelName('gpt-5.6-sol'), 'GPT-5.6 Sol');
   assert.equal(formatAssistantModelName('gpt-5.6-terra'), 'GPT-5.6 Terra');
   assert.equal(formatAssistantModelName('gpt-5.6-luna'), 'GPT-5.6 Luna');
@@ -120,6 +122,7 @@ test('a model id names the vendor that made it', () => {
 test('the model picker groups by vendor in first-appearance order', () => {
   assert.deepEqual(
     groupAssistantModels([
+      'gpt-6-astra',
       'gpt-5.6-sol',
       'cliproxy/claude-opus-5',
       'gpt-5.5',
@@ -131,7 +134,7 @@ test('the model picker groups by vendor in first-appearance order', () => {
       {
         vendorId: 'openai',
         vendorLabel: 'OpenAI',
-        models: ['gpt-5.6-sol', 'gpt-5.5'],
+        models: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5'],
       },
       {
         // The vendor's own API and its subscription land in one section:

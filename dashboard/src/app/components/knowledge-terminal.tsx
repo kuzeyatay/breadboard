@@ -13,6 +13,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import TerminalDockOutline from '@/app/components/terminal-dock-outline';
+import { DEFAULT_TERMINAL_DOCK_HEIGHT, terminalDockCollapsedHeight } from '@/lib/terminal-dock-layout';
 import {
   restoreQueuedFollowUpDraft,
   useQueuedFollowUps,
@@ -90,11 +92,7 @@ interface Props {
 
 const HISTORY_KEY = 'breadboard:knowledge-terminal-history';
 const MAX_SESSIONS = 40;
-// Collapsed height shows just the grab bar; drag the top edge up to open it,
-// the same way garden cards are resized.
-// Match the dashboard dock's slimmer golden-proportion bar (42 / phi² ≈ 16).
-const COLLAPSED_HEIGHT = 42;
-const MIN_HEIGHT = COLLAPSED_HEIGHT;
+// The fallback transport shares the runtime terminal's resting top edge.
 
 // Bottom edge of the breadboard navbar, so a fully opened terminal stops right
 // below the main header instead of covering it.
@@ -110,11 +108,11 @@ function navOffset(): number {
 
 function maxHeight(): number {
   if (typeof window === 'undefined') return 720;
-  return Math.max(MIN_HEIGHT, Math.round(window.innerHeight - navOffset()));
+  return Math.max(terminalDockCollapsedHeight(), Math.round(window.innerHeight - navOffset()));
 }
 
 function clampHeight(height: number): number {
-  return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
+  return Math.min(maxHeight(), Math.max(terminalDockCollapsedHeight(), Math.round(height)));
 }
 
 function formatChatTime(value: string): string {
@@ -240,14 +238,15 @@ const TranscriptRow = memo(function TranscriptRow({
 });
 
 export default function KnowledgeTerminal({ scope }: Props) {
+  const dockRef = useRef<HTMLElement | null>(null);
   const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
-  const [height, setHeight] = useState(COLLAPSED_HEIGHT);
+  const [height, setHeight] = useState(DEFAULT_TERMINAL_DOCK_HEIGHT);
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const headerClickGuard = useTerminalHeaderClickGuard();
 
-  const isOpen = height > COLLAPSED_HEIGHT + 8;
+  const isOpen = height > DEFAULT_TERMINAL_DOCK_HEIGHT + 8;
 
   // Keep the header items mounted through their exit animation so they can
   // retract (not just vanish) when the terminal collapses. `headerMounted`
@@ -369,7 +368,12 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const scopeTagline = isPublic ? 'chat across all public gardens' : 'chat across every garden you own';
 
   useEffect(() => {
-    const onResize = () => setHeight((current) => clampHeight(current));
+    const onResize = () => setHeight((current) =>
+      current <= DEFAULT_TERMINAL_DOCK_HEIGHT + 8
+        ? terminalDockCollapsedHeight()
+        : clampHeight(current),
+    );
+    onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
@@ -793,7 +797,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   }
 
   const terminalStyle: CSSProperties = {
-    height,
+    height: isOpen ? height : 'var(--terminal-collapsed-height)',
     background: isOpen ? 'var(--paper-surface)' : 'var(--terminal-bar)',
     borderTopColor: 'rgba(169, 193, 177, 0.7)',
   };
@@ -808,12 +812,15 @@ export default function KnowledgeTerminal({ scope }: Props) {
   return (
     <>
       <section
+        ref={dockRef}
         // Same as the dashboard dock: a viewport-positioned bar gives up its
         // own right edge when the artifact dock opens beside it.
         data-terminal-dock
+        data-terminal-collapsed={!isOpen}
         style={terminalStyle}
         className={terminalClassName}
       >
+      <TerminalDockOutline targetRef={dockRef} />
       <div
         onPointerDown={handleResizeStart}
         onPointerMove={handleResizeMove}

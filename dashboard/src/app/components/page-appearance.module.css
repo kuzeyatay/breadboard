@@ -1,0 +1,289 @@
+.anchor {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 12;
+  height: 0;
+  flex: none;
+}
+
+.anchor[data-page="dashboard"] {
+  position: relative;
+}
+
+.customizeButton {
+  position: absolute;
+  top: 40px;
+  right: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid var(--neu-border);
+  border-radius: 50%;
+  background: var(--neu-surface);
+  color: var(--botanical);
+  box-shadow: var(--neu-raised-shadow);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.customizeButton:active,
+.customizeButton[data-state="open"] {
+  background: var(--neu-surface-pressed);
+  box-shadow: var(--neu-inset-shadow);
+}
+
+.customizeButton:focus-visible,
+.drawer button:focus-visible,
+.drawer a:focus-visible {
+  outline: 2px solid var(--neu-focus);
+  outline-offset: 3px;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgb(7 13 10 / 24%);
+  backdrop-filter: blur(2px);
+}
+
+.drawer:global(.browser-wallpaper-drawer) {
+  position: fixed;
+  z-index: 91;
+  top: calc(var(--breadboard-titlebar-height, 0px) + 24px);
+  right: 24px;
+  bottom: 24px;
+  width: min(390px, calc(100vw - 48px));
+  max-height: 850px;
+  padding: 20px;
+  box-sizing: border-box;
+  overflow: hidden;
+  transform: none;
+  transition: none;
+}
+
+.drawer > header,
+.description {
+  flex: none;
+}
+
+.choices {
+  min-height: 0;
+  margin-top: 18px;
+  padding: 3px 8px 8px 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Use Breadboard's shared recessed track and rounded botanical thumb.
+     Native thin/color overrides suppress that material in Chromium. */
+  scrollbar-gutter: stable;
+}
+
+.pageTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ink-heading) 7%, transparent);
+}
+
+.pageTabs button {
+  min-height: 38px;
+  padding: 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 630 12px/1.2 var(--font-source-sans), sans-serif;
+  cursor: pointer;
+}
+
+.themeTabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.appTheme > .label {
+  margin-top: 0;
+}
+
+.pageTabs button[aria-pressed="true"],
+.choices :global(.browser-wallpaper-theme-tabs) button[aria-pressed="true"],
+.choices :global(.browser-wallpaper-source-tabs) button[aria-pressed="true"] {
+  background: var(--paper-raised);
+  box-shadow: 0 4px 12px rgb(10 20 15 / 10%);
+  color: var(--ink-heading);
+}
+
+.label {
+  margin: 20px 2px 8px;
+  font: 650 12px/1.3 var(--font-source-sans), sans-serif;
+}
+
+.choices :global(.browser-wallpaper-theme-tabs) {
+  margin-top: 12px;
+}
+
+.choices :global(.browser-wallpaper-grid) {
+  overflow: visible;
+}
+
+.hint {
+  margin: 10px 2px 0;
+  color: var(--ink-muted);
+  font: 500 11px/1.4 var(--font-source-sans), sans-serif;
+}
+
+.fileInput {
+  display: none;
+}
+
+.uploadCard {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--botanical) 4%, var(--paper-raised));
+}
+
+.uploadCard[data-dragging="true"] {
+  border-style: solid;
+  border-color: var(--botanical);
+  background: color-mix(in srgb, var(--botanical) 12%, var(--paper-raised));
+}
+
+.uploadActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  gap: 12px;
+  padding: 4px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-heading);
+  font: 600 12px/1.3 var(--font-source-sans), sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.upload > svg {
+  flex: none;
+  color: var(--botanical);
+}
+
+.upload > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.upload small,
+.uploadHint {
+  color: var(--ink-muted);
+  font: 500 11px/1.4 var(--font-source-sans), sans-serif;
+}
+
+.upload:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.uploadHint {
+  margin: 8px 4px 0;
+}
+
+.removeUpload {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.uploadPreview {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background-size: cover;
+  background-position: center;
+}
+
+.uploadPreview > span {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgb(14 25 19 / 78%);
+  color: #fff;
+  font: 600 10px/1.3 var(--font-source-sans), sans-serif;
+}
+
+.error {
+  margin: 10px 2px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .customizeButton:hover:not(:active):not([data-state="open"]) {
+    background: var(--neu-surface-raised);
+    box-shadow: var(--neu-hover-shadow);
+  }
+
+  .upload:hover:not(:disabled),
+  .removeUpload:hover {
+    color: var(--botanical);
+    background: color-mix(in srgb, var(--botanical) 8%, transparent);
+  }
+}
+
+@media (max-width: 540px) {
+  .customizeButton {
+    top: 28px;
+    right: 20px;
+  }
+
+  .drawer:global(.browser-wallpaper-drawer) {
+    top: calc(var(--breadboard-titlebar-height, 0px) + 12px);
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
+    padding: 16px;
+  }
+
+  .pageTabs button,
+  .upload {
+    min-height: 44px;
+  }
+
+  .removeUpload {
+    width: 44px;
+    height: 44px;
+  }
+}

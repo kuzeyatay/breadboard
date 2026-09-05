@@ -19,10 +19,11 @@ import ChatMarkdown, {
   type ChatTextAnnotation,
 } from "@/app/components/chat-markdown";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
+import SteeredAssistantResponse from "@/app/components/steered-assistant-response";
 import ChatModelChangeSeparator from "@/app/components/chat-model-change-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
-import AssistantResponseMeta from "@/app/components/assistant-response-meta";
+import AssistantResponseNotice from "@/app/components/assistant-response-notice";
 import AssistantComposer, {
   type ComposerAttachment,
 } from "@/app/components/assistant-composer";
@@ -57,6 +58,7 @@ import InlineBrowserRun from "./inline-browser-run";
 import InlineAgentBrowserRun from "./inline-agent-browser-run";
 import InlineArtifactCards, {
   InlineArtifactCardsProvider,
+  InlineArtifactEmptyState,
   useInlineArtifactPrefetch,
 } from "./inline-artifact-cards";
 import { ARTIFACT_BROWSER_EVENT } from "./artifact-viewer";
@@ -148,7 +150,6 @@ import {
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
 import {
   isClarificationAnswerMessage,
-  splitSteeredResponse,
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
 import {
@@ -426,37 +427,6 @@ interface Props {
   onExternalAgentSourceReady?: () => void;
 }
 
-function SteeredAssistantResponse({
-  content,
-  corrections,
-}: {
-  content: string;
-  corrections: readonly CourseCorrectionBoundary[];
-}) {
-  const segments = splitSteeredResponse(content, corrections);
-  return (
-    <div className="space-y-4">
-      {segments.map((segment) =>
-        segment.kind === "assistant" ? (
-          <div key={segment.key}>
-            <ChatMarkdown content={segment.content} compact />
-          </div>
-        ) : (
-          <div key={segment.key} className="group flex justify-end py-1">
-            <div className="w-fit max-w-[75%]">
-              <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
-                <CollapsibleUserMessage messageKey={`steer:${segment.key}`}>
-                  <UserMessageText content={segment.content} />
-                </CollapsibleUserMessage>
-              </div>
-            </div>
-          </div>
-        ),
-      )}
-    </div>
-  );
-}
-
 const BRANCH_STORAGE_PREFIX = "breadboard:conversation-branches:";
 const INLINE_SELECTION_STORAGE_PREFIX = "breadboard:inline-selections:";
 const DELETED_INLINE_SELECTION_STORAGE_PREFIX =
@@ -686,6 +656,7 @@ function inlineMapKindForAssistant(
   const assessment = requiresGeographicGrounding(request.content, {
     priorRequests,
   });
+  if (!assessment.required) return null;
   if (
     assessment.asks.some((ask) =>
       ["route", "distance", "travel_time"].includes(ask),
@@ -1207,21 +1178,19 @@ export default function AgentRuntimePanel({
     const hiddenMessageIndices = new Set<number>();
 
     messages.forEach((message, correctionIndex) => {
-      if (
-        message.role !== "user" ||
-        message.courseCorrection !== true
-      ) {
+      if (message.role !== "user") {
         return;
       }
       // The assistant asked this question inside its current response. Its
       // answer unblocks that response, but it is not a second user turn and
       // must not become either a standalone or an inlined chat bubble. Hide it
-      // even when an older/racing persistence path missed the target offset.
+      // even when a restored row lacks course-correction metadata.
       if (isClarificationAnswerMessage(message)) {
         hiddenMessageIndices.add(correctionIndex);
         return;
       }
       if (
+        message.courseCorrection !== true ||
         typeof message.courseCorrectionTargetClientMessageId !== "string" ||
         typeof message.courseCorrectionOffset !== "number"
       ) {
@@ -2452,6 +2421,21 @@ export default function AgentRuntimePanel({
                   !conversationLocked
                     ? () => retryAssistantAsBranch(index)
                     : undefined;
+                const responseFailure = failureInline && index === lastAssistantIndex ? failureText : null;
+                const responseHasErrorBody = Boolean(responseFailure?.trim() === visibleAssistantContent.trim());
+                const emptyResponse = index === lastAssistantIndex &&
+                  !runInFlight && !delegatedAgentActive && !message.pending &&
+                  !visibleAssistantContent.trim() && !message.uiResources?.length &&
+                  !message.tools?.length && !message.artifactMessageId &&
+                  !message.scheduledChatReceipt && !inlineMapKind && !inlineSpotify;
+                const responseIssue = !isExternalAgentRunMessage(message) &&
+                  (responseFailure || ((message.failed || responseInterrupted || emptyResponse) &&
+                    !message.pending && !(index === lastAssistantIndex &&
+                      (runInFlight || pendingPermission || pendingClarification))));
+                const retryResponse = onRetryMessage && !activeRun && !conversationLocked && !disabled &&
+                  (message.interrupted || message.failed || index === lastAssistantIndex)
+                    ? () => retryAssistantAsBranch(index)
+                    : undefined;
                 return (
                 <div
                   className={timeSeparators[index] ? "space-y-3" : undefined}
@@ -2499,6 +2483,8 @@ export default function AgentRuntimePanel({
                         <ActivityPanel
                           activities={[]}
                           progressNotes={thinkingUpdates}
+                          reasoning={message.reasoning}
+                          answerContent={message.content}
                           connection={delegatedAgentActive ? "streaming" : "idle"}
                           pendingPermission={null}
                           usage={message.usage}
@@ -3641,6 +3627,8 @@ export default function AgentRuntimePanel({
                               : []
                           }
                           progressNotes={thinkingUpdates}
+                          reasoning={message.reasoning}
+                          answerContent={message.content}
                           connection={
                             // A worker running behind this row keeps it alive
                             // even though the chat connection itself is idle:
@@ -3684,6 +3672,8 @@ export default function AgentRuntimePanel({
                           stateLabel={
                             responseInterrupted
                               ? "Interrupted"
+                              : message.failed && responseIssue
+                                ? "Response interrupted"
                               : delegatedAgentActive && delegatedAgentLabel
                                 ? delegatedAgentLabel
                                 : isAgentContinuationResponse
@@ -3692,7 +3682,7 @@ export default function AgentRuntimePanel({
                                     : "Research synthesized"
                                   : undefined
                           }
-                          stateFailed={responseInterrupted}
+                          stateFailed={responseInterrupted || Boolean(message.failed && responseIssue)}
                         />
                         {message.memoryUpdated ? (
                           <div className="mb-1.5 flex items-center gap-1.5 text-xs text-[var(--ink-muted)]">
@@ -3783,7 +3773,7 @@ export default function AgentRuntimePanel({
                               </button>
                             </div>
                           </form>
-                        ) : visibleAssistantContent ||
+                        ) : (!responseHasErrorBody && visibleAssistantContent) ||
                           inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                           inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                             <SteeredAssistantResponse
@@ -3791,6 +3781,12 @@ export default function AgentRuntimePanel({
                               corrections={
                                 inlinedCourseCorrections.byAssistantIndex.get(index) ?? []
                               }
+                              sourceMessageId={messageSelectionSourceId(message, index)}
+                              annotations={
+                                annotationsByMessage.get(messageSelectionSourceId(message, index)) ?? []
+                              }
+                              onSelection={receiveTextSelection}
+                              onOpenAnnotation={openAnnotation}
                             />
                           ) : (
                             <SelectableAssistantMarkdown
@@ -3809,16 +3805,18 @@ export default function AgentRuntimePanel({
                             />
                           )
                         ) : null}
-                        {failureInline &&
-                        index === lastAssistantIndex &&
-                        // A gate that replaces the answer with its own
-                        // explanation sends that sentence twice: once as the
-                        // message, once as this notice. Print it once.
-                        (failureText ?? "").trim() !==
-                          visibleAssistantContent.trim() ? (
-                          <div role="alert">
-                            <ChatMarkdown content={failureText ?? ""} />
-                          </div>
+                        {responseIssue ? (
+                          emptyResponse && !responseFailure && !message.failed && !responseInterrupted ? (
+                            <InlineArtifactEmptyState ownerMessageId={message.artifactMessageId ?? message.id ?? null}>
+                              <AssistantResponseNotice kind="empty" onRetry={retryResponse} />
+                            </InlineArtifactEmptyState>
+                          ) : (
+                            <AssistantResponseNotice
+                              kind={responseFailure || message.failed ? "failed" : responseInterrupted ? "aborted" : "empty"}
+                              detail={responseFailure}
+                              onRetry={retryResponse}
+                            />
+                          )
                         ) : null}
                       </div>
                     )}
@@ -3839,7 +3837,7 @@ export default function AgentRuntimePanel({
                        />
                      ) : null}
                     {message.role === "assistant" &&
-                    isExternalAgentRunMessage(message) &&
+                    (isExternalAgentRunMessage(message) || !visibleAssistantContent.trim() || responseHasErrorBody) &&
                     !(runInFlight && index === lastAssistantIndex) ? (
                       (() => {
                         const branch = branchNavigationForAssistant(
@@ -3856,6 +3854,7 @@ export default function AgentRuntimePanel({
                     ) : null}
                     {message.role === "assistant" &&
                     !isExternalAgentRunMessage(message) &&
+                    Boolean(visibleAssistantContent.trim()) && !responseHasErrorBody &&
                     !(runInFlight && index === lastAssistantIndex) ? (
                       <AssistantMessageActions
                         content={
@@ -3887,6 +3886,7 @@ export default function AgentRuntimePanel({
                         verification={message.verification}
                         branch={branchNavigationForAssistant(message, index)}
                         onRewrite={
+                          !responseIssue &&
                           onRetryMessage &&
                           message.content?.trim() &&
                           !activeRun &&
@@ -3896,7 +3896,7 @@ export default function AgentRuntimePanel({
                             : undefined
                         }
                         onRetry={
-                          (!responseInterrupted || !disabled) &&
+                          !responseIssue && (!responseInterrupted || !disabled) &&
                           onRetryMessage &&
                           !activeRun &&
                           (message.interrupted || index === lastAssistantIndex)
@@ -3930,50 +3930,11 @@ export default function AgentRuntimePanel({
           )}
 
           {failureText && !failureInline ? (
-            // Some run cards cannot host the plain assistant response header.
-            // Keep the fallback in the transcript, but use the same lifecycle
-            // row instead of appending a second status strip below the chat.
-            <div className="mt-5 w-full text-sm leading-7 text-gray-200" role="alert">
-              <AssistantResponseMeta
-                active={false}
-                failed
-                // Nothing was interrupted when the transcript is empty: no
-                // answer ever started, so there was no line to cut short.
-                label={messages.length === 0 ? "Couldn’t run that turn" : "Interrupted"}
-                // This notice is the fallback for a failure with no message to
-                // measure, so it never carries a usage record — left on, the
-                // row would always end in "tokens unavailable", which states
-                // an absence nobody asked about.
-                showTokenUsage={false}
-                action={
-                  onRetryMessage && lastAssistantIndex >= 0 && !activeRun ? (
-                    <button
-                      type="button"
-                      onClick={() => retryAssistantAsBranch(lastAssistantIndex)}
-                      className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)]"
-                      title="Regenerate response"
-                      aria-label="Regenerate response"
-                    >
-                      <svg
-                        className="h-4 w-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.7}
-                        aria-hidden="true"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14"
-                        />
-                      </svg>
-                    </button>
-                  ) : undefined
-                }
-              />
-              <ChatMarkdown content={failureText} />
-            </div>
+            <AssistantResponseNotice
+              detail={failureText}
+              onRetry={onRetryMessage && lastAssistantIndex >= 0 && !activeRun && !conversationLocked && !disabled
+                ? () => retryAssistantAsBranch(lastAssistantIndex) : undefined}
+            />
           ) : null}
           {messages.some((message) => !message.modelChange) ? (
             <ChatDisclaimer />

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { TabsState } from "../src/shared/ipc-contract";
 
 /** The browser boundary and the two-view layout require real Electron. */
 test(
@@ -83,6 +84,8 @@ app.on("window-all-closed", () => {});
 app.whenReady().then(async () => {
   const created = [];
   let releaseShellResponse;
+  let releaseNewTabResponse;
+  let holdNewTab = false;
   let releaseShellFrame;
   const shellFrameGate = new Promise((resolve) => { releaseShellFrame = resolve; });
   let shellFrameWaiting = false;
@@ -103,6 +106,10 @@ app.whenReady().then(async () => {
     if (request.url === "/browser" && holdFirstBrowserShell) {
       holdFirstBrowserShell = false;
       releaseShellResponse = () => send();
+      return;
+    }
+    if (request.url === "/new-tab" && holdNewTab) {
+      releaseNewTabResponse = () => send();
       return;
     }
     send();
@@ -155,6 +162,7 @@ app.whenReady().then(async () => {
     isTabsCommand(command) ? manager.tabs.handleCommand(event.sender, command) : false,
   );
   manager.tabs.setBrowserUrl(shellOrigin + "/browser");
+  manager.tabs.setNewTabUrl(shellOrigin + "/new-tab");
   const window = manager.createMainWindow();
   await window.loadURL(shellOrigin + "/dashboard");
   window.show();
@@ -197,6 +205,25 @@ app.whenReady().then(async () => {
   const webBounds = webView && webView.getBounds();
   const shellBounds = shellView && shellView.getBounds();
 
+  // Use the exact plus-button command, keeping the new route cold. The old
+  // shell is still visible and must receive its own browser state, not lose
+  // its toolbar because the selected tab is now the internal new-tab page.
+  holdNewTab = true;
+  const plusOpened = await command(shellContents, { type: "new" });
+  await until(() => releaseNewTabResponse, "held plus-button new tab");
+  const retainedShellState = await stateIn(shellContents);
+  const retainedShellPush = await until(async () => {
+    const state = await shellContents.executeJavaScript("window.__states.at(-1)");
+    return state?.activeId === retainedShellState.activeId ? state : null;
+  }, "outgoing browser receives new selection");
+  const plusLoadingTop = loadingView.getBounds().y;
+  const retainedShellVisible = window.contentView.children.includes(shellView) &&
+    shellView.getBounds().y === 0;
+  holdNewTab = false;
+  releaseNewTabResponse();
+  await command(shellContents, { type: "close", id: retainedShellState.activeId });
+  await until(() => !window.contentView.children.includes(loadingView), "return to browser after plus");
+
   const noBridge = await webContents.executeJavaScript("typeof window.breadboardDesktop");
   const browserPartition = webContents.session === session.fromPartition("persist:breadboard-browser");
   const startsWithLightScheme = await until(
@@ -217,7 +244,9 @@ app.whenReady().then(async () => {
   await until(() => webContents.getURL() === webOrigin + "/two", "address navigation");
   await command(shellContents, { type: "back" });
   await until(() => webContents.getURL() === webOrigin + "/one", "browser history");
-  await webContents.executeJavaScript("window.open(" + JSON.stringify(webOrigin + "/popup") + ")");
+  // A successful popup now returns a native Window, which cannot cross IPC.
+  const popupOpened = await webContents.executeJavaScript("window.open(" + JSON.stringify(webOrigin + "/popup") + ") !== null");
+  if (!popupOpened) throw new Error("browser popup was reported as blocked");
   const popupState = await until(async () => {
     const state = await stateIn(base);
     return state.tabs.length === 3 && state.tabs[2].browser ? state : null;
@@ -304,6 +333,11 @@ app.whenReady().then(async () => {
     !contents.isDestroyed() &&
     contents.getURL() === shellOrigin + "/browser" &&
     !knownBrowserShellIds.has(contents.id)), "fresh browser home shell");
+  const browserHomeState = await until(async () => {
+    const state = await stateIn(base);
+    const active = state.tabs.find((tab) => tab.id === state.activeId);
+    return active && active.browser && active.browser.address === "" ? state : null;
+  }, "fresh browser home state");
   const blankBrowserPagesAfterHome = created.filter((contents) =>
     !contents.isDestroyed() &&
     contents.session === session.fromPartition("persist:breadboard-browser") &&
@@ -371,6 +405,11 @@ app.whenReady().then(async () => {
     coldLoadingTop,
     domReadyLoadingTop,
     loadingShellStillOffscreen,
+    plusOpened,
+    retainedShellState,
+    retainedShellPush,
+    plusLoadingTop,
+    retainedShellVisible,
     first,
     afterSubframeNavigation,
     noBridge,
@@ -395,6 +434,7 @@ app.whenReady().then(async () => {
     replacedState,
     newTabRetired,
     homeTabOpened,
+    browserHomeState,
     homeUsesOnlyTrustedRenderer,
     homeNavigated,
     firstPageFromHome,
@@ -436,6 +476,15 @@ app.whenReady().then(async () => {
     assert.equal(result.opened, true);
     assert.equal(result.loadingShellStillOffscreen, true);
     assert.equal(result.coldLoadingTop, 101);
+    assert.equal(result.plusOpened, true);
+    assert.equal(result.retainedShellVisible, true, "the outgoing navbar remains onscreen during plus loading");
+    assert.equal(result.plusLoadingTop, 101, "the plus loader meets the retained navbar");
+    for (const state of [result.retainedShellState, result.retainedShellPush] as TabsState[]) {
+      assert.notEqual(state.selfId, state.activeId);
+      assert.equal(state.selfId, result.first.tabs[1].id, "reads and pushes identify the owning browser tab");
+      assert.equal(state.tabs.find((tab) => tab.id === state.selfId)?.browser?.address.endsWith("/one"), true);
+      assert.equal(state.tabs.find((tab) => tab.id === state.activeId)?.browser, undefined);
+    }
     assert.equal(
       result.domReadyLoadingTop,
       101,
@@ -511,6 +560,10 @@ app.whenReady().then(async () => {
     assert.equal(replacementBrowserTab.browser.address.endsWith("/replacement"), true);
     assert.equal(result.newTabRetired, true);
     assert.equal(result.homeTabOpened, true);
+    const browserHomeTab = result.browserHomeState.tabs.find(
+      (tab: { id: number }) => tab.id === result.browserHomeState.activeId,
+    );
+    assert.equal(browserHomeTab.title, "Browser");
     assert.equal(
       result.homeUsesOnlyTrustedRenderer,
       true,
@@ -525,6 +578,7 @@ app.whenReady().then(async () => {
     const returnedHome = result.returnedHome.tabs.find(
       (tab: { id: number }) => tab.id === result.returnedHome.activeId,
     );
+    assert.equal(returnedHome.title, "Browser");
     assert.equal(returnedHome.browser.address, "", "Back returns to the trusted browser home");
     assert.equal(result.homePageDetached, true, "browser home is interactive after Back");
     assert.equal(result.forwardFromHome, true);

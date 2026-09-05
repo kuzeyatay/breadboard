@@ -21,6 +21,7 @@ const invitesRoute = read("src/app/api/invites/route.ts");
 const shortcutsRoute = read("src/app/api/profile/navbar-shortcuts/route.ts");
 const locationSource = read("src/lib/current-location-source.ts");
 const deviceLocationRoute = read("src/app/api/profile/device-location/route.ts");
+const locationLabelRoute = read("src/app/api/profile/location-label/route.ts");
 const dashboardPage = read("src/app/dashboard/page.tsx");
 const dashboardShell = read("src/app/dashboard/dashboard-page-shell.tsx");
 const dashboardClient = read("src/app/dashboard/dashboard-client.tsx");
@@ -174,6 +175,17 @@ test("the profile exposes current-location availability without folding it into 
     "refresh is an unframed icon control beside the status",
   );
   assert.match(client, /requestCurrentLocationFix\(/);
+  assert.match(client, /preference\.snapshot\?\.label \?\? "Available"/);
+  assert.match(client, /resolveCurrentLocationLabel\(baseSnapshot, preference\.snapshot\)/);
+  assert.match(
+    client,
+    /if \(!preference\.useForAnswers \|\| !snapshot \|\| snapshot\.label\) return;/,
+    "an existing enabled snapshot is named once without waiting for the next refresh",
+  );
+  assert.match(locationLabelRoute, /requireUserId/);
+  assert.match(locationLabelRoute, /readJsonBody\(request, 2 \* 1024\)/);
+  assert.match(locationLabelRoute, /mapReverse/);
+  assert.match(locationLabelRoute, /currentLocationLabel/);
   assert.match(locationSource, /navigator\.geolocation\.getCurrentPosition/);
   assert.match(locationSource, /allowThemeLocation/);
   assert.match(locationSource, /enableHighAccuracy: false/);
@@ -198,6 +210,7 @@ test("an enabled current location persists across restarts and refreshes through
     "startup never opts somebody into location use",
   );
   assert.match(locationAutoRefresh, /requestCurrentLocationFix\(\{ maxAgeMs: 0 \}\)/);
+  assert.match(locationAutoRefresh, /resolveCurrentLocationLabel\(baseSnapshot, preference\.snapshot\)/);
   assert.match(locationAutoRefresh, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers: true/);
   assert.match(locationAutoRefresh, /announceCurrentLocationChange\(\)/);
   assert.match(locationAutoRefresh, /CURRENT_LOCATION_REFRESH_INTERVAL_MS = 15 \* 60_000/);

@@ -22,6 +22,9 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
   assert.ok(discovered.includes("dashboard-test-runner.test.mjs"));
   assert.deepEqual(partition.browser, [...SERIAL_BROWSER_TEST_FILES]);
   assert.deepEqual(partition.browser, [
+    "cloud-speech-ui.test.mjs",
+    "queued-steering-ui.test.mjs",
+    "thought-topology-browser.test.mjs",
     "generated-visual-presentation-convergence.test.mjs",
     "interactive-visualizer.test.mjs",
     "generated-visual-spatial-scene.test.mjs",
@@ -39,7 +42,7 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
     () => partitionDashboardTestFiles(
       discovered.filter((file) => file !== SERIAL_BROWSER_TEST_FILES[0]),
     ),
-    /missing required file.*generated-visual-presentation-convergence/u,
+    /missing required file.*cloud-speech-ui/u,
   );
 });
 

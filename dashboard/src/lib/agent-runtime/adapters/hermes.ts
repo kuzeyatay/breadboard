@@ -450,6 +450,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "web_search",
       "web_extract",
       "terminal_execute_command",
+      "browser_terminal",
       "garden_list",
       "garden_search",
       "garden_get_page",
@@ -710,30 +711,26 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   async steerRun(
     input: StartRuntimeRunInput & { clientRequestId: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
+    // Hermes desktop queues attachments for a normal turn. Staging them on a
+    // live session here would leave them for an unrelated prompt to consume.
+    if (input.attachments?.length) return false;
     const session = this.requireSession(input);
     await this.ensureSessionLease(session);
-    // Mid-run guidance owns attachments just like a new turn. The gateway
-    // consumes these specifically in session.steer and turns them into vision
-    // context before injecting the correction into the active tool loop.
-    for (const attachment of input.attachments ?? []) {
-      if (attachment.type !== "image") continue;
-      await this.client.request("image.attach_bytes", {
-        session_id: session.liveSessionId,
-        content_base64: imageBase64(attachment.dataUrl),
-        filename: attachment.name,
-      });
-    }
     const result = await this.client.request<{ status?: string }>(
-      "session.steer",
+      "session.redirect",
       {
         session_id: session.liveSessionId,
-        text: withTextAttachments(input.text, input.attachments),
+        text: input.text,
+        // Breadboard owns the follow-up queue and its run identities. Hermes
+        // must not start a hidden successor during its agent-build window.
+        queue_if_unavailable: false,
+        ...(input.messageId ? { expected_turn_id: input.messageId } : {}),
       },
     );
-    if (result.status === "rejected") {
-      throw new Error("Hermes rejected the course correction.");
-    }
+    if (result?.status === "redirected") return true;
+    if (result?.status === "rejected") return false;
+    throw new Error("Hermes did not acknowledge the course correction.");
   }
 
   async *streamSession(

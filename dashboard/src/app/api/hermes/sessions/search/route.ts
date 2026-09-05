@@ -8,6 +8,7 @@ import {
   type ConversationSearchMessage,
 } from "@/lib/conversations/search.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
+import { conversationOriginLabel } from "@/lib/conversations/origin-label.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,10 @@ interface ConversationRow {
   updated_at: string;
   pinned_at: string | null;
   legacy_chat_session_id: number | null;
+  surface: HermesSurface;
+  garden_name: string | null;
+  history_surface: string | null;
+  origin_label: string | null;
 }
 
 /** The cluster behind a garden slug, or null when the user cannot read it. */
@@ -42,7 +47,7 @@ function gardenClusterId(slug: string, userId: number): number | null {
  *
  * The ranking lives in lib/conversations/search.ts; this route only decides
  * whose chats may be read. A conversation is never returned across users, the
- * surface filter keeps a Terminal search out of Garden transcripts, and a
+ * terminal searches every source surface owned by the user, and a
  * temporary chat is never a candidate — search is history by another name.
  *
  * `gardenSlug` narrows further, to the chats of one garden. That search runs
@@ -62,6 +67,7 @@ export async function GET(request: Request) {
       surfaceParam && (HERMES_SURFACES as readonly string[]).includes(surfaceParam)
         ? (surfaceParam as HermesSurface)
         : null;
+    const sourceSurface = surface === "dashboard_terminal" ? null : surface;
     if (!query) return NextResponse.json({ results: [] });
 
     const gardenSlug = (url.searchParams.get("gardenSlug") ?? "").trim();
@@ -73,9 +79,11 @@ export async function GET(request: Request) {
 
     const conversations = db
       .prepare(
-        `SELECT id, public_id, title, updated_at, pinned_at, legacy_chat_session_id
+        `SELECT id, public_id, title, updated_at, pinned_at, legacy_chat_session_id, surface, origin_label,
+                (SELECT name FROM clusters WHERE id = conversations.default_garden_id) AS garden_name,
+                (SELECT history_surface FROM chat_sessions WHERE id = conversations.legacy_chat_session_id) AS history_surface
          FROM conversations
-         WHERE user_id = ? AND temporary = 0${surface ? " AND surface = ?" : ""}${
+         WHERE user_id = ? AND temporary = 0 AND buzz_room_id IS NULL${sourceSurface ? " AND surface = ?" : ""}${
            clusterId === null
              ? ""
              : " AND default_garden_id = ? AND legacy_chat_session_id IS NOT NULL"
@@ -84,7 +92,7 @@ export async function GET(request: Request) {
          LIMIT ${MAX_CONVERSATIONS}`,
       )
       .all(
-        ...[userId, ...(surface ? [surface] : []), ...(clusterId === null ? [] : [clusterId])],
+        ...[userId, ...(sourceSurface ? [sourceSurface] : []), ...(clusterId === null ? [] : [clusterId])],
       ) as ConversationRow[];
 
     const readMessages = db.prepare(
@@ -100,7 +108,9 @@ export async function GET(request: Request) {
         clusterId === null || row.legacy_chat_session_id === null
           ? row.public_id
           : String(row.legacy_chat_session_id),
-      title: row.title,
+      title: surface === "dashboard_terminal"
+        ? `${row.origin_label || conversationOriginLabel({ surface: row.surface, gardenName: row.garden_name, historySurface: row.history_surface })}: ${row.title}`
+        : row.title,
       updatedAt: row.updated_at,
       pinned: row.pinned_at !== null,
       messages: (

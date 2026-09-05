@@ -17,6 +17,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
+import TerminalDockOutline from "@/app/components/terminal-dock-outline";
+import { DEFAULT_TERMINAL_DOCK_HEIGHT, terminalDockCollapsedHeight } from "@/lib/terminal-dock-layout";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
@@ -366,6 +368,8 @@ interface Props {
 interface RuntimeHistorySession {
   id: string;
   title: string;
+  titlePrefix: string;
+  transcriptVersion: string;
   updatedAt: string;
   active: boolean;
   pinned: boolean;
@@ -392,6 +396,8 @@ function sameHistoryList(
     if (
       x.id !== y.id ||
       x.title !== y.title ||
+      x.titlePrefix !== y.titlePrefix ||
+      x.transcriptVersion !== y.transcriptVersion ||
       x.updatedAt !== y.updatedAt ||
       x.active !== y.active ||
       x.pinned !== y.pinned ||
@@ -485,12 +491,11 @@ function writeActiveTerminalChatSnapshot(
  */
 const HISTORY_REFRESH_FAILED =
   "The chat list could not be refreshed. Showing the last one that loaded.";
-// The resting bar is intentionally compact. Its visible top-corner radius is
-// derived from the bar height with phi squared: 42 / 2.618 ≈ 16px.
-const COLLAPSED_HEIGHT = 42;
+// Keep the open toolbar's shoulders while the resting dock uses half the home
+// widgets' height and clearance above the viewport bottom.
 const GOLDEN_RATIO_SQUARED = 2.618;
 const TERMINAL_BAR_RADIUS = Math.round(
-  COLLAPSED_HEIGHT / GOLDEN_RATIO_SQUARED,
+  42 / GOLDEN_RATIO_SQUARED,
 );
 // The shortest the dock can stand open. The composer is anchored to the bottom
 // of the body (`.bb-composer-overlay`), so a body with no room for it does not
@@ -498,7 +503,6 @@ const TERMINAL_BAR_RADIUS = Math.round(
 // squeezed to nothing behind. There is no height between this and the collapsed
 // bar that renders, so the dock never rests in that band.
 const MIN_OPEN_HEIGHT = 260;
-const MIN_HEIGHT = COLLAPSED_HEIGHT;
 const HEALTH_RETRY_DELAY_MS = 3_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
 
@@ -529,11 +533,11 @@ function navOffset(): number {
 
 function maxHeight(): number {
   if (typeof window === "undefined") return 720;
-  return Math.max(MIN_HEIGHT, Math.round(window.innerHeight - navOffset()));
+  return Math.max(terminalDockCollapsedHeight(), Math.round(window.innerHeight - navOffset()));
 }
 
 function clampHeight(height: number): number {
-  return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
+  return Math.min(maxHeight(), Math.max(terminalDockCollapsedHeight(), Math.round(height)));
 }
 
 // The open height on this viewport, which on a very short one is all the room
@@ -548,18 +552,26 @@ function minOpenHeight(): number {
 function settleHeight(height: number): number {
   const open = minOpenHeight();
   if (height >= open) return clampHeight(height);
-  return height >= (COLLAPSED_HEIGHT + open) / 2 ? open : COLLAPSED_HEIGHT;
+  const collapsed = terminalDockCollapsedHeight();
+  return height >= (collapsed + open) / 2 ? open : collapsed;
 }
 
 // Where the navbar's underside lands once the page is back at the top. Opening
 // the dock sends the page there, so this — not wherever the bar happens to be
-// right now — is the room the dock has to leave above itself. Reached through
-// the scroll offset because the bar is in normal flow and travels with the page.
+// right now — is the room the dock has to leave above itself. Only a navbar
+// that travels with the document needs its scroll offset added back.
 function navOffsetAtTop(): number {
   if (typeof document === "undefined") return 64;
   const nav = document.querySelector("nav");
   if (!nav) return 64;
-  const bottom = Math.ceil(nav.getBoundingClientRect().bottom + window.scrollY);
+  const position = getComputedStyle(nav).position;
+  const pinned = position === "sticky" || position === "fixed";
+  // The dashboard navbar stays pinned below the title bar. Adding scrollY to
+  // its viewport position would reserve the scrolled distance a second time,
+  // leaving the terminal only partly open after a click.
+  const bottom = Math.ceil(
+    nav.getBoundingClientRect().bottom + (pinned ? 0 : window.scrollY),
+  );
   return Math.min(Math.max(0, bottom), window.innerHeight);
 }
 
@@ -571,7 +583,7 @@ function navOffsetAtTop(): number {
 function openHeight(preferred: number | null): number {
   if (typeof window === "undefined") return 720;
   const max = Math.max(
-    MIN_HEIGHT,
+    terminalDockCollapsedHeight(),
     Math.round(window.innerHeight - navOffsetAtTop()),
   );
   // Floored as well as capped: a height remembered from a drag that ended just
@@ -853,13 +865,13 @@ function RuntimeTerminal({
   const openedNotificationChatRef = useRef<string | null>(null);
   const drawerPresentation = presentation === "drawer";
   const [height, setHeight] = useState(() =>
-    drawerPresentation ? 720 : COLLAPSED_HEIGHT,
+    drawerPresentation ? 720 : DEFAULT_TERMINAL_DOCK_HEIGHT,
   );
 
   useEffect(() => {
     if (drawerPresentation) return;
     const saved = Number(window.localStorage.getItem(HEIGHT_KEY));
-    if (Number.isFinite(saved) && saved > COLLAPSED_HEIGHT + 8) {
+    if (Number.isFinite(saved) && saved > terminalDockCollapsedHeight() + 8) {
       preferredOpenHeightRef.current = clampHeight(saved);
     }
     const wasOpen = window.sessionStorage.getItem(OPEN_STATE_KEY) === "true";
@@ -870,6 +882,8 @@ function RuntimeTerminal({
       // look like the user closed Terminal. Nothing is scrolled yet, so this
       // opens to exactly what a click would.
       setHeight(openHeight(preferredOpenHeightRef.current));
+    } else {
+      setHeight(terminalDockCollapsedHeight());
     }
   }, [drawerPresentation, initialPanel]);
   const [isResizing, setIsResizing] = useState(false);
@@ -1233,7 +1247,7 @@ function RuntimeTerminal({
   const wardrobeDispatchingRef = useRef(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
-  const isOpen = height > COLLAPSED_HEIGHT + 8;
+  const isOpen = drawerPresentation || height >= minOpenHeight();
 
   // The height is state, so a toggle would otherwise land in a single frame.
   // `glide` holds the direction of a click-driven change for as long as its
@@ -1729,7 +1743,7 @@ function RuntimeTerminal({
     }
     window.sessionStorage.setItem(
       OPEN_STATE_KEY,
-      height > COLLAPSED_HEIGHT + 8 ? "true" : "false",
+      height >= minOpenHeight() ? "true" : "false",
     );
   }, [drawerPresentation, height]);
 
@@ -1764,7 +1778,7 @@ function RuntimeTerminal({
     // from where the page stood when the dock opened and never revisited.
     // Collapsed the threshold cannot be met at any scroll position, so the
     // listener is only worth its layout read while the dock is open.
-    const watchesScroll = height > COLLAPSED_HEIGHT + 8;
+    const watchesScroll = height >= minOpenHeight();
     if (watchesScroll)
       window.addEventListener("scroll", sync, { passive: true });
     return () => {
@@ -1811,11 +1825,16 @@ function RuntimeTerminal({
                 id: item.id,
                 title:
                   typeof item.title === "string" ? item.title : "New chat",
+                titlePrefix:
+                  typeof item.originLabel === "string" ? item.originLabel : "Terminal",
+                transcriptVersion:
+                  typeof item.transcriptVersion === "string" ? item.transcriptVersion : "",
                 updatedAt:
                   typeof item.updatedAt === "string" ? item.updatedAt : "",
                 active:
                   Boolean(item.activeRun) ||
-                  item.externalAgentActive === true,
+                  item.externalAgentActive === true ||
+                  Number(item.pendingMessageCount) > 0,
                 pinned: item.pinned === true,
                 scheduled:
                   typeof item.scheduledChatJobId === "number" &&
@@ -1860,11 +1879,7 @@ function RuntimeTerminal({
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refreshHistory(true);
     };
-    const onSessionsChanged = (event: Event) => {
-      const changedSurface = (event as CustomEvent<{ surface?: string }>).detail
-        ?.surface;
-      if (changedSurface === "dashboard_terminal") refreshHistory(true);
-    };
+    const onSessionsChanged = () => refreshHistory(true);
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     return () => {
@@ -1878,6 +1893,26 @@ function RuntimeTerminal({
       );
     };
   }, [scope]);
+
+  // A source surface can add messages while its chat is open in the hub.
+  // Revalidate only a changed transcript, leaving locally running turns alone.
+  const observedHubTranscript = useRef<{ id: string; version: string } | null>(null);
+  useEffect(() => {
+    const chat = history.find((item) => item.id === session.sessionId);
+    if (!chat) {
+      observedHubTranscript.current = null;
+      return;
+    }
+    const previous = observedHubTranscript.current;
+    if (previous?.id !== chat.id) {
+      observedHubTranscript.current = { id: chat.id, version: chat.transcriptVersion };
+      return;
+    }
+    if (!bodyMounted || currentChatActive || session.loadingSession) return;
+    if (previous.version === chat.transcriptVersion) return;
+    observedHubTranscript.current = { id: chat.id, version: chat.transcriptVersion };
+    void session.refreshSession();
+  }, [history, session.sessionId, session.refreshSession, session.loadingSession, currentChatActive, bodyMounted]);
 
   // Keep the open conversation's sidebar snapshot current without another
   // network request for every streamed token or external-agent terminal event.
@@ -8417,6 +8452,7 @@ function RuntimeTerminal({
       history.map((item) => ({
         id: item.id,
         title: item.title,
+        titlePrefix: item.titlePrefix,
         updatedAt: item.updatedAt,
         active: item.active,
         pinned: item.pinned,
@@ -8611,11 +8647,11 @@ function RuntimeTerminal({
     if (isOpen || glide || prefersReducedMotion()) return;
     // Clicking the collapsed bar is an explicit request for the full terminal,
     // not for the last height left behind by a drag.
-    const box = Math.max(openHeight(null), MIN_HEIGHT);
+    const box = Math.max(openHeight(null), terminalDockCollapsedHeight());
     prewarmRef.current = true;
     setGlide("opening");
     setGlideBox(box);
-    setGlideShift(box - COLLAPSED_HEIGHT);
+    setGlideShift(box - terminalDockCollapsedHeight());
     setGlideMoving(false);
   }
 
@@ -8625,7 +8661,7 @@ function RuntimeTerminal({
     const dock = dockRef.current;
     if (!dock) return height;
     return Math.max(
-      MIN_HEIGHT,
+      terminalDockCollapsedHeight(),
       Math.round(window.innerHeight - dock.getBoundingClientRect().top),
     );
   }
@@ -8660,7 +8696,7 @@ function RuntimeTerminal({
     // Header clicks and keyboard activation always open the dock fully. The
     // remembered drag height is still useful for renderer/session restores,
     // but must not turn a deliberate open into a partial-height terminal.
-    const target = open ? openHeight(null) : COLLAPSED_HEIGHT;
+    const target = open ? openHeight(null) : terminalDockCollapsedHeight();
     setHeight(target);
     if (reduced) {
       cancelGlide();
@@ -8670,7 +8706,7 @@ function RuntimeTerminal({
     // it had. Either way the height above has already settled what counts as
     // open, so the header retracts and the body learns it is on its way out
     // while the box it lives in stays exactly as big as it was.
-    const box = Math.max(open ? target : from, MIN_HEIGHT);
+    const box = Math.max(open ? target : from, terminalDockCollapsedHeight());
     const settle = () => {
       glideTimer.current = window.setTimeout(
         () => {
@@ -8694,7 +8730,7 @@ function RuntimeTerminal({
     // dock is travelling on the very next frame.
     if (!moving && (warm || !open)) {
       setGlideMoving(true);
-      setGlideShift(open ? 0 : box - COLLAPSED_HEIGHT);
+      setGlideShift(open ? 0 : box - terminalDockCollapsedHeight());
       settle();
       return;
     }
@@ -8711,7 +8747,7 @@ function RuntimeTerminal({
       glideRaf.current = window.requestAnimationFrame(() => {
         glideRaf.current = null;
         setGlideMoving(true);
-        setGlideShift(open ? 0 : box - COLLAPSED_HEIGHT);
+        setGlideShift(open ? 0 : box - terminalDockCollapsedHeight());
         settle();
       });
     });
@@ -8883,7 +8919,7 @@ function RuntimeTerminal({
     // A glide lends the box its own height and moves it by offset instead, so
     // nothing inside is resized while it travels; dragging owns the height
     // directly, one frame at a time, exactly as before.
-    height: drawerPresentation ? "100%" : glideBox ?? height,
+    height: drawerPresentation ? "100%" : glideBox ?? (isOpen ? height : "var(--terminal-collapsed-height)"),
     transform:
       !drawerPresentation && glide
         ? `translate3d(0, ${glideShift}px, 0)`
@@ -8922,12 +8958,15 @@ function RuntimeTerminal({
       data-terminal-dock
       style={terminalStyle}
       data-terminal-presentation={presentation}
+      data-terminal-collapsed={!drawerPresentation && !isOpen && !glide}
+      data-terminal-prewarming={!drawerPresentation && !isOpen && glide === "opening"}
       className={`bb-terminal-dock bb-neu-tray neu-surface-raised z-40 flex flex-col overflow-hidden border-t text-gray-100 ${
         drawerPresentation
           ? "bb-terminal-drawer-surface absolute inset-0"
           : "fixed inset-x-0 bottom-0"
       }`}
     >
+      {!drawerPresentation ? <TerminalDockOutline targetRef={dockRef} /> : null}
       {/* Refraction source: direct children of the dock, painted below the
           shader canvas. Both are media elements, so the library draws them
           with drawImage and never rasterises them. */}
@@ -9124,7 +9163,7 @@ function RuntimeTerminal({
         // refraction source. The bar samples 20px past its own box, so an
         // unstacked body would land in that margin and get run through
         // html-to-image on every frame of a dock resize.
-        <div className="relative z-[1] flex min-h-0 flex-1 bg-[var(--paper-surface)]">
+        <div data-terminal-body className="relative z-[1] flex min-h-0 flex-1 bg-[var(--paper-surface)]">
           {/* Everything in the dock shares one lane for opened artifacts: the
               transcript's own cards and the Artifacts archive both file into
               it, so an artifact never leaves the dock it was made in. */}

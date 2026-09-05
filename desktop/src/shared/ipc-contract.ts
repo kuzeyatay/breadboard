@@ -1,3 +1,5 @@
+import { isTranslationLanguage, notificationOrigin, type BrowserPreferences, type BrowserPreferenceCommand, type BrowserTranslationState } from "./browser-preferences";
+
 export const IPC_CHANNELS = {
   getVersions: "breadboard:get-versions",
   getStartupState: "breadboard:get-startup-state",
@@ -26,6 +28,7 @@ export const IPC_CHANNELS = {
   // shell owns the tabs (each is its own page, like a browser's); the page only
   // draws the strip from the state it is sent and asks for changes by command.
   getTabsState: "breadboard:get-tabs-state",
+  getBrowserTerminalAccess: "breadboard:get-browser-terminal-access",
   tabsCommand: "breadboard:tabs-command",
   tabsState: "breadboard:tabs-state",
   notificationToast: "breadboard:notification-toast",
@@ -35,6 +38,13 @@ export const IPC_CHANNELS = {
   setBrowserBookmarks: "breadboard:set-browser-bookmarks",
   getBrowserShortcuts: "breadboard:get-browser-shortcuts",
   setBrowserShortcuts: "breadboard:set-browser-shortcuts",
+  getBrowserRecentSearches: "breadboard:get-browser-recent-searches",
+  getBrowserHistory: "breadboard:get-browser-history",
+  browserHistoryCommand: "breadboard:browser-history-command",
+  browserHistoryChanged: "breadboard:browser-history-changed",
+  setBrowserRecentSearches: "breadboard:set-browser-recent-searches",
+  getBrowserDownloads: "breadboard:get-browser-downloads",
+  browserDownloadCommand: "breadboard:browser-download-command",
   getClickyState: "breadboard:get-clicky-state",
   launchClicky: "breadboard:launch-clicky",
   openClickyProject: "breadboard:open-clicky-project",
@@ -80,6 +90,7 @@ export type WindowThemeSchedule =
 /** One tab as the strip draws it. */
 export interface TabView {
   id: number;
+  anchored: boolean;
   title: string;
   url: string;
   loading: boolean;
@@ -90,6 +101,9 @@ export interface TabView {
     canGoForward: boolean;
     terminalOpen: boolean;
     terminalWidth: number;
+    zoomPercent?: number;
+    translation?: BrowserTranslationState;
+    find?: { matches: number; activeMatchOrdinal: number };
     favicon?: string;
     selection?: {
       text: string;
@@ -108,9 +122,14 @@ export interface TabsState {
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
   activeId: number | null;
+  /** The visible page is waiting for a destination to paint without a loading scene. */
+  navigationPending?: boolean;
+  /** The receiving page's own tab, which may differ from the selected tab. */
+  selfId: number | null;
   tabs: TabView[];
   /** Unpacked Chromium extensions active in Breadboard's isolated browser profile. */
   extensions: BrowserExtensionView[];
+  browserPreferences?: BrowserPreferences;
 }
 
 export interface BrowserExtensionView {
@@ -125,8 +144,63 @@ export interface BrowserBookmark {
   iconUrl: string;
 }
 
+export interface BrowserDownload {
+  id: string;
+  filename: string;
+  url: string;
+  savePath: string;
+  startedAt: number;
+  receivedBytes: number;
+  totalBytes: number;
+  state: "progressing" | "completed" | "cancelled" | "interrupted";
+  active: boolean;
+}
+
+export interface BrowserDownloadsSnapshot {
+  items: BrowserDownload[];
+  error: string | null;
+}
+
+export type BrowserDownloadCommand =
+  | { type: "open" | "show" | "cancel" | "remove"; id: string }
+  | { type: "clear" };
+
+export function isBrowserDownloadCommand(value: unknown): value is BrowserDownloadCommand {
+  if (!value || typeof value !== "object") return false;
+  const command = value as Record<string, unknown>;
+  return command.type === "clear" || (
+    ["open", "show", "cancel", "remove"].includes(String(command.type)) &&
+    typeof command.id === "string" && command.id.length > 0 && command.id.length <= 100
+  );
+}
+
 export function isBrowserBookmarkOwnerKey(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 320;
+}
+
+export function isBrowserRecentSearches(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 80 && value.every((entry) =>
+    typeof entry === "string" && entry.length > 0 && entry.length <= 300 && entry === entry.trim(),
+  ) && new Set(value).size === value.length;
+}
+
+export interface BrowserHistoryEntry {
+  url: string;
+  title: string;
+  visitedAt: number;
+}
+
+export interface BrowserHistorySnapshot {
+  items: BrowserHistoryEntry[];
+  error: string | null;
+}
+
+export type BrowserHistoryCommand = { type: "clear" } | { type: "remove"; url: string };
+
+export function isBrowserHistoryCommand(value: unknown): value is BrowserHistoryCommand {
+  if (!value || typeof value !== "object") return false;
+  const command = value as Record<string, unknown>;
+  return command.type === "clear" || (command.type === "remove" && typeof command.url === "string");
 }
 
 /** Keep the renderer-to-disk bookmark payload small and display-safe. */
@@ -171,6 +245,8 @@ export interface DesktopNotificationToast {
   title?: string;
   chatId?: string;
   response?: string;
+  website?: { id: string; origin: string };
+  dismissed?: boolean;
 }
 
 /** The overlay renderer reports only the rectangle occupied by its cards. */
@@ -191,7 +267,12 @@ export function isDesktopNotificationToast(value: unknown): value is DesktopNoti
     (notice.type === "success" || notice.type === "error") &&
     optionalText(notice.title, 256) &&
     optionalText(notice.chatId, 256) &&
-    optionalText(notice.response, 100_000)
+    optionalText(notice.response, 100_000) &&
+    (notice.dismissed === undefined || typeof notice.dismissed === "boolean") &&
+    (notice.website === undefined || (typeof notice.website === "object" && notice.website !== null &&
+      typeof (notice.website as Record<string, unknown>).id === "string" &&
+      String((notice.website as Record<string, unknown>).id).length <= 100 &&
+      notificationOrigin((notice.website as Record<string, unknown>).origin) === (notice.website as Record<string, unknown>).origin))
   );
 }
 
@@ -212,10 +293,16 @@ export function isNotificationOverlaySize(value: unknown): value is Notification
 
 /** What a page may ask the shell to do with the tabs of its own window. */
 export type TabsCommand =
+  | BrowserPreferenceCommand
+  | { type: "browser-translate"; language: string }
+  | { type: "browser-translation-menu" }
+  | { type: "browser-translation-restore" }
+  | { type: "browser-notification-action"; id: string; action: "click" | "close" }
   | { type: "open"; url: string; background?: boolean }
   | { type: "new" }
   | { type: "activate"; id: number }
   | { type: "close"; id?: number }
+  | { type: "anchor"; id: number }
   | { type: "move"; id: number; index: number }
   | { type: "reopen" }
   | { type: "back" }
@@ -227,6 +314,9 @@ export type TabsCommand =
   | { type: "browser-agent"; runId: string; url?: string }
   | { type: "browser-navigate"; input: string }
   | { type: "browser-stop" }
+  | { type: "browser-menu"; x: number; y: number; profileLabel: string }
+  | { type: "browser-find"; text: string; forward?: boolean; findNext?: boolean }
+  | { type: "browser-find-close" }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-address-suggestions"; open: boolean }
   | { type: "browser-extension-load" }
@@ -245,11 +335,22 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
   const isExtensionId = (id: unknown) =>
     typeof id === "string" && /^[a-p]{32}$/u.test(id);
   switch (command.type) {
+    case "browser-translate":
+    case "browser-translation-language":
+      return isTranslationLanguage(command.language);
+    case "browser-notifications-enabled":
+      return typeof command.enabled === "boolean";
+    case "browser-notification-permission":
+      return notificationOrigin(command.origin) !== null && notificationOrigin(command.origin) === command.origin &&
+        ["default", "granted", "denied"].includes(String(command.permission));
+    case "browser-notification-action":
+      return typeof command.id === "string" && command.id.length <= 100 && ["click", "close"].includes(String(command.action));
     case "open":
       return (
         typeof command.url === "string" &&
         (command.background === undefined || typeof command.background === "boolean")
       );
+    case "anchor":
     case "activate":
       return isId(command.id);
     case "close":
@@ -270,6 +371,13 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
       );
     case "browser-navigate":
       return typeof command.input === "string" && command.input.length <= 8_192;
+    case "browser-menu":
+      return typeof command.profileLabel === "string" && command.profileLabel.length <= 320 &&
+        [command.x, command.y].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 20_000);
+    case "browser-find":
+      return typeof command.text === "string" && command.text.length <= 1_000 &&
+        (command.forward === undefined || typeof command.forward === "boolean") &&
+        (command.findNext === undefined || typeof command.findNext === "boolean");
     case "browser-terminal":
       return (
         typeof command.open === "boolean" &&
@@ -290,11 +398,14 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "notification-overlay-resize":
       return isNotificationOverlaySize(command.size);
     case "new":
+    case "browser-translation-menu":
+    case "browser-translation-restore":
     case "reopen":
     case "back":
     case "forward":
     case "reload":
     case "browser-stop":
+    case "browser-find-close":
     case "browser-extension-load":
       return true;
     default:

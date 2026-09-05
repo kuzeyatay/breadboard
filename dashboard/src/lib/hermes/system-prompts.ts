@@ -110,6 +110,9 @@ export function composeHermesSystemPrompt(input: {
     if (direct) sections.push(direct);
   }
   sections.push(surfacePrompt(input.surface));
+  if (decision.allowedTools.includes("garden_discover_sources")) {
+    sections.push(readSystemPrompt("garden-sources"));
+  }
   // Completion discipline is innate to Hermes rather than a slash-selected
   // capability. The skill itself keeps trivial turns lightweight, while every
   // substantial turn gets the same acceptance and verification contract on

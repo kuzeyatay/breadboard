@@ -12,7 +12,11 @@ const catalog = read("../src/lib/profile/navbar-shortcuts.ts");
 const page = read("../src/app/browser/page.tsx");
 const client = read("../src/app/browser/browser-client.tsx");
 const widgets = read("../src/app/browser/browser-home-widgets.tsx");
+const greetingTypewriter = read("../src/app/components/use-greeting-typewriter.ts");
+const homeAccessories = read("../src/app/browser/browser-home-accessories.tsx");
 const personalization = read("../src/app/browser/browser-personalization.tsx");
+const appearance = read("../src/app/components/page-appearance.tsx");
+const appearanceStore = read("../src/lib/page-appearance.ts");
 const terminal = read("../src/app/components/hermes/dashboard-agent-terminal.tsx");
 const inlineAgentBrowser = read("../src/app/components/hermes/inline-agent-browser-run.tsx");
 const gardenWorkspace = read("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
@@ -45,6 +49,8 @@ test("browser tabs share Breadboard's strip and use a trusted address toolbar", 
   assert.match(bridge, /browser: \{ label: "Browser", kind: "browser" \}/);
   assert.match(titleBar, /tab\.browser \? "browser" : describeTabUrl/);
   assert.match(titleBar, /tab\.browser\?\.favicon/);
+  assert.match(globals, /\.bb-tab:hover > \.bb-tab-glyph > svg\s*\{/);
+  assert.doesNotMatch(globals, /\.bb-tab:hover \.bb-tab-glyph svg\s*\{/);
   assert.match(page, /redirect\("\/auth\/login\?callbackUrl=\/browser"\)/);
   assert.match(client, /aria-label="Address and search"/);
   assert.match(client, /type: "browser-navigate", input/);
@@ -93,7 +99,7 @@ test("browser tabs share Breadboard's strip and use a trusted address toolbar", 
   assert.match(globals, /\.browser-terminal-drawer\[data-open="true"\]/);
   assert.match(globals, /--browser-terminal-width, 640px/);
   assert.match(globals, /animation: bb-suggestion-sketch 8460ms/);
-  assert.match(globals, /browser-navigation-progress 920ms/);
+  assert.doesNotMatch(globals, /browser-navigation-progress|browser-recovery-card|browser-start-status/);
 });
 
 test("browser startup reconnects and repairs a plain shell instead of becoming a dead screen", () => {
@@ -101,7 +107,7 @@ test("browser startup reconnects and repairs a plain shell instead of becoming a
   assert.match(bridge, /connectDesktopTabsBridge\(\)/);
   assert.match(bridge, /export async function refreshDesktopTabsState/);
   assert.match(client, /openBrowserInDesktop\(\{ replaceCurrent: true \}\)/);
-  assert.match(client, /Starting Browser…/);
+  assert.doesNotMatch(client, /Starting Browser|Connecting the address bar|browser-recovery-card|browser-start-status/);
   assert.match(client, /Try again/);
   assert.match(client, /Back to dashboard/);
   assert.doesNotMatch(client, /Browser tabs are available in the Breadboard desktop app/);
@@ -112,7 +118,8 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(client, /role="listbox"/);
   assert.match(client, /searchSuggestions\(searchQuery, recentSearches, googleSearchSuggestions\)/);
   assert.match(client, /searchSuggestions\(addressLookupQuery, recentSearches, googleAddressSuggestions\)/);
-  assert.match(client, /breadboard:browser-searches:/);
+  assert.match(client, /useBrowserRecentSearches\(restoreOwnerKey, browser\?\.address\)/);
+  assert.match(read("../src/app/browser/use-browser-recent-searches.ts"), /breadboard:browser-searches:/);
   assert.doesNotMatch(client, /rememberSearch\(browser\.address\)/);
   assert.match(client, /browser-address-suggestions/);
   assert.match(client, /onPointerDown=\{\(\) => setSearchFocused\(true\)\}/);
@@ -132,8 +139,9 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(globals, /\.browser-suggestion-remove\s*\{/);
   assert.doesNotMatch(client, /browser-suggestion-google|Google suggestion/);
   assert.match(client, /<AnimatedBrowserGreeting greeting=/);
-  assert.match(widgets, /window\.setTimeout\(erase, 32\)/);
-  assert.match(widgets, /window\.setTimeout\(\(\) => write\(index \+ 1\), 46\)/);
+  assert.match(widgets, /useGreetingTypewriter\(target\)/);
+  assert.match(greetingTypewriter, /window\.setTimeout\(erase, 32\)/);
+  assert.match(greetingTypewriter, /window\.setTimeout\(\(\) => write\(index \+ 1\), 46\)/);
   assert.match(widgets, /disconnected \/>/);
   assert.match(widgets, /Add shortcut/);
   assert.match(widgets, /navigatorWithBattery\.getBattery/);
@@ -163,27 +171,26 @@ test("browser home provides live dock data, search suggestions, and editable sho
 });
 
 test("browser home has daily quotes, an image-free default, and theme-specific backgrounds", () => {
-  assert.match(client, /useBrowserWallpaper\(restoreOwnerKey\)/);
-  assert.match(client, /<BrowserDailyQuote ownerKey=\{restoreOwnerKey\}/);
-  assert.match(client, /<BrowserWallpaperPicker/);
-  assert.match(personalization, /breadboard:browser-wallpaper:\$\{ownerKey\}:\$\{theme\}/);
-  assert.match(personalization, /currentTheme=|editingTheme/);
-  assert.match(personalization, /"Astral" \| "Places" \| "Abstract"/);
-  assert.match(personalization, /className="browser-wallpaper-trigger"/);
-  assert.match(globals, /\.browser-wallpaper-trigger\s*\{[\s\S]*?right:\s*30px;[\s\S]*?bottom:\s*48px;/);
-  assert.match(globals, /@media \(max-width: 620px\)\s*\{[\s\S]*?\.browser-wallpaper-trigger\s*\{[\s\S]*?bottom:\s*43px;/);
-  assert.match(personalization, /className="browser-wallpaper-drawer"/);
+  assert.match(client, /usePageAppearance\(restoreOwnerKey, "browser"\)/);
+  assert.match(client, /<BrowserHomeAccessories ownerKey=\{restoreOwnerKey\}/);
+  assert.match(homeAccessories, /<BrowserDailyQuote ownerKey=\{ownerKey\}/);
+  assert.match(homeAccessories, /<BrowserDock openConnections=/);
+  assert.match(client, /<PageAppearance page="browser"/);
+  assert.match(appearanceStore, /breadboard:browser-wallpaper:\$\{ownerKey\}:\$\{theme\}/);
+  assert.match(appearance, /editingTheme/);
+  assert.match(appearanceStore, /"Astral" \| "Places" \| "Abstract"/);
+  assert.match(appearance, /browser-wallpaper-drawer/);
   assert.match(personalization, /<BrowserSketchOutline targetRef=\{quoteRef\} index=\{2\} \/>/);
-  assert.match(personalization, /\["Generated", "Human"\] as const/);
-  assert.equal((personalization.match(/model: "GPT Image"/g) ?? []).length, 6);
-  assert.match(personalization, /Generated by \{wallpaper\.model\}/);
-  assert.match(personalization, /Photo by \{image\.creator\}/);
-  assert.doesNotMatch(personalization, /Make it yours|"Built-in" \| "Pixabay"/);
-  assert.match(personalization, /light: NO_WALLPAPER_ID,[\s\S]*?dark: NO_WALLPAPER_ID/);
-  assert.match(personalization, /className="browser-wallpaper-none"/);
+  assert.match(appearance, /\["Generated", "Human"\] as const/);
+  assert.equal((appearanceStore.match(/model: "GPT Image"/g) ?? []).length, 6);
+  assert.match(appearance, /Generated by \{wallpaper\.model\}/);
+  assert.match(appearance, /Photo by \{image\.creator\}/);
+  assert.doesNotMatch(appearance, /Make it yours|"Built-in" \| "Pixabay"/);
+  assert.match(appearanceStore, /backgrounds: \{ light: "none", dark: "none" \}/);
+  assert.match(appearance, /className="browser-wallpaper-none"/);
   assert.match(client, /data-has-wallpaper=\{personalization\.hasWallpaper\}/);
   assert.doesNotMatch(globals, /--browser-wallpaper-default/);
-  const wallpaperSources = [...personalization.matchAll(/src: "(\/browser-wallpapers\/[^"]+\.webp)"/g)]
+  const wallpaperSources = [...appearanceStore.matchAll(/src: "(\/browser-wallpapers\/[^"]+\.webp)"/g)]
     .map((match) => match[1]);
   assert.equal(wallpaperSources.length, 6);
   for (const source of wallpaperSources) {
@@ -200,7 +207,7 @@ test("browser home has daily quotes, an image-free default, and theme-specific b
   assert.match(personalization, /browserDailyQuote\(today, ownerKey, 42\)/);
   assert.match(personalization, /browser-daily-quote-compact/);
   assert.match(globals, /\.browser-dock\s*\{[\s\S]*?width:\s*var\(--browser-bottom-width\);[\s\S]*?height:\s*var\(--browser-dock-height\);/);
-  assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?background:\s*rgb\(8 14 11 \/ 94%\);/);
+  assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?background:\s*rgb\(24 27 34 \/ 86%\);/);
   assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?color:\s*#f7f4ec;/);
   assert.doesNotMatch(globals, /\.browser-dock\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--ink-heading\)/);
   assert.match(globals, /\.browser-wallpaper-drawer\[data-open="true"\]/);
@@ -208,17 +215,20 @@ test("browser home has daily quotes, an image-free default, and theme-specific b
 });
 
 test("Pixabay wallpaper search remains server-side, cached, safe, and attributed", () => {
-  assert.match(personalization, /\/api\/browser-wallpapers\/pixabay\?q=/);
-  assert.match(personalization, /Photos from Pixabay/);
-  assert.match(personalization, /pixabay:\$\{image\.id\}/);
+  assert.match(appearance, /\/api\/browser-wallpapers\/pixabay\?q=/);
+  assert.match(appearance, /setPixabayError\("could not load\. Try again in a moment\."\)/);
+  assert.match(appearance, /Photos from Pixabay/);
+  assert.match(appearance, /pixabay:\$\{image\.id\}/);
   assert.match(pixabayRoute, /process\.env\.PIXABAY_API_KEY/);
+  assert.match(pixabayRoute, /process\.env\.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR/);
+  assert.match(pixabayRoute, /process\.env\.BREADBOARD_REPO_ROOT/);
   assert.match(pixabayRoute, /readFile\(candidate, "utf8"\)/);
   assert.match(pixabayRoute, /next: \{ revalidate: SEARCH_CACHE_SECONDS \}/);
   assert.match(pixabayRoute, /safesearch: "true"/);
   assert.match(pixabayRoute, /orientation: "horizontal"/);
   assert.match(pixabayRoute, /min_width: "1280"/);
   assert.match(pixabayRoute, /selectedImage\(imageId\)/);
-  assert.doesNotMatch(personalization, /PIXABAY_API_KEY/);
+  assert.doesNotMatch(appearance, /PIXABAY_API_KEY/);
   assert.doesNotMatch(client, /PIXABAY_API_KEY/);
 });
 
@@ -236,6 +246,8 @@ test("browser bookmarks persist in desktop storage per profile and occupy truste
   assert.match(client, /type: "browser-extension-load"/);
   assert.match(client, /type: "browser-extension-reload", id/);
   assert.match(client, /type: "browser-extension-remove", id/);
+  assert.match(client, /Install from a Chrome Web Store listing with “Add to Breadboard,”/);
+  assert.match(client, /Compatibility varies by extension/);
   assert.match(globals, /\.browser-extensions-menu\s*\{/);
   assert.match(globals, /\.browser-address-actions\s*\{/);
   assert.match(client, /aria-pressed=\{currentBookmarked\}/);
@@ -248,15 +260,14 @@ test("browser bookmarks persist in desktop storage per profile and occupy truste
   assert.match(globals, /top: calc\(var\(--breadboard-navbar-height\) \+ 34px\)/);
 });
 
-test("the trusted rail opens resizable Terminal, Recent searches, and Starred panels", () => {
-  assert.match(client, /type BrowserToolPanel = "terminal" \| "history" \| "starred"/);
+test("the trusted rail opens resizable Terminal, History, and Starred panels", () => {
+  assert.match(client, /type BrowserToolPanel = "terminal" \| "history" \| "starred" \| "downloads"/);
   assert.match(client, /toggleToolPanel\("terminal"\)/);
   assert.match(client, /toggleToolPanel\("history"\)/);
   assert.match(client, /toggleToolPanel\("starred"\)/);
-  assert.match(client, /aria-label="Recent searches"/);
+  assert.match(client, /<BrowserHistoryPanel active=\{activePanel === "history"\}/);
   assert.match(client, /aria-label="Starred pages"/);
-  assert.match(client, /visibleHistory\.map/);
-  assert.match(client, /removeHistoryEntry\(entry\)/);
+  assert.match(client, /searches=\{recentSearchStore\}/);
   assert.match(client, /removeBookmark\(bookmark\.url\)/);
   assert.match(client, /aria-label="Resize browser panel"/);
   assert.match(globals, /\.browser-tool-panel\[data-active="true"\]/);
@@ -276,29 +287,57 @@ test("browser Spotify opens a CarPlay-style searchable player and uses the Bread
   assert.doesNotMatch(widgets, /onClick=\{spotify\?\.connected \? undefined/);
   assert.match(spotifyRoute, /"play-track"/);
   assert.match(spotifyRoute, /"play-playlist"/);
+  assert.match(spotifyRoute, /"add-to-playlist"/);
+  assert.match(spotifyRoute, /"remove-from-playlist"/);
+  assert.match(spotifyRoute, /"create-playlist"/);
+  assert.match(spotifyRoute, /"rename-playlist"/);
+  assert.match(spotifyRoute, /"delete-playlist"/);
   assert.match(spotifyRoute, /body: \{ uris: queueUris \}/);
+  assert.match(spotifyRoute, /spotifyRecommendedTracks\(userId, trackUri\.slice/);
+  assert.match(spotifyRoute, /\.catch\(\(\) => \[\]\)/);
   assert.match(spotifyRoute, /body: \{ context_uri: playlistUri \}/);
+  assert.match(spotifyService, /endpoint: "\/v1\/recommendations"/);
+  assert.match(widgets, /playTrack\(item, \[\], true\)/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/playlists"/);
+  assert.match(spotifyService, /endpoint: "\/v1\/me\/tracks"/);
+  assert.match(spotifyService, /endpoint: "\/v1\/me\/library"/);
+  assert.match(spotifyService, /endpoint: `\/v1\/playlists\/\$\{playlist\.id\}\/items`/);
+  assert.match(spotifyService, /export async function spotifyCreateManagedPlaylist/);
+  assert.match(spotifyService, /export async function spotifyDeletePlaylist/);
+  assert.match(spotifyService, /SPOTIFY_LIKED_SONGS_ID = "liked-songs"/);
+  assert.match(widgets, /selectedPlaylist\.kind === "liked-songs"/);
+  assert.match(widgets, /aria-label="Add to playlist"/);
+  assert.match(widgets, /Remove from Liked Songs/);
+  assert.match(widgets, /Delete “\$\{selectedPlaylist\.name\}” from your Spotify library/);
   assert.match(spotifyService, /endpoint: `\/v1\/playlists\/\$\{playlistId\}\/items`/);
   assert.match(spotifyService, /"playlist-read-private"/);
   assert.match(inlineSpotify, /@\/lib\/spotify\/player-palette/);
   assert.match(widgets, /@\/lib\/spotify\/player-palette/);
   assert.match(spotifyPalette, /export function paletteFromCover/);
+  assert.match(spotifyPalette, /overlayMiddle/);
+  assert.match(widgets, /track\?\.imageUrl\s*\? sampledPalette\.palette/);
+  assert.match(widgets, /--browser-spotify-overlay-middle/);
+  assert.match(globals, /@property --browser-spotify-surface/);
+  assert.match(globals, /--browser-spotify-surface 240ms cubic-bezier\(0\.77, 0, 0\.175, 1\)/);
+  assert.match(globals, /\.browser-spotify-popover-tint\s*\{[\s\S]*?--browser-spotify-overlay-middle/);
   assert.match(globals, /\.browser-spotify-popover\[data-open="true"\]/);
   assert.match(globals, /@media \(prefers-reduced-transparency: reduce\)/);
 });
 
-test("browser Spotify keeps the library legible and recovers playlist permissions", () => {
+test("browser Spotify keeps the library legible and preserves Liked Songs without playlist permission", () => {
   assert.doesNotMatch(widgets, /className="browser-spotify-eyebrow"/);
   assert.doesNotMatch(widgets, /className="browser-spotify-logo-dot"/);
   assert.match(widgets, /SPOTIFY_HISTORY_KEY/);
+  assert.match(widgets, /SPOTIFY_SEARCH_HISTORY_KEY/);
+  assert.match(widgets, /Recent searches/);
   assert.match(widgets, /Recently played/);
-  assert.match(widgets, /Reconnect Spotify to show your playlists\./);
   assert.match(widgets, />Reconnect Spotify</);
-  assert.match(spotifyService, /spotify_playlist_permission_required/);
+  assert.match(spotifyService, /if \(!spotifyConnectionStatus\(userId\)\.playlistAccess\) \{\s*return \[spotifyLikedSongsCollection\(await likedSongsRequest\)\];/);
   assert.match(spotifyService, /playlist\.ownerId === currentUserId \|\| playlist\.collaborative/);
-  assert.match(globals, /\.browser-spotify-result:not\(:last-child\)::after/);
-  assert.match(globals, /\.browser-spotify-result small\s*\{\s*color: rgb\(255 255 255 \/ 72%\)/);
+  assert.match(globals, /\.browser-spotify-managed-track:not\(:last-child\)::after/);
+  assert.match(globals, /\.browser-spotify-liked-art\s*\{/);
+  assert.match(globals, /\.browser-spotify-recent-searches\s*\{/);
+  assert.match(globals, /\.browser-spotify-result small,[\s\S]*?color: var\(--browser-spotify-muted\)/);
 });
 
 test("browser home orbits counter-rotate and retain a reduced-motion shade drift", () => {

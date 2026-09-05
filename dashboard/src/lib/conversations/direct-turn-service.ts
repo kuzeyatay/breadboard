@@ -23,6 +23,8 @@ import type {
   ResponseStreamEvent,
 } from "openai/resources/responses/responses";
 import { DEFAULT_MODEL } from "../ai-models.ts";
+import type { BrowserTerminalAccess } from "../browser-terminal.ts";
+import { browserTerminalPrompt } from "../hermes/browser-terminal-context.ts";
 import {
   normalizeAssistantReasoningEffort,
   toOpenAiReasoningEffort,
@@ -156,6 +158,7 @@ export interface StartDirectTurnInput {
    */
   adhdMode?: boolean;
   currentLocation?: CurrentLocationSnapshot;
+  browserAccess?: BrowserTerminalAccess;
 }
 
 type DirectStreamEvent =
@@ -559,6 +562,7 @@ export async function startDirectProviderTurn(
   const model = selectedModel(input.model);
   const effort = normalizeAssistantReasoningEffort(input.reasoningEffort);
   const startedAtMs = Date.now();
+  let reasoning = "";
 
   const finish = (
     status: "complete" | "failed" | "aborted",
@@ -569,6 +573,7 @@ export async function startDirectProviderTurn(
     const metadata = {
       backend: DIRECT_BACKEND,
       model,
+      ...(reasoning ? { reasoning } : {}),
       responseDurationMs: Math.max(0, Date.now() - startedAtMs),
       ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
     };
@@ -650,7 +655,7 @@ export async function startDirectProviderTurn(
         explicitChatReference
           ? composeExplicitCrossConversationContext(explicitChatReference)
           : "",
-      ),
+      ) + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false),
       input: [
         ...historyInput(input.conversation, input.clientMessageId),
         currentUserInput(requestText, attachments),
@@ -751,6 +756,7 @@ export async function startDirectProviderTurn(
             event.type === "response.reasoning_text.delta"
           ) {
             thinkingRecovery.recordStreamed(event.output_index, event.delta);
+            reasoning += event.delta;
             emit({ type: "thinking", text: event.delta });
           } else if (event.type === "response.output_item.done") {
             const missingThinking = thinkingRecovery.missingFrom(
@@ -758,6 +764,7 @@ export async function startDirectProviderTurn(
               reasoningTextFromOutputItem(event.item),
             );
             if (missingThinking) {
+              reasoning += missingThinking;
               emit({ type: "thinking", text: missingThinking });
             }
             const missingAnswer = answerRecovery.missingFrom(

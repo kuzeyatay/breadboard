@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   inDesktopShell,
   requestCurrentLocationFix,
+  resolveCurrentLocationLabel,
 } from "../src/lib/current-location-source.ts";
 
 const POSITION_DENIED = 1;
@@ -130,4 +131,51 @@ test("nothing answering at all is an unavailable fix, not a block", async () => 
   assert.equal(attempt.ok, false);
   assert.equal(attempt.kind, "unavailable");
   assert.match(attempt.message, /could not determine/);
+});
+
+test("an unchanged coarse fix reuses its label without another lookup", async () => {
+  let requests = 0;
+  define("fetch", async () => {
+    requests += 1;
+    throw new Error("the stored label should have been reused");
+  });
+  const snapshot = {
+    latitude: 51.51,
+    longitude: -0.13,
+    capturedAt: new Date().toISOString(),
+    accuracyMeters: 80,
+    timeZone: "Europe/London",
+  };
+  assert.equal(
+    await resolveCurrentLocationLabel(snapshot, {
+      ...snapshot,
+      label: "London, United Kingdom",
+    }),
+    "London, United Kingdom",
+  );
+  assert.equal(requests, 0);
+});
+
+test("a new coarse fix asks for and validates a minimal label", async () => {
+  let request;
+  define("fetch", async (url, init) => {
+    request = { url, init };
+    return {
+      ok: true,
+      json: async () => ({ label: "  London,   United Kingdom  " }),
+    };
+  });
+  const label = await resolveCurrentLocationLabel({
+    latitude: 51.51,
+    longitude: -0.13,
+    capturedAt: new Date().toISOString(),
+    accuracyMeters: 80,
+    timeZone: "Europe/London",
+  });
+  assert.equal(label, "London, United Kingdom");
+  assert.equal(request.url, "/api/profile/location-label");
+  assert.deepEqual(JSON.parse(request.init.body), {
+    latitude: 51.51,
+    longitude: -0.13,
+  });
 });

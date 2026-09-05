@@ -127,6 +127,8 @@ export default function CalendarClient({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [editingCalendarId, setEditingCalendarId] = useState<number | null>(null);
   const [newCalendarName, setNewCalendarName] = useState("");
+  const [pendingVisibility, setPendingVisibility] = useState<Set<number>>(new Set());
+  const [visibilityError, setVisibilityError] = useState<string | null>(null);
 
   const requestId = useRef(0);
 
@@ -173,6 +175,7 @@ export default function CalendarClient({
     if (visibleCalendarIds.length === 0) {
       setOccurrences([]);
       setEvents([]);
+      setLoadError(null);
       setLoading(false);
       return;
     }
@@ -370,6 +373,34 @@ export default function CalendarClient({
       setSaveError(error instanceof Error ? error.message : "Could not delete event");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function setCalendarVisibility(calendar: CalendarCollection, visible: boolean) {
+    if (pendingVisibility.has(calendar.id)) return;
+    setPendingVisibility((current) => new Set(current).add(calendar.id));
+    setVisibilityError(null);
+    setCalendars((current) => current.map((item) =>
+      item.id === calendar.id ? { ...item, visible } : item,
+    ));
+    try {
+      const response = await fetch(`/api/calendar/calendars/${calendar.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visible }),
+      });
+      if (!response.ok) throw new Error("Could not save calendar visibility");
+    } catch {
+      setCalendars((current) => current.map((item) =>
+        item.id === calendar.id ? { ...item, visible: calendar.visible } : item,
+      ));
+      setVisibilityError(`Couldn’t update ${calendar.name}. Try again.`);
+    } finally {
+      setPendingVisibility((current) => {
+        const next = new Set(current);
+        next.delete(calendar.id);
+        return next;
+      });
     }
   }
 
@@ -632,26 +663,19 @@ export default function CalendarClient({
               {calendars.map((calendar) => (
                 <li key={calendar.id}>
                   <div className="group flex items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-gray-800/50">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void patchCalendar(calendar.id, { visible: !calendar.visible })
-                      }
-                      className="size-3.5 shrink-0 rounded-full border transition-colors"
-                      style={{
-                        backgroundColor: calendar.visible ? calendar.color : "transparent",
-                        borderColor: calendar.color,
-                      }}
-                      aria-pressed={calendar.visible}
-                      title={calendar.visible ? "Hide this calendar" : "Show this calendar"}
-                    />
-                    <span
-                      className={`min-w-0 flex-1 truncate text-xs ${
-                        calendar.visible ? "text-gray-300" : "text-gray-600"
-                      }`}
-                    >
-                      {calendar.name}
-                    </span>
+                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={calendar.visible}
+                        disabled={pendingVisibility.has(calendar.id)}
+                        onChange={(event) => void setCalendarVisibility(calendar, event.target.checked)}
+                        aria-label={`Show ${calendar.name} on calendar`}
+                      />
+                      <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} aria-hidden="true" />
+                      <span className={`truncate ${calendar.visible ? "text-[var(--ink)]" : "text-[var(--ink-muted)]"}`}>
+                        {calendar.name}
+                      </span>
+                    </label>
                     <button
                       type="button"
                       onClick={() =>
@@ -659,7 +683,7 @@ export default function CalendarClient({
                           current === calendar.id ? null : calendar.id,
                         )
                       }
-                      className="shrink-0 px-1 text-xs text-gray-500 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
+                      className="shrink-0 px-1 text-xs text-gray-500 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 group-focus-within:opacity-100"
                       aria-label={`Edit ${calendar.name}`}
                     >
                       ⋯
@@ -721,6 +745,8 @@ export default function CalendarClient({
               ))}
             </ul>
 
+            {visibilityError && <p role="alert" className="mt-2 px-1 text-xs text-[var(--danger)]">{visibilityError}</p>}
+
             <form
               onSubmit={(event) => {
                 event.preventDefault();
@@ -760,7 +786,7 @@ export default function CalendarClient({
             anchor={anchor}
             today={today}
             now={now}
-            occurrences={occurrences}
+            occurrences={occurrences.filter((occurrence) => calendarsById.get(occurrence.calendarId)?.visible)}
             calendarsById={calendarsById}
             dueTasks={dueTasks}
             onSelectTask={onSelectTask}

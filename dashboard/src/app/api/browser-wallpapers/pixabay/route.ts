@@ -51,7 +51,11 @@ async function apiKey(): Promise<string> {
   // is added. Resolve it server-side on demand so the wallpaper drawer repairs
   // itself without exposing the credential to the browser or requiring a full
   // Breadboard restart.
+  const developmentDashboard = process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR?.trim();
+  const repositoryRoot = process.env.BREADBOARD_REPO_ROOT?.trim();
   const candidates = [
+    ...(developmentDashboard ? [path.join(developmentDashboard, ".env.local")] : []),
+    ...(repositoryRoot ? [path.join(repositoryRoot, "dashboard", ".env.local")] : []),
     path.join(process.cwd(), ".env.local"),
     path.join(process.cwd(), "dashboard", ".env.local"),
   ];

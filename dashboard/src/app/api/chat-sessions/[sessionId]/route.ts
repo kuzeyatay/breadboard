@@ -78,6 +78,7 @@ interface ChatMessage {
   responseDurationMs?: number;
   responseCompletedAt?: string;
   progressNotes?: string[];
+  thinking?: string;
   verification?: VerificationSummary;
   uiResources?: GenerativeUiResource[];
   selectedText?: string;
@@ -151,6 +152,7 @@ function mergeRuntimeMetadata(
   if (message.progressNotes?.length) {
     metadata.progressNotes = message.progressNotes;
   }
+  if (message.thinking?.trim()) metadata.reasoning = message.thinking;
   if (message.internalAgentContinuation === true) {
     metadata.internalAgentContinuation = true;
   }
@@ -339,6 +341,9 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       Number.isFinite(Date.parse(record.responseCompletedAt))
         ? record.responseCompletedAt
         : undefined;
+    const thinking = role === "assistant" && typeof record.thinking === "string"
+      ? record.thinking
+      : undefined;
     const progressNotes = role === "assistant" && Array.isArray(record.progressNotes)
       ? record.progressNotes
           .filter(
@@ -408,6 +413,7 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(responseCompletedAt ? { responseCompletedAt } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
+      ...(thinking?.trim() ? { thinking } : {}),
       ...(verification ? { verification } : {}),
       ...externalAgent,
     });

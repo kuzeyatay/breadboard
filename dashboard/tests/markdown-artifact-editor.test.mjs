@@ -14,11 +14,18 @@ const store = source("../src/lib/hermes/artifact-store.ts");
 const renderer = source("../src/lib/hermes/artifact-renderers.ts");
 const artifactTool = source("../../hermes-config/tool/artifact.ts");
 
-test("Markdown Edit opens the dedicated editor as a popup window", () => {
+test("Markdown Edit opens the dedicated editor inside the current window", () => {
   assert.match(viewer, /artifactMarkdownEditorHref/);
   assert.match(viewer, /\/artifacts\/\$\{encodeURIComponent\(artifact\.id\)\}\/markdown/);
-  assert.match(viewer, /window\.open\([\s\S]*?popup=yes,width=1440,height=900/);
-  assert.match(viewer, /aria-label=\{`Edit \$\{artifact\.title\} in a new window`\}/);
+  assert.match(viewer, /onClick=\{\(\) => setMarkdownEditorOpen\(true\)\}/);
+  assert.match(viewer, /aria-modal="true"/);
+  assert.match(viewer, /<MarkdownArtifactEditor[\s\S]*?onClose=\{\(\) => setMarkdownEditorOpen\(false\)\}/);
+  assert.doesNotMatch(viewer, /window\.open\([\s\S]*?breadboard-markdown/);
+  assert.match(editor, /onClose\?: \(\) => void/);
+  assert.match(editor, /<ConfirmDialog/);
+  assert.match(editor, /cancelLabel="Keep editing"/);
+  assert.match(editor, /confirmLabel="Discard changes"/);
+  assert.doesNotMatch(editor, /window\.confirm\(/);
 });
 
 test("the editor is user-scoped and reuses Breadboard's chat UI", () => {

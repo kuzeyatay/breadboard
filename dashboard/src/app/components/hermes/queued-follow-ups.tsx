@@ -254,6 +254,10 @@ export function useQueuedFollowUps({
 
   async function applyQueuedSteer(item: QueuedFollowUp) {
     if (applyingSteerId) return;
+    if (item.attachments.length > 0) {
+      showSteerNote(item.id, "Messages with attachments send as a follow-up when the turn finishes.");
+      return;
+    }
     if (!onSteer || !steerableRunActive || stopping) {
       showSteerNote(item.id, steerUnavailableReason());
       return;
@@ -316,8 +320,6 @@ export function useQueuedFollowUps({
     setDragOverQueuedId(null);
   }
 
-  const canSteerNow = Boolean(onSteer) && steerableRunActive && !stopping;
-
   const previewOverlay =
     previewImage && typeof document !== "undefined"
       ? createPortal(
@@ -357,6 +359,7 @@ export function useQueuedFollowUps({
       <>
         <div className="space-y-0.5 py-0.5">
           {visibleQueued.map((item, index) => {
+            const canSteerNow = Boolean(onSteer) && steerableRunActive && !stopping && item.attachments.length === 0;
             const images = item.attachments.filter(
               (
                 attachment,
@@ -473,7 +476,9 @@ export function useQueuedFollowUps({
                     title={
                       canSteerNow
                         ? "Steer the active response"
-                        : steerUnavailableReason()
+                        : item.attachments.length > 0
+                          ? "Messages with attachments send when the turn finishes"
+                          : steerUnavailableReason()
                     }
                   >
                     <svg

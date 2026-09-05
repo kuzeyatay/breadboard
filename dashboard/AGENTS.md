@@ -4,6 +4,13 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# Loading feedback
+
+Use the existing blue progress bar at the top for navigation and browser startup.
+Keep the normal page and browser controls visible while loading. Do not replace
+them with a loading screen, centered spinner card, or “Starting/Opening” message.
+Show actual failures inline with retry actions.
+
 # Adding a runtime agent
 
 Read `docs/ADDING_AN_AGENT.md` first. It covers the wiring (identity, run manager,

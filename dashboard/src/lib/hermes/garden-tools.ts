@@ -182,6 +182,31 @@ export async function executeGardenTool(input: {
   }
 
   try {
+    if (input.tool === "garden_discover_sources" || input.tool === "garden_import_source") {
+      if (!["garden_chat", "dashboard_terminal"].includes(token.surface) || token.userId !== cluster.user_id) {
+        return { ok: false, tool: input.tool, error: "Source discovery and import require the Garden's owner in a signed-in chat." };
+      }
+      if (input.tool === "garden_discover_sources") {
+        const { discoverGardenSources } = await import("./garden-source-discovery.ts");
+        const data = await discoverGardenSources(input.args);
+        const ok = data.reports.some((report) => report.status !== "error");
+        return { ok, tool: input.tool, data, ...(ok ? {} : { error: data.reports.map((report) => `${report.kind}: ${report.error}`).join("; ") }) };
+      }
+      const { importGardenSource } = await import("./garden-source-import.ts");
+      const data = await importGardenSource({
+        userId: token.userId, clusterId: cluster.id, clusterSlug: cluster.slug, contentPath: contentPath(),
+      }, input.args);
+      const result = data as Record<string, unknown>;
+      return { ok: true, tool: input.tool, data: {
+        ...result,
+        sourceImport: {
+          gardenId: cluster.slug, kind: input.args.kind,
+          title: typeof input.args.title === "string" ? input.args.title.slice(0, 180) : "Imported source",
+          jobId: typeof result.jobId === "string" ? result.jobId : null,
+          processing: result.processing === true,
+        },
+      } };
+    }
     if (input.tool === "garden_save_note") {
       return await executeSaveNote(cluster, token, input.args);
     }

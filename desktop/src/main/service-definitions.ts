@@ -593,6 +593,8 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
             path.join(paths.appRoot, "chatmock", "chatmock", "providers", "dispatch.py"),
             path.join(paths.appRoot, "chatmock", "chatmock", "providers", "registry.py"),
             path.join(paths.appRoot, "chatmock", "chatmock", "providers", "store.py"),
+            path.join(paths.appRoot, "chatmock", "chatmock", "subscription_voice.py"),
+            path.join(paths.appRoot, "chatmock", "chatmock", "app.py"),
           ]
         : undefined,
   };

@@ -8,6 +8,13 @@ export interface OpenGymAnimationReference {
 }
 
 const MARKER = "OPEN_GYM_ANIMATIONS:";
+const LEGACY_SAVE_NOTICE = "_This program is saved in openGym's persistent state; this launch had no artifact-capable conversation context._";
+
+/** Clean up the application-authored diagnostic in already saved answers. */
+export function openGymVisibleContent(content: string): string {
+  return content.replace(LEGACY_SAVE_NOTICE,
+    "Your program is saved in openGym, but couldn’t be added to this chat.");
+}
 const COMMENT_MARKER = new RegExp(
   `<!--\\s*${MARKER}\\s*([\\s\\S]*?)\\s*-->`,
   "g",
@@ -92,7 +99,7 @@ export function parseOpenGymResult(content: string): {
     return "";
   });
   return {
-    content: clean.trim(),
+    content: openGymVisibleContent(clean.trim()),
     animations: animations.slice(0, 12),
   };
 }

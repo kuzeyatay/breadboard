@@ -61,6 +61,7 @@ type ChatMessage = {
   responseDurationMs?: number;
   responseCompletedAt?: string;
   progressNotes?: string[];
+  thinking?: string;
   verification?: VerificationSummary;
   uiResources?: GenerativeUiResource[];
   selectedText?: string;
@@ -223,6 +224,18 @@ function parseResponseDuration(value: string | null): number | undefined {
     const duration = Number(parsed?.responseDurationMs);
     return Number.isFinite(duration) && duration >= 0
       ? Math.trunc(duration)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseThinking(value: string | null): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { reasoning?: unknown };
+    return typeof parsed?.reasoning === "string" && parsed.reasoning.trim()
+      ? parsed.reasoning
       : undefined;
   } catch {
     return undefined;
@@ -546,6 +559,7 @@ function readSessions(
     const responseDurationMs = parseResponseDuration(message.tool_calls);
     const responseCompletedAt = parseResponseCompletedAt(message.tool_calls);
     const progressNotes = parseProgressNotes(message.tool_calls);
+    const thinking = message.role === "assistant" ? parseThinking(message.tool_calls) : undefined;
     const pendingPermissions = parsePendingPermissions(message.tool_calls);
     const uiResources = parseGenerativeUiResources(message.tool_calls);
     const internalAgentContinuation =
@@ -583,6 +597,7 @@ function readSessions(
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(responseCompletedAt ? { responseCompletedAt } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
+      ...(thinking ? { thinking } : {}),
       ...(message.role === "assistant" && pendingPermissions.length
         ? { pendingPermissions }
         : {}),

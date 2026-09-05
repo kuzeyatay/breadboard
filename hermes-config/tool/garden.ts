@@ -56,6 +56,28 @@ export const search = tool({
   },
 })
 
+export const discover_sources = tool({
+  description: "Discover external audio, video/YouTube, link/article and PDF sources for a Garden. Read-only; use import_source for results the user asks to add.",
+  args: {
+    gardenId: tool.schema.string().optional(),
+    query: tool.schema.string(),
+    kinds: tool.schema.array(tool.schema.enum(["audio", "video", "link", "pdf"])).optional(),
+    limit: tool.schema.number().int().min(1).max(8).optional(),
+  },
+  async execute(args, ctx) { return callBreadboard(ctx.sessionID, "garden_discover_sources", args) },
+})
+
+export const import_source = tool({
+  description: "Add one discovered or user-provided source to the Garden when the user asked to upload, add, import or save it. Uses normal document/transcription ingestion; report queued jobs as processing.",
+  args: {
+    gardenId: tool.schema.string().optional(),
+    kind: tool.schema.enum(["audio", "video", "link", "pdf"]),
+    url: tool.schema.string().describe("Exact importUrl from discovery or URL supplied by the user"),
+    title: tool.schema.string().optional(),
+  },
+  async execute(args, ctx) { return callBreadboard(ctx.sessionID, "garden_import_source", args) },
+})
+
 export const get_page = tool({
   description: "Fetch a single page from this garden by slug, including its content and metadata.",
   args: {

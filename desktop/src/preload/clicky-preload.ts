@@ -9,6 +9,8 @@ ipcRenderer.on("breadboard:clicky-shortcut", (_event, available: boolean) => {
 contextBridge.exposeInMainWorld("clickyCompanion", {
   capture: () => ipcRenderer.invoke("breadboard:clicky-capture"),
   point: (target: unknown) => ipcRenderer.invoke("breadboard:clicky-point", target),
+  click: () => ipcRenderer.invoke("breadboard:clicky-click"),
+  resetTarget: () => ipcRenderer.invoke("breadboard:clicky-reset-target"),
   onToggleVoice: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on("breadboard:clicky-toggle-voice", listener);

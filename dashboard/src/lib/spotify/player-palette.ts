@@ -9,12 +9,16 @@ interface RgbColor {
 export interface PlayerPalette {
   surface: string;
   foreground: string;
+  playingForeground: string;
   muted: string;
   border: string;
   hover: string;
   active: string;
   buttonBackground: string;
   buttonForeground: string;
+  overlayStart: string;
+  overlayMiddle: string;
+  overlayEnd: string;
   overlay: string;
   errorSurface: string;
 }
@@ -71,19 +75,30 @@ function playerPalette(coverColor: RgbColor): PlayerPalette {
       ? LIGHT_INK
       : DARK_INK;
   const foregroundIsLight = foreground === LIGHT_INK;
+  const playingGreen = foregroundIsLight
+    ? { red: 116, green: 238, blue: 161 }
+    : { red: 11, green: 77, blue: 35 };
+  let playingForeground = playingGreen;
+  for (let step = 1; step <= 10 && contrastRatio(surface, playingForeground) < 4.5; step += 1) {
+    playingForeground = mixColor(playingGreen, foreground, step / 10);
+  }
+  const overlayStart = rgba(surface, 0.72);
+  const overlayMiddle = rgba(surface, 0.84);
+  const overlayEnd = rgba(surface, 0.94);
   return {
     surface: rgb(surface),
     foreground: rgb(foreground),
+    playingForeground: rgb(playingForeground),
     muted: rgba(foreground, 0.68),
     border: rgba(foreground, 0.17),
     hover: rgba(foreground, 0.12),
     active: rgba(foreground, 0.18),
     buttonBackground: rgb(foreground),
     buttonForeground: rgb(surface),
-    overlay: `linear-gradient(105deg, ${rgba(surface, 0.72)} 0%, ${rgba(
-      surface,
-      0.84,
-    )} 54%, ${rgba(surface, 0.94)} 100%)`,
+    overlayStart,
+    overlayMiddle,
+    overlayEnd,
+    overlay: `linear-gradient(105deg, ${overlayStart} 0%, ${overlayMiddle} 54%, ${overlayEnd} 100%)`,
     errorSurface: foregroundIsLight
       ? "rgb(7 12 10 / 0.52)"
       : "rgb(255 255 255 / 0.38)",

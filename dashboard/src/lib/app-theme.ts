@@ -339,9 +339,9 @@ let themeTransitionSequence = 0;
  */
 export function rememberEffectiveAppTheme(
   theme: AppTheme,
-  options: { animate?: boolean } = {},
+  options: { animate?: boolean; persist?: boolean } = {},
 ): void {
-  writeStorage(APP_THEME_STORAGE_KEY, theme);
+  if (options.persist !== false) writeStorage(APP_THEME_STORAGE_KEY, theme);
 
   const root = document.documentElement;
   const currentTheme = root.dataset.theme;

@@ -75,9 +75,10 @@ test("Hermes terminal uses the original Breadboard terminal shell", () => {
   assert.doesNotMatch(terminal, /#0b0f14/);
 });
 
-test("the resting terminal bar is slimmer with golden-proportion shoulders", () => {
-  assert.match(terminal, /const COLLAPSED_HEIGHT = 42/);
-  assert.match(legacyTerminal, /const COLLAPSED_HEIGHT = 42/);
+test("the resting terminal uses half the home dock extent and keeps its rounded shoulders", () => {
+  assert.match(terminal, /terminalDockCollapsedHeight/);
+  assert.match(legacyTerminal, /terminalDockCollapsedHeight/);
+  assert.match(globals, /--terminal-collapsed-height: calc\(\(var\(--browser-dock-height\) \+ var\(--browser-dock-bottom\)\) \/ 2\)/);
   assert.match(terminal, /const GOLDEN_RATIO_SQUARED = 2\.618/);
   assert.match(
     terminal,
@@ -124,9 +125,9 @@ test("the header conceals on close the way it reveals on open", () => {
 // used to open with. It slides instead: the box takes its final size up front
 // and only its offset is animated.
 test("the dock slides open rather than growing open", () => {
-  assert.match(terminal, /height: glideBox \?\? height/);
-  assert.match(terminal, /transform: glide \? `translate3d\(0, \$\{glideShift\}px, 0\)`/);
-  assert.match(terminal, /transition: glideMoving[\s\S]*?`transform \$\{DOCK_OPEN_MS\}ms/);
+  assert.match(terminal, /height: drawerPresentation \? "100%" : glideBox \?\? \(isOpen \? height : "var\(--terminal-collapsed-height\)"\)/);
+  assert.match(terminal, /!drawerPresentation && glide\s*\? `translate3d\(0, \$\{glideShift\}px, 0\)`/);
+  assert.match(terminal, /transition: !drawerPresentation && glideMoving[\s\S]*?`transform \$\{DOCK_OPEN_MS\}ms/);
   assert.doesNotMatch(terminal, /`height \$\{DOCK_OPEN_MS\}ms/);
 
   // Opening mounts the whole terminal in the same commit that sets the height.
@@ -159,14 +160,14 @@ test("the brown terminal header toggles fully open and fully closed", () => {
   );
   assert.match(
     terminal,
-    /const target = open \? openHeight\(null\) : COLLAPSED_HEIGHT/,
+    /const target = open \? openHeight\(null\) : terminalDockCollapsedHeight\(\)/,
   );
-  assert.match(terminal, /const box = Math\.max\(openHeight\(null\), MIN_HEIGHT\)/);
+  assert.match(terminal, /const box = Math\.max\(openHeight\(null\), terminalDockCollapsedHeight\(\)\)/);
   assert.doesNotMatch(
     terminal,
     /const target = open\s*\? openHeight\(preferredOpenHeightRef\.current\)/,
   );
-  assert.match(terminal, /aria-label=\{isOpen \? undefined : `Open terminal\$\{unreadSuffix\}`\}/);
+  assert.match(terminal, /aria-label=\{!drawerPresentation && !isOpen \? `Open terminal\$\{unreadSuffix\}` : undefined\}/);
   assert.match(terminal, /event\.key === "Enter" \|\| event\.key === " "/);
   assert.match(terminal, /toggleDock\(true\)/);
 
@@ -195,8 +196,9 @@ test("opening the terminal puts the native caret in the chat field", () => {
 });
 
 test("the terminal always starts collapsed without reopening to a stale height", () => {
+  assert.match(terminal, /drawerPresentation \? 720 : DEFAULT_TERMINAL_DOCK_HEIGHT/);
+  assert.match(legacyTerminal, /useState\(DEFAULT_TERMINAL_DOCK_HEIGHT\)/);
   for (const source of [terminal, legacyTerminal]) {
-    assert.match(source, /useState\(COLLAPSED_HEIGHT\)/);
     assert.doesNotMatch(source, /setHeight\(clampHeight\(saved(?:Height)?\)\)/);
   }
   assert.match(
@@ -225,7 +227,7 @@ test("an open Hermes terminal survives a renderer reload", () => {
   assert.match(terminal, /if \(initialPanel \|\| wasOpen\)/);
   assert.match(
     terminal,
-    /window\.sessionStorage\.setItem\([\s\S]*?OPEN_STATE_KEY[\s\S]*?height > COLLAPSED_HEIGHT \+ 8 \? "true" : "false"/,
+    /window\.sessionStorage\.setItem\([\s\S]*?OPEN_STATE_KEY[\s\S]*?height >= minOpenHeight\(\) \? "true" : "false"/,
   );
   assert.match(
     terminal,
@@ -472,7 +474,7 @@ test("a fully open terminal stops the page behind it from scrolling", () => {
 
   // Re-runs as the dock is dragged, so releasing below full height unlocks.
   const effectTail = terminal.slice(start, start + 2_800);
-  assert.match(effectTail, /\}, \[height\]\);/);
+  assert.match(effectTail, /\}, \[drawerPresentation, height\]\);/);
 });
 
 test("a message queues while its chat is still loading", () => {

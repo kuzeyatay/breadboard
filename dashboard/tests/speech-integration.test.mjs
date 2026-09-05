@@ -25,6 +25,8 @@ import {
 } from "../src/lib/speech/voice-model.ts";
 import {
   prepareLocalSpeech,
+  prepareSpeech,
+  resetSpeechPreparation,
   speechErrorMessage,
 } from "../src/lib/speech/prepare-client.ts";
 
@@ -56,6 +58,7 @@ test("Settings label writing calibration as Tone and audio controls as Voice", (
   assert.match(settingsDialog, /value: "speech",\s*label: "Voice"/);
   assert.match(toneSettings, /Tone calibration/);
   assert.doesNotMatch(toneSettings, /Voice calibration/);
+  assert.doesNotMatch(toneSettings, /Using defaults/);
 });
 
 test("Intelligence settings expose Breadboard-styled Voicebox speech controls", () => {
@@ -118,7 +121,7 @@ test("voice mode can warm Voicebox before recording the first turn", () => {
   );
   assert.match(prepareClient, /SPEECH_RECONNECT_DELAYS_MS/);
   assert.doesNotMatch(prepareClient, /throw lastFailure/);
-  assert.match(prepareClient, /Breadboard lost its connection to local speech/);
+  assert.match(prepareClient, /Breadboard lost its connection to speech/);
 
   const launcher = source("../../scripts/start-voicebox.mjs");
   assert.doesNotMatch(launcher, /["']import backend\.main["']/);
@@ -159,9 +162,35 @@ test("local speech startup is shared, reconnects once, and hides raw fetch error
     assert.equal(calls, 3);
     assert.equal(
       speechErrorMessage(new TypeError("Failed to fetch"), "fallback"),
-      "Breadboard lost its connection to local speech. Try again in a moment.",
+      "Breadboard lost its connection to speech. Try again in a moment.",
     );
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("switching speech provider bypasses an old in-flight local cold start", async () => {
+  const originalFetch = globalThis.fetch;
+  let finishLocal;
+  let calls = 0;
+  const pending = new Promise((resolve) => { finishLocal = resolve; });
+  try {
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) await pending;
+      return Response.json({ ready: true });
+    };
+    const local = prepareLocalSpeech();
+    resetSpeechPreparation();
+    const cloud = prepareSpeech();
+    assert.notEqual(local, cloud);
+    await cloud;
+    assert.equal(calls, 2);
+    finishLocal();
+    await local;
+  } finally {
+    finishLocal();
+    resetSpeechPreparation();
     globalThis.fetch = originalFetch;
   }
 });
@@ -513,7 +542,7 @@ test("the speech panel leads with the one thing left to do", () => {
 
   assert.match(speechSettings, /nextSpeechStep\(\{/);
   // Choosing a voice or previewing must not fail on the master switch.
-  assert.match(speechSettings, /updateSettings\(\{ profileId: target, enabled: true \}\)/);
+  assert.match(speechSettings, /await updateSettings\(draft\?\.speechProvider === "chatgpt"\s*\? \{ enabled: true \} : \{ profileId: target, enabled: true \}\)/);
   // Preferences save on change; there is no submit step to forget.
   assert.doesNotMatch(speechSettings, /Save dictation/);
 });

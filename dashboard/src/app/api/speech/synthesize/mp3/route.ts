@@ -1,4 +1,6 @@
-import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
+import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
+import { getSpeechSettings } from "@/lib/speech/settings";
+import { requireVoiceOrigin } from "@/lib/speech/subscription-server";
 import {
   SPEECH_DOWNLOAD_MIME,
   speechAsMp3,
@@ -19,15 +21,35 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    const body = (await request.json().catch(() => null)) as { text?: unknown } | null;
-    const spoken = await synthesizeSpeech({
+    requireVoiceOrigin(request);
+    const subscriptionAudio = request.headers.get("content-type") === "audio/wav";
+    if (subscriptionAudio && (getSpeechSettings(userId).speechProvider !== "chatgpt" || !getSpeechSettings(userId).enabled)) throw new RouteError(409, "Enable subscription speech first.");
+    let supplied: ArrayBuffer | undefined;
+    if (subscriptionAudio) {
+      const chunks: Uint8Array<ArrayBuffer>[] = [];
+      let length = 0;
+      const reader = request.body?.getReader();
+      if (!reader) throw new RouteError(400, "No audio was supplied.");
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.length;
+        if (length > 25 * 1024 * 1024) { await reader.cancel(); throw new RouteError(413, "Audio download exceeds 25 MB."); }
+        chunks.push(new Uint8Array(value));
+      }
+      supplied = await new Blob(chunks).arrayBuffer();
+    }
+    const body = subscriptionAudio ? null : (await request.json().catch(() => null)) as { text?: unknown } | null;
+    const spoken = supplied ? new Response(supplied, { headers: { "Content-Type": "audio/wav" } }) : await synthesizeSpeech({
       userId,
       text: body?.text,
       signal: request.signal,
     });
-    const mp3 = await speechAsMp3(
+    const audio = new Uint8Array(await spoken.arrayBuffer());
+    if (!audio.byteLength) throw new RouteError(502, "The speech provider returned no audio to save.");
+    const mp3 = spoken.headers.get("Content-Type")?.split(";")[0] === SPEECH_DOWNLOAD_MIME ? audio : await speechAsMp3(
       { userId, gardenId: null, conversationId: null },
-      new Uint8Array(await spoken.arrayBuffer()),
+      audio,
       request.signal,
     );
     // `speechAsMp3` may return a view backed by SharedArrayBuffer. Fetch's

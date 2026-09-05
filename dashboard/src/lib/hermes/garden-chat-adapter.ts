@@ -1326,6 +1326,7 @@ function legacyGardenEventStream(
       const emit = (value: unknown) =>
         sink.emit(encoder.encode(`data: ${JSON.stringify(value)}\n\n`));
       let assistantText = "";
+      let reasoning = "";
       // Mid-turn narration sealed off the answer buffer; the last segment is
       // promoted back if the turn ends with nothing left in the buffer.
       const narrationSegments: string[] = [];
@@ -1574,7 +1575,10 @@ function legacyGardenEventStream(
             }
           }
           if (event.type === "reasoning.status" && event.payload.detail) {
-            emit({ type: "thinking", text: event.payload.detail });
+            reasoning = event.payload.detailMode === "replace"
+              ? event.payload.detail
+              : reasoning + event.payload.detail;
+            emit({ type: "thinking", text: event.payload.detail, detailMode: event.payload.detailMode });
           }
           if (event.type === "tool.started") {
             emit({ type: "tool", status: "running", ...event.payload });
@@ -1765,6 +1769,7 @@ function legacyGardenEventStream(
                 tokenUsage,
                 metadata: {
                   calls: toolCalls,
+                  ...(reasoning ? { reasoning } : {}),
                   ...(uiResources.length ? { uiResources } : {}),
                   ...(narrationSegments.length
                     ? { progressNotes: narrationSegments }
@@ -1826,6 +1831,7 @@ function legacyGardenEventStream(
             error: "garden_event_stream_failed",
             metadata: {
               calls: toolCalls,
+              ...(reasoning ? { reasoning } : {}),
               ...(narrationSegments.length
                 ? { progressNotes: narrationSegments }
                 : {}),

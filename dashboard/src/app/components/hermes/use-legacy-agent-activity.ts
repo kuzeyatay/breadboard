@@ -369,7 +369,8 @@ export function useLegacyAgentActivity() {
       code?: string;
       error?: string | { message?: string };
     };
-    if (response.status === 409 && body.code === "run_not_active") return false;
+    if (response.status === 409 &&
+        (body.code === "run_not_active" || body.code === "steer_unavailable")) return false;
     if (!response.ok || body.accepted !== true) {
       const message =
         typeof body.error === "string"

@@ -71,7 +71,22 @@ function browserTabFaviconFallback(address: string | undefined): string | undefi
  */
 function TabStrip({ state }: { state: DesktopTabsState }) {
   const stripRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<DragState | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+
+  function updateDrag(next: DragState | null) {
+    // Pointer down and up can arrive before React has rendered the state update
+    // from the first event. Keep the gesture's live value synchronous so a
+    // quick click never disappears merely because its tab was farther along
+    // the strip (or the renderer was busy for a frame).
+    dragRef.current = next;
+    setDrag(next);
+  }
+
+  useEffect(() => {
+    stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${state.activeId}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [state.activeId]);
 
   function orderedTabElements(): HTMLElement[] {
     const strip = stripRef.current;
@@ -94,7 +109,7 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   function onTabPointerDown(event: ReactPointerEvent<HTMLDivElement>, tab: DesktopTabView) {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({
+    updateDrag({
       id: tab.id,
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -105,16 +120,23 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   }
 
   function onTabPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const offset = event.clientX - drag.startX;
-    const dragging = drag.dragging || Math.abs(offset) > DRAG_THRESHOLD_PX;
+    const current = dragRef.current;
+    if (!current || event.pointerId !== current.pointerId) return;
+    const offset = event.clientX - current.startX;
+    const dragging = current.dragging || Math.abs(offset) > DRAG_THRESHOLD_PX;
     if (!dragging) return;
-    setDrag({ ...drag, offset, dragging, target: targetIndexFor(event.clientX, drag.id) });
+    updateDrag({
+      ...current,
+      offset,
+      dragging,
+      target: targetIndexFor(event.clientX, current.id),
+    });
   }
 
   function onTabPointerUp(event: ReactPointerEvent<HTMLDivElement>, tab: DesktopTabView) {
+    const drag = dragRef.current;
     if (!drag || event.pointerId !== drag.pointerId) return;
-    setDrag(null);
+    updateDrag(null);
     if (!drag.dragging) {
       if (tab.id !== state.activeId) void sendDesktopTabsCommand({ type: "activate", id: tab.id });
       return;
@@ -126,7 +148,7 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   }
 
   function onTabPointerCancel() {
-    setDrag(null);
+    updateDrag(null);
   }
 
   return (
@@ -148,6 +170,7 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
             className="bb-tab"
             data-tab-id={tab.id}
             data-active={active ? "true" : undefined}
+            data-anchored={tab.anchored ? "true" : undefined}
             data-loading={tab.loading ? "true" : undefined}
             data-dragging={dragging ? "true" : undefined}
             style={dragging ? { transform: `translateX(${drag?.offset ?? 0}px)` } : undefined}
@@ -193,8 +216,28 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
             <span className="bb-tab-title">{label}</span>
             <button
               type="button"
+              className="bb-tab-anchor"
+              aria-label={`${tab.anchored ? "Unanchor" : "Anchor"} ${label}`}
+              aria-pressed={tab.anchored === true}
+              title={tab.anchored ? "Unanchor tab to allow closing" : "Anchor tab to keep it open"}
+              onPointerDown={(event) => event.stopPropagation()}
+              onAuxClick={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void sendDesktopTabsCommand({ type: "anchor", id: tab.id });
+              }}
+            >
+              <svg viewBox="0 0 14 14" aria-hidden="true">
+                <circle cx="7" cy="3" r="1.5" {...STROKE} />
+                <path d="M7 4.5v8M4.5 6.5h5M2 8.5v1a5 3 0 0 0 10 0v-1M2 8.5l-1 1M12 8.5l1 1" {...STROKE} />
+              </svg>
+            </button>
+            <button
+              type="button"
               className="bb-tab-close"
               aria-label={`Close ${label}`}
+              disabled={tab.anchored === true}
+              title={tab.anchored ? "Unanchor tab before closing" : `Close ${label}`}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();

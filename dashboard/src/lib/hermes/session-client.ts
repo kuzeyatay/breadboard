@@ -193,6 +193,8 @@ function withoutDeleting(
 }
 
 export function invalidateHermesSessionSummaries(surface?: HermesSurface): void {
+  // Every surface contributes to the terminal's history.
+  summaries.delete("dashboard_terminal");
   if (surface) summaries.delete(surface);
   else summaries.clear();
 }

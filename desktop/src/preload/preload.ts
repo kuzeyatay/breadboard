@@ -1,6 +1,10 @@
 import type { IpcRenderer } from "electron";
 import type {
   BrowserBookmark,
+  BrowserHistoryCommand,
+  BrowserHistorySnapshot,
+  BrowserDownloadCommand,
+  BrowserDownloadsSnapshot,
   ClickyLaunchResult,
   ClickyLauncherState,
   DesktopNotificationToast,
@@ -32,6 +36,7 @@ export const PRELOAD_IPC_CHANNELS = {
   openTeachController: "breadboard:open-teach-controller",
   closeTeachController: "breadboard:close-teach-controller",
   getTabsState: "breadboard:get-tabs-state",
+  getBrowserTerminalAccess: "breadboard:get-browser-terminal-access",
   tabsCommand: "breadboard:tabs-command",
   tabsState: "breadboard:tabs-state",
   notificationToast: "breadboard:notification-toast",
@@ -41,6 +46,13 @@ export const PRELOAD_IPC_CHANNELS = {
   setBrowserBookmarks: "breadboard:set-browser-bookmarks",
   getBrowserShortcuts: "breadboard:get-browser-shortcuts",
   setBrowserShortcuts: "breadboard:set-browser-shortcuts",
+  getBrowserRecentSearches: "breadboard:get-browser-recent-searches",
+  getBrowserHistory: "breadboard:get-browser-history",
+  browserHistoryCommand: "breadboard:browser-history-command",
+  browserHistoryChanged: "breadboard:browser-history-changed",
+  setBrowserRecentSearches: "breadboard:set-browser-recent-searches",
+  getBrowserDownloads: "breadboard:get-browser-downloads",
+  browserDownloadCommand: "breadboard:browser-download-command",
   getClickyState: "breadboard:get-clicky-state",
   launchClicky: "breadboard:launch-clicky",
   openClickyProject: "breadboard:open-clicky-project",
@@ -80,6 +92,10 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     for (const listener of startupListeners) listener(state as StartupStateView);
   });
   const tabsListeners = new Set<(state: TabsState) => void>();
+  const historyListeners = new Set<() => void>();
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.browserHistoryChanged, () => {
+    for (const listener of historyListeners) listener();
+  });
   ipcRenderer.on(PRELOAD_IPC_CHANNELS.tabsState, (_event, state) => {
     for (const listener of tabsListeners) listener(state as TabsState);
   });
@@ -182,6 +198,8 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     // can be asked for outright on first paint.
     getTabsState: (): Promise<TabsState> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getTabsState) as Promise<TabsState>,
+    getBrowserTerminalAccess: (): Promise<{ port: number; token: string } | null> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserTerminalAccess) as Promise<{ port: number; token: string } | null>,
     onTabsState: (listener: (state: TabsState) => void): (() => void) => {
       tabsListeners.add(listener);
       return () => tabsListeners.delete(listener);
@@ -239,6 +257,22 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserShortcuts, ownerKey) as Promise<BrowserBookmark[] | null>,
     setBrowserShortcuts: (ownerKey: string, shortcuts: BrowserBookmark[]): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setBrowserShortcuts, ownerKey, shortcuts) as Promise<boolean>,
+    getBrowserRecentSearches: (ownerKey: string): Promise<string[] | null> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserRecentSearches, ownerKey) as Promise<string[] | null>,
+    getBrowserHistory: (): Promise<BrowserHistorySnapshot> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserHistory) as Promise<BrowserHistorySnapshot>,
+    browserHistoryCommand: (command: BrowserHistoryCommand): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.browserHistoryCommand, command) as Promise<boolean>,
+    onBrowserHistoryChanged: (listener: () => void): (() => void) => {
+      historyListeners.add(listener);
+      return () => { historyListeners.delete(listener); };
+    },
+    setBrowserRecentSearches: (ownerKey: string, searches: string[]): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setBrowserRecentSearches, ownerKey, searches) as Promise<boolean>,
+    getBrowserDownloads: (): Promise<BrowserDownloadsSnapshot> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserDownloads) as Promise<BrowserDownloadsSnapshot>,
+    browserDownloadCommand: (command: BrowserDownloadCommand): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.browserDownloadCommand, command) as Promise<{ ok: boolean; error?: string }>,
     /** Readiness for the native macOS Clicky companion. */
     getClickyState: (): Promise<ClickyLauncherState> =>
       ipcRenderer.invoke(

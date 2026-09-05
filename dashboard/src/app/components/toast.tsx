@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { startNavigationProgress } from './navigation-progress';
 import {
   CHAT_RESPONSE_SEEN_EVENT,
   TASK_COMPLETION_NOTIFICATION_EVENT,
@@ -22,7 +24,7 @@ import {
   type ChatNotificationRecord,
   type ChatNotificationTarget,
 } from '@/lib/chat-notification-inbox';
-import { publishDesktopNotificationToast } from '@/lib/desktop-notification-overlay';
+import { publishDesktopNotificationToast, handleWebsiteNotification } from '@/lib/desktop-notification-overlay';
 
 export interface ToastItem {
   id: string;
@@ -32,6 +34,7 @@ export interface ToastItem {
   chatId?: string;
   response?: string;
   notificationId?: string;
+  website?: { id: string; origin: string };
   target?: ChatNotificationTarget;
   /** 0-100 for a notice that tracks a running pipeline; renders a status bar. */
   progressPercent?: number;
@@ -201,6 +204,7 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
       void postChatNotificationDismissal({ dismiss: [notificationId] });
       return;
     }
+    if (id.startsWith('website:')) handleWebsiteNotification(id.slice('website:'.length), 'close');
     setLocalToasts((current) => current.filter((toast) => toast.id !== id));
   }, [hideNotifications]);
 
@@ -225,17 +229,18 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
     title?: string,
     chatId?: string,
     response?: string,
+    website?: { id: string; origin: string },
   ) => {
-    const id = `toast:${++nextToastId}`;
+    const id = website ? `website:${website.id}` : `toast:${++nextToastId}`;
     if (
       !desktopOverlay &&
-      publishDesktopNotificationToast({ message, type, title, chatId, response })
+      publishDesktopNotificationToast({ message, type, title, chatId, response, website })
     ) {
       return;
     }
     setLocalToasts((current) => [
-      ...current,
-      { id, message, type, title, chatId, response },
+      ...current.filter(toast => toast.id !== id),
+      { id, message, type, title, chatId, response, website },
     ]);
   }, [desktopOverlay]);
 
@@ -384,6 +389,7 @@ function ToastCard({
   onDismiss: (id: string) => void;
   onOpenChat?: (target: ChatNotificationTarget) => boolean | void;
 }) {
+  const router = useRouter();
   const [reply, setReply] = useState('');
   const [sendingReply, setSendingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
@@ -401,7 +407,13 @@ function ToastCard({
     // navigation unmounts this page.
     onDismiss(toast.id);
     const handled = onOpenChat?.(toast.target) === true;
-    if (!handled) window.location.assign(chatNotificationHref(toast.target));
+    if (!handled) {
+      const href = chatNotificationHref(toast.target);
+      if (href !== `${window.location.pathname}${window.location.search}`) {
+        startNavigationProgress();
+      }
+      router.push(href);
+    }
   }
 
   async function submitReply() {
@@ -471,6 +483,8 @@ function ToastCard({
           ) : null}
         </span>
         <span className="flex shrink-0 items-center gap-1">
+          {toast.website ? <button type="button" className={OPEN_BUTTON_CLASS} aria-label={`Open ${toast.website.origin}`} title="Open website"
+            onClick={() => { handleWebsiteNotification(toast.website!.id, 'click'); onDismiss(toast.id); }}><span aria-hidden>↗</span></button> : null}
           {toast.target && opensLearnPanel ? (
             <button
               type="button"

@@ -170,15 +170,11 @@ export default function SettingsVoiceCalibration() {
             &ldquo;good style&rdquo;.
           </p>
         </div>
-        <span
-          className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] ${
-            state?.exists
-              ? "bg-[var(--paper-strong)] text-[var(--botanical)]"
-              : "bg-[var(--paper-strong)] text-[var(--ink-muted)]"
-          }`}
-        >
-          {state?.exists ? "Calibrated" : "Using defaults"}
-        </span>
+        {state?.exists ? (
+          <span className="shrink-0 rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-[11px] text-[var(--botanical)]">
+            Calibrated
+          </span>
+        ) : null}
       </div>
 
       {/* Current profile */}

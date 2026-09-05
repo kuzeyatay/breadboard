@@ -2,6 +2,7 @@ import {
   chatNotificationHref,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
+import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 
 export interface DesktopNotificationToast {
   message: string;
@@ -9,6 +10,12 @@ export interface DesktopNotificationToast {
   title?: string;
   chatId?: string;
   response?: string;
+  website?: { id: string; origin: string };
+  dismissed?: boolean;
+}
+
+export function handleWebsiteNotification(id: string, action: "click" | "close"): void {
+  void sendDesktopTabsCommand({ type: "browser-notification-action", id, action });
 }
 
 interface DesktopNotificationBridge {

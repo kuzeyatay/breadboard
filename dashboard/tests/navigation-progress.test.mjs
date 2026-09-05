@@ -24,8 +24,9 @@ const beginNavigation =
   component.match(/const beginNavigation = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[[^\]]*\]\);/)?.[0] ??
   "";
 
-test("only a real route change completes the bar", () => {
-  // The route-change effect is the one place allowed to fill the bar.
+test("route changes complete the bar while the timed backstop only abandons it", () => {
+  // Client route commits complete the bar; native reveals are covered by the
+  // desktop notification navigation test with the real component and bridge.
   assert.match(
     component,
     /previousRouteRef\.current = routeKey;\s*\n\s*const timer = window\.setTimeout\(finishNavigation, 0\);/,

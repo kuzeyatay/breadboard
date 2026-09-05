@@ -19,7 +19,7 @@ function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** Current weather for an already-consented, coarse device location. */
+/** Current weather for a consented coarse device location or a selected city. */
 export async function GET(request: Request) {
   try {
     await requireUserId();

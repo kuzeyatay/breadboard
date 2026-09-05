@@ -47,7 +47,7 @@ export async function GET(
     const { sessionId } = await params;
     const surface = requestedSurface(new URL(request.url).searchParams.get("surface"));
     const conversation = getConversationForUser(sessionId, userId);
-    if (conversation.surface !== surface) {
+    if (surface !== "dashboard_terminal" && conversation.surface !== surface) {
       throw new ApiError(404, "session_not_found", "This chat is no longer available.");
     }
     await reconcileMaxResearchConversation(userId, conversation.id);

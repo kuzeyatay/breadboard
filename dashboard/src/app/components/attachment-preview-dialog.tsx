@@ -8,9 +8,9 @@ import {
   OpenInNewWindowItem,
 } from "@/app/components/link-context-menu";
 import {
-  ReclaimingAudio,
   ReclaimingVideo,
 } from "@/app/components/reclaiming-media";
+import BreadboardAudioPlayer from "@/app/components/breadboard-audio-player";
 
 export interface AttachmentPreviewSource {
   kind: "pdf" | "audio" | "video";
@@ -81,7 +81,7 @@ export default function AttachmentPreviewDialog({
   );
 
   return (
-    <DialogPrimitive.Root>
+    <DialogPrimitive.Root defaultOpen={false}>
       {source.kind === "audio" ? (
         trigger
       ) : (
@@ -135,11 +135,9 @@ export default function AttachmentPreviewDialog({
             />
           ) : source.kind === "audio" ? (
             <div className="p-5">
-              <ReclaimingAudio
-                autoPlay
-                controls
-                preload="metadata"
+              <BreadboardAudioPlayer
                 src={source.href}
+                label={source.name}
                 className="w-full"
               />
             </div>

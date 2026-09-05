@@ -1,5 +1,7 @@
 "use client";
 
+import { speechRequest } from "@/lib/speech/request-client";
+import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
 import { useCallback, useEffect, useRef, useState } from "react";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import MusicRecognitionButton from "@/app/components/music-recognition-button";
@@ -114,7 +116,7 @@ async function requestTranscript(
   while (true) {
     const form = new FormData();
     form.set("file", blob, filename);
-    const response = await fetch("/api/speech/transcribe", {
+    const response = await speechRequest("/api/speech/transcribe", {
       method: "POST",
       body: form,
       signal,
@@ -256,7 +258,10 @@ export default function SpeechDictationButton({
     });
   }, []);
 
+  const subscriptionRef = useRef<SubscriptionVoice | null>(null);
   const releaseMicrophone = useCallback(() => {
+    void subscriptionRef.current?.close();
+    subscriptionRef.current = null;
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = null;
     if (partialTimerRef.current !== null) window.clearInterval(partialTimerRef.current);
@@ -363,7 +368,7 @@ export default function SpeechDictationButton({
         paintDictationLevel(Math.sqrt(energy / input.length));
         const copy = new Float32Array(input.length);
         copy.set(input);
-        capture.chunks.push(copy);
+        if (!subscriptionRef.current) capture.chunks.push(copy);
         capture.totalSamples += copy.length;
       };
       source.connect(processor);
@@ -378,6 +383,7 @@ export default function SpeechDictationButton({
   }
 
   function recognizePartial(session: number) {
+    if (subscriptionRef.current) return;
     if (partialPromiseRef.current) return;
     const capture = pcmCaptureRef.current;
     const startSample = partialCursorRef.current;
@@ -451,7 +457,7 @@ export default function SpeechDictationButton({
         controller.signal,
         true,
       );
-      if (!transcript) throw new Error("Voicebox did not hear any words.");
+      if (!transcript) throw new Error("No words were recognized.");
       if (!mountedRef.current) return;
 
       const nextValue = replaceDictationPreview(valueRef.current, previewRef.current, transcript);
@@ -506,16 +512,46 @@ export default function SpeechDictationButton({
       partialCursorRef.current = 0;
       await beginPcmCapture(stream);
 
+      const cloudController = new AbortController();
+      prepareAbortRef.current = cloudController;
+      if (await subscriptionSelected(cloudController.signal)) {
+        const voice = await connectSubscriptionVoice({ microphone: stream, signal: cloudController.signal,
+          onTranscript: (text) => { if (mountedRef.current && session === sessionRef.current) showPreview(text); },
+        });
+        if (!mountedRef.current) { await voice.close(); return; }
+        subscriptionRef.current = voice;
+      }
+      if (prepareAbortRef.current === cloudController) prepareAbortRef.current = null;
+
       const mimeType = bestRecordingMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       recorderRef.current = recorder;
       chunksRef.current = [];
       recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+        if (event.data.size > 0 && !subscriptionRef.current) chunksRef.current.push(event.data);
       });
       recorder.addEventListener(
         "stop",
         () => {
+          const voice = subscriptionRef.current;
+          if (voice) {
+            subscriptionRef.current = null;
+            sessionRef.current += 1;
+            stopPartialRecognition();
+            const controller = new AbortController();
+            finalAbortRef.current = controller;
+            controller.signal.addEventListener("abort", () => { void voice.close(); }, { once: true });
+            const final = voice.finishTranscript();
+            releaseMicrophone();
+            setState("transcribing");
+            void final.then((text) => {
+              if (!mountedRef.current) return;
+              showPreview(text);
+              previewRef.current = "";
+            }, (error) => { if (mountedRef.current) setError(error instanceof Error ? error.message : "Dictation failed."); })
+              .finally(() => { void voice.close(); if (finalAbortRef.current === controller) finalAbortRef.current = null; if (mountedRef.current) setState("idle"); });
+            return;
+          }
           sessionRef.current += 1;
           const pendingPartial = stopPartialRecognition();
           const capture = pcmCaptureRef.current;
@@ -535,14 +571,15 @@ export default function SpeechDictationButton({
       );
       // A single complete fallback container is decodable. Passing a timeslice
       // can produce WebM fragments without their header in Chromium/WebKit.
-      recorder.start();
+      if (subscriptionRef.current) recorder.start(1000);
+      else recorder.start();
       setState("recording");
       requestAnimationFrame(() => pauseButtonRef.current?.focus());
       partialTimerRef.current = window.setInterval(
         () => recognizePartial(session),
         PARTIAL_TRANSCRIPT_INTERVAL_MS,
       );
-      timeoutRef.current = window.setTimeout(() => {
+      if (!subscriptionRef.current) timeoutRef.current = window.setTimeout(() => {
         if (recorder.state === "recording" || recorder.state === "paused") recorder.stop();
       }, 5 * 60_000);
     } catch (caught) {
@@ -566,6 +603,7 @@ export default function SpeechDictationButton({
     if (!recorder) return;
 
     if (state === "recording" && recorder.state === "recording") {
+      subscriptionRef.current?.setListening(false);
       recorder.pause();
       if (capture) capture.paused = true;
       stopPartialRecognition();
@@ -575,6 +613,7 @@ export default function SpeechDictationButton({
     }
 
     if (state === "paused" && recorder.state === "paused") {
+      subscriptionRef.current?.setListening(true);
       recorder.resume();
       if (capture) capture.paused = false;
       const session = sessionRef.current;
@@ -626,7 +665,7 @@ export default function SpeechDictationButton({
     };
 
     try {
-      const response = await fetch("/api/speech/transcribe-upload", {
+      const response = await speechRequest("/api/speech/transcribe-upload", {
         method: "POST",
         body: file,
         headers: {
@@ -654,7 +693,7 @@ export default function SpeechDictationButton({
       }
 
       if (failure) throw new Error(failure);
-      if (!transcript) throw new Error("Voicebox did not hear any words in that recording.");
+      if (!transcript) throw new Error("No words were recognized in that recording.");
       if (!mountedRef.current) return;
 
       const nextValue = replaceDictationPreview(valueRef.current, "", transcript);
@@ -753,7 +792,7 @@ export default function SpeechDictationButton({
         : state === "reading-file"
           ? "Transcribing a recording"
           : state === "requesting"
-            ? "Starting local speech"
+            ? "Starting speech"
             : onOpenVoiceMode
               ? "Voice options — double-tap to talk to the assistant"
               : "Voice options";
@@ -945,7 +984,7 @@ export default function SpeechDictationButton({
           className={`neu-popover absolute right-0 z-50 flex w-[17.5rem] max-w-[85vw] items-center gap-2.5 rounded-2xl border p-3.5 text-xs leading-5 text-[var(--ink)] shadow-xl ${popupPosition}`}
         >
           <BreadboardLoader className="h-4 w-4 shrink-0" />
-          <span className="min-w-0 flex-1">Starting local speech… Dictation will begin when it is ready.</span>
+          <span className="min-w-0 flex-1">Preparing speech… Dictation will begin when it is ready.</span>
           <button
             type="button"
             className="shrink-0 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"

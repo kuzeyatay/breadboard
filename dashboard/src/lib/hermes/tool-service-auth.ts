@@ -6,6 +6,7 @@ import {
   runtimeExternalSessionId,
 } from "./runtime-store.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
+import { getBrowserTerminalContext } from "./browser-terminal-context.ts";
 import { ApiError } from "./route-core.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 
@@ -87,7 +88,11 @@ export function capabilityForInternalToolRequest(request: Request): string | nul
     allowedGardenIds: parseAllowedGardenIds(row.allowed_garden_ids),
     activeGardenId: row.cluster_id ?? undefined,
     pageSlug: row.page_slug ?? undefined,
-    allowedTools: allowedToolsForSurface(row.surface),
+    allowedTools: [...new Set([
+      ...allowedToolsForSurface(row.surface),
+      ...(row.user_id && row.surface !== "quartz_ai" && getBrowserTerminalContext(row.id)
+        ? ["browser_terminal"] : []),
+    ])],
   });
 }
 

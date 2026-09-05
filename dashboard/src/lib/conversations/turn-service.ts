@@ -132,6 +132,8 @@ import {
   GITHUB_EXPLORER_SKILL,
 } from "../hermes/github-explorer-intent.ts";
 import { humanizeCommandText } from "../hermes/humanize-intent.ts";
+import type { BrowserTerminalAccess } from "../browser-terminal.ts";
+import { browserTerminalPrompt, setBrowserTerminalContext } from "../hermes/browser-terminal-context.ts";
 import {
   computerUseCommandText,
   COMPUTER_USE_SKILL,
@@ -298,6 +300,7 @@ export interface StartConversationTurnInput {
   yoloMode?: boolean;
   /** Coarse, short-lived browser context; never durable message metadata. */
   currentLocation?: CurrentLocationSnapshot;
+  browserAccess?: BrowserTerminalAccess;
 }
 
 export type StartConversationTurnResult =
@@ -1494,6 +1497,10 @@ export async function startConversationTurn(
     ...(goalMode ? { mcp_call: true } : {}),
     ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
   });
+  // The Terminal hub may be continuing a Garden chat while retaining its origin.
+  const browserAccess = input.surface !== "quartz_ai" ? input.browserAccess : undefined;
+  setBrowserTerminalContext(session.row.id, browserAccess);
+  if (browserAccess) tools.browser_terminal = true;
   // Whether this turn needs verified map data is decided here, before dispatch,
   // from the request and Breadboard's own geographic state — never from what the
   // model later writes. The decision travels on the run, so the finished answer
@@ -1677,9 +1684,8 @@ export async function startConversationTurn(
   // Coordinates are useful for this one answer, not durable conversation
   // state. Persist only the location-free prompt so recovery, audit, and memory
   // cannot silently replay where the user was.
-  const runtimeSystem = currentLocationContext
-    ? `${baseSystem}\n\n${currentLocationContext}`
-    : baseSystem;
+  const browserContext = await browserTerminalPrompt(browserAccess);
+  const runtimeSystem = [baseSystem, currentLocationContext, browserContext].filter(Boolean).join("\n\n");
   const defaultRuntimeText =
     resolved.text ||
     "Acknowledge the persona selection briefly and ask how you can help.";
@@ -1953,6 +1959,8 @@ export async function startConversationTurn(
       });
       setProductSearchMarketContext(previousRuntimeSessionId, null);
       setProductSearchMarketContext(session.row.id, productSearchMarket);
+      setBrowserTerminalContext(previousRuntimeSessionId);
+      setBrowserTerminalContext(session.row.id, browserAccess);
       await getAgentRuntimeByKind(session.runtimeKind).applyCapabilityDecision({
         externalSessionId: session.externalSessionId,
         liveSessionId: session.liveSessionId,
@@ -1963,6 +1971,7 @@ export async function startConversationTurn(
       await dispatch(session);
     } catch (retryError) {
       setProductSearchMarketContext(session.row.id, null);
+      setBrowserTerminalContext(session.row.id);
       finishRuntimeRun(run.id, "error");
       markStatus(session, "failed");
       failAssistantMessage({

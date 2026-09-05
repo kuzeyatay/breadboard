@@ -108,7 +108,7 @@ test("the Clicky control exists only when the complete desktop bridge does", () 
   assert.ok(complete);
 });
 
-test("a direct prompt launches Clicky once and publishes the result", async () => {
+test("a direct prompt launches Clicky once without a success notification", async () => {
   let launches = 0;
   const notices = [];
   await withWindowAsync(
@@ -150,11 +150,5 @@ test("a direct prompt launches Clicky once and publishes the result", async () =
     },
   );
   assert.equal(launches, 1);
-  assert.deepEqual(notices, [
-    {
-      title: "Clicky",
-      message: "Clicky launched.",
-      type: "success",
-    },
-  ]);
+  assert.deepEqual(notices, []);
 });

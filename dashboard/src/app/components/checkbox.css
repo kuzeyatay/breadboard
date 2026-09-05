@@ -1,0 +1,70 @@
+/* Native semantics and event handlers stay with each feature. This shared skin
+   covers form, selection and rendered checklist inputs; switches keep their
+   separate track-and-thumb treatment. Alignment margins remain caller-owned. */
+input[type="checkbox"]:not([role="switch"]) {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  box-sizing: border-box;
+  vertical-align: middle;
+  border: 1px solid var(--ink-muted);
+  border-radius: 4px;
+  background: var(--paper-raised);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+input[type="checkbox"]:not([role="switch"])::before {
+  content: "";
+  width: 0.75rem;
+  height: 0.75rem;
+  background: var(--paper-raised);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 6 2.25 2.25 4.75-4.5' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  visibility: hidden;
+}
+
+input[type="checkbox"]:not([role="switch"]):is(:checked, :indeterminate) {
+  background: var(--botanical);
+  border-color: var(--botanical);
+}
+
+input[type="checkbox"]:not([role="switch"]):is(:checked, :indeterminate)::before {
+  visibility: visible;
+}
+
+input[type="checkbox"]:not([role="switch"]):indeterminate::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 6h6' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+input[type="checkbox"]:not([role="switch"]):focus-visible {
+  outline: 2px solid var(--botanical);
+  outline-offset: 3px;
+}
+
+input[type="checkbox"]:not([role="switch"]):disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  input[type="checkbox"]:not([role="switch"]):enabled:hover {
+    border-color: var(--botanical);
+  }
+}
+
+/* Let the OS supply the glyph and colors in high-contrast mode. */
+@media (forced-colors: active) {
+  input[type="checkbox"]:not([role="switch"]) {
+    appearance: auto;
+    background: revert;
+    border-color: revert;
+  }
+
+  input[type="checkbox"]:not([role="switch"])::before {
+    content: none;
+  }
+}

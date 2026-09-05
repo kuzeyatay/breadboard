@@ -72,6 +72,7 @@ export function tabShortcutFor(input: ShortcutInput): TabShortcut | null {
   if (key === "pageup") {
     return input.shift ? { type: "move", delta: -1 } : { type: "previous" };
   }
+  if (key === "=" || key === "+") return { type: "zoom", direction: "in" };
   if (input.shift) {
     if (key === "t") return once({ type: "reopen" });
     return null;
@@ -79,7 +80,6 @@ export function tabShortcutFor(input: ShortcutInput): TabShortcut | null {
   if (key === "t") return once({ type: "new" });
   if (key === "w" || key === "f4") return once({ type: "close" });
   if (key === "r") return once({ type: "reload" });
-  if (key === "=" || key === "+") return { type: "zoom", direction: "in" };
   if (key === "-") return { type: "zoom", direction: "out" };
   if (key === "0") return once({ type: "zoom", direction: "reset" });
   if (/^[1-8]$/.test(key)) return once({ type: "nth", n: Number(key) });

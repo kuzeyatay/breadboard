@@ -95,8 +95,8 @@ export function isDirectClickyLaunchPrompt(value: string): boolean {
 }
 
 /**
- * Launch Clicky from the shared composer and report the native result through
- * Breadboard's window-level toast. True means the prompt was fully handled and
+ * Launch Clicky from the shared composer; only failures need a toast.
+ * True means the prompt was fully handled and
  * must not also be submitted as an AI turn.
  */
 export function launchClickyFromPrompt(value: string): boolean {
@@ -107,7 +107,7 @@ export function launchClickyFromPrompt(value: string): boolean {
   void launchClicky
     .call(desktop)
     .then((launch) => {
-      publishClickyNotification(launch.message, launch.ok ? "success" : "error");
+      if (!launch.ok) publishClickyNotification(launch.message, "error");
     })
     .catch(() => {
       publishClickyNotification(

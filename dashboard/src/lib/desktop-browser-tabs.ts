@@ -6,7 +6,8 @@
  * history, scroll position and running work — shown one at a time inside the
  * window. The page's part is small: draw the strip from the state the shell
  * sends, and ask for changes by command. Every page in a window receives the
- * same state, so a tab brought to the front already has its strip drawn.
+ * same strip state plus its own identity, so a tab brought to the front
+ * already has its strip drawn without replacing its page-local browser chrome.
  *
  * None of this exists in a browser. There the browser's own tabs do the job,
  * `desktopTabsBridge` comes back undefined, and callers fall back to ordinary
@@ -15,6 +16,8 @@
 
 export interface DesktopTabView {
   id: number;
+  /** Optional when connected to an older desktop shell. */
+  anchored?: boolean;
   title: string;
   url: string;
   loading: boolean;
@@ -24,6 +27,9 @@ export interface DesktopTabView {
     canGoForward: boolean;
     terminalOpen: boolean;
     terminalWidth: number;
+    zoomPercent?: number;
+    translation?: { status: "original" | "translating" | "translated" | "error"; language: string; translated: number; error?: string };
+    find?: { matches: number; activeMatchOrdinal: number };
     favicon?: string;
     selection?: {
       text: string;
@@ -37,8 +43,13 @@ export interface DesktopTabsState {
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
   activeId: number | null;
+  /** The shell retains the visible page until the destination paints. */
+  navigationPending?: boolean;
+  /** The receiving page's own tab. Optional for older desktop shells. */
+  selfId?: number | null;
   tabs: DesktopTabView[];
   extensions: DesktopBrowserExtension[];
+  browserPreferences?: { notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; translationLanguage: string };
 }
 
 export interface DesktopBrowserExtension {
@@ -48,10 +59,18 @@ export interface DesktopBrowserExtension {
 }
 
 export type DesktopTabsCommand =
+  | { type: "browser-notifications-enabled"; enabled: boolean }
+  | { type: "browser-notification-permission"; origin: string; permission: "default" | "granted" | "denied" }
+  | { type: "browser-translation-language"; language: string }
+  | { type: "browser-translate"; language: string }
+  | { type: "browser-translation-menu" }
+  | { type: "browser-translation-restore" }
+  | { type: "browser-notification-action"; id: string; action: "click" | "close" }
   | { type: "open"; url: string; background?: boolean }
   | { type: "new" }
   | { type: "activate"; id: number }
   | { type: "close"; id?: number }
+  | { type: "anchor"; id: number }
   | { type: "move"; id: number; index: number }
   | { type: "reopen" }
   | { type: "back" }
@@ -61,6 +80,9 @@ export type DesktopTabsCommand =
   | { type: "browser-agent"; runId: string; url?: string }
   | { type: "browser-navigate"; input: string }
   | { type: "browser-stop" }
+  | { type: "browser-menu"; x: number; y: number; profileLabel: string }
+  | { type: "browser-find"; text: string; forward?: boolean; findNext?: boolean }
+  | { type: "browser-find-close" }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-address-suggestions"; open: boolean }
   | { type: "browser-extension-load" }
@@ -83,12 +105,40 @@ interface DesktopNavigationBridge {
   ) => Promise<boolean>;
   getBrowserShortcuts?: (ownerKey: string) => Promise<DesktopBrowserBookmark[] | null>;
   setBrowserShortcuts?: (ownerKey: string, shortcuts: DesktopBrowserBookmark[]) => Promise<boolean>;
+  getBrowserRecentSearches?: (ownerKey: string) => Promise<string[] | null>;
+  getBrowserHistory?: () => Promise<DesktopBrowserHistorySnapshot>;
+  browserHistoryCommand?: (command: DesktopBrowserHistoryCommand) => Promise<boolean>;
+  onBrowserHistoryChanged?: (listener: () => void) => () => void;
+  setBrowserRecentSearches?: (ownerKey: string, searches: string[]) => Promise<boolean>;
 }
 
 export interface DesktopBrowserBookmark {
   url: string;
   title: string;
   iconUrl: string;
+}
+
+export interface DesktopBrowserHistoryEntry {
+  url: string;
+  title: string;
+  visitedAt: number;
+}
+
+export interface DesktopBrowserHistorySnapshot {
+  items: DesktopBrowserHistoryEntry[];
+  error: string | null;
+}
+
+export type DesktopBrowserHistoryCommand = { type: "clear" } | { type: "remove"; url: string };
+
+export function browserHistoryControl() {
+  const desktop = bridge();
+  if (!desktop?.getBrowserHistory || !desktop.browserHistoryCommand || !desktop.onBrowserHistoryChanged) return null;
+  return {
+    read: () => desktop.getBrowserHistory!(),
+    command: (command: DesktopBrowserHistoryCommand) => desktop.browserHistoryCommand!(command),
+    subscribe: (listener: () => void) => desktop.onBrowserHistoryChanged!(listener),
+  };
 }
 
 function bridge(): (Partial<DesktopTabsBridge> & DesktopNavigationBridge) | undefined {
@@ -330,6 +380,21 @@ export function browserBookmarksControl(ownerKey: string): BrowserBookmarksContr
     read: () => Promise.resolve().then(() => read.call(desktop, ownerKey)),
     write: (bookmarks) =>
       Promise.resolve().then(() => write.call(desktop, ownerKey, bookmarks)).then(
+        (ok) => ok === true,
+        () => false,
+      ),
+  };
+}
+
+export function browserRecentSearchesControl(ownerKey: string) {
+  const desktop = bridge();
+  const read = desktop?.getBrowserRecentSearches;
+  const write = desktop?.setBrowserRecentSearches;
+  if (typeof read !== "function" || typeof write !== "function") return null;
+  return {
+    read: (): Promise<string[] | null> => Promise.resolve().then(() => read.call(desktop, ownerKey)),
+    write: (searches: string[]): Promise<boolean> =>
+      Promise.resolve().then(() => write.call(desktop, ownerKey, searches)).then(
         (ok) => ok === true,
         () => false,
       ),

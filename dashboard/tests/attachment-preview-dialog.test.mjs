@@ -13,10 +13,27 @@ const garden = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
 
 test("attachment previews keep the conversation open for PDF and media", () => {
   assert.match(dialog, /source\.kind === "pdf"[\s\S]*?<iframe/);
-  assert.match(dialog, /source\.kind === "audio"[\s\S]*?<ReclaimingAudio/);
+  assert.match(dialog, /source\.kind === "audio"[\s\S]*?<BreadboardAudioPlayer/);
   assert.match(dialog, /<ReclaimingVideo/);
   assert.match(dialog, /DialogPrimitive\.Portal/);
   assert.match(dialog, /Close attachment preview/);
+});
+
+test("audio previews use the Breadboard transport and start closed and paused", () => {
+  const player = source("../src/app/components/breadboard-audio-player.tsx");
+  const audioBranch = dialog.slice(
+    dialog.indexOf('source.kind === "audio" ? ('),
+    dialog.indexOf('source.playable === false ? ('),
+  );
+
+  assert.match(dialog, /<DialogPrimitive\.Root defaultOpen=\{false\}>/);
+  assert.match(dialog, /<BreadboardAudioPlayer[\s\S]*?src=\{source\.href\}[\s\S]*?label=\{source\.name\}/);
+  assert.doesNotMatch(dialog, /<ReclaimingAudio/);
+  assert.doesNotMatch(audioBranch, /autoPlay/);
+  assert.match(player, /data-breadboard-audio-player/);
+  assert.match(player, /className=\{styles\.scrubber\}/);
+  assert.match(player, /preload="metadata"/);
+  assert.doesNotMatch(player, /autoPlay/);
 });
 
 test("PDF and video have a context menu while audio deliberately does not", () => {

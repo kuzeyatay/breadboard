@@ -12,16 +12,17 @@ import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
 import { chatMessageAttachments } from "@/lib/chat-attachments.ts";
+import { hermesMessageId } from "@/lib/hermes/message-id.ts";
 import {
   appendConversationSteerMessage,
   ConversationStoreError,
 } from "@/lib/conversations/store.ts";
 import {
   acceptSteerRequest,
-  beginRuntimeRun,
   failSteerRequest,
   getActiveRuntimeRun,
   getRuntimeRun,
+  getSteerRequest,
   parseRuntimeRunDispatch,
   reserveSteerRequest,
 } from "@/lib/hermes/run-store.ts";
@@ -40,7 +41,7 @@ function parseAssistantContentOffset(value: unknown): number {
   return Number(value);
 }
 
-// POST: enqueue a course correction on the existing active run. It deliberately
+// POST: redirect the existing active run with a course correction. It deliberately
 // does not create a session, run, assistant placeholder, or SSE subscription.
 export async function POST(
   request: Request,
@@ -65,12 +66,9 @@ export async function POST(
     );
 
     const requestedRun = getRuntimeRun(runId);
-    const activeRun = getActiveRuntimeRun(session.row.id);
     if (
       !requestedRun ||
-      requestedRun.runtime_session_id !== session.row.id ||
-      requestedRun.status !== "active" ||
-      activeRun?.id !== requestedRun.id
+      requestedRun.runtime_session_id !== session.row.id
     ) {
       throw new ApiError(
         409,
@@ -81,12 +79,25 @@ export async function POST(
 
     const dispatch = parseRuntimeRunDispatch(requestedRun);
     const courseCorrectionTargetClientMessageId = dispatch.clientMessageId;
-    const reserved = reserveSteerRequest({
-      runtimeSessionId: session.row.id,
-      runId,
-      clientRequestId,
-      content: text,
-    });
+    // Resolve acknowledgements before checking liveness: a delivered request
+    // remains delivered even if the turn completed while its response travelled.
+    const existing = getSteerRequest(session.row.id, clientRequestId);
+    if (
+      !existing && (
+        requestedRun.status !== "active" ||
+        getActiveRuntimeRun(session.row.id)?.id !== runId
+      )
+    ) {
+      throw new ApiError(409, "run_not_active", "That run is no longer active.");
+    }
+    const reserved = existing
+      ? { request: existing, created: false }
+      : reserveSteerRequest({
+          runtimeSessionId: session.row.id,
+          runId,
+          clientRequestId,
+          content: text,
+        });
     if (!reserved.created) {
       if (
         reserved.request.run_id !== runId ||
@@ -116,10 +127,13 @@ export async function POST(
           "That steering request previously failed.",
         );
       }
+      // The first request owns delivery. A concurrent retry must never send
+      // the same correction into Hermes a second time.
+      throw new ApiError(409, "steer_pending", "The course correction is still being delivered.");
     }
 
     try {
-      await getAgentRuntimeByKind(session.runtimeKind).steerRun({
+      const accepted = await getAgentRuntimeByKind(session.runtimeKind).steerRun({
         externalSessionId: session.externalSessionId,
         liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
@@ -132,27 +146,28 @@ export async function POST(
         tools: dispatch.tools,
         system: dispatch.system,
         clientRequestId,
+        messageId: dispatch.clientMessageId
+          ? hermesMessageId(dispatch.clientMessageId)
+          : undefined,
       });
+      if (!accepted) {
+        failSteerRequest(reserved.request.id, "steer_unavailable");
+        throw new ApiError(409, "steer_unavailable", "This correction will send as a follow-up when the turn finishes.");
+      }
     } catch (error) {
       failSteerRequest(reserved.request.id, "steer_dispatch_failed");
       throw error;
     }
 
-    const stillActive = getRuntimeRun(runId)?.status === "active";
-    const adoptedRun = stillActive
-      ? requestedRun
-      : beginRuntimeRun({
-          runtimeSessionId: session.row.id,
-          instruction: text,
-          dispatch,
-        });
+    // A redirect was accepted by this exact turn. Its completion racing this
+    // response never means that Hermes submitted a replacement prompt.
     acceptSteerRequest({
       requestId: reserved.request.id,
       runtimeSessionId: session.row.id,
       chatSessionId: session.row.chat_session_id,
       content: text,
-      resultRunId: adoptedRun.id,
-      resultMode: stillActive ? "steer" : "follow_up",
+      resultRunId: runId,
+      resultMode: "steer",
     });
     if (session.row.conversation_id !== null) {
       try {
@@ -180,13 +195,12 @@ export async function POST(
       }
     }
     recordAuditEvent({
-      eventType: stillActive ? "run.steered" : "run.steer_fallback",
+      eventType: "run.steered",
       runtimeSessionId: session.row.id,
       userId,
       gardenId: session.row.garden_id,
       payload: {
         runId,
-        adoptedRunId: adoptedRun.id,
         clientRequestId,
         characterCount: text.length,
       },
@@ -194,8 +208,8 @@ export async function POST(
 
     return NextResponse.json({
       accepted: true,
-      runId: adoptedRun.id,
-      mode: stillActive ? "steer" : "follow_up",
+      runId,
+      mode: "steer",
       clientRequestId,
       courseCorrectionTargetClientMessageId,
       courseCorrectionOffset: assistantContentOffset,

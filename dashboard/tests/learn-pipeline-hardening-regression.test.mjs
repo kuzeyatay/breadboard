@@ -128,6 +128,41 @@ test("Learn signs visual routing only after the final LUC persistence normalizat
   );
 });
 
+test("ordinary stage recovery ignores closed mismatched epochs but blocks live mismatches", () => {
+  const ordinaryRecoverySource = sourceOf(
+    namedFunction("callOrdinaryCouncilTextWithReceipt"),
+  );
+  assert.match(
+    ordinaryRecoverySource,
+    /const mismatched = prior\.filter\([\s\S]*?candidate\.state !== "completed" &&\s*candidate\.request_hash !== requestHash/,
+    "only a nonterminal prior request with a different hash is ambiguous",
+  );
+  assert.match(
+    ordinaryRecoverySource,
+    /const candidates = prior\.filter\(\(candidate\) => candidate\.request_hash === requestHash\)/,
+    "completed prior work remains reusable only when its exact request hash matches",
+  );
+});
+
+test("formula review restoration is not reported as evidence newer than its bound manifest", () => {
+  const formulaBindingSource = sourceOf(namedFunction("reviewAndBindSourceFormulas"));
+  assert.match(
+    formulaBindingSource,
+    /existingManifest\.reviewSetHash === review\.reviewedFormulaSetHash/,
+    "restoration requires the complete final reviewed set to match the prior bound hash",
+  );
+  assert.match(
+    formulaBindingSource,
+    /existingManifest\.combinedSourceSetHash === combinedSourceSetHash/,
+    "restoration also requires the same combined source-set binding",
+  );
+  assert.match(
+    formulaBindingSource,
+    /restoredExistingBoundReviewSet && review\.newlyReplacedFormulaIds\.length > 0[\s\S]*?newlyReplacedFormulaIds: \[\]/,
+    "only a hash-identical restoration clears the transient replacement signal",
+  );
+});
+
 function namedFunction(name) {
   const declaration = learnAst.statements.find(
     (statement) =>

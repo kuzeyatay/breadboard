@@ -166,9 +166,10 @@ export interface AgentRuntime {
   createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession>;
   restoreSession(input: RestoreRuntimeSessionInput): Promise<RuntimeSession>;
   startRun(input: StartRuntimeRunInput): Promise<void>;
+  /** False leaves the correction in the host's next-turn queue. */
   steerRun(
     input: StartRuntimeRunInput & { clientRequestId: string },
-  ): Promise<void>;
+  ): Promise<boolean>;
   streamSession(
     input: RuntimeSessionReference,
     signal?: AbortSignal,

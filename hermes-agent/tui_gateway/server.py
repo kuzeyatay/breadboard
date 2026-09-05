@@ -10715,6 +10715,9 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    expected_turn_id = params.get("expected_turn_id")
+    if expected_turn_id and expected_turn_id != session.get("active_client_turn_id"):
+        return _ok(rid, {"status": "rejected", "text": text})
     agent = session.get("agent")
     # Turn-build window: a fresh turn flips running=True and kicks off an async
     # agent build, so session["agent"] is briefly None. That is not an
@@ -10722,6 +10725,10 @@ def _(rid, params: dict) -> dict:
     # model as the next turn, instead of a misleading 4010 the client silently
     # swallows into a lost follow-up.
     if agent is None and session.get("running"):
+        # Hosts with their own durable queue must create the successor there,
+        # otherwise this prompt would run without a corresponding host turn.
+        if params.get("queue_if_unavailable") is False:
+            return _ok(rid, {"status": "rejected", "text": text})
         _enqueue_prompt(session, text, current_transport() or _stdio_transport)
         session["last_active"] = time.time()
         return _ok(rid, {"status": "queued", "text": text})

@@ -6,13 +6,16 @@ import {
 } from "../src/lib/hermes/model-selection.ts";
 
 test("uses the UI-selected model and reasoning effort", () => {
-  const engine = resolveHermesEngine("gpt-5.6-terra", "max");
-  assert.deepEqual(engine.model, {
-    providerID: HERMES_CHATMOCK_PROVIDER_ID,
-    modelID: "gpt-5.6-terra",
-  });
-  assert.equal(engine.variant, "max");
-  assert.equal(engine.adjusted, false);
+  for (const modelID of ["gpt-6-astra", "gpt-5.6-terra"]) {
+    const engine = resolveHermesEngine(modelID, "max");
+    assert.deepEqual(engine.model, {
+      providerID: HERMES_CHATMOCK_PROVIDER_ID,
+      modelID,
+    });
+    assert.equal(engine.selectedModelID, modelID);
+    assert.equal(engine.variant, "max");
+    assert.equal(engine.adjusted, false);
+  }
 });
 
 test("maps max to xhigh when the selected model does not support max", () => {

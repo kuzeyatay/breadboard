@@ -15,6 +15,10 @@ export async function POST(request: Request) {
     if (!(file instanceof File) || file.size === 0) throw new RouteError(400, "No microphone recording was received.");
     if (file.size > MAX_AUDIO_BYTES) throw new RouteError(413, "Dictation recordings may be at most 25 MB.");
 
+    if (settings.speechProvider === "chatgpt") {
+      throw new RouteError(409, "Subscription dictation requires the browser audio connection. Reload Breadboard and try again.");
+    }
+
     const outgoing = new FormData();
     outgoing.set("file", file, file.name || "dictation.webm");
     outgoing.set("model", settings.transcriptionModel);

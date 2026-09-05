@@ -7259,6 +7259,49 @@ def test_session_redirect_queues_during_agent_build_window(monkeypatch):
     assert session["queued_prompt"]["text"] == "wait, use SQLite"
 
 
+def test_session_redirect_leaves_build_window_queue_to_host():
+    session = _session(running=True)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request({
+            "id": "host-redirect",
+            "method": "session.redirect",
+            "params": {
+                "session_id": "sid", "text": "use SQLite",
+                "queue_if_unavailable": False,
+            },
+        })
+    finally:
+        server._sessions.pop("sid", None)
+    assert resp["result"]["status"] == "rejected"
+    assert not session.get("queued_prompt")
+
+
+def test_session_redirect_cannot_reach_a_successor_turn():
+    calls = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: calls.append(text) or True,
+    )
+    session = _session(running=True, agent=agent)
+    session["active_client_turn_id"] = "new-turn"
+    server._sessions["sid"] = session
+    try:
+        for expected, status in [("old-turn", "rejected"), ("new-turn", "redirected")]:
+            resp = server.handle_request({
+                "id": expected, "method": "session.redirect",
+                "params": {
+                    "session_id": "sid", "text": "use SQLite",
+                    "expected_turn_id": expected, "queue_if_unavailable": False,
+                },
+            })
+            assert resp["result"]["status"] == status
+    finally:
+        server._sessions.pop("sid", None)
+    assert calls == ["use SQLite"]
+
+
 def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
     # No live turn and no agent: nothing to redirect, and we must not queue a
     # phantom turn — keep the explicit unsupported rejection.

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { conversationRequestSurface } from "@/lib/hermes/session-surface.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
   ApiError,
@@ -90,7 +91,7 @@ export async function POST(
     const { sessionId } = await params;
     const conversation = getConversationForUser(sessionId, userId);
     const body = await readJsonBody(request);
-    const surface = parseSurface(body.surface ?? conversation.surface);
+    const surface = conversationRequestSurface(conversation, parseSurface(body.surface ?? conversation.surface));
     if (surface !== conversation.surface) {
       throw new ApiError(
         409,

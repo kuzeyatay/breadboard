@@ -8,6 +8,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import AssistantResponseMeta from "./assistant-response-meta";
@@ -74,6 +75,10 @@ function selectableTextNodes(root: HTMLElement): Text[] {
   return nodes;
 }
 
+export function chatSelectableText(root: HTMLElement): string {
+  return selectableTextNodes(root).map((node) => node.data).join("");
+}
+
 function selectionCandidate(
   root: HTMLElement,
   sourceMessageId: string,
@@ -119,18 +124,21 @@ export const SelectableAssistantMarkdown = memo(
     annotations,
     onSelection,
     onOpenAnnotation,
+    selectionScopeRef,
   }: {
     content: string;
     sourceMessageId: string;
     annotations: readonly ChatTextAnnotation[];
     onSelection: (selection: ChatTextSelectionCandidate) => void;
     onOpenAnnotation: (annotationId: string, anchor: FloatingAnchorRect) => void;
+    /** Segments of a steered response share one message-relative text map. */
+    selectionScopeRef?: RefObject<HTMLDivElement | null>;
   }) {
     const rootRef = useRef<HTMLDivElement>(null);
 
     function readSelection() {
       window.requestAnimationFrame(() => {
-        const root = rootRef.current;
+        const root = selectionScopeRef?.current ?? rootRef.current;
         if (!root) return;
         const candidate = selectionCandidate(root, sourceMessageId);
         if (candidate) onSelection(candidate);
@@ -168,6 +176,7 @@ export const SelectableAssistantMarkdown = memo(
     prev.sourceMessageId === next.sourceMessageId &&
     prev.onSelection === next.onSelection &&
     prev.onOpenAnnotation === next.onOpenAnnotation &&
+    prev.selectionScopeRef === next.selectionScopeRef &&
     chatTextAnnotationsEqual(prev.annotations, next.annotations),
 );
 

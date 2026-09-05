@@ -1,5 +1,7 @@
 "use client";
 
+import { GARDEN_SOURCE_IMPORTED_EVENT, handleGardenSourceImportResult } from "@/lib/hermes/garden-source-import-client";
+
 import {
   memo,
   useState,
@@ -55,6 +57,7 @@ import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
 import { forgetChatDrafts } from "@/lib/conversations/drafts";
 import AssistantMessageActions, {
   MessageActionsSlot,
+  AssistantResponseBranchNavigation,
 } from "@/app/components/assistant-message-actions";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
@@ -88,6 +91,7 @@ import AttachmentPreviewDialog, {
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import ActivityPanel from "@/app/components/hermes/activity-panel";
+import AssistantResponseNotice from "@/app/components/assistant-response-notice";
 import type { ClarificationPrompt } from "@/app/components/hermes/use-agent-session";
 import {
   splitLeadingCommandTokens,
@@ -174,6 +178,7 @@ import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "@/app/componen
 import InlineAgentBrowserRun from "@/app/components/hermes/inline-agent-browser-run";
 import InlineArtifactCards, {
   InlineArtifactCardsProvider,
+  InlineArtifactEmptyState,
   useInlineArtifactPrefetch,
 } from "@/app/components/hermes/inline-artifact-cards";
 import InlineDeepResearchRun from "@/app/components/hermes/inline-deep-research-run";
@@ -1404,7 +1409,15 @@ function LearnModelPicker({
           {groups.map((group) => (
             <div key={group.vendorId} role="group" aria-label={group.vendorLabel}>
               <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wider text-gray-500 first:pt-1">
-                {group.vendorLabel}
+                <span
+                  className="rounded-sm px-0.5"
+                  style={{
+                    background:
+                      "linear-gradient(transparent 55%, color-mix(in srgb, var(--botanical-3) 35%, transparent) 55%)",
+                  }}
+                >
+                  {group.vendorLabel}
+                </span>
               </div>
               {group.models.map((item) => {
                 const selected = item === value;
@@ -1838,7 +1851,7 @@ const ChatTranscript = memo(function ChatTranscript({
   onGenerativeUiAction,
   activeProductComparison,
   chatSessionId,
-  isStreaming,
+  isStreaming: turnStreaming,
   loadingChats,
   messages,
   gardenSourceAttachments,
@@ -1862,6 +1875,14 @@ const ChatTranscript = memo(function ChatTranscript({
   transcriptScrollRef,
   transcriptVirtual,
 }: ChatTranscriptProps) {
+  // External launches show Thinking before their chat/run is marked streaming.
+  // Keep response actions and the transcript busy for that preparation phase,
+  // just as the terminal does for a submitting or connecting turn.
+  const isStreaming =
+    turnStreaming ||
+    connection === "connecting" ||
+    connection === "streaming" ||
+    connection === "waiting";
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
@@ -2423,6 +2444,8 @@ const ChatTranscript = memo(function ChatTranscript({
                             <ActivityPanel
                               activities={[]}
                               progressNotes={thinkingUpdates}
+                              reasoning={msg.thinking}
+                              answerContent={msg.content}
                               connection={
                                 delegatedAgentActive ? "streaming" : "idle"
                               }
@@ -2459,6 +2482,8 @@ const ChatTranscript = memo(function ChatTranscript({
                                 i === lastAssistantIndex ? activities : []
                               }
                               progressNotes={thinkingUpdates}
+                              reasoning={msg.thinking}
+                              answerContent={msg.content}
                               connection={
                                 // A worker running behind this row keeps it
                                 // alive even though the chat connection is
@@ -3306,6 +3331,27 @@ const ChatTranscript = memo(function ChatTranscript({
                           ) : null}
                           {!externalRun &&
                           !delegatedAgentActive &&
+                          !visibleAssistantContent && !msg.uiResources?.length && !msg.artifactMessageId &&
+                          i === lastAssistantIndex && !isStreaming && (connection === "idle" || connection === "error") ? (
+                            <InlineArtifactEmptyState ownerMessageId={msg.artifactMessageId ?? msg.id ?? null}>
+                              <AssistantResponseNotice kind={connection === "error" ? "failed" : "empty"} onRetry={() => onRetryAssistant(i)} />
+                            </InlineArtifactEmptyState>
+                          ) : null}
+                          {!externalRun &&
+                          !delegatedAgentActive &&
+                          !visibleAssistantContent.trim() &&
+                          !(isStreaming && i === lastAssistantIndex) ? (() => {
+                            const branch = branchForAssistant(msg, i);
+                            return branch ? <AssistantResponseBranchNavigation branch={{
+                              current: branch.activeIndex + 1,
+                              total: branch.variants.length,
+                              onPrevious: () => onSwitchBranch(branch.id, -1),
+                              onNext: () => onSwitchBranch(branch.id, 1),
+                            }} /> : null;
+                          })() : null}
+                          {!externalRun &&
+                          !delegatedAgentActive &&
+                          Boolean(visibleAssistantContent.trim()) &&
                           !(isStreaming && i === lastAssistantIndex) ? (
                             <AssistantMessageActions
                               content={
@@ -4180,6 +4226,17 @@ export default function WorkspaceClient({
   useEffect(() => {
     void fetchSavedLinks();
   }, [fetchSavedLinks]);
+
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      if ((event as CustomEvent<{ gardenId?: string }>).detail?.gardenId !== clusterSlug) return;
+      void fetchDocuments();
+      void fetchSavedLinks();
+      setGraphRefreshVersion((value) => value + 1);
+    };
+    window.addEventListener(GARDEN_SOURCE_IMPORTED_EVENT, refresh);
+    return () => window.removeEventListener(GARDEN_SOURCE_IMPORTED_EVENT, refresh);
+  }, [clusterSlug, fetchDocuments, fetchSavedLinks]);
 
   const fetchLearnStatus = useCallback((): Promise<LearnStatusResponse | null> => {
     const existing = learnStatusRequestRef.current;
@@ -13217,11 +13274,12 @@ export default function WorkspaceClient({
               | { type: "provisional"; text: string }
               | { type: "replace"; text: string }
               | { type: "segment"; text: string; streamed: boolean }
-              | { type: "thinking"; text: string }
+              | { type: "thinking"; text: string; detailMode?: "append" | "replace" }
               | {
                   type: "tool";
                   toolName?: string;
                   status?: string;
+                  details?: unknown;
                   uiResources?: unknown;
                 }
               | { type: "permission"; description?: string; requestId?: string }
@@ -13265,6 +13323,7 @@ export default function WorkspaceClient({
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "tool" && event.status === "completed") {
+              if (event.toolName === "garden_import_source") handleGardenSourceImportResult(event.details);
               const resources = normalizeGenerativeUiResources(event.uiResources);
               if (resources.length) {
                 assistantMsg.uiResources = [
@@ -13276,7 +13335,7 @@ export default function WorkspaceClient({
                 finalMessages = messagesWithAssistant();
                 updateChatMessages(sessionId, finalMessages);
               }
-            } else if (event.type === "delta") {
+            } else if (event.type === "delta" || event.type === "thinking") {
               Object.assign(
                 assistantMsg,
                 applyGardenStableTextEvent(assistantMsg, event),

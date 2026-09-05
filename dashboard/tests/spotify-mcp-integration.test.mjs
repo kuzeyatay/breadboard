@@ -85,6 +85,7 @@ test("Spotify uses public-client PKCE with the live loopback callback", () => {
     "user-read-playback-state",
     "user-modify-playback-state",
     "playlist-modify-private",
+    "playlist-modify-public",
   ]) {
     assert.ok(spotify.scopes.includes(scope));
   }

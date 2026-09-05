@@ -7,10 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { Pencil } from "lucide-react";
 import AssistantComposer from "@/app/components/assistant-composer";
 import BreadboardLoader from "@/app/components/breadboard-loader";
-import BreadboardLogo from "@/app/components/breadboard-logo";
 import ChatMarkdown from "@/app/components/chat-markdown";
+import { ConfirmDialog } from "@/app/components/confirm-dialog";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useAssistantModels } from "@/app/components/use-assistant-models";
 import { broadcastArtifactUpdate } from "@/lib/hermes/artifact-update-channel";
@@ -19,6 +20,7 @@ import {
   markdownIntegrityIssue,
   normalizeProducedMarkdown,
 } from "@/lib/markdown-safety";
+import styles from "./markdown-artifact-editor.module.css";
 
 interface EditorPayload {
   artifact: PresentedArtifact;
@@ -63,8 +65,10 @@ function errorText(value: unknown, fallback: string): string {
 
 export default function MarkdownArtifactEditor({
   initialArtifact,
+  onClose,
 }: {
   initialArtifact: PresentedArtifact;
+  onClose?: () => void;
 }) {
   const [artifact, setArtifact] = useState(initialArtifact);
   const artifactRef = useRef(initialArtifact);
@@ -77,6 +81,9 @@ export default function MarkdownArtifactEditor({
   const [saveMessage, setSaveMessage] = useState("");
   const [error, setError] = useState("");
   const [selection, setSelection] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  const discardConfirmedRef = useRef(false);
   const [prompt, setPrompt] = useState("");
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [chatHydrated, setChatHydrated] = useState(false);
@@ -84,6 +91,7 @@ export default function MarkdownArtifactEditor({
   const savingRef = useRef(false);
   const assistantController = useRef<AbortController | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement | null>(null);
+  const documentRef = useRef<HTMLElement | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
   const {
     model,
@@ -95,6 +103,7 @@ export default function MarkdownArtifactEditor({
   const { models, modelsLoading, loadModels } = useAssistantModels({ eager: true });
 
   const setContent = useCallback((value: string) => {
+    discardConfirmedRef.current = false;
     contentRef.current = value;
     setContentState(value);
   }, []);
@@ -142,9 +151,29 @@ export default function MarkdownArtifactEditor({
 
   const dirty = content !== savedContent;
 
+  const leaveEditor = useCallback(() => {
+    if (onClose) {
+      onClose();
+      return;
+    }
+    window.close();
+    window.setTimeout(() => {
+      if (!window.closed && window.history.length > 1) window.history.back();
+    }, 50);
+  }, [onClose]);
+
+  const closeEditor = useCallback(() => {
+    if (dirty) {
+      setDiscardDialogOpen(true);
+      return;
+    }
+    leaveEditor();
+  }, [dirty, leaveEditor]);
+
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => {
+      if (discardConfirmedRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -245,6 +274,7 @@ export default function MarkdownArtifactEditor({
   }, [loading, setContent]);
 
   useEffect(() => {
+    if (discardDialogOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
@@ -252,7 +282,19 @@ export default function MarkdownArtifactEditor({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [save]);
+  }, [discardDialogOpen, save]);
+
+  useEffect(() => {
+    if (!onClose || discardDialogOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeEditor();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [closeEditor, discardDialogOpen, onClose]);
 
   const history = useMemo(
     () => chat.filter((entry) => entry.role === "user").map((entry) => entry.text),
@@ -344,41 +386,58 @@ export default function MarkdownArtifactEditor({
     setSelection(field.value.slice(field.selectionStart, field.selectionEnd).trim().slice(0, 1_000));
   }
 
-  function closeWindow() {
-    window.close();
-    window.setTimeout(() => {
-      if (!window.closed && window.history.length > 1) window.history.back();
-    }, 50);
+  function captureDocumentSelection() {
+    const selected = window.getSelection();
+    if (!selected?.rangeCount || !documentRef.current?.contains(selected.getRangeAt(0).commonAncestorContainer)) {
+      setSelection("");
+      return;
+    }
+    setSelection(selected.toString().trim().slice(0, 1_000));
   }
 
   return (
-    <main className="flex h-[calc(100vh-var(--breadboard-titlebar-height,0px))] min-h-0 flex-col overflow-hidden bg-[var(--paper-bg)] text-[var(--ink)]" data-markdown-artifact-editor>
-      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-surface)] px-5 py-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--botanical)] shadow-sm">
-          <BreadboardLogo className="h-7 w-7" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-[var(--ink-heading)]">{artifact.title}</p>
-          <p className="truncate text-xs text-[var(--ink-muted)]">Markdown · {artifact.filename} · version {artifact.version}</p>
-        </div>
-        <span className="min-w-32 text-right text-xs text-[var(--ink-muted)]" aria-live="polite">
+    <main
+      className={`${styles.editor} ${
+        onClose ? "h-full" : "h-[calc(100vh-var(--breadboard-titlebar-height,0px))]"
+      }`}
+      data-markdown-artifact-editor
+    >
+      <header className={styles.toolbar}>
+        <p className={styles.title} title={artifact.title}>{artifact.title}</p>
+        <span className="sr-only" aria-live="polite">
           {saving ? "Saving…" : dirty ? "Unsaved changes" : saveMessage || "Saved"}
         </span>
         <button
           type="button"
-          onClick={() => void save()}
-          disabled={!dirty || saving || loading}
-          className="neu-button rounded-xl px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => setEditing((current) => !current)}
+          disabled={loading}
+          aria-pressed={editing}
+          aria-label={editing ? "Read document" : "Edit Markdown"}
+          title={editing ? "Read document" : "Edit Markdown"}
+          className={`${styles.action} ${editing ? "" : styles.iconAction}`}
         >
-          Save
+          {editing ? "Done" : <Pencil size={18} strokeWidth={1.5} aria-hidden="true" />}
         </button>
+        {dirty || saving ? (
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={saving || loading}
+            title="Save changes (Ctrl+S)"
+            className={`${styles.action} ${styles.save}`}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        ) : null}
         <button
           type="button"
-          onClick={closeWindow}
+          onClick={closeEditor}
           aria-label="Close Markdown editor"
-          className="neu-button-icon rounded-xl px-3 py-2 text-[var(--ink-muted)]"
+          className={`${styles.action} ${styles.iconAction}`}
         >
-          ✕
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
         </button>
       </header>
 
@@ -388,61 +447,43 @@ export default function MarkdownArtifactEditor({
         </p>
       ) : null}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_23rem]">
-        <section className="grid min-h-0 grid-cols-1 overflow-hidden border-r border-[var(--line)] lg:grid-cols-2" aria-label="Markdown workspace">
-          <div className="flex min-h-0 flex-col border-r border-[var(--line)] bg-[var(--paper-surface)]">
-            <div className="flex h-11 shrink-0 items-center justify-between border-b border-[var(--line)] px-4">
-              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">Source</span>
-              <span className="text-[11px] text-[var(--ink-muted)]">Ctrl+S to save</span>
+      <div className={styles.workspace}>
+        <section className={styles.documentPane} aria-label="Markdown workspace" aria-busy={loading}>
+          {loading ? (
+            <div className="grid min-h-0 flex-1 place-items-center">
+              <BreadboardLoader className="h-6 w-6" />
             </div>
-            {loading ? (
-              <div className="grid min-h-0 flex-1 place-items-center">
-                <BreadboardLoader className="h-6 w-6" />
-              </div>
-            ) : (
-              <textarea
-                ref={sourceRef}
-                value={content}
-                onChange={(event) => {
-                  setContent(event.target.value);
-                  setSelection("");
-                }}
-                onSelect={captureSelection}
-                onBlur={captureSelection}
-                aria-label="Markdown source"
-                spellCheck
-                className="min-h-0 flex-1 resize-none bg-[var(--paper-raised)] p-5 font-mono text-[13px] leading-6 text-[var(--ink)] outline-none selection:bg-[var(--selection)]"
-              />
-            )}
-          </div>
-
-          <div className="flex min-h-0 flex-col bg-[var(--neu-surface-pressed)]">
-            <div className="flex h-11 shrink-0 items-center border-b border-[var(--line)] px-4">
-              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">Preview</span>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-6">
-              <article className="artifact-document-page mx-auto min-h-full w-full max-w-[54rem] rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-6 py-7 text-[var(--ink)] shadow-[0_8px_24px_rgba(28,45,36,0.10)] sm:px-8">
+          ) : editing ? (
+            <textarea
+              ref={sourceRef}
+              value={content}
+              onChange={(event) => {
+                setContent(event.target.value);
+                setSelection("");
+              }}
+              onSelect={captureSelection}
+              onBlur={captureSelection}
+              aria-label="Markdown source"
+              autoFocus
+              spellCheck
+              className={styles.source}
+            />
+          ) : (
+            <div className={styles.documentScroll} tabIndex={0} aria-label="Document">
+              <article
+                ref={documentRef}
+                className={styles.document}
+                onMouseUp={captureDocumentSelection}
+                onKeyUp={captureDocumentSelection}
+              >
                 <ChatMarkdown content={content} />
               </article>
             </div>
-          </div>
+          )}
         </section>
 
-        <aside className="flex min-h-0 flex-col bg-[var(--paper-surface)]" aria-label="Bread Markdown assistant">
-          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--line)] px-4">
-            <span className="grid h-6 w-6 place-items-center rounded-full bg-[var(--botanical)] text-[11px] font-bold text-white">B</span>
-            <span className="text-sm font-semibold text-[var(--ink-heading)]">Bread</span>
-            <span className="ml-auto text-[11px] text-[var(--ink-muted)]">Markdown assistant</span>
-          </div>
+        <aside className={styles.assistant} aria-label="Bread Markdown assistant">
           <div ref={chatRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-5" aria-live="polite">
-            {chat.length === 0 ? (
-              <div className="mx-auto mt-10 max-w-64 text-center">
-                <p className="text-sm font-semibold text-[var(--ink-heading)]">Edit this document with Bread</p>
-                <p className="mt-2 text-xs leading-5 text-[var(--ink-muted)]">
-                  Ask for a rewrite, a new section, cleaner structure, or a repair to selected text. Changes are previewed and saved here.
-                </p>
-              </div>
-            ) : null}
             {chat.map((entry) => (
               <div
                 key={entry.id}
@@ -461,7 +502,7 @@ export default function MarkdownArtifactEditor({
               </div>
             ) : null}
           </div>
-          <div className="shrink-0 border-t border-[var(--line)] p-3">
+          <div className="shrink-0 p-3">
             <AssistantComposer
               value={prompt}
               onChange={setPrompt}
@@ -494,6 +535,20 @@ export default function MarkdownArtifactEditor({
           </div>
         </aside>
       </div>
+      {discardDialogOpen ? (
+        <ConfirmDialog
+          title="Discard changes?"
+          body="Your unsaved edits will be lost."
+          confirmLabel="Discard changes"
+          cancelLabel="Keep editing"
+          onCancel={() => setDiscardDialogOpen(false)}
+          onConfirm={() => {
+            discardConfirmedRef.current = true;
+            setDiscardDialogOpen(false);
+            leaveEditor();
+          }}
+        />
+      ) : null}
     </main>
   );
 }

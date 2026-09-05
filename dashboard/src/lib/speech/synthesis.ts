@@ -37,11 +37,10 @@ export function speechDownloadFilename(now = new Date()): string {
 }
 
 /**
- * Ask Voicebox to read `text` in the user's chosen voice.
+ * Read `text` with the user's selected local or cloud speech provider.
  *
- * Returns the upstream response with its body untouched, so the caller decides
- * whether to stream it or hold it: the checks that can fail have all already
- * happened by the time it comes back.
+ * Local audio passes through; cloud audio is bounded and assembled before
+ * returning. Both playback and downloads use this same provider selection.
  */
 export async function synthesizeSpeech({
   userId,
@@ -56,13 +55,17 @@ export async function synthesizeSpeech({
   if (!settings.enabled) {
     throw new RouteError(409, "Speech is turned off in Intelligence → Settings → Speech.");
   }
-  if (!settings.profileId) {
-    throw new RouteError(409, "Choose a speech voice in Intelligence → Settings → Speech first.");
-  }
   const spoken = typeof text === "string" ? text.trim() : "";
   if (!spoken) throw new RouteError(400, "There is no response text to speak.");
   if (spoken.length > MAX_SPEECH_CHARACTERS) {
     throw new RouteError(413, "Responses longer than 50,000 characters cannot be spoken at once.");
+  }
+
+  if (settings.speechProvider === "chatgpt") {
+    throw new RouteError(409, "Subscription speech requires the browser audio connection. Reload Breadboard and try again.");
+  }
+  if (!settings.profileId) {
+    throw new RouteError(409, "Choose a speech voice in Intelligence → Settings → Voice first.");
   }
 
   const profile = await voiceboxJson<VoiceProfile>(

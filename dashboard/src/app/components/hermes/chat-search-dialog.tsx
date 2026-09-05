@@ -99,7 +99,7 @@ export default function ChatSearchDialog({
   const searchingNow = searching && query.trim().length > 0;
   const recentRows = recents.slice(0, 12).map((chat) => ({
     id: chat.id,
-    title: chat.title,
+    title: chat.titlePrefix ? `${chat.titlePrefix}: ${chat.title}` : chat.title,
     updatedAt: chat.updatedAt,
     snippet: "",
   }));
@@ -108,7 +108,7 @@ export default function ChatSearchDialog({
       chat.id,
       {
         id: chat.id,
-        title: chat.title,
+        title: chat.titlePrefix ? `${chat.titlePrefix}: ${chat.title}` : chat.title,
         updatedAt: chat.updatedAt,
         snippet: "",
       },

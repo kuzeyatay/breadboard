@@ -2,8 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
+import { useDesktopTabs } from './use-desktop-tabs';
+import { usePageLoadingPending } from './use-page-loading';
 
 const NAVIGATION_START_EVENT = 'breadboard:navigation-start';
+const NAVIGATION_CANCEL_EVENT = 'breadboard:navigation-cancel';
 const MAX_PENDING_PROGRESS = 92;
 // A dev-mode route compile routinely takes 20-35s (the dashboard route has been
 // measured at 26s), so a short deadline here would abandon navigations that are
@@ -16,11 +19,21 @@ export function startNavigationProgress(): void {
   window.dispatchEvent(new Event(NAVIGATION_START_EVENT));
 }
 
+export function cancelNavigationProgress(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new Event(NAVIGATION_CANCEL_EVENT));
+}
+
 function isModifiedClick(event: MouseEvent): boolean {
   return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 }
 
 export default function NavigationProgress() {
+  const desktopNavigationPending = useDesktopTabs()?.navigationPending === true;
+  const pageLoadingPending = usePageLoadingPending();
+  const trackedNavigationPending = desktopNavigationPending || pageLoadingPending;
+  const trackedNavigationPendingRef = useRef(trackedNavigationPending);
+  const previousTrackedPendingRef = useRef(false);
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const routeKey = `${pathname}?${searchParams.toString()}`;
@@ -32,6 +45,10 @@ export default function NavigationProgress() {
   const [visible, setVisible] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    trackedNavigationPendingRef.current = trackedNavigationPending;
+  }, [trackedNavigationPending]);
 
   // Every write goes through here so the creep interval can read the current
   // value without re-arming itself on each render.
@@ -57,6 +74,7 @@ export default function NavigationProgress() {
   }, []);
 
   const finishNavigation = useCallback(() => {
+    if (trackedNavigationPendingRef.current) return;
     clearProgressTimers();
     clearCompletionTimers();
     setPending(false);
@@ -74,6 +92,7 @@ export default function NavigationProgress() {
   // it. Completing here is what made a slow navigation look like a dead button —
   // the bar finished and vanished seconds before the page it was tracking.
   const abandonNavigation = useCallback(() => {
+    if (trackedNavigationPendingRef.current) return;
     clearProgressTimers();
     clearCompletionTimers();
     setPending(false);
@@ -107,6 +126,16 @@ export default function NavigationProgress() {
 
     abandonTimerRef.current = window.setTimeout(abandonNavigation, ABANDON_AFTER_MS);
   }, [abandonNavigation, applyProgress, clearCompletionTimers, clearProgressTimers]);
+
+  useEffect(() => {
+    if (previousTrackedPendingRef.current === trackedNavigationPending) return;
+    const timer = window.setTimeout(() => {
+      previousTrackedPendingRef.current = trackedNavigationPending;
+      if (trackedNavigationPending) beginNavigation();
+      else finishNavigation();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [beginNavigation, trackedNavigationPending, finishNavigation]);
 
   useEffect(() => {
     if (previousRouteRef.current === routeKey) return;
@@ -151,19 +180,21 @@ export default function NavigationProgress() {
     }
 
     window.addEventListener(NAVIGATION_START_EVENT, beginNavigation);
+    window.addEventListener(NAVIGATION_CANCEL_EVENT, abandonNavigation);
     window.addEventListener('popstate', handlePopState);
     document.addEventListener('click', handleClick, true);
     document.addEventListener('submit', handleSubmit);
 
     return () => {
       window.removeEventListener(NAVIGATION_START_EVENT, beginNavigation);
+      window.removeEventListener(NAVIGATION_CANCEL_EVENT, abandonNavigation);
       window.removeEventListener('popstate', handlePopState);
       document.removeEventListener('click', handleClick, true);
       document.removeEventListener('submit', handleSubmit);
       clearProgressTimers();
       clearCompletionTimers();
     };
-  }, [beginNavigation, clearCompletionTimers, clearProgressTimers]);
+  }, [abandonNavigation, beginNavigation, clearCompletionTimers, clearProgressTimers]);
 
   // Pinned at the ceiling with the creep stopped, a static bar reads as frozen.
   // The shimmer is the only thing distinguishing "still compiling" from "dead".

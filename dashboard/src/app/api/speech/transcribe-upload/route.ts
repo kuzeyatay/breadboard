@@ -13,7 +13,7 @@ import {
 import { getSpeechSettings } from "@/lib/speech/settings";
 
 /**
- * Transcribe a recording the user already has, with the same local model that
+ * Transcribe a recording the user already has, with the same speech provider that
  * powers dictation.
  *
  * The file arrives as the raw request body rather than a form part so it can be
@@ -29,6 +29,7 @@ export async function POST(request: Request) {
     if (!settings.enabled) {
       throw new RouteError(409, "Speech is turned off in Intelligence → Settings → Speech.");
     }
+    if (settings.speechProvider === "chatgpt") throw new RouteError(409, "Subscription recordings use the browser audio connection. Reload Breadboard and try again.");
 
     const header = request.headers.get(RECORDING_FILENAME_HEADER);
     let filename = "";
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
         send({ stage: "preparing" });
         try {
           const text = await transcribeStoredRecording({
+            speechProvider: settings.speechProvider,
             runtimeScope: { userId, gardenId: null, conversationId: null },
             workspace,
             filename,

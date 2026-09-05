@@ -207,6 +207,7 @@ export class NominatimGeocoder implements GeocodingProvider, PlaceDetailsProvide
     url.searchParams.set("lon", String(input.lon));
     url.searchParams.set("format", "jsonv2");
     url.searchParams.set("addressdetails", "1");
+    if (input.language) url.searchParams.set("accept-language", input.language);
     const response = await requestProviderJson<NominatimPlace>({
       url: url.toString(),
       provider: this.name,

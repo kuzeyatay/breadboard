@@ -11,6 +11,7 @@ from .routes_embeddings import embeddings_bp
 from .routes_openai import openai_bp
 from .routes_ollama import ollama_bp
 from .routes_providers import providers_bp
+from .subscription_voice import voice_bp
 from .websocket_routes import register_websocket_routes
 
 
@@ -56,6 +57,7 @@ def create_app(
     app.register_blueprint(embeddings_bp)
     app.register_blueprint(ollama_bp)
     app.register_blueprint(providers_bp)
+    app.register_blueprint(voice_bp)
     app.register_blueprint(council_debug_bp)
     app.register_blueprint(council_result_bp)
     sock = Sock(app)

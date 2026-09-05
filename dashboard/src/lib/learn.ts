@@ -3132,7 +3132,7 @@ async function reviewAndBindSourceFormulas({
     .sort();
   const currentLedger = loadSourceVisuals(contentPath, gardenId);
   const existingManifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
-  if (
+  const existingManifestMatchesSelectedEvidence = Boolean(
     existingManifest &&
     existingManifest.model === model &&
     existingManifest.baseSourceSetHash === context.baseSourceSetHash &&
@@ -3140,7 +3140,8 @@ async function reviewAndBindSourceFormulas({
     existingManifest.sourceIdentityMapHash === sourceIdentityMapHash &&
     JSON.stringify(existingManifest.sourceIdentityMap) === JSON.stringify(sourceIdentityMap) &&
     JSON.stringify(existingManifest.formulaIds) === JSON.stringify(formulaIds)
-  ) {
+  );
+  if (existingManifestMatchesSelectedEvidence && existingManifest) {
     let stableHash = "";
     try {
       stableHash = computeSourceFormulaReviewSetHash(
@@ -3268,7 +3269,22 @@ async function reviewAndBindSourceFormulas({
   refreshSelectedSourceArtifactInventory(contentPath, gardenId, context);
   context.sourceFormulaReviewSetHash = review.reviewedFormulaSetHash;
   context.sourceSetHash = combinedSourceSetHash;
-  return review;
+  // Extraction can transiently replay an older signed detector/recovery
+  // projection before ordinary formula review restores the exact already-bound
+  // canonical set. In that case a replacement is new relative only to the
+  // intermediate ledger, not to planning evidence. Preserve the safety signal
+  // unless the complete final set (including identities, provenance, crops,
+  // topology receipts, and accepted text) hashes back to the prior manifest.
+  const restoredExistingBoundReviewSet = Boolean(
+    existingManifestMatchesSelectedEvidence &&
+    existingManifest &&
+    JSON.stringify(existingManifest.formulaIds) === JSON.stringify(reviewedFormulaIds) &&
+    existingManifest.reviewSetHash === review.reviewedFormulaSetHash &&
+    existingManifest.combinedSourceSetHash === combinedSourceSetHash
+  );
+  return restoredExistingBoundReviewSet && review.newlyReplacedFormulaIds.length > 0
+    ? { ...review, newlyReplacedFormulaIds: [] }
+    : review;
 }
 
 /**
@@ -6269,7 +6285,15 @@ async function callOrdinaryCouncilTextWithReceipt(input: {
   }).filter((candidate) =>
     exactLearnCouncilRetryJobBinding(candidate.job, currentJob),
   );
-  const mismatched = prior.filter((candidate) => candidate.request_hash !== requestHash);
+  // A completed checkpoint belongs to a closed request epoch. If an upstream
+  // artifact legitimately changed, that closed epoch may have a different
+  // request hash and is safe to ignore. A started checkpoint is different: its
+  // provider outcome may still be unresolved, so fail closed rather than risk
+  // dispatching a second request for the same semantic stage.
+  const mismatched = prior.filter(
+    (candidate) =>
+      candidate.state !== "completed" && candidate.request_hash !== requestHash,
+  );
   if (mismatched.length > 0) {
     throw new LearnPlanningRecoveryConflictError(
       "An exact prior ordinary Learn stage has a different request hash; no model request was issued.",

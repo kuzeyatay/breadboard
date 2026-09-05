@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import { getSpeechSettings } from "@/lib/speech/settings";
+import { subscriptionStatus } from "@/lib/speech/subscription-server";
 import {
   voiceboxObservationJson,
   voiceboxStartupStatus,
@@ -23,6 +24,13 @@ export async function GET() {
   try {
     const userId = await requireUserId();
     const settings = getSpeechSettings(userId);
+    const cloud = await subscriptionStatus(userId);
+    if (settings.speechProvider === "chatgpt") {
+      return NextResponse.json({
+        available: cloud.configured, cloud, settings, health: null, startup: null,
+        profiles: [], models: [], presets: { kokoro: [], qwen_custom_voice: [] },
+      }, { headers: { "Cache-Control": "no-store" } });
+    }
     try {
       const health = await voiceboxObservationJson<VoiceboxHealth>("/health");
       const [profiles, models, kokoro, qwen] = await Promise.all([
@@ -33,6 +41,7 @@ export async function GET() {
       ]);
       return NextResponse.json({
         available: true,
+        cloud,
         health,
         profiles,
         models: models.models,
@@ -43,6 +52,7 @@ export async function GET() {
     } catch (error) {
       return NextResponse.json({
         available: false,
+        cloud,
         error: error instanceof Error ? error.message : "Voicebox is unavailable.",
         health: null,
         profiles: [],
