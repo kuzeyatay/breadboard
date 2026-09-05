@@ -1,10 +1,17 @@
 "use client";
 
 import {
+  BatteryCharging,
   ChevronLeft,
+  ChevronUp,
+  CloudSun,
+  Globe2,
+  Laptop,
   ListMusic,
   LoaderCircle,
+  MapPinOff,
   Music2,
+  Navigation,
   Pause,
   Play,
   Search as SearchIcon,
@@ -24,6 +31,7 @@ import {
   type RefObject,
 } from "react";
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
+import { WeatherIcon, weatherKind } from "@/app/components/weather-icon";
 import { browserShortcutsControl } from "@/lib/desktop-browser-tabs";
 import { useBrowserSavedItems } from "./use-browser-saved-items";
 import {
@@ -442,15 +450,6 @@ interface DockWeather {
   condition: string;
   isDay: boolean;
   timezone: string;
-}
-
-function weatherGlyph(weather: DockWeather | null): string {
-  if (!weather) return "–";
-  if (weather.code === 0) return weather.isDay ? "☀" : "☾";
-  if (weather.code <= 3 || weather.code === 45 || weather.code === 48) return "☁";
-  if (weather.code >= 71 && weather.code <= 86) return "❄";
-  if (weather.code >= 95) return "⚡";
-  return "☂";
 }
 
 function useDockWeather(): { weather: DockWeather | null; status: "ready" | "off" | "loading" | "unavailable" } {
@@ -1055,7 +1054,7 @@ function BrowserSpotifyDock({
           <strong>{initializing ? "Loading Spotify…" : track?.name ?? (spotify?.connected ? "Spotify is ready" : spotify ? "Connect Spotify" : "Spotify unavailable")}</strong>
           <small>{initializing ? "Checking your connection" : error || track?.artist || (spotify?.connected ? (spotify.engine.ready ? "Search music or browse playlists" : "Starting player…") : spotify ? "Settings → Connections" : "Trying again shortly")}</small>
         </span>
-        {spotify?.connected ? <span className="browser-spotify-open-cue" aria-hidden="true">⌃</span> : null}
+        {spotify?.connected ? <span className="browser-spotify-open-cue" aria-hidden="true"><ChevronUp /></span> : null}
       </button>
       {initializing ? null : spotify?.connected ? (
         <span className="browser-spotify-controls">
@@ -1169,7 +1168,6 @@ export function BrowserDock({
 }: {
   openConnections: () => void;
 }) {
-  const dockRef = useRef<HTMLDivElement | null>(null);
   const [now, setNow] = useState<Date | null>(null);
   const battery = useBatteryStatus();
   const network = useNetworkStatus();
@@ -1185,31 +1183,44 @@ export function BrowserDock({
 
   const time = now?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) ?? "--:--";
   const day = now?.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) ?? "Today";
+  const currentWeather = weatherStatus === "ready" ? weather : null;
+  const weatherMessage = weatherStatus === "off" ? "Location is off" : weatherStatus === "loading" ? "Checking…" : "Unavailable";
 
   return (
-    <div ref={dockRef} className="browser-dock" role="group" aria-label="Quick tools">
-      <BrowserSketchOutline targetRef={dockRef} index={1} />
+    <div className="browser-dock" role="group" aria-label="Quick tools">
       <div className="browser-dock-time">
-        <strong>{time}</strong>
         <span>{day}</span>
+        <strong>{time}</strong>
       </div>
-      <div className="browser-dock-weather" title={weather ? `Feels like ${weather.apparentC}°, ${weather.condition}` : "Enable current location in Settings for local weather"}>
-        <span className="browser-weather-icon" aria-hidden="true">{weatherGlyph(weather)}</span>
-        <span>
-          <strong>{weather ? `${weather.temperatureC}°` : "Weather"}</strong>
-          <small>{weather?.condition ?? (weatherStatus === "off" ? "Location is off" : weatherStatus === "loading" ? "Checking…" : "Unavailable")}</small>
+      <div
+        className="browser-dock-weather"
+        data-weather-kind={currentWeather ? weatherKind(currentWeather.code) : undefined}
+        data-daylight={currentWeather ? (currentWeather.isDay ? "day" : "night") : undefined}
+        data-weather-status={weatherStatus}
+        role="status"
+        aria-label={currentWeather ? `Local weather: ${currentWeather.condition}, ${currentWeather.temperatureC}°C, feels like ${currentWeather.apparentC}°C` : `Weather: ${weatherMessage}`}
+        title={currentWeather ? `Feels like ${currentWeather.apparentC}°C, ${currentWeather.condition}` : weatherStatus === "off" ? "Enable current location in Settings for local weather" : weatherMessage}
+      >
+        <span className="browser-weather-heading" aria-hidden="true">Local weather <Navigation /></span>
+        <span className="browser-weather-icon" aria-hidden="true">
+          {currentWeather ? <WeatherIcon kind={weatherKind(currentWeather.code)} isDay={currentWeather.isDay} /> : weatherStatus === "off" ? <MapPinOff /> : <CloudSun />}
+        </span>
+        <strong className="browser-weather-temperature" aria-hidden="true">{currentWeather ? `${currentWeather.temperatureC}°` : "–°"}</strong>
+        <span className="browser-weather-detail" aria-hidden="true">
+          <span>{currentWeather?.condition ?? weatherMessage}</span>
+          {currentWeather ? <span>Feels like {currentWeather.apparentC}°</span> : <span>{weatherStatus === "off" ? "Enable in Settings" : "Local forecast"}</span>}
         </span>
       </div>
       <div className="browser-dock-network" role="status" data-online={network.online}>
-        <span className="browser-network-mark" aria-hidden="true" />
+        <span className="browser-network-mark" aria-hidden="true"><Globe2 /></span>
         <span>
           <strong>{network.online ? "Online" : "Offline"}</strong>
           <small>{network.detail}</small>
         </span>
       </div>
-      <div className="browser-battery" role="status" aria-label={battery ? `Battery ${battery.percent} percent${battery.charging ? ", charging" : ""}` : "Battery percentage unavailable"} style={{ "--browser-battery": `${(battery?.percent ?? 0) * 3.6}deg` } as CSSProperties}>
-        <span>{battery?.percent ?? "–"}</span>
-        {battery ? <small>%{battery.charging ? " · ↯" : ""}</small> : null}
+      <div className="browser-battery" role="status" data-low={Boolean(battery && battery.percent <= 20 && !battery.charging)} aria-label={battery ? `Battery ${battery.percent} percent${battery.charging ? ", charging" : ""}` : "Battery percentage unavailable"} title={battery?.charging ? "Charging" : battery ? "On battery" : "Battery percentage unavailable"} style={{ "--browser-battery": `${(battery?.percent ?? 0) * 3.6}deg` } as CSSProperties}>
+        {battery?.charging ? <BatteryCharging aria-hidden="true" /> : <Laptop aria-hidden="true" />}
+        <span className="browser-battery-reading" aria-hidden="true">{battery?.percent ?? "–"}{battery ? <small>%</small> : null}</span>
       </div>
       <BrowserSpotifyDock
         spotify={spotify}
