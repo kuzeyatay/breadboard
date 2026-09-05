@@ -64,7 +64,7 @@ app.whenReady().then(async () => {
   companion = new ClickyCompanion({ dashboardUrl: () => dashboardUrl, allowed });
   await assert.rejects(companion.launch(), /still starting/);
   dashboardUrl = origin;
-  const png = nativeImage.createFromBuffer(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZfcAAAAASUVORK5CYII=", "base64"));
+  const png = nativeImage.createFromBitmap(Buffer.from([255, 128, 64, 255]), { width: 1, height: 1 });
   desktopCapturer.getSources = async () => {
     captureCount++;
     return [{ display_id: String(screen.getPrimaryDisplay().id), thumbnail: png }];
