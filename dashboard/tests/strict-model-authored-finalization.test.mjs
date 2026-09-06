@@ -399,3 +399,52 @@ test("strict whole-finalizer rejects unsafe or malformed authoritative plan plac
     /Visualization-plan final placement projection.*opportunity 1 is malformed/i,
   );
 });
+
+test("strict finalization preserves multiline model-authored contract text while validating projections", () => {
+  const readContract = namedFunction("readLearningUnitContract").getText(finalizerAst);
+  const collectChecks = namedFunction("collectFinalizeChecks").getText(finalizerAst);
+
+  assert.match(
+    readContract,
+    /normalizeLearningUnits\(parsed,\s*\{\s*modelAuthoredOnly:\s*options\.modelAuthoredOnly\s*===\s*true/s,
+  );
+  assert.match(
+    collectChecks,
+    /readLearningUnitContract\(gardenDir,\s*\{\s*modelAuthoredOnly:\s*strictModelApprovedVisuals/s,
+  );
+});
+
+test("page-edge crop uncertainty is reported as a warning instead of a publish blocker", (t) => {
+  const fixture = makeStrictBoundaryGarden();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const assetDir = path.join(fixture.gardenDir, "assets", "source-visuals");
+  const cropPath = path.join(assetDir, "edge-equation.png");
+  fs.mkdirSync(assetDir, { recursive: true });
+  const pngHeader = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngHeader, 0);
+  pngHeader.writeUInt32BE(320, 16);
+  pngHeader.writeUInt32BE(80, 20);
+  fs.writeFileSync(cropPath, pngHeader);
+  const ledgerPath = path.join(fixture.gardenDir, ".breadboard", "source-visuals.json");
+  const [visual] = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
+  visual.croppedImagePath = "/strict-garden/assets/source-visuals/edge-equation.png";
+  visual.bbox = { x: 0, y: 0.2, width: 0.5, height: 0.2 };
+  fs.writeFileSync(ledgerPath, `${JSON.stringify([visual], null, 2)}\n`);
+
+  const report = finalizeGardenExport({
+    gardenDir: fixture.gardenDir,
+    gardenSlug: "strict-garden",
+    preserveModelAuthoredContent: true,
+  });
+
+  assert.equal(
+    report.criticalProblems.some((problem) => /bbox touches page edge/.test(problem)),
+    false,
+    report.criticalProblems.join("\n"),
+  );
+  assert.equal(
+    report.warnings.some((warning) => /bbox touches page edge/.test(warning)),
+    true,
+    report.warnings.join("\n"),
+  );
+});
