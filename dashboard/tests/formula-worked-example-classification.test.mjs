@@ -34,6 +34,13 @@ test("bounded and contour integrals are expressions, not worked examples", () =>
   assert.equal(isWorkedExampleFormula(stokes), false);
 });
 
+test("named coordinate and vector tuples are formula expressions", () => {
+  assert.equal(isFormulaExpression("A(1,2,3); B(4,5,6)"), true);
+  assert.equal(isFormulaExpression(`A(1,2,3);${BS} B(4,5,6)`), true);
+  assert.equal(isFormulaExpression(`${BS}vec{r}(x,y,z)`), true);
+  assert.equal(isFormulaExpression("compare points (first, second)"), false);
+});
+
 // Symbolic metric definitions remain non-worked-example.
 test("symbolic metric definitions are NOT worked examples", () => {
   assert.equal(isWorkedExampleFormula(`${BS}text{Accuracy} = N_{correct}/N_{total}`), false);

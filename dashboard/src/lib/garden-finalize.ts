@@ -2393,6 +2393,31 @@ export function ungroundableFormulaWarnings(gardenDir: string): string[] {
 
 function cleanExportTree(gardenDir: string, report: FinalizeReport): void {
   const allowedTop = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
+
+  // Rejected repair candidates are useful while the model repair loop is
+  // running, but they are diagnostics rather than garden content. Finalization
+  // is the production boundary, so strip them in both legacy and strict
+  // model-authored modes before the export audit examines the tree.
+  const failedRepairsDir = path.join(gardenDir, ".breadboard", "debug", "failed-repairs");
+  if (fs.existsSync(failedRepairsDir)) {
+    let removedCount = 0;
+    try {
+      removedCount = fs.readdirSync(failedRepairsDir).filter((name) => !name.startsWith(".")).length;
+    } catch {
+      // The directory is still removed below; the count is informational only.
+    }
+    rmrf(failedRepairsDir);
+    const debugDir = path.dirname(failedRepairsDir);
+    try {
+      if (fs.existsSync(debugDir) && fs.readdirSync(debugDir).length === 0) rmrf(debugDir);
+    } catch {
+      // Best effort parent cleanup; the critical gate will report any survivor.
+    }
+    report.removed.push(
+      `.breadboard/debug/failed-repairs/ (${removedCount} diagnostic entr${removedCount === 1 ? "y" : "ies"})`,
+    );
+  }
+
   // Source-file basenames, so a numbered folder named after the raw upload can
   // be recognized even without an exact "source-conversion" marker.
   const sourceBases = new Set<string>();
@@ -4296,6 +4321,7 @@ export function normalizeSourceWikilinks(gardenDir: string, report: FinalizeRepo
   const visible: Array<{ abs: string; rel: string }> = [];
   const rootIndex = path.join(gardenDir, "_index.md");
   if (fs.existsSync(rootIndex)) visible.push({ abs: rootIndex, rel: "_index.md" });
+  listMarkdown(path.join(gardenDir, "Concepts"), "Concepts", visible);
   listMarkdown(path.join(gardenDir, "learning"), "learning", visible);
   listMarkdown(path.join(gardenDir, "sources"), "sources", visible);
 
@@ -4402,6 +4428,12 @@ function normalizeSourcePageTyping(abs: string, rel: string, report: FinalizeRep
     fm = fmSetScalar(fm, "breadboardType", isIndex ? "source_index" : "source_document");
     fm = fmSetScalar(fm, "knowledge_type", isIndex ? "source-index" : "source-document");
   }
+  // Public concept projections belong only to learner pages. Extraction may
+  // attach descriptive source/media tags, but carrying those into the exported
+  // semantic graph makes a source document masquerade as a lesson.
+  fm = fmSetArray(fm, "tags", []);
+  fm = fmSetArray(fm, "primaryConcepts", []);
+  fm = fmSetArray(fm, "supportingConcepts", []);
   if (fmGetScalar(fm, "internal") === "true") fm = fmSetScalar(fm, "internal", false);
   if (!/^excludeFromLearningPath:/m.test(fm)) fm = fmSetScalar(fm, "excludeFromLearningPath", true);
   if (fm !== rawFrontmatter) {
