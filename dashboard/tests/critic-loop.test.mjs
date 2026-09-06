@@ -64,6 +64,62 @@ const issue = (over) => ({
   ...over,
 });
 
+test("anchored global findings split into executable page repairs", () => {
+  const globalIssue = issue({
+    id: "global-formulas",
+    type: "worked_example_misclassified",
+    repairTarget: "global",
+    sourceAnchorIds: ["S1.P2.E1", "S2.P4.E3"],
+    suggestedRepair: "Reclassify each anchored example in its owning page.",
+  });
+  const requests = criticIssuesToRepairRequests([globalIssue], {
+    pages: [
+      {
+        rel: "learning/1. Basics/1.1 First.md",
+        sourceAnchors: [],
+        sourceFormulaAnchors: ["S1.P2.E1"],
+        sourceVisualIds: [],
+        formulas: [],
+      },
+      {
+        rel: "learning/2. Applications/2.1 Second.md",
+        sourceAnchors: [],
+        sourceFormulaAnchors: [],
+        sourceVisualIds: [],
+        formulas: [],
+      },
+      {
+        rel: "learning/3. Unrelated/3.1 Third.md",
+        sourceAnchors: ["S9.P9.E9"],
+        sourceFormulaAnchors: [],
+        sourceVisualIds: [],
+        formulas: [],
+      },
+    ],
+    sourceUsages: [
+      {
+        anchorId: "S2.P4.E3",
+        pageRel: "learning/2. Applications/2.1 Second.md",
+        kind: "worked_example",
+      },
+    ],
+    formulas: [],
+  });
+
+  assert.deepEqual(
+    requests.map((request) => [request.targetKind, request.targetPath]),
+    [
+      ["unit_page", "learning/1. Basics/1.1 First.md"],
+      ["unit_page", "learning/2. Applications/2.1 Second.md"],
+    ],
+  );
+  assert.ok(requests.every((request) => request.formulaKindRepairs[0].pagePath === request.targetPath));
+  assert.deepEqual(
+    requests.map((request) => request.affectedAnchorIds),
+    [["S1.P2.E1"], ["S2.P4.E3"]],
+  );
+});
+
 function mkTinyGarden(prefix = "bb-critic-tiny-") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const dir = path.join(root, "test-2");
