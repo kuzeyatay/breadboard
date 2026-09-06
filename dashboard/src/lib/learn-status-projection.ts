@@ -160,6 +160,11 @@ interface LearnVersionRow {
   source_artifact_inventory_hash: string;
 }
 
+interface LearnPublicationRetryRow {
+  requested_at: string;
+  updated_at: string;
+}
+
 interface LearnJobRow {
   id: string;
   garden_id: string;
@@ -310,6 +315,11 @@ export interface LearnHumanizerVersionState {
 
 export interface LearnStatusSnapshot {
   job: LearnJob | null;
+  publicationRecovery: {
+    active: true;
+    requestedAt: string;
+    updatedAt: string;
+  } | null;
   proposedLearningMap: ProposedLearningMap | null;
   confirmedLearningMapId?: string;
   confirmedLearningMapModel?: string;
@@ -690,6 +700,27 @@ function latestLearnJob(gardenId: string): LearnJob | null {
       )
       .get(gardenId) as LearnJobRow | undefined,
   );
+}
+
+function pendingLearnPublicationRecovery(
+  gardenId: string,
+): LearnStatusSnapshot["publicationRecovery"] {
+  if (!tableExists("learn_publication_retries")) return null;
+  const row = db
+    .prepare(
+      `SELECT requested_at, updated_at
+       FROM learn_publication_retries
+       WHERE garden_id = ?
+       LIMIT 1`,
+    )
+    .get(gardenId) as LearnPublicationRetryRow | undefined;
+  return row
+    ? {
+        active: true,
+        requestedAt: row.requested_at,
+        updatedAt: row.updated_at,
+      }
+    : null;
 }
 
 function learnJobById(jobId: string): LearnJob | null {
@@ -2463,6 +2494,7 @@ export function getLearnStatusSnapshot({
   contentPath: string;
 }): LearnStatusSnapshot {
   const context = scanStatusKnowledge(contentPath, gardenId);
+  const publicationRecovery = pendingLearnPublicationRecovery(gardenId);
   const storedLatestJob = latestLearnJob(gardenId);
   const latestConfirmed = latestConfirmedLearnMap(gardenId);
   const confirmedMap = isContractBackedLearningMap(latestConfirmed)
@@ -2696,6 +2728,7 @@ export function getLearnStatusSnapshot({
 
   return {
     job: visibleJobWithWorkflowUsage,
+    publicationRecovery,
     proposedLearningMap:
       visibleJob?.status === "awaiting_confirmation" ||
       contractProposed?.status === "proposed"
