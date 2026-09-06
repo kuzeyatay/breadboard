@@ -190,6 +190,50 @@ test("default critic budget repairs blockers revealed after the third audit", as
   assert.equal(result.status.criticPass, true);
 });
 
+test("critic packet preserves contract section order across multi-digit chapter names", () => {
+  const dir = mkTinyGarden("bb-critic-contract-order-");
+  for (const [chapter, unitId] of [["1. Foundations", "U1"], ["10. Waves", "U10"], ["2. Fields", "U2"]]) {
+    const sectionDir = path.join(dir, "learning", chapter);
+    fs.mkdirSync(sectionDir, { recursive: true });
+    writeTinyModelPage(dir, `learning/${chapter}/${chapter.split(".")[0]}.1 Lesson.md`);
+    const pagePath = path.join(sectionDir, `${chapter.split(".")[0]}.1 Lesson.md`);
+    fs.writeFileSync(
+      pagePath,
+      fs.readFileSync(pagePath, "utf-8").replace('learningUnitId: "U1"', `learningUnitId: "${unitId}"`),
+      "utf-8",
+    );
+  }
+  const state = buildFinalGardenState(dir, "test-2");
+  const unit = (id) => ({
+    id,
+    title: id,
+    role: "core_concept",
+    learningQuestion: `What does ${id} teach?`,
+    prerequisiteConcepts: [],
+    newConcepts: [],
+    sourceAnchors: [],
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    sourceQuestions: [],
+    zettelNotes: [],
+    mustNotRepeat: [],
+    expectedWordRange: [1, 1000],
+  });
+  state.learningUnitContract = {
+    ...state.learningUnitContract,
+    units: [unit("U1"), unit("U2"), unit("U10")],
+  };
+
+  const packet = buildCriticReviewPacket(state);
+
+  assert.deepEqual(packet.sections.map((section) => section.title), [
+    "1. Foundations",
+    "2. Fields",
+    "10. Waves",
+  ]);
+});
+
 describe("critic request fail-closed boundaries", () => {
   test("prose critic propagates ambiguous provider failures by exact identity after one call", async () => {
     for (const [label, providerError] of ambiguousModelFailures()) {
