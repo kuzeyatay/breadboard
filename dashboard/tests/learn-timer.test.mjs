@@ -3,10 +3,35 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  cumulativeLearnWorkflowElapsedMs,
   currentLearnElapsedMs,
   formatLearnElapsedTime,
   transitionLearnTimer,
 } from "../src/lib/learn-timer.ts";
+
+test("Learn timer accumulates retries on one confirmed map until publication", () => {
+  const attempts = [
+    { id: "first", status: "failed", elapsedMs: 9 * 60 * 60 * 1000, createdAt: "2026-07-14T00:00:00.000Z" },
+    { id: "second", status: "failed", elapsedMs: 3 * 60 * 60 * 1000, createdAt: "2026-07-14T09:10:00.000Z" },
+    { id: "current", status: "generating_textbook", elapsedMs: 15 * 60 * 1000, createdAt: "2026-07-14T12:20:00.000Z" },
+  ];
+
+  assert.equal(
+    cumulativeLearnWorkflowElapsedMs(attempts, "current"),
+    12 * 60 * 60 * 1000 + 15 * 60 * 1000,
+  );
+});
+
+test("a completed publication closes the cumulative Learn timer chain", () => {
+  const attempts = [
+    { id: "failed", status: "failed", elapsedMs: 60_000, createdAt: "2026-07-14T00:00:00.000Z" },
+    { id: "published", status: "complete", elapsedMs: 120_000, createdAt: "2026-07-14T00:02:00.000Z" },
+    { id: "new-run", status: "generating_textbook", elapsedMs: 30_000, createdAt: "2026-07-14T00:05:00.000Z" },
+  ];
+
+  assert.equal(cumulativeLearnWorkflowElapsedMs(attempts, "published"), 180_000);
+  assert.equal(cumulativeLearnWorkflowElapsedMs(attempts, "new-run"), 30_000);
+});
 
 test("Learn timer pauses for map confirmation and resumes for generation", () => {
   const planning = {
@@ -84,6 +109,11 @@ test("Learn timer and skip-review state are persisted and exposed by the panel",
   assert.match(learnSource, /timer_started_at\s+TEXT/);
   assert.match(learnSource, /transitionLearnTimer/);
   assert.match(projectionSource, /function learnTimerForWorkflow/);
+  assert.match(projectionSource, /cumulativeLearnWorkflowElapsedMs/);
+  assert.match(
+    projectionSource,
+    /confirmed_learning_map_id\s*=\s*\?\s+OR\s+proposed_learning_map_id\s*=\s*\?/,
+  );
   assert.match(
     projectionSource,
     /const workflowTimer = visibleJob \? learnTimerForWorkflow\(visibleJob\) : null/,

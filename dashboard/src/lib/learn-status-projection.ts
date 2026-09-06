@@ -21,6 +21,7 @@ import {
   sourceSetHashForBindingRecords,
 } from "@/lib/learn-source-normalization-receipt";
 import { failedGenerationRequiresReplanFromEvents } from "@/lib/learn-replan-recovery";
+import { cumulativeLearnWorkflowElapsedMs } from "@/lib/learn-timer";
 import type {
   SourceVisual,
   SourceVisualSourceIdentity,
@@ -811,18 +812,31 @@ function learnTimerForWorkflow(job: LearnJob): {
 } {
   let elapsedMs = job.elapsedMs;
   const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
-  if (learningMapId && tableExists("learn_maps") && tableExists("learn_jobs")) {
-    const owner = db
+  if (learningMapId && tableExists("learn_jobs")) {
+    const attempts = db
       .prepare(
-        `SELECT j.id, j.active_elapsed_ms
-         FROM learn_maps m
-         JOIN learn_jobs j ON j.id = m.job_id
-         WHERE m.id = ? AND m.garden_id = ?`,
+        `SELECT id, status, active_elapsed_ms, created_at
+         FROM learn_jobs
+         WHERE garden_id = ?
+           AND (confirmed_learning_map_id = ? OR proposed_learning_map_id = ?)
+         ORDER BY created_at ASC, id ASC`,
       )
-      .get(learningMapId, job.gardenId) as
-      | { id: string; active_elapsed_ms: number | null }
-      | undefined;
-    if (owner && owner.id !== job.id) elapsedMs += Number(owner.active_elapsed_ms ?? 0);
+      .all(job.gardenId, learningMapId, learningMapId) as Array<{
+        id: string;
+        status: LearnStatus;
+        active_elapsed_ms: number | null;
+        created_at: string;
+      }>;
+    const cumulativeElapsedMs = cumulativeLearnWorkflowElapsedMs(
+      attempts.map((attempt) => ({
+        id: attempt.id,
+        status: attempt.status,
+        elapsedMs: Number(attempt.active_elapsed_ms ?? 0),
+        createdAt: attempt.created_at,
+      })),
+      job.id,
+    );
+    if (attempts.some((attempt) => attempt.id === job.id)) elapsedMs = cumulativeElapsedMs;
   }
   return {
     elapsedMs,

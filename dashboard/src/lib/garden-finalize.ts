@@ -517,7 +517,10 @@ function normalizeSourceArtifactAssignments(raw: unknown): SourceArtifactAssignm
   return assignments;
 }
 
-function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifact {
+function readLearningUnitContract(
+  gardenDir: string,
+  options: { modelAuthoredOnly?: boolean } = {},
+): LearningUnitContractArtifact {
   const candidates = [
     path.join(gardenDir, ".breadboard", "learning-unit-contract.json"),
     path.join(gardenDir, ".breadboard", "planning", "learning-unit-contract.json"),
@@ -526,7 +529,9 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
     if (!fs.existsSync(filePath)) continue;
     try {
       const parsed = JSON.parse(readFileSyncWithRetry(filePath, "utf-8"));
-      const units = normalizeLearningUnits(parsed);
+      const units = normalizeLearningUnits(parsed, {
+        modelAuthoredOnly: options.modelAuthoredOnly === true,
+      });
       const assignments = dedupeSourceArtifactAssignments(normalizeSourceArtifactAssignments(parsed), units);
       // A present canonical contract remains authoritative even when its unit
       // payload is empty or invalid. Falling through to an older planning copy
@@ -6369,8 +6374,14 @@ function imageDimensions(filePath: string): { width: number; height: number } | 
   return null;
 }
 
-function cropQualityProblems(gardenDir: string, visual: LedgerVisual): string[] {
+interface CropQualityFindings {
+  problems: string[];
+  warnings: string[];
+}
+
+function cropQualityFindings(gardenDir: string, visual: LedgerVisual): CropQualityFindings {
   const problems: string[] = [];
+  const warnings: string[] = [];
   const id = visual.sourceVisualId;
   const cropped = String(visual.croppedImagePath ?? "");
   const conceptUsage = String(visual.conceptUsage ?? "");
@@ -6378,9 +6389,9 @@ function cropQualityProblems(gardenDir: string, visual: LedgerVisual): string[] 
   const requiresEmbeddedCrop = !conceptUsage || /^(?:embedded_as_crop|embedded_and_explained)$/i.test(conceptUsage);
   if (visual.usageStatus === "assigned" && requiresEmbeddedCrop && !cropped && cropStatus !== "omitted_unreliable") {
     problems.push(`${id}: assigned visual has no croppedImagePath`);
-    return problems;
+    return { problems, warnings };
   }
-  if (!cropped) return problems;
+  if (!cropped) return { problems, warnings };
   if (/-page-\d{2,}(?:-\d+)?\.(?:png|jpe?g|webp)$/i.test(cropped)) {
     problems.push(`${id}: croppedImagePath looks like a full-page snapshot`);
   }
@@ -6404,10 +6415,10 @@ function cropQualityProblems(gardenDir: string, visual: LedgerVisual): string[] 
   if ([x, y, width, height].every(Number.isFinite)) {
     const edge = 0.015;
     if (x <= edge || y <= edge || x + width >= 1 - edge || y + height >= 1 - edge) {
-      problems.push(`${id}: detection bbox touches page edge and may be clipped`);
+      warnings.push(`${id}: detection bbox touches page edge and may be clipped`);
     }
   }
-  return problems;
+  return { problems, warnings };
 }
 
 function wikilinkTargets(markdown: string): string[] {
@@ -8569,7 +8580,9 @@ function collectFinalizeChecks({
     if (!report.warnings.includes(message)) report.warnings.push(message);
   };
   const learnerPages = loadLearnerPages(gardenDir);
-  const contract = readLearningUnitContract(gardenDir);
+  const contract = readLearningUnitContract(gardenDir, {
+    modelAuthoredOnly: strictModelApprovedVisuals,
+  });
   const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
   const pagesByUnit = new Map<string, LearnerPage>();
   for (const page of learnerPages) {
@@ -9133,7 +9146,11 @@ function collectFinalizeChecks({
   push("section titles are learner-facing", titleProblems);
 
   // Source crop quality.
-  const cropProblems = ledger.flatMap((visual) => cropQualityProblems(gardenDir, visual));
+  const cropFindings = ledger.map((visual) => cropQualityFindings(gardenDir, visual));
+  const cropProblems = cropFindings.flatMap((finding) => finding.problems);
+  for (const warning of cropFindings.flatMap((finding) => finding.warnings)) {
+    warn(`Source crop quality warning: ${warning}`);
+  }
   push("source crop quality is acceptable", cropProblems);
   push("Crop quality and fallbacks", cropFallbackProblems(ledger, learnerPages));
 

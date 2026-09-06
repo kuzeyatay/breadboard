@@ -3,6 +3,13 @@ export interface LearnTimerState {
   startedAt?: string;
 }
 
+export interface LearnTimerAttempt {
+  id: string;
+  status: string;
+  elapsedMs: number;
+  createdAt: string;
+}
+
 function boundedLearnProgress(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -81,6 +88,36 @@ export function currentLearnElapsedMs(
     Math.max(0, Math.trunc(timer.elapsedMs)) +
     (startedMs === null ? 0 : Math.max(0, nowMs - startedMs))
   );
+}
+
+/**
+ * Sum every attempt in the current confirmed-map publication chain. A
+ * successful publication closes the chain, so a later run on the same map
+ * starts at zero while retries and service restarts before that publication
+ * retain their accumulated active time.
+ */
+export function cumulativeLearnWorkflowElapsedMs(
+  attempts: LearnTimerAttempt[],
+  currentJobId: string,
+): number {
+  const ordered = [...attempts].sort((a, b) => {
+    const byCreatedAt = (timestamp(a.createdAt) ?? 0) - (timestamp(b.createdAt) ?? 0);
+    return byCreatedAt || a.id.localeCompare(b.id);
+  });
+  const currentIndex = ordered.findIndex((attempt) => attempt.id === currentJobId);
+  if (currentIndex < 0) return 0;
+
+  let chainStart = 0;
+  for (let index = 0; index < currentIndex; index += 1) {
+    if (ordered[index]?.status === "complete") chainStart = index + 1;
+  }
+  return ordered
+    .slice(chainStart, currentIndex + 1)
+    .reduce(
+      (total, attempt) =>
+        total + (Number.isFinite(attempt.elapsedMs) ? Math.max(0, Math.trunc(attempt.elapsedMs)) : 0),
+      0,
+    );
 }
 
 export function formatLearnElapsedTime(elapsedMs: number): string {
