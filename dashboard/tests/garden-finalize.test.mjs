@@ -37,6 +37,7 @@ describe("source wikilink normalization (C)", () => {
       const dir = path.join(root, "test-2");
       fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
       fs.mkdirSync(path.join(dir, "learning"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "Concepts", "source-concepts"), { recursive: true });
       fs.writeFileSync(path.join(dir, "_index.md"), "---\ntitle: \"t\"\n---\n\n# t\n");
       fs.writeFileSync(
         path.join(dir, "sources", "_index.md"),
@@ -50,6 +51,9 @@ describe("source wikilink normalization (C)", () => {
           'knowledge_type: "source-document"',
           'breadboardType: "source_document"',
           'internal: "true"',
+          'tags: ["source", "audio", "transcript"]',
+          'primaryConcepts: ["source-media"]',
+          'supportingConcepts: ["transcript"]',
           "---",
           "",
           "## Summary",
@@ -77,6 +81,20 @@ describe("source wikilink normalization (C)", () => {
         ].join("\n"),
       );
 
+      fs.writeFileSync(
+        path.join(dir, "Concepts", "source-concepts", "source-concepts.md"),
+        [
+          "---",
+          'title: "Source concepts"',
+          "---",
+          "",
+          "# Source concepts",
+          "",
+          "[[#Page 2|Page 2]] ### A concept extracted from a missing page heading",
+          "",
+        ].join("\n"),
+      );
+
       const report = { changed: [], removed: [], notes: [], reconciliation: [], criticalProblems: [] };
       normalizeSourceWikilinks(dir, report);
 
@@ -89,6 +107,17 @@ describe("source wikilink normalization (C)", () => {
       assert.doesNotMatch(out, /\[\[Page 1\]\]/, "[[Page 1]] must be resolved or flattened");
       // Timestamped source-conversion link must be canonicalized or flattened.
       assert.doesNotMatch(out, /\[\[2510-27379v1-1783174795571/, "timestamped link must be removed");
+
+      assert.doesNotMatch(out, /^tags:/m, "source public tags must be removed");
+      assert.doesNotMatch(out, /^primaryConcepts:/m, "source primary concepts must be removed");
+      assert.doesNotMatch(out, /^supportingConcepts:/m, "source supporting concepts must be removed");
+
+      const concept = fs.readFileSync(
+        path.join(dir, "Concepts", "source-concepts", "source-concepts.md"),
+        "utf-8",
+      );
+      assert.doesNotMatch(concept, /\[\[#Page 2\|Page 2\]\]/, "broken concept-page self-links must be flattened");
+      assert.match(concept, /^Page 2 ### A concept extracted/m);
 
       // The validator's wikilink check must now pass for this source file.
       const results = runChecks(dir, "test-2");
@@ -108,6 +137,9 @@ describe("source wikilink normalization (C)", () => {
     try {
       const dir = path.join(root, "generic-garden");
       fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      const failedRepairsDir = path.join(dir, ".breadboard", "debug", "failed-repairs");
+      fs.mkdirSync(failedRepairsDir, { recursive: true });
+      fs.writeFileSync(path.join(failedRepairsDir, "rejected.md"), "diagnostic only\n");
       fs.writeFileSync(
         path.join(dir, "sources", "generic-source.md"),
         [
@@ -162,6 +194,11 @@ describe("source wikilink normalization (C)", () => {
       assert.match(
         fs.readFileSync(path.join(dir, "sources", "generic-source.md"), "utf8"),
         /- Visible label/,
+      );
+      assert.equal(
+        fs.existsSync(failedRepairsDir),
+        false,
+        "strict model-authored finalization must not ship failed-repair diagnostics",
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

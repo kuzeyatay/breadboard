@@ -410,6 +410,13 @@ export function isFormulaExpression(expr: string): boolean {
   if (/^[+-]?\d+(?:\.\d+)?(?:\\?%)?$/.test(compacted)) return false;
   if (isTrivialFormulaFragment(expr)) return false;
   if (/^(?:ms|s|j|w|hz|khz|mhz|v|a)$/i.test(compacted)) return false;
+  // Coordinate and component tuples are mathematical expressions even when
+  // they do not contain an operator or equality sign. This covers point/vector
+  // definitions such as `A(1,2,3); B(4,5,6)` while requiring a named tuple and
+  // at least two scalar/symbolic components, so ordinary parenthetical prose is
+  // not promoted to formula metadata.
+  const coordinateTuple = /(?:^|[;\s\\])(?:[A-Za-z][A-Za-z0-9_]*|\\(?:mathbf|vec)\{[A-Za-z][A-Za-z0-9_]*\})\s*\(\s*[+-]?(?:\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9_]*)\s*(?:,\s*[+-]?(?:\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9_]*)\s*){1,}\)/;
+  if (coordinateTuple.test(original)) return true;
   // TeX command names end before `_`, `^`, or `{`, not only at a JavaScript
   // word boundary. This recognizes bounded integrals such as `\\int_S` and
   // contour integrals such as `\\oint` without accepting longer prose words.
