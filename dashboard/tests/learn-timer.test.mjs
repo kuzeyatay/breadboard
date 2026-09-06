@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   cumulativeLearnWorkflowElapsedMs,
   currentLearnElapsedMs,
+  currentLearnWorkflowAttempts,
   formatLearnElapsedTime,
   transitionLearnTimer,
 } from "../src/lib/learn-timer.ts";
@@ -31,6 +32,24 @@ test("a completed publication closes the cumulative Learn timer chain", () => {
 
   assert.equal(cumulativeLearnWorkflowElapsedMs(attempts, "published"), 180_000);
   assert.equal(cumulativeLearnWorkflowElapsedMs(attempts, "new-run"), 30_000);
+  assert.deepEqual(
+    currentLearnWorkflowAttempts(attempts, "new-run").map((attempt) => attempt.id),
+    ["new-run"],
+  );
+});
+
+test("time and token projections select the same complete retry chain", () => {
+  const attempts = [
+    { id: "map-owner", status: "failed", elapsedMs: 10, createdAt: "2026-07-14T00:00:00.000Z" },
+    { id: "retry-one", status: "failed", elapsedMs: 20, createdAt: "2026-07-14T00:01:00.000Z" },
+    { id: "retry-two", status: "generating_textbook", elapsedMs: 30, createdAt: "2026-07-14T00:02:00.000Z" },
+  ];
+
+  assert.deepEqual(
+    currentLearnWorkflowAttempts(attempts, "retry-two").map((attempt) => attempt.id),
+    ["map-owner", "retry-one", "retry-two"],
+  );
+  assert.equal(cumulativeLearnWorkflowElapsedMs(attempts, "retry-two"), 60);
 });
 
 test("Learn timer pauses for map confirmation and resumes for generation", () => {
@@ -110,6 +129,10 @@ test("Learn timer and skip-review state are persisted and exposed by the panel",
   assert.match(learnSource, /transitionLearnTimer/);
   assert.match(projectionSource, /function learnTimerForWorkflow/);
   assert.match(projectionSource, /cumulativeLearnWorkflowElapsedMs/);
+  assert.match(
+    projectionSource,
+    /function learnTokenUsageForWorkflow[\s\S]*?learnWorkflowAttempts\(job\)[\s\S]*?attempts\.map\(\(attempt\) => attempt\.id\)/,
+  );
   assert.match(
     projectionSource,
     /confirmed_learning_map_id\s*=\s*\?\s+OR\s+proposed_learning_map_id\s*=\s*\?/,
