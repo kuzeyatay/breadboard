@@ -1533,7 +1533,12 @@ function introducedAuditProblems(before: FinalAuditResult | null, after: FinalAu
   return after.problems.filter((problem) => !existing.has(problem));
 }
 
-function applyModelRepairOutput(gardenDir: string, gardenSlug: string, out: ModelRepairOutput): boolean {
+function applyModelRepairOutput(
+  gardenDir: string,
+  gardenSlug: string,
+  out: ModelRepairOutput,
+  validateCandidate?: (gardenDir: string, gardenSlug: string) => boolean,
+): boolean {
   const abs = path.join(gardenDir, out.targetPath);
   if (!fs.existsSync(path.dirname(abs))) return false;
   const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : null;
@@ -1563,7 +1568,10 @@ function applyModelRepairOutput(gardenDir: string, gardenSlug: string, out: Mode
   }
   try {
     const afterAudit = auditFinalGardenState(buildFinalGardenState(gardenDir, gardenSlug));
-    if (introducedAuditProblems(beforeAudit, afterAudit).length > 0) {
+    if (
+      introducedAuditProblems(beforeAudit, afterAudit).length > 0 ||
+      (validateCandidate && !validateCandidate(gardenDir, gardenSlug))
+    ) {
       if (before !== null) fs.writeFileSync(abs, before, "utf-8");
       return false;
     }
@@ -1622,6 +1630,10 @@ interface TargetedRepairSummary {
 export function makeCriticArtifactRepair(opts: {
   modelRepair?: ModelRepairFn;
   deterministicFinalize?: (gardenDir: string, gardenSlug: string) => void;
+  /** Optional production hard gate for the complete export contract. Active
+   * Learn supplies the same strict formula/visual audit used before promotion,
+   * so a semantic repair cannot introduce a later finalization failure. */
+  validateModelCandidate?: (gardenDir: string, gardenSlug: string) => boolean;
   allowDeterministicRepairs?: boolean;
 } = {}): ArtifactRepairFn {
   const allowDeterministicRepairs = opts.allowDeterministicRepairs !== false;
@@ -1671,7 +1683,12 @@ export function makeCriticArtifactRepair(opts: {
             );
           }
           modelFailureReason = "model returned no valid candidate";
-        } else if (applyModelRepairOutput(gardenDir, gardenSlug, out)) {
+        } else if (applyModelRepairOutput(
+          gardenDir,
+          gardenSlug,
+          out,
+          opts.validateModelCandidate,
+        )) {
           used = "model";
           changed = true;
         } else {
