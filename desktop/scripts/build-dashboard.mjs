@@ -13,11 +13,28 @@ import {
 import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
 import { isTransientDashboardBuildFailure } from "./dashboard-build-retry.mjs";
 import { assertSafeDashboardTraces } from "./dashboard-trace-safety.mjs";
+import {
+  claimDashboardBuildLease,
+  duplicateLeanDesktopWarning,
+  releaseDashboardBuildLease,
+} from "./lean-desktop-lease.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dashboardDir = path.join(repoRoot, "dashboard");
 const nextBin = path.join(dashboardDir, "node_modules", "next", "dist", "bin", "next");
 const traceGuard = path.join(repoRoot, "desktop", "scripts", "next-trace-guard.cjs");
+
+// Packaging and QA also invoke this file directly. Secure dev-fast's output
+// lease before provisioning or rotating output so a second build cannot
+// remove manifests while Next is collecting page data.
+const buildLease = claimDashboardBuildLease({ repoRoot });
+if (!buildLease.acquired) {
+  process.stderr.write(`[desktop] ${duplicateLeanDesktopWarning(buildLease.existing)}\n`);
+  process.exit(2);
+}
+if (!buildLease.inherited) {
+  process.once("exit", () => releaseDashboardBuildLease(repoRoot, buildLease.record));
+}
 
 // This file is also called directly by packaging and Electron QA, outside the
 // lean development launcher. Keep resource admission at the heavy boundary so
@@ -54,6 +71,9 @@ const genofficeEditor = spawnSync(
   { cwd: dashboardDir, stdio: "inherit" },
 );
 if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
+const clapWorklet = spawnSync(process.execPath, [path.join(dashboardDir, 'scripts', 'build-clap-worklet.mjs')],
+  { cwd: dashboardDir, stdio: 'inherit', windowsHide: true });
+if (clapWorklet.status !== 0) process.exit(clapWorklet.status ?? 1);
 
 // Turbopack keeps the route graph in its Rust worker instead of retaining the
 // whole graph in V8. Keep the existing one-time ceiling for Next's JavaScript

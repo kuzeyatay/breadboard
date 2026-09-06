@@ -75,6 +75,7 @@ import InlineGetDocRun from "./inline-get-doc-run";
 import InlineMeetingNotesRun from "./inline-meeting-notes-run";
 import type { MeetingRecording } from "@/lib/meeting-notes/use-meeting-recorder";
 import InlineDeepTutorRun from "./inline-deep-tutor-run";
+import InlineMusicProducerRun from "./inline-music-producer-run";
 import InlineCareerOpsRun from "./inline-career-ops-run";
 import InlineOpenExecutiveRun from "./inline-openexecutive-run";
 import InlineOpenGymRun from "./inline-open-gym-run";
@@ -348,8 +349,11 @@ interface Props {
   deepTutorAgent?: { id: string; name: string } | null;
   onClearDeepTutor?: () => void;
   onSelectDeepTutor?: () => void;
+  musicProducerAgent?: { id: string; name: string } | null;
   careerOpsAgent?: { id: string; name: string } | null;
+  onClearMusicProducer?: () => void;
   onClearCareerOps?: () => void;
+  onSelectMusicProducer?: () => void;
   onSelectCareerOps?: () => void;
   openExecutiveAgent?: { id: string; name: string } | null;
   onClearOpenExecutive?: () => void;
@@ -748,8 +752,11 @@ export default function AgentRuntimePanel({
   deepTutorAgent,
   onClearDeepTutor,
   onSelectDeepTutor,
+  musicProducerAgent,
   careerOpsAgent,
+  onClearMusicProducer,
   onClearCareerOps,
+  onSelectMusicProducer,
   onSelectCareerOps,
   openExecutiveAgent,
   onClearOpenExecutive,
@@ -2421,7 +2428,8 @@ export default function AgentRuntimePanel({
                   !conversationLocked
                     ? () => retryAssistantAsBranch(index)
                     : undefined;
-                const responseFailure = failureInline && index === lastAssistantIndex ? failureText : null;
+                const responseFailure = (failureInline && index === lastAssistantIndex ? failureText : null)
+                  || (message.failed ? message.runtimeError : null);
                 const responseHasErrorBody = Boolean(responseFailure?.trim() === visibleAssistantContent.trim());
                 const emptyResponse = index === lastAssistantIndex &&
                   !runInFlight && !delegatedAgentActive && !message.pending &&
@@ -2858,6 +2866,29 @@ export default function AgentRuntimePanel({
                         <InlineAgentReachRun
                           runId={message.agentReachRun.runId}
                           task={message.agentReachRun.task}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted ||
+                              index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : message.musicProducerRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineMusicProducerRun
+                          key={message.musicProducerRun.runId}
+                          runId={message.musicProducerRun.runId}
+                          task={message.musicProducerRun.task}
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
                           onRetry={
@@ -4086,9 +4117,12 @@ export default function AgentRuntimePanel({
           deepTutorAgent={deepTutorAgent}
           onClearDeepTutor={onClearDeepTutor}
           onSelectDeepTutor={onSelectDeepTutor}
-          careerOpsAgent={careerOpsAgent}
-          onClearCareerOps={onClearCareerOps}
-          onSelectCareerOps={onSelectCareerOps}
+          musicProducerAgent={musicProducerAgent}
+careerOpsAgent={careerOpsAgent}
+          onClearMusicProducer={onClearMusicProducer}
+onClearCareerOps={onClearCareerOps}
+          onSelectMusicProducer={onSelectMusicProducer}
+onSelectCareerOps={onSelectCareerOps}
           openExecutiveAgent={openExecutiveAgent}
           onClearOpenExecutive={onClearOpenExecutive}
           onSelectOpenExecutive={onSelectOpenExecutive}

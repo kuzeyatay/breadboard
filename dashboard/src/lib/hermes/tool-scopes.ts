@@ -290,8 +290,8 @@ export const MAP_TOOLS = [
 ] as const;
 
 // Spotify's first-party connected-app tools. Search is read-only; play can
-// start or control playback on the user's available phone and records new
-// queues for the conversation's inline player.
+// start or control Breadboard's inline player (or a phone explicitly requested
+// by the user) and records queues for the conversation's player.
 export const SPOTIFY_TOOLS = [
   "spotify_search",
   "spotify_play",
@@ -396,6 +396,7 @@ export const HUMANIZER_TOOLS = ["humanize_text", "humanize_status"] as const;
 // immutable Hermes session toolset and the computer-use guidance provide the
 // runtime and last-resort gates.
 export const COMPUTER_USE_TOOLS = ["computer_use"] as const;
+export const BREADBOARD_USE_TOOLS = ["breadboard_use"] as const;
 
 // The build loop: read a file, change it, look for the next thing to change.
 // Hermes ships its own `file` toolset and it stays off — those tools take
@@ -499,6 +500,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...HUMANIZER_TOOLS,
       ...HUMANIZER_TOOLS,
       ...COMPUTER_USE_TOOLS,
+      ...BREADBOARD_USE_TOOLS,
       ...WORKSPACE_TOOLS,
       ...SUPER_AGENT_TOOLS,
       ...gbrain,
@@ -542,6 +544,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...WATERMARK_TOOLS,
     ...HUMANIZER_TOOLS,
     ...COMPUTER_USE_TOOLS,
+    ...BREADBOARD_USE_TOOLS,
     ...WORKSPACE_TOOLS,
     ...SUPER_AGENT_TOOLS,
     ...gbrain,

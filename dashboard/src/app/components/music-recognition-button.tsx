@@ -1,5 +1,7 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 import { useEffect, useRef, useState } from "react";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import MicrophonePermissionHelp from "@/app/components/microphone-permission-help";
@@ -148,7 +150,7 @@ export default function MusicRecognitionButton({
     if (countdownTimerRef.current !== null) window.clearInterval(countdownTimerRef.current);
     stopTimerRef.current = null;
     countdownTimerRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    stopForegroundStream(streamRef.current);
     streamRef.current = null;
     recorderRef.current = null;
   }
@@ -186,7 +188,7 @@ export default function MusicRecognitionButton({
       if (countdownTimerRef.current !== null) window.clearInterval(countdownTimerRef.current);
       stopTimerRef.current = null;
       countdownTimerRef.current = null;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+      stopForegroundStream(streamRef.current);
       streamRef.current = null;
       recorderRef.current = null;
       onBusyChange?.(false);
@@ -209,7 +211,7 @@ export default function MusicRecognitionButton({
 
     setState("requesting");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await requestForegroundMicrophone({
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
@@ -219,7 +221,7 @@ export default function MusicRecognitionButton({
         video: false,
       });
       if (!mountedRef.current || operation !== operationRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
+        stopForegroundStream(stream);
         return;
       }
       streamRef.current = stream;

@@ -16,21 +16,24 @@ import {
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
 import {
-  activateSpotifyPhonePlayback,
   createSpotifyPlaylist,
   recordSpotifyPlaybackIntent,
   searchSpotifyTracks,
   spotifyApiRequest,
   spotifyCurrentPlaybackState,
-  spotifyPhonePlaybackDevice,
   SPOTIFY_SKILL_SLUG,
 } from "@/lib/spotify/service.ts";
+import {
+  spotifyPlaybackTarget,
+  withSpotifyPlaybackDevice,
+  type SpotifyPlaybackTarget,
+} from "@/lib/spotify/playback-target.ts";
 import type { SpotifyConnectDevice } from "@/lib/spotify/devices.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SPOTIFY_PHONE_CONTROL_ACTIONS = [
+const SPOTIFY_CONTROL_ACTIONS = [
   "pause",
   "resume",
   "next",
@@ -41,15 +44,15 @@ const SPOTIFY_PHONE_CONTROL_ACTIONS = [
   "repeat",
 ] as const;
 
-type SpotifyPhoneControlAction =
-  (typeof SPOTIFY_PHONE_CONTROL_ACTIONS)[number];
+type SpotifyControlAction =
+  (typeof SPOTIFY_CONTROL_ACTIONS)[number];
 
-function phoneControlAction(value: unknown): SpotifyPhoneControlAction | null {
+function playbackControlAction(value: unknown): SpotifyControlAction | null {
   if (value === undefined || value === null || value === "") return null;
   if (
     typeof value !== "string" ||
-    !SPOTIFY_PHONE_CONTROL_ACTIONS.includes(
-      value as SpotifyPhoneControlAction,
+    !SPOTIFY_CONTROL_ACTIONS.includes(
+      value as SpotifyControlAction,
     )
   ) {
     throw new ApiError(
@@ -58,57 +61,43 @@ function phoneControlAction(value: unknown): SpotifyPhoneControlAction | null {
       "That Spotify playback control is not supported.",
     );
   }
-  return value as SpotifyPhoneControlAction;
+  return value as SpotifyControlAction;
 }
 
-async function requireSpotifyPhone(userId: number) {
-  const device = await spotifyPhonePlaybackDevice(userId);
-  if (!device) {
-    throw new ApiError(
-      409,
-      "spotify_phone_unavailable",
-      "Spotify is not currently available on your phone. Open Spotify on the phone and try again.",
-    );
-  }
-  return device;
-}
-
-async function startPhonePlayback(input: {
+async function startPlayback(input: {
   userId: number;
   uris: string[];
-  device?: SpotifyConnectDevice;
+  target: SpotifyPlaybackTarget;
 }): Promise<SpotifyConnectDevice> {
-  const availableDevice = input.device ?? await requireSpotifyPhone(input.userId);
-  const device = await activateSpotifyPhonePlayback({
-    userId: input.userId,
-    device: availableDevice,
-    play: false,
-  });
-  await spotifyApiRequest({
-    userId: input.userId,
-    method: "PUT",
-    endpoint: "/v1/me/player/play",
-    query: { device_id: device.id },
-    body: { uris: input.uris },
-  });
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const current = await spotifyCurrentPlaybackState(input.userId).catch(
-      () => null,
-    );
-    if (
-      current?.isPlaying === true &&
-      current.deviceId === device.id &&
-      input.uris.includes(current.track.uri)
-    ) {
-      return device;
+  return withSpotifyPlaybackDevice(input.userId, input.target, async (device) => {
+    await spotifyApiRequest({
+      userId: input.userId,
+      method: "PUT",
+      endpoint: "/v1/me/player/play",
+      query: { device_id: device.id },
+      body: { uris: input.uris },
+    });
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const current = await spotifyCurrentPlaybackState(input.userId).catch(
+        () => null,
+      );
+      if (
+        current?.isPlaying === true &&
+        current.deviceId === device.id &&
+        current.track.uri === input.uris[0]
+      ) {
+        return device;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new ApiError(
-    502,
-    "spotify_phone_playback_failed",
-    "Spotify selected your phone but did not start playback. Open Spotify on the phone and try again.",
-  );
+    throw new ApiError(
+      502,
+      "spotify_playback_failed",
+      input.target === "phone"
+        ? "Spotify selected your phone but did not start the requested track. Try playback again."
+        : "Breadboard's Spotify player did not start the requested track. Try playback again.",
+    );
+  }, true);
 }
 
 function numberInRange(input: {
@@ -129,22 +118,15 @@ function numberInRange(input: {
   return Math.round(value);
 }
 
-async function controlSpotifyPhone(input: {
+async function controlSpotifyPlayback(input: {
   userId: number;
-  action: SpotifyPhoneControlAction;
+  action: SpotifyControlAction;
+  target: SpotifyPlaybackTarget;
   args: Record<string, unknown>;
 }) {
-  const availableDevice = await requireSpotifyPhone(input.userId);
-  const device = await activateSpotifyPhonePlayback({
-    userId: input.userId,
-    device: availableDevice,
-    play: input.action === "resume",
-  });
   let method: "POST" | "PUT" = "PUT";
   let endpoint = "";
-  const query: Record<string, string | number | boolean> = {
-    device_id: device.id,
-  };
+  const query: Record<string, string | number | boolean> = {};
 
   if (input.action === "pause" || input.action === "resume") {
     endpoint = input.action === "pause"
@@ -195,17 +177,21 @@ async function controlSpotifyPhone(input: {
     query.state = state;
   }
 
-  await spotifyApiRequest({
-    userId: input.userId,
-    method,
-    endpoint,
-    query,
+  return withSpotifyPlaybackDevice(input.userId, input.target, async (device) => {
+    query.device_id = device.id;
+    await spotifyApiRequest({
+      userId: input.userId,
+      method,
+      endpoint,
+      query,
+    });
+    return {
+      action: input.action,
+      status: "controlled",
+      player: input.target,
+      device: { name: device.name, type: device.type },
+    };
   });
-  return {
-    action: input.action,
-    status: "controlled",
-    device: { name: device.name, type: device.type },
-  };
 }
 
 export async function POST(request: Request) {
@@ -251,13 +237,15 @@ export async function POST(request: Request) {
       body.args && typeof body.args === "object" && !Array.isArray(body.args)
         ? (body.args as Record<string, unknown>)
         : {};
+    const target = spotifyPlaybackTarget(args.target);
     const controlAction = toolName === "spotify_play"
-      ? phoneControlAction(args.action)
+      ? playbackControlAction(args.action)
       : null;
     if (controlAction) {
-      const data = await controlSpotifyPhone({
+      const data = await controlSpotifyPlayback({
         userId: session.user_id,
         action: controlAction,
+        target,
         args,
       });
       recordAuditEvent({
@@ -302,69 +290,47 @@ export async function POST(request: Request) {
     if (!tracks.length) {
       throw new ApiError(404, "spotify_track_not_found", "Spotify did not find a matching track.");
     }
-    const data = toolName === "spotify_create_playlist"
+    const playlist = toolName === "spotify_create_playlist"
+      ? await createSpotifyPlaylist({
+          userId: session.user_id,
+          name: typeof args.name === "string" ? args.name : "",
+          description: typeof args.description === "string" ? args.description : "",
+          tracks,
+        })
+      : null;
+    const shouldPlay = toolName === "spotify_play" || (playlist !== null && args.play === true);
+    const data = shouldPlay
       ? await (async () => {
-          const shouldPlay = args.play === true;
-          // A combined create-and-play request must not create the playlist and
-          // then silently substitute Breadboard for the requested phone.
-          const availablePhone = shouldPlay
-            ? await requireSpotifyPhone(session.user_id!)
-            : null;
-          const playlist = await createSpotifyPlaylist({
-            userId: session.user_id!,
-            name: typeof args.name === "string" ? args.name : "",
-            description: typeof args.description === "string" ? args.description : "",
-            tracks,
-          });
-          const phone = shouldPlay
-            ? await startPhonePlayback({
-                userId: session.user_id!,
-                uris: tracks.map((track) => track.uri),
-                device: availablePhone!,
-              })
-            : null;
-          const intent = phone
-            ? recordSpotifyPlaybackIntent({
-                userId: session.user_id!,
-                conversationId: session.conversation_id!,
-                tracks,
-              })
-            : null;
-          return {
-            playlist,
-            ...(intent
-              ? {
-                  selected: intent.track,
-                  queueLength: intent.queueUris.length,
-                  player: "phone",
-                  status: "playing",
-                  playbackStarted: true,
-                  device: { name: phone!.name, type: phone!.type },
-                }
-              : { status: "created" }),
-          };
-        })()
-      : toolName === "spotify_play"
-      ? await (async () => {
-          const phone = await startPhonePlayback({
-            userId: session.user_id!,
-            uris: tracks.map((track) => track.uri),
-          });
+          // Persist the resolved request before starting audio so the inline
+          // controls remain available even if the playback engine fails.
           const intent = recordSpotifyPlaybackIntent({
             userId: session.user_id!,
             conversationId: session.conversation_id!,
             tracks,
+            target,
           });
-          return {
+          const selection = {
+            ...(playlist ? { playlist } : {}),
             selected: intent.track,
             queueLength: intent.queueUris.length,
-            player: "phone",
-            status: "playing",
-            playbackStarted: true,
-            device: { name: phone.name, type: phone.type },
+            player: target,
           };
+          try {
+            const device = await startPlayback({
+              userId: session.user_id!, uris: intent.queueUris, target,
+            });
+            return {
+              ...selection, status: "playing", playbackStarted: true,
+              device: { name: device.name, type: device.type },
+            };
+          } catch (error) {
+            return {
+              ...selection, status: "playback_failed", playbackStarted: false,
+              playbackError: error instanceof Error ? error.message : "Spotify playback failed.",
+            };
+          }
         })()
-      : { tracks };
+      : playlist ? { playlist, status: "created" } : { tracks };
     recordAuditEvent({
       eventType: "spotify.tool_completed",
       runtimeSessionId: session.id,

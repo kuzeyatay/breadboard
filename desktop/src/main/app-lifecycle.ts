@@ -42,6 +42,7 @@ import {
 } from "./window-manager";
 import { BROWSER_SESSION_PARTITION, BROWSER_TAB_PATH } from "./tab-manager";
 import { BrowserDownloads } from "./browser-downloads";
+import { BreadboardUseBridge } from "./breadboard-use";
 import {
   allowThemeLocationFor,
   allowedOriginsFor,
@@ -128,6 +129,7 @@ import {
 import { rebuildDevelopmentInstallation } from "./development-rebuild";
 import { createClickyLauncher } from "./clicky-launcher";
 import { ClickyCompanion } from "./clicky-companion";
+import { VoiceCompanion } from "./voice-companion";
 import { createWindowsInput } from "./windows-click";
 
 export interface StartupFailure {
@@ -279,8 +281,10 @@ export class AppLifecycle {
   private runtimeStopped = false;
   private computerUseIndicator: ComputerUseIndicator | null = null;
   private clickyCompanion: ClickyCompanion | null = null;
+  private voiceCompanion: VoiceCompanion | null = null;
   /** Random loopback-only CDP port reserved for visible browser-agent tabs. */
   private browserAgentDebuggingPort: number | null = null;
+  private breadboardUse: BreadboardUseBridge | null = null;
   /** Set only after this process successfully claims a Hot dev checkout. */
   private devInstanceLockRepoRoot: string | null = null;
   private readonly moduleDir: string;
@@ -368,6 +372,24 @@ export class AppLifecycle {
     );
 
     const launchMode = runtimeLaunchMode(this.paths.mode);
+    const attachedDashboardUrl = (() => {
+      const configured = process.env["BREADBOARD_DESKTOP_ATTACH_DASHBOARD_URL"]?.trim();
+      if (!configured) return null;
+      const parsed = new URL(configured);
+      if (
+        parsed.protocol !== "http:" ||
+        !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname) ||
+        parsed.username ||
+        parsed.password ||
+        parsed.search ||
+        parsed.hash
+      ) {
+        throw new Error(
+          "BREADBOARD_DESKTOP_ATTACH_DASHBOARD_URL must be an unauthenticated loopback HTTP URL.",
+        );
+      }
+      return parsed.toString();
+    })();
     let hotCheckoutFailure: string | null = null;
     if (
       requiresExclusiveHotCheckout({
@@ -415,7 +437,7 @@ export class AppLifecycle {
       (line) => supervisorLog.write(line),
     );
 
-    if (hotCheckoutFailure === null) {
+    if (hotCheckoutFailure === null && attachedDashboardUrl === null) {
       this.runtime = new RuntimeProcess({
         ...this.runtimeProcessOptions(launchMode),
         startupTimeoutMs: runtimeInitialStartupTimeoutMs(this.paths.runtimeRoot, launchMode),
@@ -504,6 +526,12 @@ export class AppLifecycle {
       },
     });
     this.windows.tabs.setEnabled(readBrowserNavigationEnabled(this.paths.configDir));
+    this.breadboardUse = new BreadboardUseBridge({
+      tabs: this.windows.tabs, dataRoot: this.paths.dataRoot,
+      dashboardUrl: () => this.runtimeDashboardUrl,
+      clicky: () => this.clickyLauncher(),
+    });
+    await this.breadboardUse.start();
 
     this.computerUseIndicator = new ComputerUseIndicator({
       dataDir: path.join(this.paths.dataRoot, "ui-tars"),
@@ -540,6 +568,21 @@ export class AppLifecycle {
           logTail: supervisorLog.readTail(20),
         },
       });
+      return;
+    }
+
+    if (attachedDashboardUrl !== null) {
+      this.runtimeDashboardUrl = attachedDashboardUrl;
+      this.allowDashboardOrigin(attachedDashboardUrl);
+      this.startVoiceCompanion();
+      this.windows.tabs.setNewTabUrl(new URL("/new-tab", attachedDashboardUrl).toString());
+      this.windows.tabs.setBrowserUrl(new URL(BROWSER_TAB_PATH, attachedDashboardUrl).toString());
+      this.dashboardShown = true;
+      this.setStartupState({ phase: "ready", message: "Ready", services: [] });
+      await this.windows.showDashboard(
+        attachedDashboardUrl,
+        new URL("/new-tab", attachedDashboardUrl).toString(),
+      );
       return;
     }
 
@@ -685,6 +728,7 @@ export class AppLifecycle {
       const ready = await this.runtime.start();
       this.runtimeDashboardUrl = ready.dashboardUrl;
       this.allowDashboardOrigin(ready.dashboardUrl);
+      this.startVoiceCompanion();
       this.windows.tabs.setNewTabUrl(new URL("/new-tab", ready.dashboardUrl).toString());
       this.windows.tabs.setBrowserUrl(new URL(BROWSER_TAB_PATH, ready.dashboardUrl).toString());
       const status = await this.runtime.status();
@@ -1157,6 +1201,14 @@ export class AppLifecycle {
     );
     ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command: unknown) => {
       if (!isTabsCommand(command)) return false;
+      if (command.type === 'voice-open') {
+        if (event.senderFrame !== event.sender.mainFrame || !this.windows.tabs.stateFor(event.sender)?.selfId) return false;
+        const url = event.sender.getURL();
+        if (!this.runtimeDashboardUrl || new URL(url).origin !== new URL(this.runtimeDashboardUrl).origin) return false;
+        this.startVoiceCompanion();
+        return this.voiceCompanion?.launch().catch(() => false) ?? false;
+      }
+      if (command.type === 'voice-overlay' && event.senderFrame !== event.sender.mainFrame) return false;
       return this.windows.tabs.handleCommand(event.sender, command);
     });
     ipcMain.handle(IPC_CHANNELS.getBrowserNavigation, () => this.windows.tabs.isEnabled);
@@ -1227,7 +1279,8 @@ export class AppLifecycle {
           !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url) || !isBrowserHistoryCommand(command)) return false;
       return this.windows.tabs.browserHistory.command(command);
     });
-    ipcMain.handle(IPC_CHANNELS.setBrowserRecentSearches, (_event, ownerKey: unknown, searches: unknown) => {
+    ipcMain.handle(IPC_CHANNELS.setBrowserRecentSearches, (event, ownerKey: unknown, searches: unknown) => {
+      if (this.windows.tabs.isPrivateBrowser(event.sender)) return false;
       if (!isBrowserBookmarkOwnerKey(ownerKey) || !isBrowserRecentSearches(searches)) return false;
       try {
         writeBrowserRecentSearches(this.paths.configDir, ownerKey, searches);
@@ -1283,6 +1336,12 @@ export class AppLifecycle {
       }
       return this.clickyLauncher().openProject();
     });
+  }
+
+  private startVoiceCompanion() {
+    this.voiceCompanion ??= new VoiceCompanion({ dashboardUrl: () => this.runtimeDashboardUrl, allowed: this.allowedOrigins });
+    this.windows.tabs.onVoiceNotification = notice => this.voiceCompanion?.notify(notice);
+    void this.voiceCompanion.start().catch(error => this.logs.forService('desktop').write(`[voice] ${String(error)}`));
   }
 
   private clickyLauncher() {
@@ -1455,6 +1514,9 @@ export class AppLifecycle {
       this.computerUseIndicator?.stop();
       this.clickyCompanion?.stop();
       this.clickyCompanion = null;
+      this.voiceCompanion?.stop();
+      this.voiceCompanion = null;
+      void this.breadboardUse?.close();
       if (this.runtimeStopped) return;
       event.preventDefault();
       if (this.quitting) return;

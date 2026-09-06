@@ -40,8 +40,8 @@ export function parsePageTranslation(content: unknown, input: PageTranslationReq
 }
 
 /** A plain translation request through the configured provider, with no tools or agent context. */
-export async function translatePageText(input: PageTranslationRequest, signal?: AbortSignal, fetcher: typeof fetch = fetch) {
-  const response = await fetcher(`${localChatmockBaseUrl()}/chat/completions`, {
+export async function translatePageText(input: PageTranslationRequest, signal?: AbortSignal, fetcher: typeof fetch = fetch, baseUrl = localChatmockBaseUrl()) {
+  const response = await fetcher(`${baseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${chatmockApiKeyValue()}` },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(90000)]) : AbortSignal.timeout(90000),
     body: JSON.stringify({
@@ -52,6 +52,9 @@ export async function translatePageText(input: PageTranslationRequest, signal?: 
         { role: "user", content: JSON.stringify({ segments: input.segments }) },
       ],
     }),
+  }).catch(error => {
+    if (error?.name === "AbortError" || error?.name === "TimeoutError") throw error;
+    throw new Error("Translation is unavailable. Check your AI connection in Settings and try again.");
   });
   if (!response.ok) throw new Error("Translation is unavailable. Check your AI connection in Settings and try again.");
   const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };

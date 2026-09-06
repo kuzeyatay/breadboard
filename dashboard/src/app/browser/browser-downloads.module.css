@@ -16,3 +16,40 @@
 .panel button:disabled { opacity: .5; cursor: default; }
 .error { padding: 12px 18px; color: var(--ink-heading); font-size: 12px; background: color-mix(in srgb, #d68a36 12%, transparent); }
 .error button { margin-left: 10px; text-decoration: underline; }
+
+.control { position: absolute; right: 58px; top: 50%; transform: translateY(-50%); }
+.trigger { position: relative; cursor: pointer; }
+.trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--ink-muted) 14%, var(--paper-surface)); color: var(--ink-heading); }
+.trigger[data-downloading="true"] { color: var(--botanical); }
+.spinner { position: absolute; inset: 2px; border: 1.5px solid color-mix(in srgb, currentColor 20%, transparent); border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; animation: download-spin 1s linear infinite; pointer-events: none; }
+@keyframes download-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-color: currentColor; } }
+.toolbarError { position: absolute; top: 44px; right: 0; width: 260px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper-raised); color: var(--ink-heading); font-size: 12px; }
+
+.popover { box-sizing: border-box; width: 100%; display: flex; flex-direction: column; max-height: 480px; border: 1px solid color-mix(in srgb, var(--ink-muted) 25%, transparent); border-radius: 10px; overflow: hidden; background: var(--paper-raised); color: var(--ink-heading); font-family: var(--font-source-sans), Arial, sans-serif; }
+.recentList { overflow-y: auto; min-height: 0; padding: 4px 10px; }
+.recentRow { display: flex; align-items: center; gap: 12px; padding: 14px 6px; }
+.recentRow + .recentRow { border-top: 1px solid color-mix(in srgb, var(--ink-muted) 15%, transparent); }
+.fileIcon { display: grid; place-items: center; flex: none; width: 28px; color: var(--ink-muted); }
+.recentDetails { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.filename { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; background: transparent; border: 0; text-align: left; font: inherit; font-size: 13px; font-weight: 500; line-height: 18px; color: var(--ink-heading); cursor: pointer; }
+.filename:disabled { color: var(--ink-heading); opacity: 1; cursor: default; }
+.recentStatus { color: var(--ink-muted); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.progress { appearance: none; border: 0; width: 100%; height: 3px; margin-top: 4px; overflow: hidden; border-radius: 2px; accent-color: var(--botanical); }
+.progress::-webkit-progress-bar { background: color-mix(in srgb, var(--ink-muted) 18%, transparent); border-radius: 2px; }
+.progress::-webkit-progress-value { background: var(--botanical); border-radius: 2px; }
+.iconAction { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 6px; background: transparent; border: 0; color: var(--ink-heading); cursor: pointer; }
+.iconAction:disabled { opacity: .5; cursor: default; }
+.showAll { flex: none; display: block; width: 100%; min-height: 40px; padding: 10px 16px; border: 0; border-top: 1px solid color-mix(in srgb, var(--ink-muted) 22%, transparent); background: transparent; color: var(--ink-heading); text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.empty { display: flex; align-items: center; flex-direction: column; gap: 8px; padding: 24px 12px; color: var(--ink-muted); font-size: 13px; }
+.empty small { font-size: 11px; }
+.popover button:focus-visible { outline: 2px solid var(--botanical); outline-offset: -2px; }
+@media (hover: hover) and (pointer: fine) {
+  .iconAction:not(:disabled):hover, .showAll:hover { background: color-mix(in srgb, var(--ink-muted) 10%, transparent); }
+  .filename:not(:disabled):hover { text-decoration: underline; }
+}
+
+:global(html):has(.popover),
+:global(html):has(.popover) :global(body) { margin: 0; min-height: 0; overflow: hidden; background: transparent !important; }
+:global(html):has(.popover) :global(.desktop-title-bar),
+:global(html):has(.popover) :global(.bb-page-toast-host) { display: none !important; }

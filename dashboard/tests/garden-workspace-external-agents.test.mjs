@@ -20,6 +20,7 @@ test("the main garden workspace exposes and launches every restored runtime agen
     "onSelectDeepResearch",
     "onSelectOpenCode",
     "onSelectOpenPlanter",
+    "onSelectMusicProducer",
   ]) {
     assert.match(workspace, new RegExp(`${callback}=\\{`));
   }
@@ -191,7 +192,7 @@ test("delegated workers stay hidden and preserve their Super Agent message acros
   assert.match(workspace, /msg\.delegatedAgentPreamble/);
   assert.match(
     workspace,
-    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
   );
   assert.match(updateRoute, /delegatedAgentPreamble\?: string/);
   assert.match(updateRoute, /externalAgentResult\?: string/);

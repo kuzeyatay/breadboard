@@ -1491,11 +1491,6 @@ body:has(> [data-dashboard-page])::-webkit-scrollbar {
   top: 0;
 }
 
-html[data-breadboard-desktop="true"] body:has(> .dashboard-shell) > .desktop-title-bar {
-  position: sticky;
-  top: 0;
-}
-
 /* A cold Electron tab is revealed behind a separate loading view. The native
    view begins after the 32px caption reserve, while the retained page can be
    captured below that overlaid caption strip. In that frame the dashboard
@@ -1521,6 +1516,9 @@ html[data-breadboard-desktop="true"] {
 }
 
 html[data-breadboard-desktop="true"] .desktop-title-bar {
+  /* Keep the window tabs aligned on document-scrolling pages such as Profile. */
+  position: sticky;
+  top: 0;
   z-index: 1000;
   display: flex;
   width: 100%;
@@ -2543,18 +2541,6 @@ html[data-breadboard-desktop="true"] body > .browser-shell {
     var(--paper-bg);
 }
 
-.browser-home-rings {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  display: grid;
-  place-items: center;
-  isolation: isolate;
-  pointer-events: none;
-}
-
-.browser-home-rings::before,
-.browser-home-rings::after,
 .browser-start-page::before,
 .browser-start-page::after {
   --browser-orbit-opacity-low: 0.66;
@@ -2569,7 +2555,6 @@ html[data-breadboard-desktop="true"] body > .browser-shell {
   will-change: transform, opacity;
 }
 
-.browser-home-rings::before,
 .browser-start-page::before {
   width: min(64vw, 760px);
   aspect-ratio: 1.7;
@@ -2580,7 +2565,6 @@ html[data-breadboard-desktop="true"] body > .browser-shell {
       alternate;
 }
 
-.browser-home-rings::after,
 .browser-start-page::after {
   --browser-orbit-opacity-low: 0.58;
   --browser-orbit-opacity-high: 0.92;
@@ -2866,13 +2850,13 @@ html[data-theme="dark"] .browser-start-page {
   transition: background-image 180ms ease;
 }
 
-.browser-start-page[data-wallpaper-ready="true"][data-wallpaper-tone="light"] {
+.browser-home-widget-surface[data-wallpaper-ready="true"][data-wallpaper-tone="light"] {
   --browser-wallpaper-wash: linear-gradient(rgb(255 252 244 / 8%), rgb(239 244 238 / 18%));
   --browser-wallpaper-foreground: #122019;
   --browser-wallpaper-muted: rgb(18 32 25 / 70%);
 }
 
-.browser-start-page[data-wallpaper-ready="true"][data-wallpaper-tone="dark"] {
+.browser-home-widget-surface[data-wallpaper-ready="true"][data-wallpaper-tone="dark"] {
   --browser-wallpaper-wash: linear-gradient(rgb(4 9 14 / 12%), rgb(3 8 12 / 34%));
   --browser-wallpaper-foreground: #fbfcf9;
   --browser-wallpaper-muted: rgb(251 252 249 / 74%);
@@ -2884,9 +2868,8 @@ html[data-theme="dark"] .browser-start-page {
   text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
 }
 
-.browser-start-page .browser-greeting p,
-.browser-start-page .browser-quick-link span:last-child {
-  color: var(--browser-wallpaper-muted);
+.browser-start-page .browser-quick-link > span:last-child {
+  color: var(--browser-wallpaper-foreground);
 }
 
 .browser-daily-quote {
@@ -2923,7 +2906,7 @@ html[data-theme="dark"] .browser-home-widget-surface:not([data-wallpaper-tone]) 
 }
 
 html[data-theme="dark"] .browser-home-widget-surface:not([data-wallpaper-tone]) .browser-daily-quote,
-.browser-start-page[data-wallpaper-tone="dark"] .browser-daily-quote {
+.browser-home-widget-surface[data-wallpaper-tone="dark"] .browser-daily-quote {
   border-color: rgb(255 255 255 / 13%);
   background: rgb(9 16 20 / 48%);
   box-shadow: 0 14px 38px rgb(0 0 0 / 25%);
@@ -2985,6 +2968,8 @@ html[data-theme="dark"] .browser-home-calendar {
 
 .browser-home-calendar-heading {
   display: flex;
+  width: 100%;
+  min-width: 0;
   align-items: center;
   gap: 7px;
   font: 600 11px/1.2 var(--font-source-sans), sans-serif;
@@ -2997,6 +2982,7 @@ html[data-theme="dark"] .browser-home-calendar {
 
 .browser-home-calendar-event {
   display: flex;
+  width: 100%;
   min-width: 0;
   align-items: center;
   gap: 12px;
@@ -3028,6 +3014,7 @@ html[data-theme="dark"] .browser-home-calendar {
 .browser-home-calendar-copy {
   display: flex;
   min-width: 0;
+  flex: 1;
   flex-direction: column;
   gap: 3px;
 }
@@ -3495,7 +3482,6 @@ html[data-theme="dark"] .browser-home-calendar {
 
 .browser-start-copy .browser-greeting p {
   margin-top: 3px;
-  color: var(--browser-wallpaper-muted);
 }
 
 .browser-greeting-caret {
@@ -3709,7 +3695,7 @@ html[data-theme="dark"] .browser-dock .browser-sketch-outline path {
 }
 
 html[data-theme="dark"] .browser-home-widget-surface:not([data-wallpaper-tone]) .browser-daily-quote .browser-sketch-outline path,
-.browser-start-page[data-wallpaper-tone="dark"]
+.browser-home-widget-surface[data-wallpaper-tone="dark"]
   .browser-daily-quote
   .browser-sketch-outline
   path {
@@ -6031,13 +6017,11 @@ html[data-theme="dark"] .browser-spotify-cover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .browser-home-rings::before,
   .browser-start-page::before {
     animation: browser-orbit-shade 16920ms
       cubic-bezier(0.77, 0, 0.175, 1) infinite alternate;
   }
 
-  .browser-home-rings::after,
   .browser-start-page::after {
     animation: browser-orbit-shade 16920ms
       cubic-bezier(0.77, 0, 0.175, 1) -8460ms infinite alternate;
@@ -8338,6 +8322,21 @@ b {
   animation: terminal-boot-conceal 0.2s var(--neu-easing) both;
 }
 
+.bb-nav-progress {
+  transition: opacity 160ms ease-out;
+}
+
+.bb-nav-progress-fill {
+  /* Match the creep interval so progress stays in motion between updates.
+     Translating the fixed-size fill avoids layout on every animation frame. */
+  transition: transform 260ms linear;
+}
+
+.bb-nav-progress[aria-busy="false"] .bb-nav-progress-fill {
+  transition-duration: 220ms;
+  transition-timing-function: ease-out;
+}
+
 /* The navigation bar creeps to its ceiling in a few seconds, but a dev-mode
    route compile can keep the page waiting far longer than that. Once the creep
    stops, this is what says the wait is still live rather than stuck. */
@@ -8358,6 +8357,11 @@ b {
 @media (prefers-reduced-motion: reduce) {
   .bb-nav-progress-stalled {
     animation: none;
+  }
+
+  .bb-nav-progress,
+  .bb-nav-progress .bb-nav-progress-fill {
+    transition: none;
   }
 }
 
@@ -10309,8 +10313,38 @@ html[data-breadboard-desktop="true"] .voice-chip {
 .voice-stage-state {
   font-size: 0.8rem;
   letter-spacing: 0.18em;
-  text-transform: uppercase;
+  text-transform: none;
   color: rgb(253 234 222 / 70%);
+}
+
+html[data-voice-widget="true"], html[data-voice-widget="true"] body { background: transparent !important; }
+.voice-companion-page { position: fixed; inset: 0; background: transparent; }
+.voice-companion-drag { position: fixed; z-index: 10001; top: 0; left: 0; right: 60px; height: 48px; -webkit-app-region: drag; }
+.voice-stage-compact {
+  border-radius: 26px;
+  border: 1px solid rgb(255 235 218 / 28%);
+  box-shadow: inset 0 1px 0 rgb(255 241 228 / 16%);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  animation: voice-widget-in 160ms ease-out both;
+}
+@keyframes voice-widget-in { from { opacity: 0; } to { opacity: 1; } }
+.voice-stage-compact .voice-stage-header { flex: 0 0 48px; padding: 12px 16px 0 22px; align-items: center; justify-content: space-between; }
+.voice-widget-name { font-size: 13px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; color: rgb(255 240 230 / 86%); }
+.voice-widget-close { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid rgb(255 238 222 / 14%); border-radius: 50%; color: #fdeade; background: rgb(255 229 211 / 10%); cursor: pointer; -webkit-app-region: no-drag; transition: background 120ms ease; }
+.voice-widget-close:hover { background: rgb(255 229 211 / 20%); }
+.voice-widget-close:active { background: rgb(255 229 211 / 30%); }
+.voice-widget-close:focus-visible { outline: 2px solid #fdeade; outline-offset: 3px; }
+.voice-stage-compact .voice-stage-centre { display: grid; grid-template-columns: minmax(110px, 45%) minmax(0, 1fr); grid-template-rows: 1fr auto auto 1fr; column-gap: 12px; row-gap: 6px; align-items: center; padding: 0 22px 20px 8px; text-align: left; overflow-y: auto; }
+.voice-stage-compact .voice-ring-button { grid-column: 1; grid-row: 1 / 5; width: min(43vw, 160px, 72vh); justify-self: center; }
+.voice-stage-compact .voice-stage-state { grid-column: 2; grid-row: 2; font-size: 22px; font-weight: 500; line-height: 1.15; letter-spacing: -0.035em; color: #fff1e6; margin: 0; }
+.voice-widget-hint { grid-column: 2; grid-row: 3; font-size: 12px; line-height: 1.45; color: rgb(253 234 222 / 72%); margin: 0; }
+.voice-stage-compact .voice-note, .voice-stage-compact .voice-blocked { grid-column: 1 / -1; font-size: 12px; max-height: 100px; overflow: auto; margin: 0; }
+.voice-stage-compact .voice-stage-centre:has(.voice-note, .voice-blocked) { grid-template-rows: 0 auto auto 0 auto; }
+.voice-stage-compact .voice-stage-centre:has(.voice-note, .voice-blocked) .voice-ring-button { width: 88px; }
+.voice-permission-actions { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
+@media (max-width: 340px) {
+  .voice-stage-compact .voice-stage-centre { column-gap: 8px; padding-right: 16px; }
+  .voice-stage-compact .voice-stage-state { font-size: 20px; }
 }
 
 .voice-caption {
@@ -11487,15 +11521,13 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
 
 .assistant-response-notice {
   margin-block: 12px;
-  max-width: 640px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--paper-strong);
-  padding: 16px;
+  color: var(--ink-muted);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .assistant-response-notice-details {
-  margin-top: 10px;
+  margin-top: 4px;
   color: var(--ink-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -11518,27 +11550,53 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
 
 .assistant-response-notice-retry {
   flex-shrink: 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  padding: 6px 12px;
   color: var(--ink);
-  background: var(--paper-raised);
-  font-size: 12px;
-  line-height: 18px;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
   cursor: pointer;
-  transition: background-color 150ms, transform 150ms;
 }
 
-.assistant-response-notice-retry:active { transform: scale(0.97); }
 .assistant-response-notice-retry:focus-visible,
 .assistant-response-notice-details summary:focus-visible {
   outline: 2px solid var(--botanical);
   outline-offset: 3px;
 }
 @media (hover: hover) and (pointer: fine) {
-  .assistant-response-notice-retry:hover { background: var(--paper-bg); }
+  .assistant-response-notice-retry:hover { color: var(--botanical); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .assistant-response-notice-retry { transition: none; }
-  .assistant-response-notice-retry:active { transform: none; }
-}
+/* Application-level clap controls. No corner dock or native overlay renderer. */
+.clap-settings { color: var(--ink); border: 1px solid var(--neu-border); border-radius: 16px; padding: 20px; display: grid; gap: 14px; font-size: 13px; }
+.clap-settings header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.clap-settings header > div { flex: 1; min-width: 0; }
+.clap-settings h3 { font-size: 15px; font-weight: 600; }
+.clap-settings header > div > p, .clap-detail, .clap-sensitivity span { color: var(--ink-muted); font-size: 12px; line-height: 1.6; }
+.clap-settings label:not(.clap-checkbox) { display: grid; gap: 6px; }
+.clap-settings select { width: 100%; min-width: 0; color: var(--ink); background: var(--paper-raised); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.clap-settings button, .clap-review button { border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; font-size: 12px; background: var(--paper-raised); }
+.clap-settings button:disabled { opacity: .5; cursor: not-allowed; }
+.clap-parallel-option { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.clap-parallel-option > div { min-width: 0; }
+.clap-parallel-option .clap-detail { margin-top: 4px; }
+.clap-settings .clap-switch { position: relative; flex: 0 0 auto; width: 44px; height: 24px; margin-top: 2px; padding: 0; border-radius: 999px; background: var(--line-strong); }
+.clap-settings .clap-switch[aria-checked="true"] { background: var(--botanical); border-color: var(--botanical); }
+.clap-switch > span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+.clap-switch[aria-checked="true"] > span { transform: translateX(20px); }
+.clap-settings :is(button,input,select):focus-visible, .clap-indicator button:focus-visible { outline: 2px solid var(--botanical); outline-offset: 3px; }
+.clap-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .65fr); gap: 14px; }
+.clap-checkbox, .clap-status, .clap-buttons { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.clap-settings .clap-status { color: var(--ink-muted); font-size: 12px; line-height: 1.6; }
+.clap-settings input { accent-color: var(--botanical); }
+.clap-sensitivity output { float: right; }
+.clap-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted); flex-shrink: 0; }
+.clap-dot.is-listening { background: var(--botanical); }
+.clap-test { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
+.clap-test meter { width: 100%; height: 12px; }
+.clap-error { color: var(--danger, #b43f38); font-size: 12px; }
+.clap-indicator { position: fixed; top: calc(var(--desktop-titlebar-height, 0px) + 70px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 100px; padding: 5px 10px; color: var(--ink); background: var(--paper-raised); font-size: 11px; z-index: 95; max-width: calc(100vw - 32px); white-space: nowrap; }
+.clap-indicator button { text-decoration: underline; text-underline-offset: 2px; }
+.clap-notice { position: fixed; top: 112px; left: 50%; transform: translateX(-50%); display: flex; gap: 16px; max-width: min(480px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper-raised); color: var(--ink); font-size: 13px; z-index: 180; }
+.clap-review { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; background: #0006; padding: 24px; }
+.clap-review > div { border-radius: 16px; padding: 24px; max-width: 520px; background: var(--paper-raised); color: var(--ink); display: grid; gap: 14px; }
+html[data-voice-stage='open'] .clap-indicator { display: none; }
+@media (max-width: 540px) { .clap-fields { grid-template-columns: 1fr; } }

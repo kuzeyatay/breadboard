@@ -20,6 +20,7 @@ function source(relative) {
  * prompt somewhere different.
  */
 const WIRED = [
+  { agent: "music-producer", file: "src/lib/music-producer/planning.ts", seam: /promptWithContext\(input\.task/ },
   { agent: "codex", file: "src/app/api/codex/runs/route.ts", seam: /withConversationContext\(/ },
   { agent: "opencode", file: "src/app/api/opencode/runs/route.ts", seam: /withConversationContext\(/ },
   { agent: "ruflo", file: "src/app/api/ruflo/runs/route.ts", seam: /withConversationContext\(/ },
@@ -76,6 +77,7 @@ test("every runtime agent with a prompt reads the chat it was launched from", ()
 
 test("the launch routes hand the conversation to their run manager", () => {
   const routes = [
+    "music-producer",
     "agent-reach", "career-ops", "openexecutive", "open-gym", "deep-tutor", "get-doc", "openplanter",
     "openscience", "openwork", "legal", "deer-flow", "inbox-zero",
     "hyperframes", "openmontage", "vibe-trading", "stock-analyst",

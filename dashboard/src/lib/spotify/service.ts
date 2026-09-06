@@ -9,12 +9,14 @@ import {
 import { readConnectedAppTokens } from "../connected-apps/vault.ts";
 import { findNangoIntegration } from "../nango/catalog.ts";
 import { ApiError } from "../hermes/route-core.ts";
+import { createSpotifyHistoryStore } from "./history-store.ts";
 import {
   selectSpotifyPhoneDevice,
   type SpotifyConnectDevice,
 } from "./devices.ts";
 
 export const SPOTIFY_CONNECTION_SLUG = "spotify";
+export const spotifyListeningHistory = createSpotifyHistoryStore(db);
 export const SPOTIFY_SKILL_SLUG = "spotify";
 // Spotify's current Search API rejects values above 10. Keep this guard at
 // the provider boundary so every caller, including playback queue resolution,
@@ -54,6 +56,7 @@ export interface SpotifyTrack {
 }
 
 export interface SpotifyPlaybackIntent {
+  target: "inline" | "phone";
   revision: string;
   track: SpotifyTrack;
   queueUris: string[];
@@ -97,6 +100,7 @@ export interface SpotifyLibraryPlaylist {
 }
 
 type PlaybackIntentRow = {
+  target: "inline" | "phone";
   revision: string;
   track_json: string;
   queue_json: string;
@@ -368,6 +372,7 @@ export async function spotifyCurrentPlaybackState(
   const device = objectRecord(playback.device);
   const progressMs = Number(playback.progress_ms);
   const providerDeviceId = typeof device?.id === "string" ? device.id : null;
+  if (playback.is_playing === true) spotifyListeningHistory.record(userId, track);
   return {
     track,
     isPlaying: playback.is_playing === true,
@@ -839,12 +844,14 @@ export function recordSpotifyPlaybackIntent(input: {
   userId: number;
   conversationId: number;
   tracks: SpotifyTrack[];
+  target?: "inline" | "phone";
 }): SpotifyPlaybackIntent {
   const [track, ...rest] = input.tracks;
   if (!track) {
     throw new ApiError(404, "spotify_track_not_found", "Spotify did not find a matching track.");
   }
   const intent: SpotifyPlaybackIntent = {
+    target: input.target ?? "inline",
     revision: crypto.randomUUID(),
     track,
     queueUris: [track, ...rest].map((item) => item.uri).slice(0, 50),
@@ -852,14 +859,15 @@ export function recordSpotifyPlaybackIntent(input: {
   };
   db.prepare(
     `INSERT INTO spotify_playback_intents
-       (conversation_id, user_id, revision, track_json, queue_json, requested_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+       (conversation_id, user_id, revision, track_json, queue_json, requested_at, target)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(conversation_id) DO UPDATE SET
        user_id = excluded.user_id,
        revision = excluded.revision,
        track_json = excluded.track_json,
        queue_json = excluded.queue_json,
        requested_at = excluded.requested_at,
+       target = excluded.target,
        updated_at = datetime('now')`,
   ).run(
     input.conversationId,
@@ -868,6 +876,7 @@ export function recordSpotifyPlaybackIntent(input: {
     JSON.stringify(intent.track),
     JSON.stringify(intent.queueUris),
     intent.requestedAt,
+    intent.target,
   );
   return intent;
 }
@@ -878,7 +887,7 @@ export function getSpotifyPlaybackIntent(
 ): SpotifyPlaybackIntent | null {
   const row = db
     .prepare(
-      `SELECT revision, track_json, queue_json, requested_at
+      `SELECT revision, track_json, queue_json, requested_at, target
        FROM spotify_playback_intents
        WHERE user_id = ? AND conversation_id = ?`,
     )
@@ -892,6 +901,7 @@ export function getSpotifyPlaybackIntent(
       track,
       queueUris: Array.isArray(queueUris) ? queueUris : [track.uri],
       requestedAt: row.requested_at,
+      target: row.target,
     };
   } catch {
     return null;

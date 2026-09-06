@@ -93,7 +93,7 @@ test("Intelligence settings expose Breadboard-styled Voicebox speech controls", 
 test("every shared assistant composer receives recording and transcription", () => {
   assert.match(composer, /<SpeechDictationButton/);
   assert.match(composer, /textareaRef=\{internalTextareaRef\}/);
-  assert.match(dictation, /navigator\.mediaDevices\.getUserMedia/);
+  assert.match(dictation, /requestForegroundMicrophone/);
   assert.match(dictation, /new MediaRecorder/);
   assert.match(dictation, /createScriptProcessor/);
   assert.match(dictation, /dictation-partial\.wav/);
@@ -101,7 +101,7 @@ test("every shared assistant composer receives recording and transcription", () 
   assert.match(dictation, /recorder\.start\(\)/);
   assert.doesNotMatch(dictation, /recorder\.start\(250\)/);
   assert.match(dictation, /\/api\/speech\/transcribe/);
-  assert.match(dictation, /getTracks\(\)\.forEach/);
+  assert.match(dictation, /stopForegroundStream/);
   assert.match(dictation, /5 \* 60_000/);
   assert.match(dictation, /aria-label=\{label\}/);
   assert.match(dictation, /<MicrophonePermissionHelp/);
@@ -116,7 +116,7 @@ test("voice mode can warm Voicebox before recording the first turn", () => {
   assert.match(dictation, /await prepareLocalSpeech\(prepareController\.signal\)/);
   assert.ok(
     dictation.indexOf("await prepareLocalSpeech(prepareController.signal)") <
-      dictation.indexOf("navigator.mediaDevices.getUserMedia"),
+      dictation.indexOf("await requestForegroundMicrophone"),
     "Dictate live must wait for Voicebox before it starts capturing audio",
   );
   assert.match(prepareClient, /SPEECH_RECONNECT_DELAYS_MS/);
@@ -580,7 +580,7 @@ test("a voice can be cloned from a recording made on the spot", () => {
   assert.match(speechSettings, /Record now/);
   assert.match(speechSettings, /Upload a file/);
   assert.match(speechSettings, /<VoiceSampleRecorder/);
-  assert.match(recorder, /navigator\.mediaDevices\.getUserMedia/);
+  assert.match(recorder, /requestForegroundMicrophone/);
   assert.match(recorder, /new MediaRecorder/);
   assert.match(recorder, /Read this aloud/);
   assert.match(recorder, /const recordButton =\s*\n\s*"neu-button-accent/);
@@ -597,7 +597,7 @@ test("a voice can be cloned from a recording made on the spot", () => {
   assert.match(speechSettings, /clearStagedSample\(\)/);
   assert.match(speechSettings, /sampleFileRef\.current\.value = ""/);
   // The microphone and its meter are released whatever ends the take.
-  assert.match(recorder, /getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\)/);
+  assert.match(recorder, /stopForegroundStream\(streamRef\.current\)/);
   assert.match(recorder, /audioContextRef\.current\?\.close\(\)/);
   assert.match(recorder, /URL\.revokeObjectURL/);
   assert.match(recorder, /MAX_SAMPLE_SECONDS \* 1_000/);

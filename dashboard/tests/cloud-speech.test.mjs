@@ -143,6 +143,14 @@ test("subscription status and prepare do not contact Voicebox or use an API key"
   assert.equal((await prepareRoute.POST()).status, 503);
 });
 
+test("unknown voice failures never imply that an existing account needs another login", async () => {
+  cloud();
+  state.cloud = { configured: false, source: "subscription" };
+  const response = await prepareRoute.POST();
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /Re-check it in Voice settings/);
+});
+
 test("stale API-key clients cannot enable billed speech or fall back to local", async () => {
   cloud();
   process.env.OPENAI_API_KEY = "sk-test-do-not-use";

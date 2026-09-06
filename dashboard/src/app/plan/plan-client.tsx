@@ -29,6 +29,7 @@ import {
   type PlanBoardScope,
 } from "@/lib/plan/board-scope.ts";
 import type { PlanView } from "@/lib/plan/view.ts";
+import { notifyPlanChanged, subscribePlanChanges } from "@/lib/plan/client-sync";
 import type {
   PlanBoard as PlanBoardData,
   PlanComment,
@@ -133,6 +134,7 @@ export default function PlanClient({
   const [dueTasks, setDueTasks] = useState<PlanTask[]>([]);
 
   const activeProjectId = board?.project.id ?? null;
+  const boardRequest = useRef(0);
   const dueRequest = useRef(0);
 
   const projectColors = useMemo(
@@ -181,14 +183,17 @@ export default function PlanClient({
   }, []);
 
   const refreshBoard = useCallback(async (projectId: number) => {
+    const id = ++boardRequest.current;
     try {
       const response = await fetch(`/api/plan/projects/${projectId}`, {
         cache: "no-store",
       });
       if (!response.ok) throw new Error(await readError(response, "Could not load the board"));
       const body = (await response.json()) as { board: PlanBoardData };
+      if (id !== boardRequest.current) return;
       setBoard(body.board);
     } catch (loadError) {
+      if (id !== boardRequest.current) return;
       setError(loadError instanceof Error ? loadError.message : "Could not load the board");
     }
   }, []);
@@ -220,6 +225,12 @@ export default function PlanClient({
     if (view !== "calendar" || !dueRange) return;
     void loadDueTasks(dueRange.from, dueRange.to);
   }, [view, dueRange, loadDueTasks]);
+
+  useEffect(() => subscribePlanChanges(() => {
+    if (activeProjectId) void refreshBoard(activeProjectId);
+    void refreshProjects().catch(() => {});
+    if (dueRange) void loadDueTasks(dueRange.from, dueRange.to).catch(() => {});
+  }), [activeProjectId, dueRange, refreshBoard, refreshProjects, loadDueTasks]);
 
   const onCalendarRange = useCallback((from: string, to: string) => {
     setDueRange((current) =>
@@ -266,6 +277,7 @@ export default function PlanClient({
         body: JSON.stringify({ projectId: activeProjectId, columnId, title }),
       });
       if (!response.ok) throw new Error(await readError(response, "Could not add the card"));
+      notifyPlanChanged();
       await refreshBoard(activeProjectId);
       void refreshProjects();
     } catch (createError) {
@@ -286,6 +298,7 @@ export default function PlanClient({
         body: JSON.stringify({ columnId, position }),
       });
       if (!response.ok) throw new Error(await readError(response, "Could not move the card"));
+      notifyPlanChanged();
     } catch (moveError) {
       setError(moveError instanceof Error ? moveError.message : "Could not move the card");
     } finally {
@@ -317,6 +330,7 @@ export default function PlanClient({
         body: JSON.stringify(patch),
       });
       if (!response.ok) throw new Error(await readError(response, "Could not save the card"));
+      notifyPlanChanged();
       const body = (await response.json()) as { task: PlanTask };
       setDetail((current) => (current ? { ...current, task: body.task } : current));
       if (activeProjectId) await refreshBoard(activeProjectId);
@@ -355,6 +369,7 @@ export default function PlanClient({
     if (activeProjectId) await refreshBoard(activeProjectId);
     void refreshProjects();
     if (dueRange) void loadDueTasks(dueRange.from, dueRange.to);
+    notifyPlanChanged();
   }
 
   async function createProject(event: React.FormEvent) {

@@ -318,6 +318,8 @@ export interface AgentMessage {
   };
   /** The canonical turn ended without an answer. */
   failed?: boolean;
+  /** Persisted failure diagnostics, displayed separately from the answer. */
+  runtimeError?: string;
   interrupted?: boolean;
   courseCorrection?: boolean;
   /** Runtime input that answered the assistant's own mid-turn question. */
@@ -353,6 +355,7 @@ export interface AgentMessage {
    * found, the scripts it ran, the files it wrote, and its answer.
    */
   careerOpsRun?: { runId: string; task: string };
+  musicProducerRun?: { runId: string; task: string };
   /** OpenExecutive's multi-specialist virtual executive advisory run. */
   openExecutiveRun?: { runId: string; task: string };
   /** Persistent openGym coaching/program run with catalogue animations. */
@@ -1174,6 +1177,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["agentBrowserRun", "agent_browser"],
   ["agentReachRun", "agent_reach"],
   ["careerOpsRun", "career_ops"],
+  ["musicProducerRun", "music_producer"],
   ["openExecutiveRun", "openexecutive"],
   ["openGymRun", "open_gym"],
   ["tradingAgentsRun", "trading_agents"],
@@ -1313,9 +1317,12 @@ function isExpectedCancellationError(message: string): boolean {
 }
 
 interface CreateOptions {
+  voice?: boolean;
   gardenSlug?: string;
   pageSlug?: string;
   title?: string;
+  /** Display provenance for chats created in the browser drawer. */
+  browser?: boolean;
   /**
    * Create the next conversation off the record: kept out of history and out
    * of memory, both ways, for as long as it exists. Read at creation time, so
@@ -1336,7 +1343,7 @@ function activeConversationStorageKey(
   surface: AgentSurface,
   options?: CreateOptions,
 ): string {
-  const context = options?.gardenSlug ?? options?.pageSlug ?? "global";
+  const context = options?.voice ? 'voice' : options?.gardenSlug ?? options?.pageSlug ?? "global";
   return `breadboard-active-conversation:${surface}:${context}`;
 }
 
@@ -1393,6 +1400,12 @@ export interface UseAgentSessionResult {
   cancelDelegatedExternalAgentTurn: (clientMessageId: string) => boolean;
   /** Returns the durable client id that the launcher must pass to its run API. */
   previewExternalAgentTurn: (input: ExternalAgentTurnPreview) => string;
+  /** Persistence mode captured by preview, including a new hidden worker. */
+  externalAgentTurnPersistence: (clientMessageId: string) => {
+    attachToExistingTurn: boolean;
+    delegatedAgentRun: boolean;
+    delegatedAgentReason?: string;
+  };
   appendExternalAgentTurn: (input: ExternalAgentTurnInput) => Promise<void>;
   finishExternalAgentTurn: (input: ExternalAgentTurnResult) => Promise<void>;
   send: (
@@ -3470,6 +3483,15 @@ export function useAgentSession(
     [bindExternalAgentToCurrentConversation, transition],
   );
 
+  const externalAgentTurnPersistence = useCallback((clientMessageId: string) => {
+    const attachToExistingTurn = attachedDelegatedExternalTurnIdsRef.current.has(clientMessageId);
+    return {
+      attachToExistingTurn,
+      delegatedAgentRun: delegatedExternalTurnIdsRef.current.has(clientMessageId) && !attachToExistingTurn,
+      delegatedAgentReason: delegatedExternalTurnReasonsRef.current.get(clientMessageId),
+    };
+  }, []);
+
   const appendExternalAgentTurn = useCallback(
     async (input: ExternalAgentTurnInput) => {
       const showedThinking = externalThinkingTurnIdsRef.current.has(input.clientMessageId);
@@ -5393,6 +5415,7 @@ export function useAgentSession(
     beginDelegatedExternalAgentTurn,
     cancelDelegatedExternalAgentTurn,
     previewExternalAgentTurn,
+    externalAgentTurnPersistence,
     appendExternalAgentTurn,
     finishExternalAgentTurn,
     send,

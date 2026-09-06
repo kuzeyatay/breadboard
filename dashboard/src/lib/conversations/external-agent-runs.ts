@@ -3,6 +3,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "agent_browser",
   "agent_reach",
   "praxist",
+  "music_producer",
   "career_ops",
   "openexecutive",
   "open_gym",
@@ -51,6 +52,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   agent_browser: "Agent Browser",
   agent_reach: "Agent Reach",
   praxist: "Praxist",
+  music_producer: "Music Producer",
   career_ops: "Career Ops",
   openexecutive: "OpenExecutive",
   open_gym: "openGym",
@@ -105,6 +107,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   agent_browser: "agent-browser",
   agent_reach: "agent-reach",
   praxist: "praxist",
+  music_producer: "music-producer",
   career_ops: "career-ops",
   openexecutive: "openexecutive",
   open_gym: "open-gym",
@@ -178,6 +181,9 @@ export function externalAgentCardContent(message: {
 }): string {
   if (message.delegatedAgentRun !== true) return message.content;
   if (message.externalAgentResult !== undefined) return message.externalAgentResult;
+  // Hidden worker turns created before a run starts store launch failures in
+  // content. Only an attached parent turn has a separate visible preamble.
+  if (message.delegatedAgentPreamble === undefined) return message.content;
   if (
     message.delegatedAgentPreamble?.trim() &&
     message.content !== message.delegatedAgentPreamble
@@ -364,6 +370,11 @@ export type ExternalAgentRun =
       kind: "praxist";
       runId: string;
       /** Absolute prepared task-project directory supplied by the operator. */
+      task: string;
+    }
+  | {
+      kind: "music_producer";
+      runId: string;
       task: string;
     }
   | {
@@ -657,6 +668,11 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "praxist", runId, task };
   }
 
+  if (candidate.kind === "music_producer") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    if (!task) return null;
+    return { kind: "music_producer", runId, task };
+  }
   if (candidate.kind === "career_ops") {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
     if (!task) return null;
@@ -920,6 +936,7 @@ interface ExternalAgentRunFields {
   agentBrowserRun?: { runId: string } | null;
   agentReachRun?: { runId: string } | null;
   praxistRun?: { runId: string } | null;
+  musicProducerRun?: { runId: string } | null;
   careerOpsRun?: { runId: string } | null;
   openExecutiveRun?: { runId: string } | null;
   openGymRun?: { runId: string; quiet?: boolean } | null;
@@ -977,6 +994,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   agent_browser: "agentBrowserRun",
   agent_reach: "agentReachRun",
   praxist: "praxistRun",
+  music_producer: "musicProducerRun",
   career_ops: "careerOpsRun",
   openexecutive: "openExecutiveRun",
   open_gym: "openGymRun",
@@ -1078,6 +1096,7 @@ export function externalAgentMessageFields(
   agentBrowserRun?: { agentId: string; runId: string; task: string };
   agentReachRun?: { runId: string; task: string };
   praxistRun?: { runId: string; task: string };
+  musicProducerRun?: { runId: string; task: string };
   careerOpsRun?: { runId: string; task: string };
   openExecutiveRun?: { runId: string; task: string };
   openGymRun?: { runId: string; task: string; quiet?: boolean };
@@ -1214,6 +1233,12 @@ export function externalAgentMessageFields(
   if (run.kind === "praxist") {
     return {
       praxistRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "music_producer") {
+    return {
+      musicProducerRun: { runId: run.runId, task: run.task },
       ...outcomeField,
     };
   }

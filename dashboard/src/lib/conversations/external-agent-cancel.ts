@@ -52,6 +52,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../agent-reach/run-manager.ts")).abortRun(userId, runId),
   praxist: async (userId, runId) =>
     (await import("../praxist/run-manager.ts")).abortRun(userId, runId),
+  music_producer: async (userId, runId) =>
+    (await import("../music-producer/run-manager.ts")).abortRun(userId, runId),
   career_ops: async (userId, runId) =>
     (await import("../career-ops/run-manager.ts")).abortRun(userId, runId),
   openexecutive: async (userId, runId) =>

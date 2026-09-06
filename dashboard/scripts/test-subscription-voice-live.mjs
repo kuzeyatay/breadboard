@@ -13,6 +13,12 @@ import esbuild from "esbuild";
 import { chromium } from "playwright";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+const fixtureText = process.env.BREADBOARD_VOICE_TEST_TEXT || "Breadboard subscription voice test.";
+const fixtureVoice = process.env.BREADBOARD_VOICE_TEST_VOICE || "cove";
+const fixtureReply = process.env.BREADBOARD_VOICE_TEST_REPLY || "The same connection can speak the selected model's reply.";
+const fixtureThinkingMs = Number(process.env.BREADBOARD_VOICE_TEST_THINKING_MS || 0);
+const normalizeSpeech = text => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const assistantTranscripts = [];
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-voice-test-"));
 const secret = randomBytes(32).toString("hex");
 const python = process.env.BREADBOARD_TEST_PYTHON || path.join(root, "chatmock/.venv/Scripts/python.exe");
@@ -21,9 +27,8 @@ import os
 from flask import Flask
 from werkzeug.serving import make_server
 from chatmock import subscription_voice as v
-from chatmock.utils import _read_auth_file_with_path, get_effective_chatgpt_auth
-selected = _read_auth_file_with_path()
-v.get_effective_chatgpt_auth = lambda: get_effective_chatgpt_auth(selected=selected)
+selected = v.selected_auth()
+v.selected_auth = lambda: selected
 os.environ['CODEX_HOME'] = os.environ['BREADBOARD_TEST_HOME']
 v.secret_path().write_text(os.environ['BREADBOARD_TEST_SECRET'], encoding='utf-8')
 app = Flask(__name__)
@@ -57,13 +62,16 @@ try {
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);
         let body = chunks.length ? Buffer.concat(chunks).toString() : undefined;
-        if (!suffix && body) body = JSON.stringify({ ...JSON.parse(body), voice: "cove", language: null });
+        if (!suffix && body) body = JSON.stringify({ ...JSON.parse(body), voice: fixtureVoice, language: null });
         const response = await fetch(`http://127.0.0.1:${port}/breadboard/voice/sessions${suffix}`, { method: req.method, body,
           headers: { "Content-Type": "application/json", "X-Breadboard-Voice-Secret": secret, "X-Breadboard-Voice-Owner": "1" } });
         if (req.method !== "GET") console.log(JSON.stringify({ method: req.method, status: response.status }));
         const payload = await response.text();
         if (req.method === "GET") {
           const data = JSON.parse(payload);
+          for (const event of data.events || []) {
+            if (event.type === "transcript" && event.role === "assistant") assistantTranscripts.push(event.text);
+          }
           if (data.events?.length) console.log(JSON.stringify({ events: data.events.map(e => ({ type: e.type, role: e.role })) }));
         }
         res.writeHead(response.status, { "Content-Type": "application/json" }); res.end(payload);
@@ -79,21 +87,23 @@ try {
   page.on("pageerror", error => process.stderr.write(error.message + "\n"));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.click("#start");
-  const spoken = await page.evaluate(async () => {
-    const blob = window.liveAudio = await voiceTest.subscriptionSpeech({ text: "Breadboard subscription voice test." });
+  const spoken = await page.evaluate(async text => {
+    const blob = window.liveAudio = await voiceTest.subscriptionSpeech({ text });
     const context = new AudioContext();
     const audio = await context.decodeAudioData(await blob.arrayBuffer());
     const samples = audio.getChannelData(0);
     const energy = samples.reduce((sum, value) => sum + value * value, 0);
     await context.close();
     return { bytes: blob.size, type: blob.type, seconds: audio.duration, energy };
-  });
+  }, fixtureText);
   assert.equal(spoken.type, "audio/wav"); assert.ok(spoken.bytes > 10000); assert.ok(spoken.energy > 0.1);
+  assert.equal(normalizeSpeech(assistantTranscripts.join(" ")), normalizeSpeech(fixtureText), "Read-aloud must speak the supplied words, without a reply or an introduction");
   console.log(JSON.stringify({ test: "subscription read-aloud", ...spoken }));
   const text = await page.evaluate(() => voiceTest.subscriptionSpeech({ file: window.liveAudio }));
-  assert.match(text.replace(/[^\p{L}\p{N}]+/gu, " "), /breadboard subscription voice test/i);
+  assert.equal(normalizeSpeech(text), normalizeSpeech(fixtureText));
   console.log(JSON.stringify({ test: "subscription transcription", text, passed: true, apiKeyUsed: false }));
-  const live = await page.evaluate(async () => {
+  const liveTranscriptStart = assistantTranscripts.length;
+  const live = await page.evaluate(async ({ reply, thinkingMs }) => {
     const context = new AudioContext();
     const microphone = context.createMediaStreamDestination();
     const source = context.createBufferSource();
@@ -108,11 +118,13 @@ try {
       const endedAt = performance.now();
       const text = await voice.finishTranscript();
       const finalizationMs = Math.round(performance.now() - endedAt);
-      await voice.speak("The same connection can speak the selected model's reply.");
+      if (thinkingMs > 0) await new Promise(resolve => setTimeout(resolve, thinkingMs));
+      await voice.speak(reply);
       return { text, finalizationMs };
     } finally { await voice.close(); await context.close(); }
-  });
-  assert.match(live.text.replace(/[^\p{L}\p{N}]+/gu, " "), /breadboard subscription voice test/i);
+  }, { reply: fixtureReply, thinkingMs: fixtureThinkingMs });
+  assert.equal(normalizeSpeech(live.text), normalizeSpeech(fixtureText));
+  assert.equal(normalizeSpeech(assistantTranscripts.slice(liveTranscriptStart).join(" ")), normalizeSpeech(fixtureReply));
   console.log(JSON.stringify({ test: "live microphone and reply on one connection", ...live, passed: true }));
 } finally {
   clearTimeout(hardStop);
@@ -120,5 +132,8 @@ try {
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   if (process.platform === "win32" && backend.exitCode === null) spawnSync("taskkill", ["/PID", String(backend.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
   else backend.kill();
-  fs.rmSync(temporary, { recursive: true, force: true });
+  const cleanupTarget = path.resolve(temporary);
+  assert.equal(path.dirname(cleanupTarget), path.resolve(os.tmpdir()));
+  assert.ok(path.basename(cleanupTarget).startsWith("breadboard-voice-test-"));
+  fs.rmSync(cleanupTarget, { recursive: true, force: true });
 }

@@ -3,10 +3,18 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { app, BrowserWindow, webContents } = require("electron");
+const { app, BrowserWindow, WebContentsView, webContents } = require("electron");
 const { WindowManager } = require("../../dist/main/window-manager.js");
 const { writeTabSession } = require("../../dist/main/tab-session.js");
 const dir = process.argv[2];
+// Electron 33 exposes setVisible without a getter. Record calls while still
+// applying them to the real native views, including their initial attachment.
+const visibilityCalls = new WeakMap();
+const setVisible = WebContentsView.prototype.setVisible;
+WebContentsView.prototype.setVisible = function (visible) {
+  visibilityCalls.set(this, [...(visibilityCalls.get(this) ?? []), visible]);
+  return setVisible.call(this, visible);
+};
 app.setPath("userData", path.join(dir, "profile"));
 app.on("window-all-closed", () => {});
 const until = async (probe, label) => {
@@ -65,13 +73,28 @@ app.whenReady().then(async () => {
   const showing = manager.showDashboard(origin + "/dashboard", origin + "/new-tab").then(() => { shown = true; });
   const readiness = manager.waitForDashboardPaint().then(() => { ready = true; });
   // Even an early click (or the welcome's own failsafe) cannot bypass loading.
-  manager.markStartupContinued();
+  if (process.argv[3] !== "welcome") manager.markStartupContinued();
   await until(() => ["local", "shell", "external", "popup"].every(name => held.has("/resource/" + name)), "all background tabs start loading");
+  const overlays = () => BrowserWindow.getAllWindows().flatMap(window =>
+    window.contentView.children.filter(view => view.webContents?.getURL() === origin + "/notification-overlay"),
+  );
+  await until(() => overlays().length === 3, "startup and restored windows have notification overlays");
+  const assertNotificationsHidden = () => {
+    for (const view of overlays()) {
+      // A poll returning a real card must not make its native view visible.
+      assert.equal(manager.tabs.resizeNotificationOverlay(view.webContents, { width: 400, height: 220 }), true);
+      const calls = visibilityCalls.get(view);
+      assert.equal(calls?.at(-1), false, "notifications stay hidden until the app replaces welcome");
+      if (!shown) assert.equal(calls.includes(true), false, "no notification flashes during creation or relayout");
+    }
+  };
+  assertNotificationsHidden();
   const assertStillLoading = async () => {
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(ready, false, "the welcome must wait for all tab resources");
     assert.equal(shown, false, "the app must wait for all tab resources");
     assert.equal(manager.window, loadingWindow);
+    assertNotificationsHidden();
     for (const window of BrowserWindow.getAllWindows()) {
       if (window !== loadingWindow) assert.equal(window.getOpacity(), 0, "restored windows stay hidden");
     }
@@ -94,6 +117,14 @@ app.whenReady().then(async () => {
   }
   released.add("/resource/popup");
   for (const response of held.get("/resource/popup")) response.end("done");
+  if (process.argv[3] === "welcome") {
+    await readiness;
+    assert.equal(ready, true);
+    assert.equal(shown, false, "a painted dashboard still waits for welcome dismissal");
+    assert.equal(manager.window, loadingWindow);
+    assertNotificationsHidden();
+    manager.markStartupContinued();
+  }
   await until(() => ready && shown, "all tabs complete and the app opens");
   await Promise.all([showing, readiness]);
   assert.equal(loadingWindow.isDestroyed(), true);
@@ -108,6 +139,13 @@ app.whenReady().then(async () => {
   for (const window of BrowserWindow.getAllWindows()) {
     assert.equal(window.getOpacity(), 1);
   }
+  assert.equal(overlays().length, 2);
+  for (const view of overlays()) {
+    assert.equal(visibilityCalls.get(view)?.at(-1), true, "pending notifications appear in every window after welcome");
+    assert.equal(view.getBounds().width, 400, "the pending card retains its measured size");
+  }
+  await manager.showStartupScreen();
+  assertNotificationsHidden();
   manager.tabs.freezeSession();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();
   server.close();

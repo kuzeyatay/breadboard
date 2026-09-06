@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
-test("desktop tests isolate the physical-screen fixture", () => {
+test("desktop tests isolate physical-screen and native-focus fixtures", () => {
   const desktopRoot = path.resolve(__dirname, "..", "..");
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopRoot, "package.json"), "utf8"));
   assert.equal(packageJson.scripts.test, "npm run build && node scripts/run-desktop-tests.mjs");
@@ -32,14 +32,17 @@ test("desktop tests isolate the physical-screen fixture", () => {
   });
   assert.equal(run.status, 0, run.stderr);
   const result = JSON.parse(run.stdout);
-  assert.deepEqual(result.serial, ["tab-manager.test.js"]);
+  assert.deepEqual(result.serial, ["tab-manager.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-picture-in-picture-integration.test.js"]);
   assert.deepEqual(result.partition, {
     parallel: ["alpha.test.js", "zeta.test.js"],
-    screen: ["tab-manager.test.js"],
+    screen: ["tab-manager.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-picture-in-picture-integration.test.js"],
   });
   assert.deepEqual(result.lanes.map((lane: { files: string[] }) => lane.files), [
     ["alpha.test.js", "zeta.test.js"],
     ["tab-manager.test.js"],
+    ["browser-downloads-popover-integration.test.js"],
+    ["browser-fullscreen-integration.test.js"],
+    ["browser-picture-in-picture-integration.test.js"],
   ]);
   assert.deepEqual(result.args, [
     "--test",

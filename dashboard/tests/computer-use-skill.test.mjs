@@ -41,7 +41,7 @@ function selects(text, priorMessages) {
 }
 
 test("the first-party /computer-use skill is ready and requires background operation", () => {
-  const markdown = fs.readFileSync(skillPath, "utf8");
+  const markdown = fs.readFileSync(skillPath, "utf8").replaceAll("\r\n", "\n");
   for (const marker of [
     "name: computer-use",
     "allowed-tools:\n  - computer_use",

@@ -18,6 +18,7 @@ export interface NavbarShortcuts {
   workTimer: boolean;
   browser: boolean;
   clicky: boolean;
+  voice: boolean;
   plan: boolean;
   fastRead: boolean;
   buzz: boolean;
@@ -70,6 +71,11 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
     description: "Your project board and calendar, opened together in one workspace.",
   },
   {
+    key: "voice",
+    label: "Voice",
+    description: "Open the voice assistant in a small floating widget.",
+  },
+  {
     key: "buzz",
     label: "Organization",
     href: "/buzz",
@@ -92,6 +98,7 @@ export const DEFAULT_NAVBAR_SHORTCUTS: NavbarShortcuts = {
   workTimer: true,
   browser: true,
   clicky: true,
+  voice: false,
   plan: true,
   fastRead: false,
   buzz: false,
@@ -131,6 +138,7 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       buzz          INTEGER NOT NULL DEFAULT 0,
       browser       INTEGER NOT NULL DEFAULT 1,
       clicky        INTEGER NOT NULL DEFAULT 1,
+      voice         INTEGER NOT NULL DEFAULT 0,
       show_flowers  INTEGER NOT NULL DEFAULT 1,
       updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
     );
@@ -173,6 +181,9 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       "ALTER TABLE navbar_shortcut_settings ADD COLUMN show_flowers INTEGER NOT NULL DEFAULT 1",
     );
   }
+  if (!has("voice")) {
+    database.exec("ALTER TABLE navbar_shortcut_settings ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
+  }
   // `map_page` and `world_monitor` columns survive on databases written before
   // those shortcuts were withdrawn. They are left alone: both default to 0, so
   // writes that no longer name them still satisfy their NOT NULL.
@@ -184,7 +195,7 @@ export function readNavbarShortcuts(
 ): NavbarShortcuts {
   const row = database
     .prepare(
-      "SELECT work_timer, plan, fast_read, buzz, browser, clicky FROM navbar_shortcut_settings WHERE user_id = ?",
+      "SELECT work_timer, plan, fast_read, buzz, browser, clicky, voice FROM navbar_shortcut_settings WHERE user_id = ?",
     )
     .get(userId) as
     | {
@@ -194,6 +205,7 @@ export function readNavbarShortcuts(
         buzz: number;
         browser: number;
         clicky: number;
+        voice: number;
       }
     | undefined;
 
@@ -203,6 +215,7 @@ export function readNavbarShortcuts(
     workTimer: row.work_timer === 1,
     browser: row.browser === 1,
     clicky: row.clicky === 1,
+    voice: row.voice === 1,
     plan: row.plan === 1,
     fastRead: row.fast_read === 1,
     buzz: row.buzz === 1,
@@ -217,8 +230,8 @@ export function writeNavbarShortcuts(
   const next = applyNavbarShortcutPatch(readNavbarShortcuts(database, userId), patch);
   database
     .prepare(
-      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, plan, fast_read, buzz, browser, clicky, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, plan, fast_read, buzz, browser, clicky, voice, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(user_id) DO UPDATE SET
          work_timer = excluded.work_timer,
          plan = excluded.plan,
@@ -226,6 +239,7 @@ export function writeNavbarShortcuts(
          buzz = excluded.buzz,
          browser = excluded.browser,
          clicky = excluded.clicky,
+         voice = excluded.voice,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -236,6 +250,7 @@ export function writeNavbarShortcuts(
       next.buzz ? 1 : 0,
       next.browser ? 1 : 0,
       next.clicky ? 1 : 0,
+      next.voice ? 1 : 0,
     );
   return next;
 }

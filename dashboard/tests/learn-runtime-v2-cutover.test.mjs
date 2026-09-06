@@ -71,8 +71,15 @@ async function loadCutoverModule() {
                   contents: `
                     const state = () => globalThis[${JSON.stringify(stateKey)}];
                     const db = {
-                      prepare() {
-                        return { get() { return state()?.latestLearnJob ?? undefined; } };
+                      prepare(sql) {
+                        return {
+                          get() {
+                            if (sql.includes("learn_publication_retries")) {
+                              return state()?.pendingLearnPublication ? { pending: 1 } : undefined;
+                            }
+                            return state()?.latestLearnJob ?? undefined;
+                          },
+                        };
                       },
                     };
                     export default db;
@@ -167,12 +174,29 @@ function freshState() {
     replays: [],
     runtimeEvents: [],
     latestLearnJob: null,
+    pendingLearnPublication: false,
     jobIds: new Map(),
     jobs: new Map(),
   };
   globalThis[stateKey] = state;
   return state;
 }
+
+test("pending rollback publication is rejected before a Runtime worker is admitted", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-publication-"));
+  try {
+    const state = freshState();
+    state.pendingLearnPublication = true;
+
+    await assert.rejects(
+      cutover.executeLearnOperationForRoute(planRequest(temporaryRoot), "planning"),
+      /finishing publication recovery/,
+    );
+    assert.equal(state.submissions.length, 0);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
 
 function planRequest(contentPath) {
   return {

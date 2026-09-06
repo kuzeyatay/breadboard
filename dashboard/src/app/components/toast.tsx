@@ -24,7 +24,8 @@ import {
   type ChatNotificationRecord,
   type ChatNotificationTarget,
 } from '@/lib/chat-notification-inbox';
-import { publishDesktopNotificationToast, handleWebsiteNotification } from '@/lib/desktop-notification-overlay';
+import { publishDesktopNotificationToast, handleWebsiteNotification, respondToWebsiteNotificationPermission } from '@/lib/desktop-notification-overlay';
+import { VOICE_ASSISTANT_CHANNEL } from '@/lib/speech/assistant-preferences';
 
 export interface ToastItem {
   id: string;
@@ -35,6 +36,7 @@ export interface ToastItem {
   response?: string;
   notificationId?: string;
   website?: { id: string; origin: string };
+  notificationPermission?: { id: string; origin: string };
   target?: ChatNotificationTarget;
   /** 0-100 for a notice that tracks a running pipeline; renders a status bar. */
   progressPercent?: number;
@@ -56,6 +58,8 @@ const CHAT_NOTIFICATION_TOAST_PREFIX = 'chat-notification:';
 const SEEN_TARGET_GRACE_MS = 20_000;
 const OPEN_BUTTON_CLASS =
   'neu-button-icon flex h-8 w-8 items-center justify-center rounded-md text-base font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)] active:scale-[0.97]';
+const TOAST_CARD_CLASS =
+  'pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] text-sm text-[var(--ink)] shadow-[0_8px_24px_rgba(54,67,58,0.13)]';
 
 function notificationToast(record: ChatNotificationRecord): ToastItem {
   if (chatNotificationKind(record) === 'learn') {
@@ -194,7 +198,7 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
     return hidden;
   }, [replaceNotifications]);
 
-  const dismissToast = useCallback((id: string) => {
+  const dismissToast = useCallback((id: string, notifySource = true) => {
     const notificationId = id.startsWith(CHAT_NOTIFICATION_TOAST_PREFIX)
       ? id.slice(CHAT_NOTIFICATION_TOAST_PREFIX.length)
       : null;
@@ -204,7 +208,10 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
       void postChatNotificationDismissal({ dismiss: [notificationId] });
       return;
     }
-    if (id.startsWith('website:')) handleWebsiteNotification(id.slice('website:'.length), 'close');
+    if (notifySource && id.startsWith('website:')) handleWebsiteNotification(id.slice('website:'.length), 'close');
+    if (notifySource && id.startsWith('website-permission:')) {
+      void respondToWebsiteNotificationPermission(id.slice('website-permission:'.length), 'default').catch(() => undefined);
+    }
     setLocalToasts((current) => current.filter((toast) => toast.id !== id));
   }, [hideNotifications]);
 
@@ -230,18 +237,23 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
     chatId?: string,
     response?: string,
     website?: { id: string; origin: string },
+    notificationPermission?: { id: string; origin: string },
   ) => {
-    const id = website ? `website:${website.id}` : `toast:${++nextToastId}`;
+    const id = notificationPermission ? `website-permission:${notificationPermission.id}` : website ? `website:${website.id}` : `toast:${++nextToastId}`;
     if (
       !desktopOverlay &&
-      publishDesktopNotificationToast({ message, type, title, chatId, response, website })
+      publishDesktopNotificationToast({ message, type, title, chatId, response, website, notificationPermission })
     ) {
       return;
     }
     setLocalToasts((current) => [
       ...current.filter(toast => toast.id !== id),
-      { id, message, type, title, chatId, response, website },
+      { id, message, type, title, chatId, response, website, notificationPermission },
     ]);
+    if (!desktopOverlay && typeof BroadcastChannel !== 'undefined') {
+      const channel = new BroadcastChannel(VOICE_ASSISTANT_CHANNEL);
+      channel.postMessage({ type: 'notification', notice: { message, title, response } }); channel.close();
+    }
   }, [desktopOverlay]);
 
   const pollChatNotifications = useCallback(async () => {
@@ -380,6 +392,69 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
   return { toasts, addToast, dismissToast, dismissChatToasts, dismissLearnToasts };
 }
 
+function WebsiteNotificationPermissionCard({ toast }: { toast: ToastItem }) {
+  const [responding, setResponding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const request = toast.notificationPermission!;
+  const titleId = `permission-title-${request.id}`;
+  const descriptionId = `permission-description-${request.id}`;
+
+  async function respond(permission: NotificationPermission) {
+    if (responding) return;
+    setResponding(true);
+    setError(null);
+    try {
+      const accepted = await respondToWebsiteNotificationPermission(request.id, permission);
+      if (!accepted) throw new Error('This request is no longer available.');
+      // The shell dismisses the card after resolving the website's request.
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not save your choice. Try again.');
+      setResponding(false);
+    }
+  }
+
+  return (
+    <div
+      className={`${TOAST_CARD_CLASS} w-[min(20rem,calc(100vw-2rem))] shrink-0 p-3`}
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      aria-busy={responding}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') { event.stopPropagation(); void respond('default'); }
+      }}
+    >
+      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
+        <span className="mt-0.5 flex size-8 items-center justify-center rounded-lg bg-[var(--paper-strong)] text-[var(--botanical)]" aria-hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+          </svg>
+        </span>
+        <div className="min-w-0">
+          <p className="mb-1 break-all text-[11px] leading-4 text-[var(--ink-muted)]">{request.origin}</p>
+          <p id={titleId} className="text-xs font-semibold text-[var(--ink-heading)]">{toast.title}</p>
+        </div>
+        <button
+          type="button" disabled={responding} onClick={() => void respond('default')}
+          className="flex size-7 items-center justify-center rounded-md text-xl leading-none text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50"
+          aria-label="Dismiss notification request" title="Not now"
+        ><span aria-hidden>×</span></button>
+      </div>
+      <p id={descriptionId} className="mt-2.5 text-xs leading-5 text-[var(--ink-muted)]">{toast.message}</p>
+      <div className="mt-3 flex items-center gap-2 border-t border-[var(--line)] pt-3">
+        <button type="button" disabled={responding} onClick={() => void respond('default')}
+          className="mr-auto min-h-8 rounded-md px-2 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50">Not now</button>
+        <button type="button" disabled={responding} onClick={() => void respond('denied')}
+          className="min-h-8 rounded-md border border-[var(--line)] px-3 text-xs font-medium transition-colors hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50">Block</button>
+        <button type="button" disabled={responding} onClick={() => void respond('granted')}
+          className="min-h-8 rounded-md bg-[var(--botanical)] px-3 text-xs font-semibold text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50">Allow</button>
+      </div>
+      {error ? <p className="mt-2 text-xs text-[var(--danger)]" role="alert">{error}</p> : null}
+    </div>
+  );
+}
+
 function ToastCard({
   toast,
   onDismiss,
@@ -434,7 +509,7 @@ function ToastCard({
 
   return (
     <div
-      className={`pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] text-sm text-[var(--ink)] shadow-[0_8px_24px_rgba(54,67,58,0.13)] ${
+      className={`${TOAST_CARD_CLASS} ${
         hasAssistantResponse
           ? 'w-[min(36rem,calc(100vw-2rem))] p-4'
           : 'w-[min(20rem,calc(100vw-2rem))] px-3 py-2.5'
@@ -451,6 +526,7 @@ function ToastCard({
           aria-hidden
         />
         <span className="min-w-0 flex-1">
+          {toast.website ? <span className="mb-1 block break-all text-[11px] text-[var(--ink-muted)]">{toast.website.origin}</span> : null}
           {toast.title ? (
             <span className="block text-xs font-semibold text-[var(--ink-heading)]">
               {toast.title}
@@ -629,7 +705,7 @@ export function Toaster({
       aria-atomic="false"
     >
       {toasts.map((toast) => (
-        <ToastCard
+        toast.notificationPermission ? <WebsiteNotificationPermissionCard key={toast.id} toast={toast} /> : <ToastCard
           key={toast.id}
           toast={toast}
           onDismiss={onDismiss}

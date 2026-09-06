@@ -17,6 +17,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
+import { registerClapChat } from "@/lib/speech/clap-wake";
 import TerminalDockOutline from "@/app/components/terminal-dock-outline";
 import { DEFAULT_TERMINAL_DOCK_HEIGHT, terminalDockCollapsedHeight } from "@/lib/terminal-dock-layout";
 import BreadboardLoader from "@/app/components/breadboard-loader";
@@ -132,6 +133,12 @@ import {
   agentReachUserMessage,
   taskFromAgentReachCommand,
 } from "@/lib/agent-reach/identity.ts";
+import {
+  MUSIC_PRODUCER_AGENT_ID,
+  MUSIC_PRODUCER_AGENT_NAME,
+  musicProducerUserMessage,
+  taskFromMusicProducerCommand,
+} from "@/lib/music-producer/identity.ts";
 import {
   CAREER_OPS_AGENT_ID,
   CAREER_OPS_AGENT_NAME,
@@ -1135,6 +1142,10 @@ function RuntimeTerminal({
     id: string;
     name: string;
   } | null>(null);
+  const [musicProducerAgent, setMusicProducerAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [careerOpsAgent, setCareerOpsAgent] = useState<{
     id: string;
     name: string;
@@ -1182,6 +1193,7 @@ function RuntimeTerminal({
   const [launchingMeetingNotesRun, setLaunchingMeetingNotesRun] =
     useState(false);
   const [launchingDeepTutorRun, setLaunchingDeepTutorRun] = useState(false);
+  const [launchingMusicProducerRun, setLaunchingMusicProducerRun] = useState(false);
   const [launchingCareerOpsRun, setLaunchingCareerOpsRun] = useState(false);
   const [launchingOpenExecutiveRun, setLaunchingOpenExecutiveRun] = useState(false);
   const [launchingOpenGymRun, setLaunchingOpenGymRun] = useState(false);
@@ -1248,6 +1260,11 @@ function RuntimeTerminal({
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const isOpen = drawerPresentation || height >= minOpenHeight();
+
+  useEffect(() => registerClapChat(() => {
+    setSidePanel(null);
+    setHeight(maxHeight());
+  }), []);
 
   // The height is state, so a toggle would otherwise land in a single frame.
   // `glide` holds the direction of a click-driven change for as long as its
@@ -1348,7 +1365,7 @@ function RuntimeTerminal({
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
-  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat });
+  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat, browser: drawerPresentation });
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
@@ -1360,9 +1377,10 @@ function RuntimeTerminal({
     () => ({
       title: "New chat",
       temporary: temporaryChat,
+      browser: drawerPresentation,
       restoreLastConversation: false,
     }),
-    [temporaryChat],
+    [temporaryChat, drawerPresentation],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
   useEffect(() => {
@@ -1581,6 +1599,7 @@ function RuntimeTerminal({
     launchingAgentReachRun ||
     launchingGetDocRun ||
     launchingMeetingNotesRun ||
+    launchingMusicProducerRun ||
     launchingCareerOpsRun ||
     launchingOpenExecutiveRun ||
     launchingOpenGymRun ||
@@ -2025,6 +2044,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2164,6 +2184,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2295,6 +2316,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2395,6 +2417,7 @@ function RuntimeTerminal({
       setGetDocAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2438,6 +2461,7 @@ function RuntimeTerminal({
       setOpenPlanterAgent(null);
       setAgentReachAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2488,6 +2512,7 @@ function RuntimeTerminal({
       setGetDocAgent(null);
       setMeetingNotesAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       clearDeepResearch();
       clearCodex();
@@ -2511,7 +2536,58 @@ function RuntimeTerminal({
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
 
   /** Activating checks the clone so an unprepared workspace says so up front. */
-  const selectCareerOps = useCallback(async () => {
+  const selectMusicProducer = useCallback(async () => {
+    setAttachmentStatus("");
+    try {
+      const response = await fetch("/api/music-producer/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Music Producer is unavailable.",
+        );
+      }
+      const selected = { id: MUSIC_PRODUCER_AGENT_ID, name: MUSIC_PRODUCER_AGENT_NAME };
+      setBrowserAgent(null);
+      setAgentBrowserAgent(null);
+      setOpenPlanterAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      clearDeepResearch();
+      clearCodex();
+      clearOpenCode();
+      clearRuflo();
+      setBrowserAgent(null);
+      setAgentBrowserAgent(null);
+      setOpenPlanterAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setOpenExecutiveAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setStockAnalystAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setFormsmithAgent(null);
+      setMusicProducerAgent(selected);
+      if (data.state !== "ready") setAttachmentStatus(data.message ?? "Open Music Producer settings to prepare a provider.");
+      return selected;
+    } catch (cause) {
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Music Producer is unavailable.",
+      );
+      return null;
+    }
+  }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
+const selectCareerOps = useCallback(async () => {
     setAttachmentStatus("");
     try {
       const response = await fetch("/api/career-ops/health");
@@ -2583,6 +2659,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setStockAnalystAgent(null);
@@ -2618,6 +2695,7 @@ function RuntimeTerminal({
       getDocAgent ||
       meetingNotesAgent ||
       deepTutorAgent ||
+      musicProducerAgent ||
       careerOpsAgent ||
       tradingAgentsAgent ||
       vibeTradingAgent ||
@@ -2637,6 +2715,7 @@ function RuntimeTerminal({
     agentBrowserAgent,
     agentReachAgent,
     browserAgent,
+    musicProducerAgent,
     careerOpsAgent,
     codex.agent,
     deepResearch.agent,
@@ -2686,6 +2765,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       clearDeepResearch();
       clearCodex();
       clearOpenCode();
@@ -2732,6 +2812,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2777,6 +2858,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -2811,6 +2893,7 @@ function RuntimeTerminal({
       getDocAgent ||
       meetingNotesAgent ||
       deepTutorAgent ||
+      musicProducerAgent ||
       careerOpsAgent ||
       tradingAgentsAgent ||
       vibeTradingAgent ||
@@ -2829,6 +2912,7 @@ function RuntimeTerminal({
     agentBrowserAgent,
     agentReachAgent,
     browserAgent,
+    musicProducerAgent,
     careerOpsAgent,
     codex.agent,
     deepResearch.agent,
@@ -2860,6 +2944,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -2913,6 +2998,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -2966,6 +3052,7 @@ function RuntimeTerminal({
       getDocAgent ||
       meetingNotesAgent ||
       deepTutorAgent ||
+      musicProducerAgent ||
       careerOpsAgent ||
       tradingAgentsAgent ||
       vibeTradingAgent ||
@@ -2984,6 +3071,7 @@ function RuntimeTerminal({
     agentBrowserAgent,
     agentReachAgent,
     browserAgent,
+    musicProducerAgent,
     careerOpsAgent,
     codex.agent,
     deepResearch.agent,
@@ -3013,6 +3101,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -3059,6 +3148,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -3078,6 +3168,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -3097,6 +3188,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -3537,7 +3629,85 @@ function RuntimeTerminal({
     [deepTutorAgent, launchingDeepTutorRun, model, reasoningEffort, session],
   );
 
-  const launchCareerOpsRun = useCallback(
+  const launchMusicProducerRun = useCallback(
+    async (task: string, agentOverride?: { id: string; name: string }, delegation?: AgentLaunchRequestPayload) => {
+      const selectedAgent = agentOverride ?? musicProducerAgent;
+      if (!selectedAgent || launchingMusicProducerRun) return;
+      setLaunchingMusicProducerRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = delegation ? task : musicProducerUserMessage(task);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
+      let runStarted = false;
+      try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/music-producer/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+            delegatedAgentRun: Boolean(delegation?.workerClientMessageId),
+            internalAgentContinuation: Boolean(delegation?.workerClientMessageId),
+            attachToExistingTurn: Boolean(delegation && !delegation.workerClientMessageId),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.error === "string"
+              ? data.error
+              : "The Music Producer run could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "music_producer", runId: String(data.run.runId), task },
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "Music Producer started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent = `The Music Producer task could not start: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Music Producer turn could not be saved.",
+          );
+        }
+      } finally {
+        setLaunchingMusicProducerRun(false);
+      }
+    },
+    [musicProducerAgent, launchingMusicProducerRun, model, reasoningEffort, session],
+  );
+const launchCareerOpsRun = useCallback(
     async (task: string, agentOverride?: { id: string; name: string }) => {
       const selectedAgent = agentOverride ?? careerOpsAgent;
       if (!selectedAgent || launchingCareerOpsRun) return;
@@ -4418,7 +4588,7 @@ function RuntimeTerminal({
         userContent,
         branchGroupId: options.branchGroupId,
       });
-      const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
+      const launchPersistence = session.externalAgentTurnPersistence(clientMessageId);
       let runStarted = false;
       try {
         const conversationPublicId =
@@ -4432,7 +4602,7 @@ function RuntimeTerminal({
             reasoningEffort,
             conversationPublicId,
             clientMessageId,
-            attachToExistingTurn,
+            ...launchPersistence,
             branchGroupId: options.branchGroupId,
           }),
         });
@@ -4522,7 +4692,7 @@ function RuntimeTerminal({
         userContent,
         branchGroupId: options.branchGroupId,
       });
-      const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
+      const launchPersistence = session.externalAgentTurnPersistence(clientMessageId);
       let runStarted = false;
       try {
         const conversationPublicId = await session.ensureConversation(clientMessageId);
@@ -4535,7 +4705,7 @@ function RuntimeTerminal({
             reasoningEffort,
             conversationPublicId,
             clientMessageId,
-            attachToExistingTurn,
+            ...launchPersistence,
             branchGroupId: options.branchGroupId,
           }),
         });
@@ -4614,7 +4784,7 @@ function RuntimeTerminal({
         userContent,
         branchGroupId: options.branchGroupId,
       });
-      const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
+      const launchPersistence = session.externalAgentTurnPersistence(clientMessageId);
       let runStarted = false;
       try {
         const conversationPublicId = await session.ensureConversation(clientMessageId);
@@ -4626,7 +4796,7 @@ function RuntimeTerminal({
             model,
             conversationPublicId,
             clientMessageId,
-            attachToExistingTurn,
+            ...launchPersistence,
             branchGroupId: options.branchGroupId,
           }),
         });
@@ -4701,7 +4871,7 @@ function RuntimeTerminal({
         userContent,
         branchGroupId: options.branchGroupId,
       });
-      const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
+      const launchPersistence = session.externalAgentTurnPersistence(clientMessageId);
       let runStarted = false;
       try {
         const conversationPublicId =
@@ -4715,7 +4885,7 @@ function RuntimeTerminal({
             reasoningEffort,
             conversationPublicId,
             clientMessageId,
-            attachToExistingTurn,
+            ...launchPersistence,
             branchGroupId: options.branchGroupId,
           }),
         });
@@ -6355,6 +6525,7 @@ function RuntimeTerminal({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -6392,6 +6563,7 @@ function RuntimeTerminal({
     (getDocAgent && "get-doc") ||
     (meetingNotesAgent && "meeting-notes") ||
     (deepTutorAgent && "deep-tutor") ||
+    (musicProducerAgent && "music-producer") ||
     (careerOpsAgent && "career-ops") ||
     (openExecutiveAgent && "openexecutive") ||
     (tradingAgentsAgent && "trading-agent") ||
@@ -6696,7 +6868,21 @@ function RuntimeTerminal({
         })();
         return;
       }
-      const careerOpsTask = taskFromCareerOpsCommand(text);
+      const musicProducerTask = taskFromMusicProducerCommand(text);
+      if (musicProducerTask !== null) {
+        if (launchingMusicProducerRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = musicProducerAgent ?? (await selectMusicProducer());
+          // A bare token selects the agent and leaves the chip up, the same as
+          // every other runtime agent; the next message carries the request.
+          if (selected && musicProducerTask)
+            await launchMusicProducerRun(musicProducerTask, selected);
+        })();
+        return;
+      }
+const careerOpsTask = taskFromCareerOpsCommand(text);
       if (careerOpsTask !== null) {
         if (launchingCareerOpsRun) return;
         setInput("");
@@ -6979,7 +7165,14 @@ function RuntimeTerminal({
         void launchDeepTutorRun(text);
         return;
       }
-      if (careerOpsAgent) {
+      if (musicProducerAgent) {
+        if (!text || launchingMusicProducerRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchMusicProducerRun(text);
+        return;
+      }
+if (careerOpsAgent) {
         if (!text || launchingCareerOpsRun) return;
         setInput("");
         setAttachmentStatus("");
@@ -7137,6 +7330,7 @@ function RuntimeTerminal({
       meetingNotesAgent,
       tradingAgentsAgent,
       selectTradingAgents,
+      musicProducerAgent,
       careerOpsAgent,
       openExecutiveAgent,
       vibeTradingAgent,
@@ -7156,6 +7350,7 @@ function RuntimeTerminal({
       launchAgentReachRun,
       launchGetDocRun,
       launchMeetingNotesRun,
+      launchMusicProducerRun,
       launchCareerOpsRun,
       launchOpenExecutiveRun,
       launchCodexRun,
@@ -7170,6 +7365,7 @@ function RuntimeTerminal({
       deepTutorAgent,
       selectDeepTutor,
       launchDeepTutorRun,
+      launchingMusicProducerRun,
       launchingCareerOpsRun,
       launchingOpenExecutiveRun,
       launchBrowserRun,
@@ -7179,6 +7375,7 @@ function RuntimeTerminal({
       selectAgentReach,
       selectGetDoc,
       selectMeetingNotes,
+      selectMusicProducer,
       selectCareerOps,
       selectOpenExecutive,
       selectShorts,
@@ -7238,6 +7435,7 @@ function RuntimeTerminal({
       getDoc: getDocAgent,
       meetingNotes: meetingNotesAgent,
       deepTutor: deepTutorAgent,
+      musicProducer: musicProducerAgent,
       careerOps: careerOpsAgent,
       openExecutive: openExecutiveAgent,
       tradingAgents: tradingAgentsAgent,
@@ -7263,6 +7461,7 @@ function RuntimeTerminal({
     setGetDocAgent(snapshot.getDoc);
     setMeetingNotesAgent(snapshot.meetingNotes);
     setDeepTutorAgent(snapshot.deepTutor);
+    setMusicProducerAgent(snapshot.musicProducer);
     setCareerOpsAgent(snapshot.careerOps);
     setOpenExecutiveAgent(snapshot.openExecutive);
     setTradingAgentsAgent(snapshot.tradingAgents);
@@ -7410,6 +7609,11 @@ function RuntimeTerminal({
         case "deep-tutor": {
           const selected = deepTutorAgent ?? (await selectDeepTutor());
           if (selected) await launchDeepTutorRun(request.brief, selected);
+          return;
+        }
+        case "music-producer": {
+          const selected = musicProducerAgent ?? (await selectMusicProducer());
+          if (selected) await launchMusicProducerRun(request.brief, selected, request);
           return;
         }
         case "career-ops": {
@@ -8249,6 +8453,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setOpenExecutiveAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
@@ -8287,6 +8492,7 @@ function RuntimeTerminal({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setOpenExecutiveAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
@@ -8485,6 +8691,7 @@ function RuntimeTerminal({
             {
               id: pendingChatId,
               title: "New chat",
+              titlePrefix: drawerPresentation ? "Browser" : "Terminal",
               updatedAt: "",
               active: false,
               pinned: false,
@@ -8495,7 +8702,7 @@ function RuntimeTerminal({
             ...sidebarChats,
           ]
         : sidebarChats,
-    [pendingChatId, sidebarChats],
+    [pendingChatId, sidebarChats, drawerPresentation],
   );
   // The rollup the dock bar carries. A chat still running is not counted: the
   // dot says something is waiting to be read, not that something is happening.
@@ -9079,6 +9286,7 @@ function RuntimeTerminal({
                 />
               ) : (
                 <UnreadChatDot
+                  multiple={unreadCount > 1}
                   label={
                     unreadCount > 0 ? unreadLabel : "Agent runtime is available"
                   }
@@ -9087,14 +9295,8 @@ function RuntimeTerminal({
               <p className="truncate text-sm font-semibold text-[var(--terminal-bar-ink)]">
                 Terminal
               </p>
-              {unreadCount > 1 ? (
-                <span
-                  aria-hidden
-                  title={unreadLabel}
-                  className="shrink-0 text-[11px] font-medium text-[var(--terminal-bar-ink-muted)]"
-                >
-                  {unreadCount}
-                </span>
+              {!runtimeOnline && unreadCount > 1 ? (
+                <UnreadChatDot multiple label={unreadLabel} />
               ) : null}
               {!runtimeOnline ? (
                 <button
@@ -9146,10 +9348,11 @@ function RuntimeTerminal({
           // header's own label, so the mark itself stays out of the reading.
           <span
             aria-hidden
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--terminal-bar-ink-muted)]"
+            className="inline-flex items-center gap-1.5"
           >
-            <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--signal-live)] shadow-[0_0_0_1px_var(--signal-live-ring)]" />
-            {unreadCount > 1 ? unreadCount : null}
+            {Array.from({ length: unreadCount > 1 ? 3 : 1 }, (_, dot) => (
+              <span key={dot} className="h-2 w-2 shrink-0 rounded-full bg-[var(--signal-live)] shadow-[0_0_0_1px_var(--signal-live-ring)]" />
+            ))}
           </span>
         ) : null}
       </header>
@@ -9415,6 +9618,7 @@ function RuntimeTerminal({
                   setMeetingNotesAgent(null);
                   setDeepTutorAgent(null);
                   setCareerOpsAgent(null);
+                  setMusicProducerAgent(null);
                   setTradingAgentsAgent(null);
                   setVibeTradingAgent(null);
                   setDeerFlowAgent(null);
@@ -9493,8 +9697,10 @@ function RuntimeTerminal({
                   setDeepTutorAgent(null);
                   setAttachmentStatus("");
                 }}
-                careerOpsAgent={careerOpsAgent}
-                onSelectCareerOps={() => void selectCareerOps()}
+                musicProducerAgent={musicProducerAgent}
+careerOpsAgent={careerOpsAgent}
+                onSelectMusicProducer={() => void selectMusicProducer()}
+onSelectCareerOps={() => void selectCareerOps()}
                 openExecutiveAgent={openExecutiveAgent}
                 onSelectOpenExecutive={() => void selectOpenExecutive()}
                 onClearOpenExecutive={() => {
@@ -9502,8 +9708,13 @@ function RuntimeTerminal({
                   setAttachmentStatus("");
                 }}
                 onSelectOpenGym={() => {}}
-                onClearCareerOps={() => {
+                onClearMusicProducer={() => {
+                  setMusicProducerAgent(null);
+                  setAttachmentStatus("");
+                }}
+onClearCareerOps={() => {
                   setCareerOpsAgent(null);
+                  setMusicProducerAgent(null);
                   setAttachmentStatus("");
                 }}
                 vibeTradingAgent={vibeTradingAgent}

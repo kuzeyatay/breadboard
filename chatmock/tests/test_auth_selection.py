@@ -158,6 +158,20 @@ class AuthFileSelectionTests(unittest.TestCase):
         stored = json.loads(external.read_text(encoding="utf-8"))
         self.assertEqual(stored["tokens"]["access_token"], "access-external")
 
+    def test_forced_refresh_does_not_reuse_rejected_token_after_failure(self) -> None:
+        auth = {"tokens": {"access_token": "rejected", "refresh_token": "refresh", "account_id": "account"}}
+        with patch("chatmock.utils._should_refresh_access_token", return_value=False), patch("chatmock.utils._refresh_chatgpt_tokens", return_value=None) as refresh:
+            result = load_chatgpt_tokens(selected=(auth, str(self.codex_home / "auth.json")), force_refresh=True, refresh_timeout=7)
+        self.assertEqual(result, (None, None, None))
+        self.assertEqual(refresh.call_args.kwargs["timeout"], 7)
+
+    def test_forced_refresh_without_refresh_token_fails_closed(self) -> None:
+        auth = {"tokens": {"access_token": "rejected", "account_id": "account"}}
+        with patch("chatmock.utils._refresh_chatgpt_tokens") as refresh:
+            result = load_chatgpt_tokens(selected=(auth, str(self.codex_home / "auth.json")), force_refresh=True)
+        self.assertEqual(result, (None, None, None))
+        refresh.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

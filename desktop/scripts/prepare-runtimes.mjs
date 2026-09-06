@@ -25,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { commitAtomicDirectorySwap } from "./atomic-artifact-swap.mjs";
+import { ensureChatMockSourceHook } from "./chatmock-python-source-hook.mjs";
 import { ensureHermesSourceHook } from "./hermes-python-source-hook.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -299,18 +300,6 @@ const CHATMOCK_PINNED_DEPS = [
   "websockets==15.0.1",
   "werkzeug==3.1.3",
 ];
-
-function ensureChatMockImportPath(target) {
-  const sitePackages = path.join(target, "Lib", "site-packages");
-  const chatMockRoot = path.join(desktopRoot, "build-resources", "app-services", "chatmock");
-  const relativeChatMockRoot = path.relative(sitePackages, chatMockRoot).split(path.sep).join("/");
-  fs.mkdirSync(sitePackages, { recursive: true });
-  fs.writeFileSync(
-    path.join(sitePackages, "breadboard-chatmock.pth"),
-    `${relativeChatMockRoot}\n`,
-    "utf8",
-  );
-}
 
 function ensureHermesImportPath(target) {
   ensureHermesSourceHook(target);
@@ -1282,7 +1271,7 @@ async function preparePython() {
     if (!fs.existsSync(cachedPython) || await sha256File(cachedPython) !== PYTHON_EXE_SHA256) {
       fail("Cached bundled Python executable identity does not match the pinned CPython artifact.");
     }
-    ensureChatMockImportPath(target);
+    ensureChatMockSourceHook(target);
     ensureHermesImportPath(target);
     log(`python ${fullVersion} runtime already assembled — skipping`);
     return { runtime: "python", version: fullVersion, source: "cached" };
@@ -1401,7 +1390,7 @@ async function preparePython() {
     `${ifixAiCommit}\n`,
     "utf8",
   );
-  ensureChatMockImportPath(target);
+  ensureChatMockSourceHook(target);
   ensureHermesImportPath(target);
   log(`python ${fullVersion} runtime assembled`);
   return { runtime: "python", version: fullVersion, source: url };

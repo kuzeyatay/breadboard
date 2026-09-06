@@ -82,9 +82,12 @@ export const GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_ATTEMPTS = 8;
 const GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_BASE_DELAY_MS = 2_000;
 const GENERATED_VISUAL_COUNCIL_TRANSPORT_RECOVERY_MAX_DELAY_MS = 30_000;
 /** Spatial visuals can require several critic-guided, model-authored revisions
- * across independent geometry, runtime, and accessibility gates. Keep that
- * semantic loop finite and distinct from identical-request transport replay. */
-export const GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS = 8;
+ * across independent geometry, runtime, and accessibility gates. A critic can
+ * discover a late topology/domain mismatch only after compilation, browser
+ * capture, and review, so retain a small bounded tail for applying that exact
+ * evidence. Keep this semantic loop finite and distinct from identical-request
+ * transport replay. */
+export const GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS = 12;
 /** Every semantic candidate can contribute one exact repair record. The history
  * therefore remains bounded without dropping an earlier gate or critic reason. */
 export const GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES =

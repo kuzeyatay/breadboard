@@ -11,7 +11,6 @@ import {
 import {
   BROWSER_RAIL_WIDTH,
   BROWSER_BOOKMARKS_HEIGHT,
-  BROWSER_ADDRESS_SUGGESTIONS_HEIGHT,
   BROWSER_CONTENT_TOP_INSET,
   BROWSER_TOOLBAR_HEIGHT,
   BROWSER_TERMINAL_WIDTH,
@@ -76,6 +75,7 @@ test("only well-formed tab commands are accepted from a page", () => {
   assert.ok(isTabsCommand({ type: "browser-terminal", open: true }));
   assert.ok(isTabsCommand({ type: "browser-terminal", open: true, width: 620 }));
   assert.ok(isTabsCommand({ type: "browser-address-suggestions", open: true }));
+  assert.ok(isTabsCommand({ type: "browser-address-suggestions", open: true, bottom: 174.5 }));
   assert.ok(isTabsCommand({ type: "browser-extension-load" }));
   assert.ok(isTabsCommand({ type: "browser-extension-reload", id: "a".repeat(32) }));
   assert.ok(isTabsCommand({ type: "browser-extension-remove", id: "p".repeat(32) }));
@@ -99,6 +99,9 @@ test("only well-formed tab commands are accepted from a page", () => {
   assert.ok(!isTabsCommand({ type: "browser-terminal", open: true, width: 12 }));
   assert.ok(!isTabsCommand({ type: "browser-terminal", open: true, width: 620.5 }));
   assert.ok(!isTabsCommand({ type: "browser-address-suggestions", open: "yes" }));
+  for (const bottom of [-1, NaN, Infinity, "174", 20_001]) {
+    assert.ok(!isTabsCommand({ type: "browser-address-suggestions", open: true, bottom }));
+  }
   assert.ok(!isTabsCommand({ type: "browser-extension-reload", id: "not-an-extension" }));
   assert.ok(!isTabsCommand({ type: "browser-extension-remove", id: "z".repeat(32) }));
   assert.ok(!isTabsCommand({ type: "detach" }));
@@ -122,10 +125,12 @@ test("browser selection messages and trusted rail bounds are narrow and validate
   assert.equal(browserContentLeft(1_280, true, 700), 640);
   assert.equal(browserContentLeft(640, true), 320);
   assert.equal(browserContentTop(false), BROWSER_CONTENT_TOP_INSET);
-  assert.equal(
-    browserContentTop(true),
-    BROWSER_CONTENT_TOP_INSET + BROWSER_ADDRESS_SUGGESTIONS_HEIGHT,
-  );
+  assert.equal(browserContentTop(true, 174), 174, "two suggestions leave no unused strip");
+  assert.equal(browserContentTop(true, 174.5), 175, "fractional edges never clip the dropdown");
+  assert.equal(browserContentTop(true, 424), 424, "larger lists are not clipped at a fixed height");
+  assert.equal(browserContentTop(false, 424), BROWSER_CONTENT_TOP_INSET);
+  assert.equal(browserContentTop(true, 64), BROWSER_CONTENT_TOP_INSET);
+  assert.equal(browserContentTop(true, 424, 300), 299, "resizing keeps the page within the window");
   assert.equal(
     tabLoadingSceneTop(true, false),
     TAB_LOADING_SCENE_TOP_INSET,

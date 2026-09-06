@@ -13,7 +13,7 @@ const ARTIFACT_DIRECTORY = "openwork-artifacts";
 
 function samePath(left: string, right: string): boolean {
   const canonical = (value: string) => {
-    const resolved = path.normalize(path.resolve(value));
+    const resolved = path.toNamespacedPath(path.normalize(path.resolve(value)));
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   };
   return canonical(left) === canonical(right);

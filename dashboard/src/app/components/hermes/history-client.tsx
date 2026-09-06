@@ -146,10 +146,30 @@ export function ActiveChatIcon({
 export function UnreadChatDot({
   label,
   className = "h-2 w-2",
+  multiple = false,
 }: {
   label: string;
   className?: string;
+  multiple?: boolean;
 }) {
+  if (multiple) {
+    return (
+      <span
+        role="status"
+        aria-label={label}
+        title={label}
+        className="inline-flex shrink-0 items-center gap-1.5"
+      >
+        {[0, 1, 2].map((dot) => (
+          <span
+            key={dot}
+            aria-hidden
+            className={`inline-block shrink-0 rounded-full bg-[var(--signal-live)] shadow-[0_0_0_1px_var(--signal-live-ring)] ${className}`}
+          />
+        ))}
+      </span>
+    );
+  }
   return (
     <span
       role="status"

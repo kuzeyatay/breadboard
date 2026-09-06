@@ -26,7 +26,7 @@ const { selectSpotifyPhoneDevice } = await import(
   "../src/lib/spotify/devices.ts"
 );
 
-test("Spotify playback prefers an unrestricted phone over another active device", () => {
+test("Explicit phone selection prefers an unrestricted phone over another active device", () => {
   const phone = selectSpotifyPhoneDevice({
     devices: [
       {
@@ -123,6 +123,10 @@ test("Spotify uses public-client PKCE with the live loopback callback", () => {
 });
 
 test("Spotify intent reaches the live catalog without confusing search with playback", () => {
+  const originalRequest = "Can you play the song 'Shoot the Thrill' by AC/DC?";
+  assert.equal(isSpotifyPlaybackRequest(originalRequest), true);
+  assert.deepEqual(spotifyCommandText({ text: originalRequest, surface: "dashboard_terminal", authenticated: true }),
+    { text: `/spotify ${originalRequest}`, automatic: true });
   assert.equal(isSpotifyRequest("play Radiohead"), true);
   assert.equal(
     isSpotifyRequest(
@@ -178,10 +182,10 @@ test("Spotify intent reaches the live catalog without confusing search with play
   );
   const agent = loadSpotifyAgentDefinition();
   assert.equal(agent.slug, "agent-spotify");
-  assert.match(agent.instructions, /phone is the only playback target/i);
+  assert.match(agent.instructions, /inline player is the default playback target/i);
   assert.match(agent.instructions, /returns status=playing only after Spotify confirms/i);
   assert.match(agent.instructions, /Never tell the user to press Play/i);
-  assert.match(agent.instructions, /never substitute Breadboard playback/i);
+  assert.match(agent.instructions, /Never infer a phone target from available devices/i);
   assert.doesNotMatch(agent.instructions, /status=ready|falls back to Breadboard/i);
   assert.match(agent.instructions, /Respond naturally/);
   assert.match(agent.instructions, /phrase the response freely/);
@@ -189,7 +193,7 @@ test("Spotify intent reaches the live catalog without confusing search with play
   assert.match(agent.instructions, /spotify_create_playlist/);
   assert.match(agent.instructions, /Spotify's live catalog/);
   assert.match(agent.instructions, /call spotify_search before answering/);
-  assert.match(agent.instructions, /available Spotify phone/);
+  assert.match(agent.instructions, /Always choose and send target/);
   assert.match(agent.instructions, /For playback controls/);
   assert.doesNotMatch(agent.instructions, /open Spotify|remote MCP|Music Assistant|Sendspin/);
 });
@@ -357,16 +361,16 @@ test("Spotify skill selects native tools and has no MCP dependency", () => {
   assert.match(skill, /phrase the response freely/i);
   assert.match(skill, /Spotify's live catalog/);
   assert.match(skill, /call `spotify_search` before answering/);
-  assert.match(skill, /Controls target the user's available phone/);
-  assert.match(skill, /phone is the only playback target/i);
+  assert.match(skill, /Always choose and send `target`/);
+  assert.match(skill, /inline player is the default playback target/i);
   assert.match(skill, /Never tell the user to press Play/i);
-  assert.match(skill, /never substitute Breadboard playback/i);
+  assert.match(skill, /Never infer a phone target from available devices/i);
   assert.doesNotMatch(skill, /status: ready|falls back to Breadboard/i);
   assert.doesNotMatch(skill, /say the track is ready/i);
   assert.doesNotMatch(skill, /required `spotify` MCP/);
 });
 
-test("Spotify login lives in Connections and native tools enforce phone-only playback", () => {
+test("Spotify login lives in Connections and inline playback uses the managed engine", () => {
   const connections = fs.readFileSync(
     new URL("../src/app/components/settings-connections.tsx", import.meta.url),
     "utf8",
@@ -446,17 +450,15 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
   assert.match(nativeToolRoute, /createSpotifyPlaylist/);
   assert.doesNotMatch(nativeToolRoute, /startInlinePlaylistPlayback/);
   assert.doesNotMatch(nativeToolRoute, /player: "inline"|status: "ready"/);
-  assert.match(nativeToolRoute, /startPhonePlayback/);
-  assert.match(nativeToolRoute, /player: "phone"/);
+  assert.match(nativeToolRoute, /startPlayback/);
+  assert.match(nativeToolRoute, /player: target/);
   assert.match(nativeToolRoute, /status: "playing"/);
   assert.match(nativeToolRoute, /playbackStarted: true/);
-  assert.match(nativeToolRoute, /spotify_phone_playback_failed/);
-  assert.match(nativeToolRoute, /activateSpotifyPhonePlayback/);
+  assert.match(nativeToolRoute, /spotify_playback_failed/);
   assert.match(nativeToolRoute, /current\.deviceId === device\.id/);
   assert.match(nativeToolRoute, /current\?\.isPlaying === true/);
-  assert.match(nativeToolRoute, /input\.uris\.includes\(current\.track\.uri\)/);
-  assert.match(nativeToolRoute, /controlSpotifyPhone/);
-  assert.match(nativeToolRoute, /activateSpotifyPhonePlayback/);
+  assert.match(nativeToolRoute, /current\.track\.uri === input\.uris\[0\]/);
+  assert.match(nativeToolRoute, /controlSpotifyPlayback/);
   assert.doesNotMatch(nativeToolRoute, /instruction:/);
   assert.match(nativeToolRoute, /recordSpotifyPlaybackIntent/);
   assert.match(nativeToolRoute, /toolName === "spotify_search" \? 5 : 10/);
@@ -471,10 +473,9 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
     /Math\.min\(SPOTIFY_SEARCH_RESULT_LIMIT, Math\.max\(1, limit\)\)/,
   );
   assert.doesNotMatch(player, /sdk\.scdn\.co\/spotify-player\.js/);
-  assert.match(player, /aria-label="Spotify phone remote"/);
+  assert.match(player, /aria-label="Spotify player"/);
   assert.match(player, /MAX_INTENT_POLLS/);
   assert.doesNotMatch(player, /\bElectron\//);
-  assert.doesNotMatch(player, /\/api\/hermes\/connections\/spotify\/engine/);
   assert.doesNotMatch(engine, /node:child_process|\bspawn\(|detached:|\.unref\(\)/);
   assert.match(engine, /readSpotifyPlaybackRuntimeStatus/);
   assert.match(runtimeEngine, /import \{ spawn \} from "node:child_process"/);
@@ -505,14 +506,14 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
   assert.match(playerPalette, /relativeLuminance/);
   assert.match(player, /--spotify-control-fg/);
   assert.match(playbackRoute, /spotifyCurrentPlaybackState/);
-  assert.match(playbackRoute, /spotifyPhonePlaybackDevice/);
+  assert.match(playbackRoute, /spotifyTargetDevice/);
   assert.match(playbackRoute, /activateSpotifyPhonePlayback/);
   assert.match(playbackRoute, /playbackAfterChange/);
   assert.match(playbackRoute, /spotifyQueueStep/);
   assert.match(playbackRoute, /body: \{ uris: step\.playbackUris \}/);
   assert.doesNotMatch(playbackRoute, /endpoint: `\/v1\/me\/player\/\$\{action\}`/);
   assert.match(player, /currentTrackId: visibleTrack\.id/);
-  assert.match(player, /aria-label="Loading Spotify phone remote"/);
+  assert.match(player, /aria-label="Loading Spotify player"/);
   assert.match(player, /size-10 animate-pulse/);
   assert.match(player, /intentLoading \? <SpotifyPlayerLoading \/> : null/);
   assert.match(player, /turnPending \|\| attempts < MAX_INTENT_POLLS/);
@@ -535,8 +536,6 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
   assert.match(broker, /authenticationFailed \? 409 : forbidden \? 403 : 502/);
   assert.match(playbackRoute, /intent\?\.queueUris\.includes\(current\.track\.uri\)/);
   assert.match(player, /connection\?\.playback/);
-  assert.doesNotMatch(player, /phonePlaybackRef|managedEngine|playerRef|sdkState/);
-  assert.match(player, /if \(!connection\.phone\)/);
   assert.match(
     player,
     /Spotify is not currently available on your phone\. Open Spotify on the phone and try again\./,
@@ -545,7 +544,7 @@ test("Spotify login lives in Connections and native tools enforce phone-only pla
   assert.match(player, /window\.setTimeout\(\(\) => void load\(\), POLL_INTERVAL_MS\)/);
   assert.doesNotMatch(player, /setInterval\(\(\) => void load\(\), POLL_INTERVAL_MS\)/);
   assert.match(player, /method: "POST"/);
-  assert.doesNotMatch(player, /crypto\.randomUUID\(\)|ENGINE_VIEW_HEARTBEAT_MS/);
-  assert.doesNotMatch(player, /method: "DELETE"|keepalive: true/);
+  assert.match(player, /method: "DELETE"/);
+  assert.match(player, /ENGINE_VIEW_HEARTBEAT_MS/);
   assert.doesNotMatch(player, /spotify:\/\/|open\.spotify\.com|window\.open/);
 });

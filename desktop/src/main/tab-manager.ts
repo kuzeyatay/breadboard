@@ -15,8 +15,10 @@ import {
   type WebContents,
 } from "electron";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { BrowserPreferenceStore } from "./browser-preferences";
 import { BrowserNotifications } from "./browser-notifications";
+import { toggleBrowserPictureInPicture } from "./browser-picture-in-picture";
 import { BrowserTranslation, type TranslatePageBatch } from "./browser-translation";
 import { TRANSLATION_LANGUAGES } from "../shared/browser-preferences";
 import { readTabSession, restoredTabUrl, saveTab, writeTabSession, type SavedTabWindow } from "./tab-session";
@@ -64,13 +66,13 @@ import { browserPageBackgroundColor } from "./browser-theme";
 import { browserNavigationTargetIndex } from "./browser-navigation-history";
 import { BrowserVisitedLinks } from "./browser-visited-links";
 import { BrowserHistory } from "./browser-history";
+import { BrowserDownloadsPopover } from "./browser-downloads-popover";
 import { browserMenuTemplate, browserMenuShortcut, savedPageFilename, type BrowserMenuAction } from "./browser-menu";
 import {
-  MAX_EXTENSION_ARCHIVE_BYTES,
   browserExtensionInstallId,
   browserWebStoreInstallBootstrapScript,
   browserWebStoreInstallCleanupScript,
-  chromeWebStoreDownloadUrl,
+  downloadChromeWebStorePackage,
   chromeWebStoreExtensionId,
   installChromeWebStorePackage,
   readBrowserExtensionPaths,
@@ -89,7 +91,7 @@ export interface TabManagerOptions {
   recoveryHtmlPath: () => string;
   theme: () => BreadboardWindowTheme;
   /** A new hardened window: where a page goes when it cannot go in a tab. */
-  openWindow: (url: string) => void;
+  openWindow: (url: string, privateBrowsing?: boolean) => void;
   /** Open a web page in the operating system browser when tabs are disabled. */
   openExternal?: (url: string) => void;
   /** Lets F12 open the inspector in a tab. Development builds only. */
@@ -126,6 +128,8 @@ export async function loadRecoveryUrlIfAlive(
  * The untrusted page beneath a browser tab's trusted Breadboard chrome.
  */
 interface BrowserPage {
+  /** In-memory web profile shared only by currently open private tabs. */
+  privatePartition?: string;
   translation?: BrowserTranslation;
   menu?: Menu;
   find?: { matches: number; activeMatchOrdinal: number };
@@ -148,6 +152,7 @@ interface BrowserPage {
   terminalWidth: number;
   /** The trusted address dropdown temporarily occupies space above the page. */
   addressSuggestionsOpen: boolean;
+  addressSuggestionsBottom: number;
   /** The trusted new-tab page precedes the first web page in user navigation. */
   homeEntryAvailable: boolean;
   /** The trusted new-tab page is currently shown instead of the web view. */
@@ -217,8 +222,6 @@ export const BROWSER_TERMINAL_MIN_WIDTH = 420;
 export const BROWSER_TERMINAL_MAX_VIEWPORT_SHARE = 0.5;
 /** Keep a useful reading column beside the drawer in compact windows. */
 export const BROWSER_MIN_CONTENT_WIDTH = 320;
-/** Room left for the trusted address autocomplete above an external page. */
-export const BROWSER_ADDRESS_SUGGESTIONS_HEIGHT = 312;
 export const BROWSER_CONTENT_TOP_INSET =
   BREADBOARD_TITLE_BAR.height + BROWSER_TOOLBAR_HEIGHT + BROWSER_BOOKMARKS_HEIGHT;
 /** Keep both the window tabs and Breadboard's Garden navbar on screen while
@@ -235,6 +238,9 @@ const BROWSER_WEB_PREFERENCES = {
   webviewTag: false,
   spellcheck: true,
   backgroundThrottling: false,
+  // The tab manager owns HTML fullscreen so it can expand the page view and
+  // restore the window's previous F11 state independently of video fullscreen.
+  disableHtmlFullscreenWindowResize: true,
   partition: BROWSER_SESSION_PARTITION,
 };
 // Electron annotates popup preferences internally. Pass a fresh copy to each
@@ -260,6 +266,7 @@ export const MAX_REOPENABLE_TABS = 10;
 export const REVEAL_MAX_WAIT_MS = 10_000;
 
 interface Tab {
+  voiceOverlay?: boolean;
   id: number;
   anchored: boolean;
   /** The view this tab draws in, or null for the window's own page. */
@@ -295,7 +302,9 @@ interface ClosedTab {
 }
 
 interface Host {
+  privateBrowsing?: boolean;
   window: BrowserWindow;
+  browserFullscreen?: { contents: WebContents; wasWindowFullscreen: boolean };
   sessionTracked: boolean;
   sessionMain: boolean;
   /** In strip order. The window's own page is in here until it is closed. */
@@ -329,6 +338,8 @@ interface Host {
   afterReveal: Array<() => void>;
   /** One native layer shared by every tab in this window. */
   notificationOverlay: NotificationOverlay | null;
+  downloadsPopover?: BrowserDownloadsPopover;
+  downloadsClosedAt?: number;
   /** Lazily-created copy of Breadboard's startup loading field. */
   loadingScene: TabLoadingScene | null;
 }
@@ -486,9 +497,15 @@ export function browserTerminalMaxWidth(width: number): number {
   );
 }
 
-export function browserContentTop(addressSuggestionsOpen: boolean): number {
-  return BROWSER_CONTENT_TOP_INSET +
-    (addressSuggestionsOpen ? BROWSER_ADDRESS_SUGGESTIONS_HEIGHT : 0);
+export function browserContentTop(
+  addressSuggestionsOpen: boolean,
+  addressSuggestionsBottom = 0,
+  viewportHeight = Infinity,
+): number {
+  return Math.min(
+    Math.max(0, viewportHeight - 1),
+    Math.max(BROWSER_CONTENT_TOP_INSET, addressSuggestionsOpen ? Math.ceil(addressSuggestionsBottom) : 0),
+  );
 }
 
 /**
@@ -581,7 +598,9 @@ export class TabManager {
   private newTabUrl: string | null = null;
   private browserUrl: string | null = null;
   private notificationOverlayUrl: string | null = null;
+  private notificationsVisible = false;
   private browserExtensionSession: Session | null = null;
+  private privateProfile: { partition: string; session: Session; users: number } | null = null;
   private browserExtensionsReady: Promise<void> | null = null;
   private readonly browserVisitedLinks: BrowserVisitedLinks;
   private readonly browserPreferences: BrowserPreferenceStore;
@@ -741,7 +760,7 @@ export class TabManager {
         const [width = 1, height = 1] = host.window.getContentSize();
         const browser = contents === tab.browser?.contents ? tab.browser : null;
         const x = browser ? browserContentLeft(width, browser.terminalOpen, browser.terminalWidth) : 0;
-        const y = browser ? browserContentTop(browser.addressSuggestionsOpen) : 0;
+        const y = browser ? browserContentTop(browser.addressSuggestionsOpen, browser.addressSuggestionsBottom, height) : 0;
         view.setBounds({ x, y, width: Math.max(1, width - x), height: Math.max(1, height - y) });
         host.window.contentView.addChildView(view);
         view.setVisible(true);
@@ -773,8 +792,8 @@ export class TabManager {
   }
 
   private rememberSession(host: Host): void {
-    if (!host.sessionTracked || !this.sessionDashboardUrl || this.sessionFrozen || this.restoringSession) return;
-    const tabs = host.tabs.map((tab) => ({ tab, saved: saveTab(tab, this.sessionDashboardUrl!) }))
+    if (host.privateBrowsing || !host.sessionTracked || !this.sessionDashboardUrl || this.sessionFrozen || this.restoringSession) return;
+    const tabs = host.tabs.filter(tab => !tab.browser?.privatePartition).map((tab) => ({ tab, saved: saveTab(tab, this.sessionDashboardUrl!) }))
       .filter((entry) => entry.saved !== null);
     this.savedWindows.set(host.window.id, {
       tabs: tabs.map((entry) => entry.saved!),
@@ -853,6 +872,42 @@ export class TabManager {
     return host && !host.window.isDestroyed() ? host.window : null;
   }
 
+  isPrivateBrowser(sender: WebContents): boolean {
+    const host = this.hostByContents.get(sender.id);
+    return Boolean(host?.privateBrowsing || host?.tabs.find(tab =>
+      tab.contents === sender || tab.browser?.contents === sender)?.browser?.privatePartition);
+  }
+
+  /** Set before loading a private window's trusted browser shell. */
+  setPrivateWindow(window: BrowserWindow): void {
+    const host = this.hosts.get(window.id);
+    if (host) host.privateBrowsing = true;
+  }
+
+  private privateBrowserPartition(): string {
+    if (!this.privateProfile) {
+      const partition = `breadboard-private-${randomUUID()}`;
+      this.privateProfile = { partition, session: session.fromPartition(partition, { cache: false }), users: 0 };
+    }
+    return this.privateProfile.partition;
+  }
+
+  private retainPrivateProfile(tab: Tab): void {
+    const profile = this.privateProfile;
+    if (!profile || tab.browser?.privatePartition !== profile.partition) return;
+    profile.users++;
+    tab.contents.once("destroyed", () => {
+      if (--profile.users !== 0) return;
+      if (this.privateProfile === profile) this.privateProfile = null;
+      // Retire the identity before cleanup so a newly opened private tab
+      // cannot race with removal of the preceding session's data.
+      void Promise.allSettled([
+        profile.session.closeAllConnections(), profile.session.clearStorageData(),
+        profile.session.clearCache(), profile.session.clearAuthCache(),
+      ]);
+    });
+  }
+
   attach(window: BrowserWindow): void {
     if (this.hosts.has(window.id)) return;
     const base: Tab = {
@@ -895,10 +950,15 @@ export class TabManager {
 
     const relayout = () => this.layout(host);
     window.on("resize", relayout);
+    window.on("focus", () => this.broadcast(host));
+    window.on("blur", () => this.broadcast(host));
     window.on("maximize", relayout);
     window.on("unmaximize", relayout);
     window.on("enter-full-screen", relayout);
-    window.on("leave-full-screen", relayout);
+    window.on("leave-full-screen", () => {
+      this.exitBrowserFullscreen(host, true, false);
+      relayout();
+    });
     window.on("app-command", (_event, command) => {
       if (command === "browser-backward") this.run(host, { type: "back" });
       else if (command === "browser-forward") this.run(host, { type: "forward" });
@@ -941,6 +1001,7 @@ export class TabManager {
       this.destroyLoadingScene(host);
       this.destroyNotificationOverlay(host);
       this.hostByContents.delete(base.contents.id);
+      host.downloadsPopover?.close();
     });
   }
 
@@ -954,6 +1015,9 @@ export class TabManager {
     const source = this.hosts.get(from.id);
     const target = this.hosts.get(to.id);
     if (!source || !target || source === target) return;
+    source.downloadsPopover?.close();
+    target.downloadsPopover?.close();
+    target.privateBrowsing = source.privateBrowsing;
     target.sessionTracked = source.sessionTracked;
     target.sessionMain = source.sessionMain;
     source.sessionTracked = false;
@@ -1005,6 +1069,17 @@ export class TabManager {
     if (!host || host.window.isDestroyed()) return false;
     if (host.tabs.some(tab => tab.browser?.contents === sender)) return false;
     switch (command.type) {
+      case "voice-overlay": {
+        const tab = host.tabs.find(candidate => candidate.contents === sender);
+        if (!tab || (command.open && (tab.id !== host.activeId || host.pending))) return false;
+        tab.voiceOverlay = command.open;
+        if (command.open) host.downloadsPopover?.close();
+        if (command.open) this.detachBrowser(host.window, tab);
+        else this.syncBrowser(host);
+        this.layoutNotificationOverlay(host);
+        if (command.open) tab.contents.focus();
+        return true;
+      }
       case "browser-notifications-enabled":
       case "browser-notification-permission":
       case "browser-translation-language": {
@@ -1014,6 +1089,8 @@ export class TabManager {
       }
       case "browser-notification-action":
         return sender === host.notificationOverlay?.contents && this.browserNotifications.action(command.id, command.action, host.window);
+      case "browser-notification-permission-response":
+        return sender === host.notificationOverlay?.contents && this.browserNotifications.respondToPermission(command.id, command.permission, host.window);
       case "browser-translation-menu": {
         const tab = host.tabs.find(tab => tab.contents === sender);
         if (!tab?.browser) return false;
@@ -1052,7 +1129,7 @@ export class TabManager {
       case "anchor": {
         if (!this.enabled) return false;
         const tab = tabById(host, command.id);
-        if (!tab) return false;
+        if (!tab || tab.browser?.privatePartition || host.privateBrowsing) return false;
         tab.anchored = !tab.anchored;
         this.broadcast(host);
         this.flushSession();
@@ -1087,6 +1164,9 @@ export class TabManager {
           false,
           undefined,
           current,
+          undefined,
+          host.tabs.find(tab => tab.contents === sender)?.browser?.privatePartition
+            ?? (host.privateBrowsing ? this.privateBrowserPartition() : null),
         ) !== null;
       }
       case "browser-agent":
@@ -1100,6 +1180,38 @@ export class TabManager {
         const browser = liveBrowserPage(tab?.browser);
         if (!browser) return false;
         browser.contents.stop();
+        return true;
+      }
+      case "browser-downloads-popover": {
+        const tab = host.tabs.find(candidate => candidate.contents === sender && candidate.id === host.activeId);
+        if (!tab?.browser) return false;
+        // A click on the toolbar first focuses its native view, dismissing
+        // the popup. Do not reopen it from that same click's later event.
+        if (Date.now() - (host.downloadsClosedAt ?? 0) < 200) return true;
+        return this.openDownloadsPopover(host, tab, command);
+      }
+      case "browser-downloads-resize": {
+        if (host.downloadsPopover?.contents !== sender) return false;
+        host.downloadsPopover.resize(command.height);
+        return true;
+      }
+      case "browser-downloads-close": {
+        const popup = host.downloadsPopover;
+        if (!popup) return true;
+        const tab = tabById(host, popup.ownerId);
+        if (sender !== popup.contents && sender !== tab?.contents) return false;
+        popup.close();
+        if (tab && !tab.contents.isDestroyed()) tab.contents.focus();
+        return true;
+      }
+      case "browser-downloads-show-all": {
+        const popup = host.downloadsPopover;
+        if (!popup || popup.contents !== sender) return false;
+        const tab = tabById(host, popup.ownerId);
+        popup.close();
+        if (!tab || tab.contents.isDestroyed()) return false;
+        tab.contents.focus();
+        void this.browserMenuAction(host, tab, "downloads");
         return true;
       }
       case "browser-menu": {
@@ -1163,6 +1275,9 @@ export class TabManager {
         const tab = host.tabs.find((candidate) => candidate.contents.id === sender.id);
         if (!tab?.browser) return false;
         tab.browser.addressSuggestionsOpen = command.open;
+        tab.browser.addressSuggestionsBottom = command.open
+          ? (command.bottom ?? 0) * sender.getZoomFactor()
+          : 0;
         this.layout(host);
         return true;
       }
@@ -1198,11 +1313,18 @@ export class TabManager {
     const internal = (pathname: string) => this.openTab(host, new URL(pathname, tab.browser!.shellUrl).toString(), { background: false, origin: "link", from: tab });
     try {
       switch (action) {
+        case "picture-in-picture":
+          if (page && !await toggleBrowserPictureInPicture(page)) {
+            this.publishNotificationToast(tab.contents, { type: "error", message: "No video is ready for Picture in Picture on this page. Start a video and try again." });
+          }
+          return;
         case "profile": internal("/profile"); return;
         case "settings": internal("/browser/settings"); return;
         case "appearance": internal("/browser/settings?section=appearance"); return;
         case "new-tab": this.openBrowserTab(host); return;
-        case "new-window": this.options.openWindow(tab.browser.shellUrl); return;
+        case "new-window": this.options.openWindow(tab.browser.shellUrl, Boolean(tab.browser.privatePartition || host.privateBrowsing)); return;
+        case "new-private-tab": this.openBrowserTab(host, undefined, false, undefined, undefined, undefined, this.privateBrowserPartition()); return;
+        case "new-private-window": this.options.openWindow(tab.browser.shellUrl, true); return;
         case "history": case "bookmarks": case "downloads": case "find":
           tab.contents.focus();
           await tab.contents.executeJavaScript(`window.dispatchEvent(new CustomEvent('breadboard:browser-menu-action', { detail: ${JSON.stringify(action)} }))`, true);
@@ -1216,6 +1338,9 @@ export class TabManager {
           }); };
           const extensions = this.browserExtensionViews();
           const menu = Menu.buildFromTemplate([
+            { label: "Picture in Picture (Built-in)", enabled: Boolean(page), accelerator: "Alt+P", registerAccelerator: false,
+              click: () => { void this.browserMenuAction(host, tab, "picture-in-picture"); } },
+            { type: "separator" as const },
             ...extensions.map(extension => ({ label: extension.name.replace(/&/g, "&&"), submenu: [
               { label: "Reload", click: () => run(() => this.reloadBrowserExtension(tab, extension.id)) },
               { label: "Remove", click: () => run(() => this.removeBrowserExtension(tab, extension.id)) },
@@ -1252,7 +1377,7 @@ export class TabManager {
         case "zoom-in": case "zoom-out": case "zoom-reset":
           if (page) this.zoomBrowserPage(host, page, action === "zoom-reset" ? "reset" : action === "zoom-in" ? "in" : "out");
           return;
-        case "fullscreen": host.window.setFullScreen(!host.window.isFullScreen()); return;
+        case "fullscreen": this.toggleWindowFullscreen(host); return;
         case "developer-tools": page?.toggleDevTools(); return;
         case "copy-link": if (page) clipboard.writeText(page.getURL()); return;
         case "help": this.openBrowserTab(host, "https://github.com/kuzeyatay/breadboard#readme"); return;
@@ -1302,10 +1427,7 @@ export class TabManager {
   stateFor(sender: WebContents): TabsState {
     const host = this.hostByContents.get(sender.id);
     return host
-      ? {
-          ...this.state(host),
-          selfId: host.tabs.find((tab) => tab.contents.id === sender.id)?.id ?? null,
-        }
+      ? this.stateForTab(host, host.tabs.find((tab) => tab.contents.id === sender.id))
       : {
           enabled: this.enabled,
           activeId: null,
@@ -1313,6 +1435,50 @@ export class TabManager {
           tabs: [],
           extensions: this.browserExtensionViews(),
         };
+  }
+
+  /** Startup owns this gate: loading or painting alone never dismisses welcome. */
+  setNotificationsVisible(visible: boolean): void {
+    this.notificationsVisible = visible;
+    for (const host of this.hosts.values()) this.layoutNotificationOverlay(host);
+  }
+
+  private openDownloadsPopover(host: Host, tab: Tab, anchor: { x: number; y: number }): Promise<boolean> {
+    if (host.downloadsPopover) return Promise.resolve(true);
+    const popup = new BrowserDownloadsPopover(
+      host.window, tab.id, anchor, this.options.preloadPath,
+      [tab.contents, ...(tab.browser?.contents ? [tab.browser.contents] : [])],
+      () => {
+        this.hostByContents.delete(popup.contents.id);
+        if (host.downloadsPopover === popup) host.downloadsPopover = undefined;
+        host.downloadsClosedAt = Date.now();
+        if (!host.window.isDestroyed()) this.broadcast(host);
+      },
+    );
+    host.downloadsPopover = popup;
+    this.hostByContents.set(popup.contents.id, host);
+    this.broadcast(host);
+    const url = new URL("/browser/downloads-popover", tab.browser!.shellUrl).toString();
+    return popup.contents.loadURL(url).then(() => true, error => {
+      if (popup.isClosed) return true;
+      this.log(`Downloads popover failed: ${String(error)}`);
+      popup.close();
+      return false;
+    });
+  }
+
+  /** Only app-owned tabs and their embedded browser pages, never DevTools or
+   * unrelated Electron contents. Used by the authenticated Breadboard skill. */
+  breadboardUseTargets() {
+    return [...this.hosts.values()].filter(host => !host.window.isDestroyed()).flatMap(host =>
+      host.tabs.flatMap(tab => {
+        const info = { windowId: host.window.id, tabId: tab.id, active: tab.id === host.activeId, focusedWindow: host.window.isFocused(), chrome: tab.contents };
+        const targets = [{ ...info, kind: tab.browser ? "chrome" : "app", contents: tab.contents }];
+        const browser = liveBrowserPage(tab.browser);
+        if (browser && !tab.browser?.showingHome) targets.push({ ...info, kind: "browser", contents: browser.contents! });
+        return targets.filter(target => !target.contents.isDestroyed() && /^https?:\/\//i.test(target.contents.getURL()));
+      }),
+    );
   }
 
   private browserExtensionPathKey(extensionPath: string): string {
@@ -1475,6 +1641,7 @@ export class TabManager {
   private refreshBrowserStoreInstallButton(
     browser: LiveBrowserPage,
     override?: "available" | "installing" | "installed" | "failed",
+    errorMessage?: string,
   ): void {
     if (browser.contents.isDestroyed()) return;
     const extensionId = chromeWebStoreExtensionId(browser.contents.getURL());
@@ -1492,59 +1659,19 @@ export class TabManager {
           : "available"
     );
     void browser.contents
-      .executeJavaScript(browserWebStoreInstallBootstrapScript(extensionId, state), true)
+      .executeJavaScript(browserWebStoreInstallBootstrapScript(extensionId, state, errorMessage), true)
       .catch(() => undefined);
-  }
-
-  private async responseBytes(response: Response, maximum: number): Promise<Buffer> {
-    const declared = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > maximum) {
-      throw new Error("The browser extension package is too large.");
-    }
-    if (!response.body) return Buffer.alloc(0);
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let length = 0;
-    try {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        const bytes = Buffer.from(chunk.value);
-        length += bytes.length;
-        if (length > maximum) {
-          await reader.cancel();
-          throw new Error("The browser extension package is too large.");
-        }
-        chunks.push(bytes);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return Buffer.concat(chunks, length);
   }
 
   private async performBrowserStoreInstall(extensionId: string): Promise<boolean> {
     const configDir = this.options.browserExtensionsConfigDir;
-    if (!configDir) return false;
+    if (!configDir) throw new Error("Browser extension storage is unavailable. Restart Breadboard and try again.");
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
     await this.ensureBrowserExtensions(browserSession);
     if (browserSession.getExtension(extensionId)) return true;
     const chromeVersion = process.versions.chrome;
     if (!chromeVersion) throw new Error("Chromium version is unavailable.");
-    const response = await net.fetch(chromeWebStoreDownloadUrl(extensionId, chromeVersion), {
-      redirect: "follow",
-      headers: {
-        accept: "application/x-chrome-extension",
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`Chrome Web Store download failed with HTTP ${response.status}.`);
-    }
-    const finalUrl = new URL(response.url);
-    if (finalUrl.protocol !== "https:") {
-      throw new Error("Chrome Web Store redirected to an unsafe download.");
-    }
-    const archive = await this.responseBytes(response, MAX_EXTENSION_ARCHIVE_BYTES);
+    const archive = await downloadChromeWebStorePackage(extensionId, chromeVersion, (options) => net.request(options));
     const extensionPath = installChromeWebStorePackage(configDir, extensionId, archive);
     const extension = await browserSession.loadExtension(extensionPath);
     if (extension.id !== extensionId) {
@@ -1586,7 +1713,7 @@ export class TabManager {
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      this.refreshBrowserStoreInstallButton(browser, "failed");
+      this.refreshBrowserStoreInstallButton(browser, "failed", error instanceof Error ? error.message : String(error));
       return false;
     } finally {
       if (this.browserExtensionInstalls.get(extensionId) === install) {
@@ -1622,7 +1749,9 @@ export class TabManager {
       this.options.openExternal?.(url);
       return;
     }
-    this.openBrowserTab(host, url, background);
+    const from = host.tabs.find(tab => tab.contents === sender || tab.browser?.contents === sender);
+    this.openBrowserTab(host, url, background, undefined, undefined, undefined,
+      from?.browser?.privatePartition ?? (host.privateBrowsing ? this.privateBrowserPartition() : null));
   }
 
   // ------------------------------------------------------------------ state
@@ -1637,6 +1766,7 @@ export class TabManager {
       ...(tab.browser
         ? {
             browser: {
+              private: Boolean(tab.browser.privatePartition),
               // The run marker only exists so the worker can select this exact
               // Chromium target. It is not an address the person can use, so
               // keep the trusted toolbar looking like an ordinary fresh tab.
@@ -1653,6 +1783,7 @@ export class TabManager {
                 ? this.browserHomeForwardAvailable(tab)
                 : this.browserNavigationTarget(tab, "forward") !== null,
               terminalOpen: tab.browser.terminalOpen,
+              downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
               terminalWidth: tab.browser.terminalWidth,
               zoomPercent: liveBrowserPage(tab.browser) ? Math.round(tab.browser.contents!.getZoomFactor() * 100) : 100,
               ...(tab.browser.translation ? { translation: tab.browser.translation.state } : {}),
@@ -1665,6 +1796,7 @@ export class TabManager {
     }));
     return {
       enabled: this.enabled,
+      windowFocused: host.window.isFocused(),
       activeId: host.activeId,
       navigationPending: host.pending !== null && host.pendingNavigation && !host.loadingScene?.attached,
       selfId: null,
@@ -1677,7 +1809,22 @@ export class TabManager {
   private broadcast(host: Host): void {
     this.rememberSession(host);
     const state = this.state(host);
-    for (const tab of host.tabs) this.send(tab.contents, { ...state, selfId: tab.id });
+    for (const tab of host.tabs) this.send(tab.contents, this.stateForTab(host, tab, state));
+  }
+
+  private stateForTab(host: Host, tab: Tab | undefined, state = this.state(host)): TabsState {
+    // A reveal belongs to the outgoing page and its destination. Starting the
+    // bar in every background renderer leaves a completion animation waiting
+    // when the user switches back to an otherwise fully loaded website.
+    const outgoing = host.tabs.find((candidate) =>
+      candidate.view && candidate.attached && candidate !== host.pending,
+    ) ?? host.base;
+    return {
+      ...state,
+      selfId: tab?.id ?? null,
+      navigationPending: state.navigationPending === true &&
+        (tab === host.pending || tab === outgoing),
+    };
   }
 
   private send(contents: WebContents, state: TabsState): void {
@@ -1699,6 +1846,9 @@ export class TabManager {
   // ---------------------------------------------------------------- opening
 
   private openBlankTab(host: Host): boolean {
+    if (host.privateBrowsing || tabById(host, host.activeId)?.browser?.privatePartition) {
+      return this.openBrowserTab(host) !== null;
+    }
     const url = this.newTabUrl;
     if (!url || host.window.isDestroyed()) return false;
     return this.openTab(host, url, { background: false, origin: "blank" }) !== null;
@@ -1778,6 +1928,7 @@ export class TabManager {
     sender: WebContents,
     notice: DesktopNotificationToast,
   ): boolean {
+    this.onVoiceNotification?.(notice);
     const host = this.hostByContents.get(sender.id);
     const overlay = host?.notificationOverlay;
     if (!host || !overlay || overlay.contents.isDestroyed()) return false;
@@ -1792,6 +1943,8 @@ export class TabManager {
       return false;
     }
   }
+
+  onVoiceNotification?: (notice: DesktopNotificationToast) => void;
 
   /** Resize only the overlay renderer that sent the measurement. */
   resizeNotificationOverlay(
@@ -1829,6 +1982,8 @@ export class TabManager {
     automationRunId?: string,
     replace?: Tab,
     popup?: BrowserPopup,
+    privatePartition: string | null = replace?.browser?.privatePartition ?? tabById(host, host.activeId)?.browser?.privatePartition
+      ?? (host.privateBrowsing ? this.privateBrowserPartition() : null),
   ): Tab | null {
     const shellUrl = this.browserUrl;
     const initialUrl = requestedUrl === undefined ? null : browserUrlForInput(requestedUrl);
@@ -1841,6 +1996,7 @@ export class TabManager {
     const tab = this.createView(host, shellUrl);
     tab.anchored = replace?.anchored ?? false;
     tab.browser = {
+      privatePartition: privatePartition ?? undefined,
       shellUrl,
       view: null,
       contents: null,
@@ -1849,13 +2005,15 @@ export class TabManager {
       terminalOpen: false,
       terminalWidth: BROWSER_TERMINAL_WIDTH,
       addressSuggestionsOpen: false,
+      addressSuggestionsBottom: 0,
       homeEntryAvailable: requestedUrl === undefined && !automationRunId && !popup,
       showingHome: requestedUrl === undefined && !automationRunId && !popup,
       homeHistoryIndex: null,
       pendingHomeNavigation: false,
       ...(automationRunId ? { automationRunId } : {}),
     };
-    tab.title = automationRunId ? "Agent Browser" : "Browser";
+    this.retainPrivateProfile(tab);
+    tab.title = privatePartition ? "Private Tab" : automationRunId ? "Agent Browser" : "Browser";
     tab.url = "";
     this.setTabLoading(tab, false);
     // A blank browser tab is entirely the trusted home page. Creating the
@@ -1916,7 +2074,7 @@ export class TabManager {
     if (browser.contents) this.hostByContents.delete(browser.contents.id);
     const view = new WebContentsView({
       ...(popupContents ? { webContents: popupContents } : {}),
-      webPreferences: { ...BROWSER_WEB_PREFERENCES },
+      webPreferences: { ...BROWSER_WEB_PREFERENCES, partition: browser.privatePartition ?? BROWSER_SESSION_PARTITION },
     });
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     browser.view = view;
@@ -1925,15 +2083,25 @@ export class TabManager {
     browser.attached = false;
     const live = browser as LiveBrowserPage;
     this.trackBrowser(host, tab, live);
-    browser.translation = new BrowserTranslation(live.contents, this.options.translatePageBatch ?? (async (segments, language, signal) => {
-      const response = await tab.contents.session.fetch(new URL("/api/browser/translate", browser.shellUrl).toString(), {
-        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", redirect: "error",
+    // Translation can publish once more while its WebContents is closing. The
+    // mutable browser slot is deliberately nulled during teardown, so retain
+    // the identity used by hostByContents instead of dereferencing it later.
+    const translationContents = live.contents;
+    const translationContentsId = translationContents.id;
+    browser.translation = new BrowserTranslation(translationContents, this.options.translatePageBatch ?? (async (segments, language, signal) => {
+      const endpoint = new URL("/api/browser/translate", browser.shellUrl).toString();
+      const cookies = await tab.contents.session.cookies.get({ url: endpoint });
+      // Node's abortable fetch avoids retaining Chromium network requests when
+      // the document closes mid-translation. Only this trusted local endpoint
+      // receives the shell's session cookies; they never enter the web page.
+      const response = await fetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "application/json", Cookie: cookies.map(cookie => `${cookie.name}=${cookie.value}`).join("; ") }, redirect: "error",
         body: JSON.stringify({ segments, language }), signal: AbortSignal.any([signal, AbortSignal.timeout(100000)]),
       });
       const value = await response.json() as { segments?: Array<{ id: number; text: string }>; error?: string };
       if (!response.ok || !Array.isArray(value.segments)) throw new Error(value.error || "Translation is unavailable. Check your AI connection in Settings and try again.");
       return value.segments;
-    }), () => { const owner = this.hostByContents.get(live.contents.id); if (owner) this.broadcast(owner); });
+    }), () => { const owner = this.hostByContents.get(translationContentsId); if (owner) this.broadcast(owner); });
     return live;
   }
 
@@ -1985,6 +2153,7 @@ export class TabManager {
   private navigateBrowser(host: Host, tab: Tab, input: string): boolean {
     const url = browserUrlForInput(input);
     if (!url) return false;
+    if (host.downloadsPopover?.ownerId === tab.id) host.downloadsPopover.close();
     const browser = this.ensureBrowserPage(host, tab);
     if (!browser) return false;
     if (browser.showingHome) {
@@ -2006,7 +2175,7 @@ export class TabManager {
       const currentBrowser = liveBrowserPage(tab.browser);
       if (!owner || currentBrowser?.contents !== contents) return;
       this.setTabLoading(tab, false);
-      this.log(
+      if (!browser.privatePartition) this.log(
         `browser navigation failed for ${url}: ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -2029,6 +2198,8 @@ export class TabManager {
     });
     contents.once("destroyed", () => {
       const owner = current();
+      if (owner?.browserFullscreen?.contents === contents) this.exitBrowserFullscreen(owner, false);
+      this.browserNotifications.clearForPage(contents);
       this.hostByContents.delete(contents.id);
       if (browser.contents !== contents) return;
       if (browser.attached && browser.view && owner && !owner.window.isDestroyed()) {
@@ -2051,21 +2222,27 @@ export class TabManager {
     });
 
     hardenExternalBrowserWebContents(contents, {
-      configurePermissions: target => this.browserNotifications.installSession(target),
+      configurePermissions: (target: Session) => {
+        if (!browser.privatePartition) return this.browserNotifications.installSession(target);
+        // Keep ordinary page controls working without persisting site grants.
+        const allowed = (permission: string) => permission === "fullscreen" || permission === "clipboard-sanitized-write";
+        target.setPermissionCheckHandler((_contents, permission) => allowed(permission));
+        target.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed(permission)));
+      },
       onOpenWindow: (details) => {
         const owner = current();
         if (!owner || !this.enabled || !this.browserUrl || owner.window.isDestroyed()) {
           return { action: "deny" };
         }
-        if (!browser.automationRunId) this.browserVisitedLinks.remember(contents.getURL(), details.url);
+        if (!browser.automationRunId && !browser.privatePartition) this.browserVisitedLinks.remember(contents.getURL(), details.url);
         return {
           action: "allow",
           outlivesOpener: true,
-          overrideBrowserWindowOptions: { webPreferences: { ...BROWSER_WEB_PREFERENCES } },
+          overrideBrowserWindowOptions: { webPreferences: { ...BROWSER_WEB_PREFERENCES, partition: browser.privatePartition ?? BROWSER_SESSION_PARTITION } },
           createWindow: (options) => {
             const popup = this.openBrowserTab(
               owner, undefined, details.disposition === "background-tab",
-              undefined, undefined, { details, options },
+              undefined, undefined, { details, options }, browser.privatePartition ?? null,
             );
             const page = liveBrowserPage(popup?.browser);
             if (!page) throw new Error("The browser popup could not be attached to a tab.");
@@ -2079,9 +2256,39 @@ export class TabManager {
             isBrowserAgentBootstrapUrl(url, browser.automationRunId),
         ),
     });
-    this.browserNotifications.attach(contents);
-    if (!browser.automationRunId) this.browserVisitedLinks.attach(contents);
-    if (!browser.automationRunId) this.browserHistory.attach(contents);
+    if (browser.privatePartition) {
+      // The sandboxed preload asks synchronously on every document. Private
+      // pages need a reply too, without consulting or changing saved grants.
+      contents.ipc.on("breadboard:web-notification:permission", event => { event.returnValue = "denied"; });
+      contents.ipc.handle("breadboard:web-notification:request", async () => "denied");
+    } else this.browserNotifications.attach(contents);
+    contents.on("enter-html-full-screen", () => {
+      const owner = current();
+      if (!owner || owner.window.isDestroyed()) return;
+      if (owner.activeId !== tab.id || !browser.attached) {
+        this.exitPageFullscreen(contents);
+        return;
+      }
+      if (owner.browserFullscreen?.contents === contents) return;
+      owner.browserFullscreen = { contents, wasWindowFullscreen: owner.window.isFullScreen() };
+      browser.addressSuggestionsOpen = false;
+      owner.downloadsPopover?.close();
+      owner.window.setFullScreen(true);
+      this.layout(owner);
+      contents.focus();
+    });
+    contents.on("leave-html-full-screen", () => {
+      const owner = current();
+      if (owner?.browserFullscreen?.contents === contents) this.exitBrowserFullscreen(owner, false);
+    });
+    contents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
+      const owner = current();
+      if (isMainFrame && !inPlace && owner?.browserFullscreen?.contents === contents) {
+        this.exitBrowserFullscreen(owner);
+      }
+    });
+    if (!browser.automationRunId && !browser.privatePartition) this.browserVisitedLinks.attach(contents);
+    if (!browser.automationRunId && !browser.privatePartition) this.browserHistory.attach(contents);
     contents.on("page-title-updated", (_event, title) => {
       if (browser.showingHome) return;
       if (
@@ -2208,6 +2415,7 @@ export class TabManager {
     });
     contents.on("render-process-gone", () => {
       const owner = current();
+      if (owner?.browserFullscreen?.contents === contents) this.exitBrowserFullscreen(owner, false);
       if (!owner || !tab.url || contents.isDestroyed()) return;
       this.setTabLoading(tab, true);
       this.broadcast(owner);
@@ -2220,6 +2428,7 @@ export class TabManager {
   }
 
   private reopenClosedTab(host: Host): boolean {
+    if (host.privateBrowsing || tabById(host, host.activeId)?.browser?.privatePartition) return false;
     const closed = host.closedTabs.pop();
     if (!closed) return false;
     if (closed.browser) return this.openBrowserTab(host, closed.url || undefined) !== null;
@@ -2242,7 +2451,7 @@ export class TabManager {
     if (!tab) return false;
     const countBefore = host.tabs.length;
     const activeIndex = tabIndex(host, host.activeId);
-    if (tab.url) {
+    if (tab.url && !tab.browser?.privatePartition && !host.privateBrowsing) {
       host.closedTabs.push({ url: tab.url, browser: Boolean(tab.browser) });
       if (host.closedTabs.length > MAX_REOPENABLE_TABS) host.closedTabs.shift();
     }
@@ -2274,6 +2483,7 @@ export class TabManager {
   private dispose(host: Host, tab: Tab): void {
     tab.browser?.menu?.closePopup(host.window);
     this.detach(host.window, tab);
+    if (tab.browser?.contents) this.browserNotifications.clearForPage(tab.browser.contents);
     this.hostByContents.delete(tab.contents.id);
     if (tab.browser?.contents) this.hostByContents.delete(tab.browser.contents.id);
     this.destroyView(tab);
@@ -2283,6 +2493,7 @@ export class TabManager {
     const view = tab.view;
     if (!view) return;
     const host = this.hostByContents.get(tab.contents.id);
+    if (host?.downloadsPopover?.ownerId === tab.id) host.downloadsPopover.close();
     if (host) this.detach(host.window, tab);
     const browserContents = tab.browser?.contents;
     if (browserContents && !browserContents.isDestroyed()) {
@@ -2341,7 +2552,7 @@ export class TabManager {
     if (views.length === 0) return;
     for (const tab of views) {
       if (tab.browser) {
-        if (tab.url) this.options.openExternal?.(tab.url);
+        if (tab.url && !tab.browser.privatePartition) this.options.openExternal?.(tab.url);
       } else if (host.baseRetired && tab === active && tab.url) {
         // The window's own page is blank; give it the page that was in front
         // rather than send that one away and leave the window empty.
@@ -2353,6 +2564,7 @@ export class TabManager {
         this.options.openWindow(tab.url);
       }
       this.detach(host.window, tab);
+      if (tab.browser?.contents) this.browserNotifications.clearForPage(tab.browser.contents);
       this.hostByContents.delete(tab.contents.id);
       if (tab.browser?.contents) this.hostByContents.delete(tab.browser.contents.id);
       this.destroyView(tab);
@@ -2372,6 +2584,8 @@ export class TabManager {
     const tab = tabById(host, id);
     if (!tab) return;
     if (host.activeId !== id) {
+      this.exitBrowserFullscreen(host);
+      host.downloadsPopover?.close();
       const previous = tabById(host, host.activeId);
       if (previous?.browser) {
         previous.browser.addressSuggestionsOpen = false;
@@ -2554,7 +2768,7 @@ export class TabManager {
   private applyTitle(host: Host): void {
     if (host.window.isDestroyed()) return;
     const active = tabById(host, host.activeId);
-    host.window.setTitle(active?.title || "Breadboard");
+    host.window.setTitle(`${active?.browser?.privatePartition || host.privateBrowsing ? "Private — " : ""}${active?.title || "Breadboard"}`);
   }
 
   private detach(window: BrowserWindow, tab: Tab): void {
@@ -2684,12 +2898,13 @@ export class TabManager {
       tab.view?.setBounds(tab === host.pending ? offscreen : { x: 0, y: 0, width, height });
       const browser = liveBrowserPage(tab.browser);
       if (browser?.attached) {
-        const x = browserContentLeft(
+        const fullscreen = host.browserFullscreen?.contents === browser.contents;
+        const x = fullscreen ? 0 : browserContentLeft(
           width,
           browser.terminalOpen,
           browser.terminalWidth,
         );
-        const y = browserContentTop(browser.addressSuggestionsOpen);
+        const y = fullscreen ? 0 : browserContentTop(browser.addressSuggestionsOpen, browser.addressSuggestionsBottom, height);
         browser.view.setBounds({
           x,
           y,
@@ -2705,6 +2920,28 @@ export class TabManager {
 
   // ---------------------------------------------------------- browser page
 
+  private exitPageFullscreen(contents: WebContents): void {
+    if (contents.isDestroyed()) return;
+    void contents.executeJavaScript("if (document.fullscreenElement) document.exitFullscreen();", true).catch(() => undefined);
+  }
+
+  private exitBrowserFullscreen(host: Host, exitPage = true, restoreWindow = true): void {
+    const fullscreen = host.browserFullscreen;
+    if (!fullscreen) return;
+    host.browserFullscreen = undefined;
+    if (exitPage) this.exitPageFullscreen(fullscreen.contents);
+    if (host.window.isDestroyed()) return;
+    if (restoreWindow) host.window.setFullScreen(fullscreen.wasWindowFullscreen);
+    this.layout(host);
+  }
+
+  private toggleWindowFullscreen(host: Host): void {
+    if (host.window.isDestroyed()) return;
+    const fullscreen = host.window.isFullScreen();
+    this.exitBrowserFullscreen(host, true, false);
+    host.window.setFullScreen(!fullscreen);
+  }
+
   /** Put the active browser page immediately below its trusted toolbar. */
   private syncBrowser(host: Host): void {
     if (host.window.isDestroyed() || host.pending) return;
@@ -2713,11 +2950,13 @@ export class TabManager {
       if (tab !== active) this.detachBrowser(host.window, tab);
     }
     const browser = liveBrowserPage(active?.browser);
+    if (active?.voiceOverlay) { this.detachBrowser(host.window, active); return; }
     if (!active?.attached || !browser || !active.url || !browser.ready) return;
     const [width, height] = host.window.getContentSize();
     if (typeof width !== "number" || typeof height !== "number") return;
-    const x = browserContentLeft(width, browser.terminalOpen, browser.terminalWidth);
-    const y = browserContentTop(browser.addressSuggestionsOpen);
+    const fullscreen = host.browserFullscreen?.contents === browser.contents;
+    const x = fullscreen ? 0 : browserContentLeft(width, browser.terminalOpen, browser.terminalWidth);
+    const y = fullscreen ? 0 : browserContentTop(browser.addressSuggestionsOpen, browser.addressSuggestionsBottom, height);
     browser.view.setBounds({
       x,
       y,
@@ -2734,6 +2973,8 @@ export class TabManager {
 
   private detachBrowser(window: BrowserWindow, tab: Tab): void {
     const browser = liveBrowserPage(tab.browser);
+    const host = this.hosts.get(window.id);
+    if (browser && host?.browserFullscreen?.contents === browser.contents) this.exitBrowserFullscreen(host);
     if (!browser?.attached) return;
     browser.attached = false;
     if (window.isDestroyed()) return;
@@ -2798,7 +3039,7 @@ export class TabManager {
     browser.addressSuggestionsOpen = false;
     browser.favicon = undefined;
     tab.url = "";
-    tab.title = "Browser";
+    tab.title = browser.privatePartition ? "Private Tab" : "Browser";
     if (browser.contents.isLoading()) browser.contents.stop();
     this.setTabLoading(tab, false);
     this.detachBrowser(host.window, tab);
@@ -2858,7 +3099,6 @@ export class TabManager {
     });
     this.layoutNotificationOverlay(host);
     host.window.contentView.addChildView(view);
-    view.setVisible(true);
     void overlay.contents.loadURL(url).catch((error) => {
       this.log(
         `notification overlay failed for ${url}: ${
@@ -2900,6 +3140,7 @@ export class TabManager {
   private layoutNotificationOverlay(host: Host): void {
     const overlay = host.notificationOverlay;
     if (!overlay || host.window.isDestroyed() || overlay.contents.isDestroyed()) return;
+    overlay.view.setVisible(this.notificationsVisible && !tabById(host, host.activeId)?.voiceOverlay);
     const [windowWidth, windowHeight] = host.window.getContentSize();
     if (typeof windowWidth !== "number" || typeof windowHeight !== "number") return;
     const renderWidth = Math.max(1, Math.min(NOTIFICATION_OVERLAY_MAX_WIDTH, windowWidth));
@@ -2980,6 +3221,9 @@ export class TabManager {
     contents.on("did-navigate-in-page", (_event, url) => remember(url));
     contents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
       if (!isMainFrame || isInPlace) return;
+      tab.voiceOverlay = false;
+      const owner = current();
+      if (owner) { this.syncBrowser(owner); this.layoutNotificationOverlay(owner); }
       // `painted` describes the current document, not the lifetime of the tab.
       // A full navigation must earn its first frame before it can use the warm
       // reactivation path. Same-document/App Router navigation keeps the live
@@ -3035,6 +3279,11 @@ export class TabManager {
   }
 
   private handleInput(host: Host, event: ElectronEvent, input: Input): void {
+    if (host.browserFullscreen && input.type === "keyDown" && input.key === "Escape") {
+      event.preventDefault();
+      this.exitBrowserFullscreen(host);
+      return;
+    }
     const browserAction = browserMenuShortcut(input);
     const browserTab = tabById(host, host.activeId);
     if (browserAction && browserTab?.browser) {
@@ -3044,7 +3293,7 @@ export class TabManager {
     }
     if (isFullScreenShortcut(input)) {
       event.preventDefault();
-      if (!host.window.isDestroyed()) host.window.setFullScreen(!host.window.isFullScreen());
+      this.toggleWindowFullscreen(host);
       return;
     }
     if (

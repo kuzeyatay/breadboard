@@ -19,6 +19,7 @@ export default async function WorkflowsPage({
   return (
     <WorkflowsClient
       workflowId={value("workflow")}
+      clapReview={value("clapReview") === "1"}
       teachOnOpen={value("teach") === "1"}
       initialRunId={value("run")}
       showNavbarFlowers={getNavbarFlowers(userId)}

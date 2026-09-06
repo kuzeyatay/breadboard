@@ -7,9 +7,12 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DESKTOP_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const COMPILED_TESTS_ROOT = path.join(DESKTOP_ROOT, "dist-tests", "tests");
 
-/** This fixture captures the physical desktop and must not overlap others. */
+/** Native focus and physical desktop checks must not overlap other windows. */
 export const SERIAL_SCREEN_TEST_FILES = Object.freeze([
   "tab-manager.test.js",
+  "browser-downloads-popover-integration.test.js",
+  "browser-fullscreen-integration.test.js",
+  "browser-picture-in-picture-integration.test.js",
 ]);
 
 function isDesktopTestFile(name) {

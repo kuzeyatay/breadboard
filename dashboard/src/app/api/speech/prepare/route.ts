@@ -15,7 +15,7 @@ export async function POST() {
     const userId = await requireUserId();
     if (getSpeechSettings(userId).speechProvider === "chatgpt") {
       const status = await subscriptionStatus(userId);
-      if (!status.configured) throw new RouteError(503, status.error || "Sign in to ChatGPT in Accounts first.");
+      if (!status.configured) throw new RouteError(503, status.error || "The subscription voice connection is unavailable. Re-check it in Voice settings.");
       return NextResponse.json({ ready: true, provider: "chatgpt" });
     }
     await voiceboxJson<{ models: unknown[] }>("/models/status", {}, 10 * 60_000);

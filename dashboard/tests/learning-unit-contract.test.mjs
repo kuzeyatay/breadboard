@@ -1060,6 +1060,45 @@ describe("Learning Unit Contract — inline figure placement (Fix 2)", () => {
     assert.deepEqual(figurePlacementProblems(interpreted, options), []);
   });
 
+  test("measures distance in prose paragraphs and accepts ordinary word inflections", () => {
+    const url = "/garden/assets/source-visuals/local-basis.png";
+    const md = [
+      `![Local basis](${url})`,
+      "*Local basis vectors beside a coordinate surface*",
+      "$$\\vec a_1 \\times \\vec a_2 = \\vec a_3$$",
+      "The arrows are tracked as the observation point moves around the surface, so their local directions rotate even though the physical vector remains unchanged. The right-handed relation is preserved at every point and fixes the positive normal direction.",
+    ].join("\n\n");
+    const options = {
+      maxDistanceParagraphs: 1,
+      requiredInterpretations: [{
+        sourceVisualId: "S1.P4.G2",
+        url,
+        interpretationGoal: "Track the handedness of the local directions",
+      }],
+    };
+
+    assert.deepEqual(figurePlacementProblems(md, options), []);
+  });
+
+  test("matches interpretation nominalizations without accepting generic prose", () => {
+    const url = "/garden/assets/source-visuals/cancellation-map.png";
+    const interpreted = `![Cancellation map](${url})\n\nLocating the midpoint reveals where the two equal field contributions cancel. By symmetry, the opposing components have equal magnitude there, while away from that point a nonzero resultant remains.`;
+    const generic = `![Cancellation map](${url})\n\nThe diagram contains two sources and several curved lines around them. It provides a useful picture for comparing the geometry at multiple observation points.`;
+    const options = {
+      requiredInterpretations: [{
+        sourceVisualId: "S1.P5.G1",
+        url,
+        interpretationGoal: "Locate symmetry-driven cancellation regions",
+      }],
+    };
+
+    assert.deepEqual(figurePlacementProblems(interpreted, options), []);
+    assert.match(
+      figurePlacementProblems(generic, options).join("\n"),
+      /S1\.P5\.G1.*does not address its interpretation goal/i,
+    );
+  });
+
   test("flags more than 3 figures on one page", () => {
     const md = [prose, "![a](x/source-visuals/a.png)", prose, "![b](x/source-visuals/b.png)", prose, "![c](x/source-visuals/c.png)", prose, "![d](x/source-visuals/d.png)", prose].join("\n\n");
     const problems = figurePlacementProblems(md);

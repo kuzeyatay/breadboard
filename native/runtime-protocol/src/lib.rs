@@ -2154,6 +2154,7 @@ pub enum TrustedWorkerEnvironmentSource {
     ScriberrGarden,
     Watermark,
     OuterHardwareBlueprint,
+    MusicProducer,
     GetDoc,
     GetDocDownload,
     MeetingNotes,
@@ -2388,6 +2389,7 @@ impl ServiceRequirement {
 #[serde(rename_all = "kebab-case")]
 pub enum TrustedServiceEnvironmentSource {
     Chatmock,
+    Acestep,
     Comfyui,
     Dashboard,
     Gbrain,
@@ -2425,7 +2427,7 @@ impl TrustedServiceEnvironmentSource {
     /// Closed iteration/index order used by endpoint allocation. Adding a
     /// service environment is therefore one compile-visible change rather
     /// than another hand-maintained field in every reservation table.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Chatmock,
         Self::Comfyui,
         Self::Dashboard,
@@ -2458,6 +2460,7 @@ impl TrustedServiceEnvironmentSource {
         Self::VibeTrading,
         Self::StockAnalyst,
         Self::SolidworksMcp,
+        Self::Acestep,
     ];
     pub const COUNT: usize = Self::ALL.len();
 
@@ -2465,6 +2468,7 @@ impl TrustedServiceEnvironmentSource {
         match self {
             Self::Chatmock => 0,
             Self::Comfyui => 1,
+            Self::Acestep => 32,
             Self::Dashboard => 2,
             Self::Gbrain => 3,
             Self::Hermes => 4,
@@ -5130,6 +5134,7 @@ mod tests {
                 "outer-deep-research-node",
                 "outer-openscience-node",
                 "outer-openwork-node",
+                "outer-music-producer-node",
             ]
         );
         let learn = workers
@@ -5912,6 +5917,7 @@ mod tests {
                 "deer-flow",
                 "vibe-trading",
                 "stock-analyst",
+                "acestep",
             ]
         );
         for service in &services.services {

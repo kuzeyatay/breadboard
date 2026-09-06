@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
+import type { ClientRequest, ClientRequestConstructorOptions } from "electron";
 import { atomicWriteFile } from "./runtime-config";
 
 export const BROWSER_EXTENSIONS_STATE_FILE = "browser-extensions.json";
@@ -111,6 +112,84 @@ export function chromeWebStoreDownloadUrl(extensionId: string, chromeVersion: st
   return url.toString();
 }
 
+/** Electron's net.fetch Response.url is empty. Validate each redirect before
+ * following it through Chromium's request API, which also uses system proxies. */
+export function downloadChromeWebStorePackage(
+  extensionId: string,
+  chromeVersion: string,
+  createRequest: (options: ClientRequestConstructorOptions) => ClientRequest,
+): Promise<Buffer> {
+  const url = chromeWebStoreDownloadUrl(extensionId, chromeVersion);
+  return new Promise((resolve, reject) => {
+    const request = createRequest({ url, redirect: "manual" });
+    let settled = false;
+    let redirects = 0;
+    let length = 0;
+    const chunks: Buffer[] = [];
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chunks.length = 0;
+      reject(error);
+      request.abort();
+    };
+    const timer = setTimeout(() => fail(new Error("The extension download timed out. Try again.")), 60_000);
+    request.on("error", fail);
+    request.on("abort", () => fail(new Error("The extension download was cancelled.")));
+    // In Electron 33 the writable request can close before response data arrives.
+    // Completion is the response's end event; errors/aborts and the timer settle failures.
+    request.on("redirect", (_status, _method, redirectUrl) => {
+      if (settled) return;
+      try {
+        const target = new URL(redirectUrl);
+        if (target.protocol !== "https:" || target.username || target.password) {
+          throw new Error("Chrome Web Store redirected to an unsafe download.");
+        }
+        if (++redirects > 10) throw new Error("The extension download redirected too many times.");
+        request.followRedirect();
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    request.on("response", (response) => {
+      response.on("error", fail);
+      response.on("aborted", () => fail(new Error("The extension download was interrupted. Try again.")));
+      if (settled) return;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        fail(new Error(`Chrome Web Store download failed with HTTP ${response.statusCode}.`));
+        return;
+      }
+      const declared = Number(response.headers["content-length"]);
+      if (Number.isFinite(declared) && declared > MAX_EXTENSION_ARCHIVE_BYTES) {
+        fail(new Error("The browser extension package is too large."));
+        return;
+      }
+      response.on("data", (chunk: Buffer) => {
+        if (settled) return;
+        length += chunk.length;
+        if (length > MAX_EXTENSION_ARCHIVE_BYTES) {
+          fail(new Error("The browser extension package is too large."));
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      response.on("end", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(Buffer.concat(chunks, length));
+      });
+    });
+    try {
+      request.setHeader("accept", "application/x-chrome-extension");
+      request.end();
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
 /**
  * Add a Breadboard-owned install affordance to a Web Store listing. It lives
  * in a closed shadow root so the store's application CSS cannot disable or
@@ -119,13 +198,14 @@ export function chromeWebStoreDownloadUrl(extensionId: string, chromeVersion: st
 export function browserWebStoreInstallBootstrapScript(
   extensionId: string,
   state: BrowserWebStoreInstallState,
+  errorMessage?: string,
 ): string {
   if (!isBrowserExtensionId(extensionId)) return "void 0";
   const labels: Record<BrowserWebStoreInstallState, string> = {
     available: "Add to Breadboard",
-    installing: "Adding to Breadboard…",
+    installing: "Adding…",
     installed: "Added to Breadboard",
-    failed: "Try adding to Breadboard again",
+    failed: "Try again",
   };
   const label = labels[state];
   const enabled = state === "available" || state === "failed";
@@ -142,14 +222,19 @@ export function browserWebStoreInstallBootstrapScript(
       position: "fixed",
       top: "260px",
       right: "max(28px, calc((100vw - 1072px) / 2))",
-      width: "164px",
+      width: "200px",
+      maxWidth: "calc(100vw - 32px)",
       height: "42px",
       zIndex: "2147483647"
     });
     const root = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent = \`button {
+      box-sizing: border-box;
       appearance: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       width: 100%;
       height: 100%;
       padding: 0 18px;
@@ -158,14 +243,33 @@ export function browserWebStoreInstallBootstrapScript(
       background: #1f684b;
       color: #fff;
       box-shadow: 0 4px 14px rgba(22, 57, 43, .2);
-      font: 600 14px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 600 14px/20px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      white-space: nowrap;
       cursor: pointer;
     }
     button:hover { background: #18573e; }
     button:focus-visible { outline: 3px solid rgba(31, 104, 75, .3); outline-offset: 3px; }
     button:disabled { background: #e4e9e6; border-color: #d5dcd8; color: #68736d; box-shadow: none; cursor: default; }
+    .error {
+      box-sizing: border-box;
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 280px;
+      max-width: calc(100vw - 32px);
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid #e8c3bd;
+      border-radius: 8px;
+      background: #fff8f6;
+      color: #8b3026;
+      box-shadow: 0 4px 14px rgba(22, 57, 43, .12);
+      font: 400 13px/18px system-ui, sans-serif;
+      overflow-wrap: anywhere;
+    }
     @media (prefers-color-scheme: dark) {
       button:disabled { background: #303733; border-color: #424b46; color: #c2cac5; }
+      .error { background: #392825; border-color: #72504a; color: #ffcdc5; }
     }\`;
     const button = document.createElement("button");
     button.type = "button";
@@ -174,10 +278,22 @@ export function browserWebStoreInstallBootstrapScript(
     button.setAttribute("aria-label", ${JSON.stringify(label)});
     button.addEventListener("click", () => {
       button.disabled = true;
-      button.textContent = "Adding to Breadboard…";
+      button.textContent = "Adding…";
+      button.setAttribute("aria-label", "Adding to Breadboard");
+      button.removeAttribute("aria-describedby");
+      root.querySelector(".error")?.remove();
       location.href = ${JSON.stringify(target)};
     });
     root.append(style, button);
+    if (${state === "failed"}) {
+      const error = document.createElement("p");
+      error.id = "install-error";
+      error.className = "error";
+      error.setAttribute("role", "alert");
+      error.textContent = ${JSON.stringify(errorMessage || "Couldn't add this extension. Try again.")};
+      button.setAttribute("aria-describedby", error.id);
+      root.append(error);
+    }
     document.documentElement.appendChild(host);
     const findChromeButton = () => {
       const roots = [document];
@@ -197,11 +313,11 @@ export function browserWebStoreInstallBootstrapScript(
       if (!nativeButton) return;
       const rect = nativeButton.getBoundingClientRect();
       if (rect.width < 80 || rect.height < 28) return;
-      host.style.left = rect.left + "px";
+      host.style.left = "auto";
       host.style.top = rect.top + "px";
-      host.style.right = "auto";
-      host.style.width = rect.width + "px";
-      host.style.height = rect.height + "px";
+      host.style.right = Math.max(16, innerWidth - rect.right) + "px";
+      host.style.width = Math.max(200, rect.width) + "px";
+      host.style.height = Math.max(42, rect.height) + "px";
     };
     let placementFrame = 0;
     const schedulePlace = () => {

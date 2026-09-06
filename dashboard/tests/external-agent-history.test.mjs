@@ -45,6 +45,42 @@ function conversation() {
   });
 }
 
+test("a delegated design launch failure survives storage, reload, and hand-back", async () => {
+  const chat = conversation();
+  const diagnostic = "The parametric CAD run could not start: turn_not_found";
+  const result = turns.recordExternalAgentTurn({
+    conversation: chat,
+    clientMessageId: "agent-launch-cad-start-failed",
+    surface: "dashboard_terminal",
+    userContent: "/agents:parametric-cad Design AR glasses and provide build files",
+    assistantContent: diagnostic,
+    outcome: "failed",
+    delegatedAgentRun: true,
+    delegatedAgentReason: "Generate checked CAD files",
+  });
+  const metadata = store.presentConversationMessage(result.assistantMessage).metadata;
+  assert.equal(metadata.externalAgentResult, diagnostic);
+  const restored = presentation.presentHermesSessionDetail(store.getConversationById(chat.id));
+  const answer = restored.messages.find((message) => message.role === "assistant");
+  assert.equal(runs.externalAgentCardContent(answer), diagnostic);
+  const { agentLaunchContinuationMessage } = await import("../src/lib/hermes/agent-launch.ts");
+  const handback = agentLaunchContinuationMessage({
+    agentName: "Parametric CAD", outcome: "failed",
+    content: runs.externalAgentCardContent(answer),
+  });
+  assert.ok(handback.includes(diagnostic));
+  assert.ok(!handback.includes("(it returned no output)"));
+  // Existing hidden failures predate the explicit result field.
+  assert.equal(runs.externalAgentCardContent({
+    content: diagnostic, delegatedAgentRun: true,
+  }), diagnostic);
+  // An attached parent has only a preamble until its worker returns.
+  assert.equal(runs.externalAgentCardContent({
+    content: "Building the files.", delegatedAgentRun: true,
+    delegatedAgentPreamble: "Building the files.",
+  }), "");
+});
+
 test("completed thinking details survive session restore and a later response", () => {
   const chat = conversation();
   for (const [index, reasoning] of ["Compare the sources.", "Check the result."].entries()) {

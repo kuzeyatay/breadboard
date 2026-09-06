@@ -1586,6 +1586,7 @@ const REQUEST_VALIDATORS = Object.freeze({
   "hardware-blueprint": validateRuntimeV2HardwareBlueprintRequest,
   "inbox-zero": validateRuntimeV2InboxZeroRequest,
   "socials-manager": validateRuntimeV2SocialsManagerRequest,
+  "music-producer": validateMusicRequest,
   "get-doc": validateRuntimeV2GetDocRequest,
   "get-doc-download": validateRuntimeV2GetDocDownloadRequest,
   "meeting-notes": validateRuntimeV2MeetingNotesRequest,
@@ -1625,6 +1626,7 @@ const MANAGER_MODULES = Object.freeze({
   "hardware-blueprint": ["lib", "hardware", "run-manager.ts"],
   "inbox-zero": ["lib", "inbox-zero", "run-manager.ts"],
   "socials-manager": ["lib", "socials-manager", "run-manager.ts"],
+  "music-producer": ["lib", "music-producer", "worker.ts"],
   "get-doc": ["lib", "get-doc", "run-manager.ts"],
   "get-doc-download": ["lib", "get-doc", "download-run-manager.ts"],
   "meeting-notes": ["lib", "meeting-notes", "runtime-worker-run-manager.ts"],
@@ -1833,6 +1835,7 @@ export const RUNTIME_V2_OUTER_AGENT_WORKER_ADAPTERS = Object.freeze({
     scopePrefix: "oa_socials_manager_",
     maximumInputs: 0,
   }),
+  "music-producer": Object.freeze({ id: "music-producer", workerKind: "outer-music-producer-node", jobType: "music-producer-run", scopePrefix: "oa_music_producer_", maximumInputs: 0 }),
   "get-doc": Object.freeze({
     id: "get-doc",
     workerKind: "outer-get-doc-node",
@@ -2065,6 +2068,7 @@ export async function executeRuntimeV2OuterAgentAdapter({
   if (!adapter) fail("The Runtime worker adapter is not registered.");
   const manager = await import(pathToFileURL(path.join(sourceRoot, ...MANAGER_MODULES[adapterId])).href);
   const request = launch.request;
+  if (adapterId === "music-producer") return manager.executeMusicWorker({ ...request, userId: launch.executionScope.userId, workspace: launch.workspacePath, signal, update });
   // Snapshot in the disposable worker before any coding toolchain can write.
   // The terminal event is held back until the matching after-snapshot exists,
   // so a browser can never observe completion without its durable undo refs.
@@ -2555,4 +2559,12 @@ export async function executeRuntimeV2OuterAgentAdapter({
   } finally {
     signal.removeEventListener("abort", stop);
   }
+}
+
+function validateMusicRequest(value) {
+  if (!exactRecord(value, ["launchId","task","model","reasoningEffort","baseUrl","conversationPublicId","conversationContext","defaults","explicit"]) ||
+      !/^music_[a-f0-9]{32}$/.test(value.launchId) || !boundedText(value.task, 96000) || !boundedString(value.model,256) ||
+      !EFFORTS.has(value.reasoningEffort) || !baseUrl(value.baseUrl) || !/^conv_[A-Za-z0-9_-]{24}$/.test(value.conversationPublicId) ||
+      !boundedText(value.conversationContext,32000,{empty:true}) || !isRecord(value.defaults) || !isRecord(value.explicit)) fail("Invalid canonical music request.");
+  return value;
 }

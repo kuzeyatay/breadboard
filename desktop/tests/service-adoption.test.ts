@@ -61,6 +61,20 @@ test("nothing listening is not an instance to adopt", async () => {
   assert.equal(await isOurServiceRunning("chatmock", 1, context), false);
 });
 
+test('legacy ChatMock health cannot pass the subscription voice capability check', async () => {
+  let current = false;
+  const server = http.createServer((_request, response) => {
+    response.end(JSON.stringify(current ? { status: 'ok', breadboard_subscription_voice: 1 } : { status: 'ok' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  try {
+    assert.equal(await isOurServiceRunning('chatmock', address.port, context), false);
+    current = true;
+    assert.equal(await isOurServiceRunning('chatmock', address.port, context), true);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
 test("a dashboard still compiling its route is waited out, not declared a stranger", async () => {
   // The regression this budget exists for: `next dev` holds the first request
   // to a route open while it compiles it (fifteen seconds is ordinary). A

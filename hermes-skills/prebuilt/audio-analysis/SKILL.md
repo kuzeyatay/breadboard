@@ -39,6 +39,11 @@ Arguments, all optional:
   Omit it and the most recently attached track is used. Never pass a path or a
   URL: the tool resolves the stored file itself from a message in this
   conversation.
+- A generated audio artifact can be selected with `artifact:ARTIFACT_ID@VERSION`
+  in `track` or `against`. Copy the ID and version from this conversation's
+  artifacts. This uses the same analysis permission checks and never accepts a
+  filesystem path. Select the version explicitly; do not use another chat's
+  latest output.
 - `analysis` — `full` (the default) covers everything and adds section
   boundaries. `info` is duration and sample rate only, and is the cheap way to
   check a long file before committing to it. `spectral` is brightness,

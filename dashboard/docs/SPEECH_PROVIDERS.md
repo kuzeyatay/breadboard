@@ -5,7 +5,7 @@ Settings → Voice offers Local and ChatGPT subscription (experimental). The cho
 ## Setup
 
 1. Restart Breadboard after updating so ChatMock loads its new voice bridge.
-2. Sign in to ChatGPT under Accounts.
+2. Use the ChatGPT account already connected under Accounts. Voice reuses it automatically; only connect an account if none is connected.
 3. Select ChatGPT subscription in Voice settings and preview a voice.
 
 Requires a native Codex CLI supporting experimental realtime V3; tested with 0.153.4. The bridge finds the native CLI on PATH or the installed Windows Codex app. An administrator can set BREADBOARD_CODEX_BINARY to an explicit executable. The ChatGPT account comes from Breadboard/ChatMock's existing account selection, not from that executable's global sign-in.
@@ -14,7 +14,9 @@ This does not call the billed OpenAI Audio API, and never uses OPENAI_API_KEY or
 
 ## UX and limits
 
-Voice mode holds one connection across listening and speaking. Microphone input is sent live, and read-aloud plays from the remote audio track as it arrives. Transcripts go to Breadboard's normal selected-model chat; the voice service must not answer questions or execute tools itself. Composer dictation also streams microphone input directly and shows partial transcripts. Response actions, previews and Clicky read-aloud stream playback. Clicky's existing recording input remains a recorded-file path.
+Voice mode holds one connection across listening and speaking. Microphone input is sent live, and read-aloud plays from the remote audio track as it arrives. Transcripts go to Breadboard's normal selected-model chat; the voice service must not answer questions or execute tools itself. Composer dictation also streams microphone input directly and shows partial transcripts. Response actions, previews and Clicky read-aloud stream playback. Clicky microphone input also uses the live connection.
+
+Preview voice reads the editable preview text. Read-aloud connections use speech mode, and the bridge frames each supplied text as a JSON script with explicit verbatim-reading instructions. Questions inside that script are read, not answered. The live acceptance test checks the returned transcript against the exact supplied words as well as recording audible output and transcribing it back.
 
 There is no new 90-second recording cap or 4,000-character total reading cap. Long readings are divided at sentence/word boundaries into transport-sized pieces. Uploaded recordings use browser media decoding and run in real time, not batch STT. Existing general file-upload/media-worker limits and browser codec support still apply. Downloads need the complete captured audio before encoding.
 
@@ -25,6 +27,8 @@ Stopping or closing voice stops audio and the owned connection. Authentication, 
 The authenticated dashboard forwards only status, create, event-read, speak and close operations to the loopback ChatMock bridge, authenticated with a private random secret in CODEX_HOME/breadboard-voice.secret. The browser receives SDP and transcript events, never account tokens. Browser origins cannot call the bridge directly.
 
 ChatMock starts an isolated native app-server with an ephemeral thread, temporary CODEX_HOME, read-only sandbox, no approvals and client-managed handoffs. It provides existing ChatGPT OAuth tokens in memory; it does not copy the user's Codex configuration, plugins or tools. API-key variables are blank. Audio travels directly between the browser and OpenAI. Idle abandoned sessions expire; active sessions have no artificial three-minute cutoff.
+
+Voice uses chat's existing account selector, including additional connected accounts. A call is pinned to its selected account. Native token-refresh requests reuse or refresh that same stored session in the background, without launching a sign-in flow. Missing runtime/service errors are separate from missing-account status. A browser-only ChatGPT login is not itself a Breadboard account connection.
 
 ## Verification
 

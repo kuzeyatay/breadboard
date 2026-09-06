@@ -83,7 +83,7 @@ export function audioAnalysisCommandText(
     !SPEECH_ONLY.test(prose) &&
     (input.hasAudioAttachment
       ? !HANDLING_ONLY.test(prose) || MUSIC_REQUEST.test(prose)
-      : input.hasRecentAudioAttachment === true &&
+      : (input.hasRecentAudioAttachment === true || /\bartifact:[A-Za-z0-9_-]+@[1-9]\d*\b/.test(text)) &&
         Boolean(text) &&
         MUSIC_REQUEST.test(prose));
   return {

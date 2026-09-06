@@ -58,6 +58,7 @@ import { MEETING_NOTES_COMMAND } from '@/lib/meeting-notes/identity.ts';
 import MeetingRecorderBar from '@/app/components/hermes/meeting-recorder-bar';
 import type { MeetingRecording } from '@/lib/meeting-notes/use-meeting-recorder';
 import { DEEP_TUTOR_COMMAND } from '@/lib/deep-tutor/identity.ts';
+import { MUSIC_PRODUCER_COMMAND } from '@/lib/music-producer/identity.ts';
 import { CAREER_OPS_COMMAND } from '@/lib/career-ops/identity.ts';
 import { OPENEXECUTIVE_COMMAND } from '@/lib/openexecutive/identity.ts';
 import { OPEN_GYM_COMMAND } from '@/lib/open-gym/identity.ts';
@@ -285,8 +286,11 @@ interface Props {
    * Active Career Ops agent. Same contract as the other ChatMock-driven agents:
    * a chip in the composer, and the host routes sends to a job-search run.
    */
+  musicProducerAgent?: { id: string; name: string } | null;
   careerOpsAgent?: { id: string; name: string } | null;
+  onClearMusicProducer?: () => void;
   onClearCareerOps?: () => void;
+  onSelectMusicProducer?: () => void;
   onSelectCareerOps?: () => void;
   openExecutiveAgent?: { id: string; name: string } | null;
   onClearOpenExecutive?: () => void;
@@ -536,8 +540,11 @@ export default function AssistantComposer({
   deepTutorAgent,
   onClearDeepTutor,
   onSelectDeepTutor,
+  musicProducerAgent,
   careerOpsAgent,
+  onClearMusicProducer,
   onClearCareerOps,
+  onSelectMusicProducer,
   onSelectCareerOps,
   openExecutiveAgent,
   onClearOpenExecutive,
@@ -654,6 +661,7 @@ export default function AssistantComposer({
   // origin; the account copy is what survives a Breadboard restart.
   useComposerSwitchHydration();
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [greetVoice, setGreetVoice] = useState(false);
 
   // Migrate a Super Agent preference saved by an older build, before the two
   // modes were coupled. New toggles already set YOLO in the shared store.
@@ -673,6 +681,7 @@ export default function AssistantComposer({
   const slashCommandMenuRef = useRef<SlashCommandMenuHandle>(null);
   const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   useImperativeHandle(textareaRef, () => internalTextareaRef.current as HTMLTextAreaElement);
+
 
   const pendingWorkflowPrompt = pendingWorkflow
     ? workflowComposerPrompt(pendingWorkflow)
@@ -1258,6 +1267,7 @@ export default function AssistantComposer({
     onSelectGetDoc ? 'get-doc' : null,
     onSelectMeetingNotes ? 'meeting-notes' : null,
     onSelectDeepTutor ? 'deep-tutor' : null,
+    onSelectMusicProducer ? 'music-producer' : null,
     onSelectCareerOps ? 'career-ops' : null,
     onSelectOpenExecutive ? 'openexecutive' : null,
     onSelectOpenGym ? 'open-gym' : null,
@@ -1669,7 +1679,30 @@ export default function AssistantComposer({
             </span>
           </div>
         ) : null}
-        {careerOpsAgent ? (
+        {musicProducerAgent ? (
+          <div className="flex items-center px-2 pb-1.5 pt-0.5">
+            <span
+              className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
+              title={`${MUSIC_PRODUCER_COMMAND} · job search: evaluate, tailor, track (ChatMock)`}
+            >
+              <span className="truncate font-mono font-medium text-[var(--botanical)]">{MUSIC_PRODUCER_COMMAND}</span>
+              {onClearMusicProducer ? (
+                <button
+                  type="button"
+                  onClick={() => onClearMusicProducer()}
+                  className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                  aria-label={`Clear ${musicProducerAgent.name}`}
+                  title="Clear Music Producer"
+                >
+                  <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
+                  </svg>
+                </button>
+              ) : null}
+            </span>
+          </div>
+        ) : null}
+{careerOpsAgent ? (
           <div className="flex items-center px-2 pb-1.5 pt-0.5">
             <span
               className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
@@ -2067,7 +2100,8 @@ export default function AssistantComposer({
             onSelectGetDoc={onSelectGetDoc ? () => insertCommandToken(GET_DOC_COMMAND) : undefined}
             onSelectMeetingNotes={onSelectMeetingNotes ? () => insertCommandToken(MEETING_NOTES_COMMAND) : undefined}
             onSelectDeepTutor={onSelectDeepTutor ? () => insertCommandToken(DEEP_TUTOR_COMMAND) : undefined}
-            onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMAND) : undefined}
+            onSelectMusicProducer={onSelectMusicProducer ? () => insertCommandToken(MUSIC_PRODUCER_COMMAND) : undefined}
+onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMAND) : undefined}
             onSelectOpenExecutive={onSelectOpenExecutive ? () => insertCommandToken(OPENEXECUTIVE_COMMAND) : undefined}
             onSelectOpenGym={onSelectOpenGym ? () => insertCommandToken(OPEN_GYM_COMMAND) : undefined}
             onSelectVibeTrading={onSelectVibeTrading ? () => insertCommandToken(VIBE_TRADING_COMMAND) : undefined}
@@ -2591,7 +2625,7 @@ export default function AssistantComposer({
             disabled={disabled || isSending || Boolean(formAgent)}
             compact={compact}
             textareaRef={internalTextareaRef}
-            onOpenVoiceMode={voiceMessages ? () => setVoiceOpen(true) : undefined}
+            onOpenVoiceMode={voiceMessages ? (greet = false) => { setGreetVoice(greet); setVoiceOpen(true); } : undefined}
             runtimeSessionId={capabilitySessionId}
           />
 
@@ -2766,6 +2800,8 @@ export default function AssistantComposer({
       {voiceMessages ? (
         <VoiceConversationOverlay
           open={voiceOpen}
+          onOpenSettings={() => { setVoiceOpen(false); setSettingsInitialTab('speech'); setIntelligencePanel('settings'); }}
+          greetOnOpen={greetVoice}
           onClose={() => setVoiceOpen(false)}
           onSend={sendSpokenTurn}
           messages={voiceMessages}

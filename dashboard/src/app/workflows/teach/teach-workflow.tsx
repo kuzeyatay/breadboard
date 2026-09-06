@@ -1,5 +1,7 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 // Teach Workflow: the whole flow from "show me" to a saved workflow.
 //
 // Four screens, one per state the session can actually be in — setup, recording,
@@ -115,8 +117,8 @@ export default function TeachWorkflow({
     try {
       // Opening the stream is what makes the device labels readable, so the
       // picker is only worth showing after permission has been granted.
-      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
-      for (const track of probe.getTracks()) track.stop();
+      const probe = await requestForegroundMicrophone({ audio: true });
+      stopForegroundStream(probe);
       setMicGranted(true);
       const devices = await listMicrophones();
       setMicrophones(devices);

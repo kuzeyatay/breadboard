@@ -3,13 +3,19 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 
 const notificationChannel = "breadboard:web-notification";
+let cachedPermission: NotificationPermission = ipcRenderer.sendSync(`${notificationChannel}:permission`);
+const notificationListeners = new Set<(value: { id: string; type: string }) => void>();
+ipcRenderer.on(`${notificationChannel}:event`, (_event, value) => {
+  if (value.type === "permissionchange" && ["default", "granted", "denied"].includes(value.permission)) cachedPermission = value.permission;
+  for (const listener of notificationListeners) listener(value);
+});
 contextBridge.exposeInMainWorld("breadboardWebNotifications", {
-  permission: () => ipcRenderer.sendSync(`${notificationChannel}:permission`),
-  request: () => ipcRenderer.invoke(`${notificationChannel}:request`),
+  permission: () => cachedPermission,
+  request: async () => { cachedPermission = await ipcRenderer.invoke(`${notificationChannel}:request`); return cachedPermission; },
   show: (value: unknown) => ipcRenderer.send(`${notificationChannel}:show`, value),
   close: (id: string) => ipcRenderer.send(`${notificationChannel}:close`, id),
   listen: (callback: (value: { id: string; type: string }) => void) => {
-    ipcRenderer.on(`${notificationChannel}:event`, (_event, value) => callback(value));
+    notificationListeners.add(callback);
   },
 });
 
@@ -21,6 +27,18 @@ function installWebNotifications() {
   } }).breadboardWebNotifications;
   const notices = new Map<string, PageNotification>();
   let serial = 0;
+  class PageNotificationPermission extends EventTarget {
+    readonly name = "notifications";
+    onchange: ((event: Event) => unknown) | null = null;
+    get state(): PermissionState { const permission = bridge.permission(); return permission === "default" ? "prompt" : permission; }
+    changed() { const event = new Event("change"); this.dispatchEvent(event); this.onchange?.call(this, event); }
+  }
+  const permissionStatus = new PageNotificationPermission();
+  if (navigator.permissions) {
+    const query = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = descriptor => descriptor?.name === "notifications"
+      ? Promise.resolve(permissionStatus as PermissionStatus) : query(descriptor);
+  }
   class PageNotification extends EventTarget {
     static get permission() { return bridge.permission(); }
     static get maxActions() { return 0; }
@@ -65,6 +83,7 @@ function installWebNotifications() {
     }
   }
   bridge.listen(({ id, type }) => {
+    if (type === "permissionchange") { permissionStatus.changed(); return; }
     const notice = notices.get(id);
     if (type === "close" || type === "error") notices.delete(id);
     notice?.emit(type);

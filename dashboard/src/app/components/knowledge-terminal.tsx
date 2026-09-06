@@ -13,6 +13,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import { registerClapChat } from '@/lib/speech/clap-wake';
 import TerminalDockOutline from '@/app/components/terminal-dock-outline';
 import { DEFAULT_TERMINAL_DOCK_HEIGHT, terminalDockCollapsedHeight } from '@/lib/terminal-dock-layout';
 import {
@@ -247,6 +248,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const headerClickGuard = useTerminalHeaderClickGuard();
 
   const isOpen = height > DEFAULT_TERMINAL_DOCK_HEIGHT + 8;
+
+  useEffect(() => registerClapChat(() => setHeight(maxHeight())), []);
 
   // Keep the header items mounted through their exit animation so they can
   // retract (not just vanish) when the terminal collapses. `headerMounted`

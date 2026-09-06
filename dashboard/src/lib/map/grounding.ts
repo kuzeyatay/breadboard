@@ -168,7 +168,7 @@ const DIGITAL_NAVIGATION = new RegExp(
     [
       /https?:\/\/[^\s,;]+|(?:[\w-]+\.)+[a-z]{2,}(?:[/:?#][^\s,;]*)?/.source,
       /(?:instagram|facebook|youtube|tiktok|twitter|reddit|linkedin|github|gmail|spotify|whatsapp|discord|chatgpt)(?:'s)?(?:\s+(?:website|site|app|profile|page|homepage))?/.source,
-      /(?:[\p{L}\p{N}'’-]+\s+){0,5}(?:website|webpage|web page|homepage|home page|settings|dashboard|browser tab)/.source,
+      /(?:[\p{L}\p{N}'’-]+\s+){0,5}(?:website|webpage|web page|homepage|home page|settings|dashboard|browser tab)/u.source,
     ].join("|"),
     ")",
     /(?:\s+in\s+(?:(?:my|the|a)\s+)?(?:browser|chrome|edge|firefox|safari|new tab))?/.source,

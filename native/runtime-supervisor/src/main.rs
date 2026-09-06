@@ -191,6 +191,9 @@ const VOX_DIRECTOR_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "COMFYUI_ENABLED",
     "COMFYUI_MANAGED",
     "COMFYUI_PORT",
+    "BREADBOARD_ACESTEP_DIR",
+    "BREADBOARD_ACESTEP_URL",
+    "BREADBOARD_ACESTEP_PORT",
     "COMFYUI_URL",
     "COMFYUI_ROOT",
     "COMFYUI_ENV_DIR",
@@ -880,6 +883,9 @@ const COMFYUI_ENVIRONMENT_NAMES: &[&str] = &[
     "COMFYUI_ROOT",
     "COMFYUI_ENV_DIR",
     "COMFYUI_RUNTIME_DIR",
+    "BREADBOARD_ACESTEP_DIR",
+    "BREADBOARD_ACESTEP_URL",
+    "BREADBOARD_ACESTEP_PORT",
     "COMFYUI_URL",
     "COMFYUI_PORT",
 ];
@@ -1436,6 +1442,9 @@ const DASHBOARD_ENVIRONMENT_NAMES: &[&str] = &[
     "GBRAIN_QUERY_TIMEOUT_MS",
     "COMFYUI_ENABLED",
     "COMFYUI_MANAGED",
+    "BREADBOARD_ACESTEP_DIR",
+    "BREADBOARD_ACESTEP_URL",
+    "BREADBOARD_ACESTEP_PORT",
     "COMFYUI_URL",
     "COMFYUI_PORT",
     "COMFYUI_ROOT",
@@ -1545,6 +1554,7 @@ enum EnvironmentProfile {
     ScriberrGardenWorker,
     WatermarkWorker,
     OuterHardwareBlueprintWorker,
+    MusicProducerWorker,
     GetDocWorker,
     GetDocDownloadWorker,
     MeetingNotesWorker,
@@ -1562,6 +1572,7 @@ enum EnvironmentProfile {
     OuterOpenscienceWorker,
     OuterOpenworkWorker,
     Chatmock,
+    Acestep,
     Comfyui,
     Dashboard,
     Gbrain,
@@ -1602,6 +1613,7 @@ impl EnvironmentProfile {
         !matches!(
             self,
             Self::Chatmock
+                | Self::Acestep
                 | Self::Comfyui
                 | Self::Dashboard
                 | Self::Gbrain
@@ -1690,6 +1702,7 @@ impl EnvironmentProfile {
             "scriberr-garden-worker" => Ok(Self::ScriberrGardenWorker),
             "watermark-worker" => Ok(Self::WatermarkWorker),
             "outer-hardware-blueprint-worker" => Ok(Self::OuterHardwareBlueprintWorker),
+            "music-producer-worker" => Ok(Self::MusicProducerWorker),
             "get-doc-worker" => Ok(Self::GetDocWorker),
             "get-doc-download-worker" => Ok(Self::GetDocDownloadWorker),
             "meeting-notes-worker" => Ok(Self::MeetingNotesWorker),
@@ -1707,6 +1720,7 @@ impl EnvironmentProfile {
             "outer-openscience-worker" => Ok(Self::OuterOpenscienceWorker),
             "outer-openwork-worker" => Ok(Self::OuterOpenworkWorker),
             "chatmock" => Ok(Self::Chatmock),
+            "acestep" => Ok(Self::Acestep),
             "comfyui" => Ok(Self::Comfyui),
             "dashboard" => Ok(Self::Dashboard),
             "gbrain" => Ok(Self::Gbrain),
@@ -1936,6 +1950,7 @@ impl EnvironmentProfile {
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 OUTER_HARDWARE_BLUEPRINT_WORKER_ENVIRONMENT_NAMES,
             ),
+            Self::MusicProducerWorker => (TOOL_WORKER_ENVIRONMENT_NAMES, &["CHATMOCK_API_KEY", "BREADBOARD_ACESTEP_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"][..]),
             Self::GetDocWorker => (
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 GET_DOC_WORKER_ENVIRONMENT_NAMES,
@@ -2002,6 +2017,7 @@ impl EnvironmentProfile {
                 DASHBOARD_ENVIRONMENT_NAMES,
             ),
             Self::Chatmock => (SERVICE_COMMON_ENVIRONMENT_NAMES, CHATMOCK_ENVIRONMENT_NAMES),
+            Self::Acestep => (SERVICE_COMMON_ENVIRONMENT_NAMES, &["PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "BREADBOARD_ACESTEP_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT"][..]),
             Self::Comfyui => (SERVICE_COMMON_ENVIRONMENT_NAMES, COMFYUI_ENVIRONMENT_NAMES),
             Self::Dashboard => (
                 SERVICE_COMMON_ENVIRONMENT_NAMES,

@@ -44,6 +44,12 @@
   color: var(--botanical);
 }
 
+.surface[data-wallpaper-tone] .heading h1,
+.surface[data-wallpaper-tone] .addressee {
+  color: var(--browser-wallpaper-foreground);
+  text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
+}
+
 .greeting {
   display: grid;
 }
@@ -140,6 +146,8 @@
 }
 
 .destinationButton {
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -154,7 +162,23 @@
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
-  transition: transform 120ms ease-out;
+  transition: transform var(--neu-duration) ease;
+}
+
+.destinationButton::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--botanical) 9%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--neu-duration) ease;
+}
+
+.destinationButton:focus-visible::before {
+  opacity: 1;
 }
 
 .destinationButton:disabled {
@@ -300,7 +324,15 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .destinationButton:not(:disabled):hover,
+  .destinationButton:not(:disabled):hover {
+    color: var(--ink-heading);
+    transform: translateY(-2px);
+  }
+
+  .destinationButton:not(:disabled):hover::before {
+    opacity: 1;
+  }
+
   .clearSearch:hover,
   .gardenAction:hover,
   .showAll:hover {
@@ -364,6 +396,7 @@
     transition: none;
   }
 
+  .destinationButton:not(:disabled):hover,
   .destinationButton:not(:disabled):active,
   .clearSearch:active,
   .gardenAction:active,

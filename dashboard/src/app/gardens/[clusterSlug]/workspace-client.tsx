@@ -189,6 +189,7 @@ import InlineAgentReachRun from "@/app/components/hermes/inline-agent-reach-run"
 import InlineGetDocRun from "@/app/components/hermes/inline-get-doc-run";
 import InlineMeetingNotesRun from "@/app/components/hermes/inline-meeting-notes-run";
 import InlineDeepTutorRun from "@/app/components/hermes/inline-deep-tutor-run";
+import InlineMusicProducerRun from "@/app/components/hermes/inline-music-producer-run";
 import InlineCareerOpsRun from "@/app/components/hermes/inline-career-ops-run";
 import InlineOpenExecutiveRun from "@/app/components/hermes/inline-openexecutive-run";
 import InlineOpenGymRun from "@/app/components/hermes/inline-open-gym-run";
@@ -415,6 +416,12 @@ import {
   taskFromDeepTutorCommand,
 } from "@/lib/deep-tutor/identity.ts";
 import {
+  MUSIC_PRODUCER_AGENT_ID,
+  MUSIC_PRODUCER_AGENT_NAME,
+  musicProducerUserMessage,
+  taskFromMusicProducerCommand,
+} from "@/lib/music-producer/identity.ts";
+import {
   CAREER_OPS_AGENT_ID,
   CAREER_OPS_AGENT_NAME,
   careerOpsUserMessage,
@@ -606,6 +613,7 @@ interface Message {
   meetingNotesRun?: { runId: string; task: string };
   deepTutorRun?: { runId: string; task: string; capability: string };
   careerOpsRun?: { runId: string; task: string };
+  musicProducerRun?: { runId: string; task: string };
   openExecutiveRun?: { runId: string; task: string };
   openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
@@ -1688,6 +1696,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.getDocRun ||
       message.meetingNotesRun ||
       message.deepTutorRun ||
+      message.musicProducerRun ||
       message.careerOpsRun ||
       message.openExecutiveRun ||
       message.openGymRun ||
@@ -2066,6 +2075,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.getDocRun ??
                 msg.meetingNotesRun ??
                 msg.deepTutorRun ??
+                msg.musicProducerRun ??
                 msg.careerOpsRun ??
                 msg.openExecutiveRun ??
                 msg.openGymRun ??
@@ -2803,6 +2813,25 @@ const ChatTranscript = memo(function ChatTranscript({
                                   onTerminal={(result) =>
                                     onExternalAgentTerminal(
                                       msg.deerFlowRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.musicProducerRun ? (
+                                <InlineMusicProducerRun
+                                  key={msg.musicProducerRun.runId}
+                                  runId={msg.musicProducerRun.runId}
+                                  task={msg.musicProducerRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.musicProducerRun!.runId,
                                       result,
                                     )
                                   }
@@ -3729,6 +3758,8 @@ export default function WorkspaceClient({
     useState<ExternalAgentSelection | null>(null);
   const [deepTutorAgent, setDeepTutorAgent] =
     useState<ExternalAgentSelection | null>(null);
+  const [musicProducerAgent, setMusicProducerAgent] =
+    useState<ExternalAgentSelection | null>(null);
   const [careerOpsAgent, setCareerOpsAgent] =
     useState<ExternalAgentSelection | null>(null);
   const [openExecutiveAgent, setOpenExecutiveAgent] =
@@ -3770,6 +3801,7 @@ export default function WorkspaceClient({
     | "meeting-notes"
     | "deep-tutor"
     | "career-ops"
+    | "music-producer"
     | "openexecutive"
     | "open-gym"
     | "trading-agent"
@@ -3812,6 +3844,7 @@ export default function WorkspaceClient({
     | "meeting-notes"
     | "deep-tutor"
     | "career-ops"
+    | "music-producer"
     | "openexecutive"
     | "open-gym"
     | "trading-agent"
@@ -5633,6 +5666,7 @@ export default function WorkspaceClient({
       getDoc: getDocAgent,
       meetingNotes: meetingNotesAgent,
       deepTutor: deepTutorAgent,
+      musicProducer: musicProducerAgent,
       careerOps: careerOpsAgent,
       openExecutive: openExecutiveAgent,
       tradingAgents: tradingAgentsAgent,
@@ -5657,6 +5691,7 @@ export default function WorkspaceClient({
     setGetDocAgent(snapshot.getDoc);
     setMeetingNotesAgent(snapshot.meetingNotes);
     setDeepTutorAgent(snapshot.deepTutor);
+    setMusicProducerAgent(snapshot.musicProducer);
     setCareerOpsAgent(snapshot.careerOps);
     setOpenExecutiveAgent(snapshot.openExecutive);
     setTradingAgentsAgent(snapshot.tradingAgents);
@@ -5769,6 +5804,10 @@ export default function WorkspaceClient({
         case "deep-tutor":
           if (!deepTutorAgent) await selectDeepTutor();
           await launchDeepTutor(request.brief);
+          return;
+        case "music-producer":
+          if (!musicProducerAgent) await selectMusicProducer();
+          await launchMusicProducer(request.brief);
           return;
         case "career-ops":
           if (!careerOpsAgent) await selectCareerOps();
@@ -6079,6 +6118,7 @@ export default function WorkspaceClient({
       awaitedLaunchesRef.current.delete(continuationKey);
       if (
         continuedKeys.has(continuationKey) ||
+        (typeof runId === "string" && continuedKeys.has(runId)) ||
         continuedDelegatedRunsRef.current.has(continuationKey)
       ) {
         continuedDelegatedRunsRef.current.add(continuationKey);
@@ -6813,6 +6853,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setOpenExecutiveAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
@@ -7865,6 +7906,7 @@ export default function WorkspaceClient({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -7899,6 +7941,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -7952,6 +7995,7 @@ export default function WorkspaceClient({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -8043,6 +8087,7 @@ export default function WorkspaceClient({
       setGetDocAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -8085,6 +8130,7 @@ export default function WorkspaceClient({
       setRufloAgent(null);
       setAgentReachAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -8136,6 +8182,7 @@ export default function WorkspaceClient({
       setGetDocAgent(null);
       setMeetingNotesAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -8186,6 +8233,7 @@ export default function WorkspaceClient({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -8228,6 +8276,7 @@ export default function WorkspaceClient({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setDeerFlowAgent(null);
@@ -8259,6 +8308,7 @@ export default function WorkspaceClient({
       getDocAgent ||
       meetingNotesAgent ||
       deepTutorAgent ||
+      musicProducerAgent ||
       careerOpsAgent ||
       tradingAgentsAgent ||
       vibeTradingAgent ||
@@ -8272,6 +8322,7 @@ export default function WorkspaceClient({
   }, [
     agentBrowserAgent,
     agentReachAgent,
+    musicProducerAgent,
     careerOpsAgent,
     codexAgent,
     deepResearchAgent,
@@ -8317,6 +8368,7 @@ export default function WorkspaceClient({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(selected);
       // An unbuilt environment is worth saying before the request is filled in,
       // not after.
@@ -8334,7 +8386,50 @@ export default function WorkspaceClient({
     }
   }
 
-  async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
+  async function selectMusicProducer(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/music-producer/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Music Producer is unavailable.",
+        );
+      }
+      const selected = {
+        id: MUSIC_PRODUCER_AGENT_ID,
+        name: MUSIC_PRODUCER_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCodexAgent(null);
+      setGetDocAgent(null);
+      setShortsAgent(null);
+      setRufloAgent(null);
+      setLaunchingExternalAgent(null);
+      setMusicProducerAgent(selected);
+      if (data.state !== "ready") setExternalAgentStatus(data.message ?? "Open Music Producer settings to prepare a provider.");
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Music Producer is unavailable.",
+      );
+      return null;
+    }
+  }
+async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
     setExternalAgentStatus("");
     try {
       const response = await fetch("/api/career-ops/health");
@@ -8410,6 +8505,7 @@ export default function WorkspaceClient({
       setMeetingNotesAgent(null);
       setDeepTutorAgent(null);
       setCareerOpsAgent(null);
+      setMusicProducerAgent(null);
       setTradingAgentsAgent(null);
       setVibeTradingAgent(null);
       setStockAnalystAgent(null);
@@ -8444,6 +8540,7 @@ export default function WorkspaceClient({
       getDocAgent ||
       meetingNotesAgent ||
       deepTutorAgent ||
+      musicProducerAgent ||
       careerOpsAgent ||
       tradingAgentsAgent ||
       vibeTradingAgent ||
@@ -8458,6 +8555,7 @@ export default function WorkspaceClient({
   }, [
     agentBrowserAgent,
     agentReachAgent,
+    musicProducerAgent,
     careerOpsAgent,
     codexAgent,
     deepResearchAgent,
@@ -8489,6 +8587,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -8528,6 +8627,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -8571,6 +8671,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -8817,7 +8918,7 @@ export default function WorkspaceClient({
     }
     const nextMessages: Message[] = [
       ...transcriptForRetriedTurn(session),
-      { role: "user", content: userContent, createdAt, ...userMessageFields },
+      { role: "user", content: userContent, createdAt, ...(assistantMessage.clientMessageId ? { clientMessageId: assistantMessage.clientMessageId } : {}), ...userMessageFields },
       { ...assistantMessage, createdAt },
     ];
     // The retried turn now has its replacement; a later launch appends again.
@@ -9473,6 +9574,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -9525,6 +9627,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -9576,6 +9679,7 @@ export default function WorkspaceClient({
     setMeetingNotesAgent(null);
     setDeepTutorAgent(null);
     setCareerOpsAgent(null);
+    setMusicProducerAgent(null);
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setDeerFlowAgent(null);
@@ -9628,6 +9732,7 @@ export default function WorkspaceClient({
       getDocAgent ||
       meetingNotesAgent ||
       deepTutorAgent ||
+      musicProducerAgent ||
       careerOpsAgent ||
       tradingAgentsAgent ||
       vibeTradingAgent ||
@@ -9641,6 +9746,7 @@ export default function WorkspaceClient({
   }, [
     agentBrowserAgent,
     agentReachAgent,
+    musicProducerAgent,
     careerOpsAgent,
     codexAgent,
     deepResearchAgent,
@@ -9836,7 +9942,83 @@ export default function WorkspaceClient({
     }
   }
 
-  async function launchCareerOps(task: string) {
+  async function launchMusicProducer(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) {
+        setExternalAgentStatus(
+          "Describe one musical draft or select a track version to revise.",
+        );
+      }
+      return;
+    }
+    externalAgentLaunchRef.current = "music-producer";
+    setLaunchingExternalAgent("music-producer");
+    setExternalAgentStatus("");
+    const clientMessageId = delegatedAgentLaunchRef.current?.workerClientMessageId ?? delegatedAgentLaunchRef.current?.originClientMessageId ?? crypto.randomUUID();
+    const userContent = delegatedAgentLaunchRef.current ? task : musicProducerUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/music-producer/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+          clientMessageId,
+          delegatedAgentRun: Boolean(delegatedAgentLaunchRef.current?.workerClientMessageId),
+          internalAgentContinuation: Boolean(delegatedAgentLaunchRef.current?.workerClientMessageId),
+          attachToExistingTurn: Boolean(delegatedAgentLaunchRef.current && !delegatedAgentLaunchRef.current.workerClientMessageId),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Music Producer run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          clientMessageId,
+          musicProducerRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Music Producer task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+async function launchCareerOps(task: string) {
     if (!task || externalAgentLaunchRef.current) {
       if (!task) {
         setExternalAgentStatus(
@@ -12293,6 +12475,7 @@ export default function WorkspaceClient({
         (getDocAgent && "get-doc") ||
         (meetingNotesAgent && "meeting-notes") ||
         (deepTutorAgent && "deep-tutor") ||
+        (musicProducerAgent && "music-producer") ||
         (careerOpsAgent && "career-ops") ||
         (openExecutiveAgent && "openexecutive") ||
         (tradingAgentsAgent && "trading-agent") ||
@@ -12422,7 +12605,17 @@ export default function WorkspaceClient({
       return;
     }
 
-    const careerOpsTask = taskFromCareerOpsCommand(text);
+    const musicProducerTask = taskFromMusicProducerCommand(text);
+    if (musicProducerTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = musicProducerAgent ?? (await selectMusicProducer());
+        if (selected) await launchMusicProducer(musicProducerTask);
+      })();
+      return;
+    }
+const careerOpsTask = taskFromCareerOpsCommand(text);
     if (careerOpsTask !== null) {
       setInput("");
       setChatAttachments([]);
@@ -12755,7 +12948,13 @@ export default function WorkspaceClient({
       void launchDeepTutor(text);
       return;
     }
-    if (careerOpsAgent) {
+    if (musicProducerAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchMusicProducer(text);
+      return;
+    }
+if (careerOpsAgent) {
       setInput("");
       setChatAttachments([]);
       void launchCareerOps(text);
@@ -17509,16 +17708,23 @@ export default function WorkspaceClient({
                 setDeepTutorAgent(null);
                 setExternalAgentStatus("");
               }}
-              careerOpsAgent={careerOpsAgent}
-              onSelectCareerOps={() => void selectCareerOps()}
+              musicProducerAgent={musicProducerAgent}
+careerOpsAgent={careerOpsAgent}
+              onSelectMusicProducer={() => void selectMusicProducer()}
+onSelectCareerOps={() => void selectCareerOps()}
               openExecutiveAgent={openExecutiveAgent}
               onSelectOpenExecutive={() => void selectOpenExecutive()}
               onClearOpenExecutive={() => {
                 setOpenExecutiveAgent(null);
                 setExternalAgentStatus("");
               }}
-              onClearCareerOps={() => {
+              onClearMusicProducer={() => {
+                setMusicProducerAgent(null);
+                setExternalAgentStatus("");
+              }}
+onClearCareerOps={() => {
                 setCareerOpsAgent(null);
+                setMusicProducerAgent(null);
                 setExternalAgentStatus("");
               }}
               vibeTradingAgent={vibeTradingAgent}

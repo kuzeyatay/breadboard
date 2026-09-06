@@ -15,6 +15,7 @@ import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { caldavVaultConfigured } from "@/lib/calendar/caldav-credentials.ts";
 import { googleImageGenerationCredentialsStatus } from "@/lib/hermes/google-image-generation-credentials.ts";
 import ProfileClient from "./profile-client";
+import { readClapAction } from "@/lib/profile/clap-action-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -72,6 +73,9 @@ export default async function ProfilePage({
   return (
     <ProfileClient
       stats={stats}
+      initialClapAction={readClapAction(db, userId)}
+      initialSnapAction={readClapAction(db, userId, 'snap')}
+      clapActionUserId={String(userId)}
       initialShortcuts={getNavbarShortcuts(userId)}
       initialNavbarFlowers={getNavbarFlowers(userId)}
       browserProfile={await browserProfileState()}

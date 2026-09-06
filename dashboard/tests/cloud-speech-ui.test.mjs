@@ -20,9 +20,16 @@ test("Voice settings switch providers, use subscription sign-in, preview cloud s
     plugins: [{ name: "silent-preview", setup(build) {
       build.onResolve({ filter: /speech\/request-client$/ }, () => ({ path: "request", namespace: "request-stub" }));
       build.onLoad({ filter: /.*/, namespace: "request-stub" }, () => ({ contents: "export const speechRequest = (...args) => fetch(...args);", loader: "js" }));
-      build.onResolve({ filter: /speech\/playback$/ }, () => ({ path: "playback", namespace: "stub" }));
+      build.onResolve({ filter: /(?:speech\/|^\.\/)subscription-live$/ }, () => ({ path: "subscription", namespace: "stub" }));
       build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-        contents: "export async function playSubscriptionText() { return false; } export async function playSpeechBlob(blob, ended) { window.previewBytes=blob.size; setTimeout(ended, 20); } export function stopSpeechPlayback() {}",
+        contents: `export async function subscriptionSelected() {
+          const {settings} = await (await fetch('/api/speech/settings')).json(); return settings.speechProvider === 'chatgpt';
+        }
+        export async function connectSubscriptionVoice() {
+          return {close:async()=>{},speak:async text=>{
+            (window.spokenPreviews??=[]).push(text); await new Promise(resolve=>setTimeout(resolve,20));
+          }};
+        }`,
         loader: "js",
       }));
     } }],
@@ -61,6 +68,10 @@ test("Voice settings switch providers, use subscription sign-in, preview cloud s
       const request = route.request();
       const pathname = new URL(request.url()).pathname;
       const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+      if (pathname.endsWith('/clap-controls')) return json({ userId: '1',
+        preferences: { version: 1, enabled: false, resumeOnStartup: false, deviceId: '', sensitivity: .55, pattern: 'double' },
+        action: { prompt: 'Start dictation', action: { kind: 'dictation' } },
+      });
       if (pathname.endsWith("/status")) {
         const local = settings.speechProvider === "local";
         return json({ settings, cloud, available: local || cloud.configured, health: null, startup: null,
@@ -75,13 +86,7 @@ test("Voice settings switch providers, use subscription sign-in, preview cloud s
         }
         return json({ ready: true });
       }
-      if (pathname.endsWith("/credentials")) {
-        if (request.method() === "PUT") {
-          assert.deepEqual(request.postDataJSON(), { apiKey: "sk-browser-fixture" });
-          cloud = { ...cloud, configured: true, source: "stored", hasStoredKey: true };
-        } else cloud = { ...cloud, configured: false, source: null, hasStoredKey: false };
-        return json({ cloud });
-      }
+      assert.ok(!pathname.endsWith("/credentials"), "Subscription voice never requests API credentials");
       if (pathname.endsWith("/settings")) {
         if (failSave) { failSave = false; return json({ error: "Preferences could not be saved" }, 500); }
         settings = { ...settings, ...request.postDataJSON() };
@@ -97,15 +102,27 @@ test("Voice settings switch providers, use subscription sign-in, preview cloud s
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole("heading", { name: "ChatGPT subscription speech" }).waitFor();
     assert.equal(prepareCalls, 0, "Opening cloud settings must not start Voicebox");
-    assert.equal(await page.getByRole("button", { name: "Preview subscription voice" }).isEnabled(), false);
+    assert.equal(await page.getByRole("button", { name: "Preview voice", exact: true }).isEnabled(), false);
     assert.equal(await page.locator('input[type="password"]').count(), 0);
+    assert.equal(await page.getByText("Sign in under Accounts.", { exact: false }).count(), 0);
+    cloud = { configured: false, source: "subscription", signedIn: true, reason: "runtime_missing", error: "Your ChatGPT account is connected. Install the native voice runtime." };
+    await page.getByRole("button", { name: "Re-check connection" }).click();
+    await page.getByText(cloud.error, { exact: true }).waitFor();
+    assert.equal(await page.getByText("Sign in under Accounts.", { exact: false }).count(), 0);
+    cloud = { configured: false, source: "subscription", reason: "service_unavailable", error: "Restart Breadboard to load the subscription voice service." };
+    await page.getByRole("button", { name: "Re-check connection" }).click();
+    await page.getByText(cloud.error, { exact: true }).waitFor();
+    await page.getByText("An unavailable voice service does not mean you are signed out.", { exact: false }).waitFor();
     cloud = { configured: true, source: "subscription" };
     await page.getByRole("button", { name: "Re-check connection" }).click();
     await page.getByText("ChatGPT account connected.", { exact: false }).waitFor();
     await page.getByLabel("Cloud voice", { exact: true }).selectOption("maple");
-    await page.getByRole("button", { name: "Preview subscription voice" }).click();
-    await page.waitForFunction(() => window.previewBytes > 0);
-    assert.equal(previewCalls, 1);
+    const previewText = 'Can you hear the rain? Read "these words" exactly.';
+    await page.getByLabel("Preview text", { exact: true }).fill(previewText);
+    await page.getByRole("button", { name: "Preview voice", exact: true }).click();
+    await page.waitForFunction(() => window.spokenPreviews?.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.spokenPreviews), [previewText]);
+    assert.equal(previewCalls, 0, "Subscription previews use streamed playback, not local synthesis");
     assert.equal(settings.openaiVoice, "maple");
     await page.getByRole("button", { name: "Local", exact: true }).click();
     await page.getByRole("heading", { name: "Local speech service" }).waitFor();
@@ -124,10 +141,11 @@ test("Voice settings switch providers, use subscription sign-in, preview cloud s
     await page.getByRole("heading", { name: "Local speech service" }).waitFor();
     await page.getByRole("button", { name: "ChatGPT subscription", exact: true }).click();
     await page.getByRole("heading", { name: "ChatGPT subscription speech" }).waitFor();
-    cloud = { configured: false, source: "subscription", error: "Sign in to ChatGPT" };
+    cloud = { configured: false, source: "subscription", signedIn: false, reason: "sign_in_required", error: "No connected ChatGPT account was found." };
     await page.getByRole("button", { name: "Re-check connection" }).click();
-    await page.getByText("Sign in to ChatGPT", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Preview subscription voice" }).isEnabled(), false);
+    await page.getByText(cloud.error, { exact: true }).waitFor();
+    assert.equal(await page.getByText("An unavailable voice service does not mean you are signed out.", { exact: false }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Preview voice", exact: true }).isEnabled(), false);
     assert.deepEqual(pageErrors, []);
   } finally {
     await browser?.close();

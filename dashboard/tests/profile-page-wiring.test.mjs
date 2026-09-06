@@ -68,6 +68,7 @@ test("both invite calls the page makes exist on the route", () => {
 });
 
 test("the optional navbar entries obey their settings", () => {
+  assert.ok(navbar.includes('{shortcuts.voice && <VoiceShortcut />}'), 'Voice obeys its profile switch');
   // The work timer seat is a component that opens in place rather than a link;
   // the /pomodoro link now lives inside the panel it opens.
   assert.ok(

@@ -85,6 +85,21 @@ test("the desktop manager owns and repeatedly raises the shared overlay", () => 
   assert.match(source, /this\.layoutNotificationOverlay\(host\)/);
 });
 
+test("website permission responses and cards validate the request identity and choice", () => {
+  const request = { id: "permission-request", origin: "https://www.youtube.com" };
+  assert.equal(isDesktopNotificationToast({ type: "success", message: "Allow notifications?", notificationPermission: request }), true);
+  for (const invalid of [{ ...request, id: "" }, { ...request, id: "x".repeat(101) }, { ...request, origin: "file:///tmp/site" }, { ...request, origin: null }]) {
+    assert.equal(isDesktopNotificationToast({ type: "success", message: "Allow notifications?", notificationPermission: invalid }), false);
+  }
+  for (const permission of ["default", "granted", "denied"]) {
+    assert.equal(isTabsCommand({ type: "browser-notification-permission-response", id: request.id, permission }), true);
+  }
+  for (const permission of ["allow", true, undefined, ["granted"]]) {
+    assert.equal(isTabsCommand({ type: "browser-notification-permission-response", id: request.id, permission }), false);
+  }
+  assert.equal(isTabsCommand({ type: "browser-notification-permission-response", id: "", permission: "granted" }), false);
+});
+
 test("the preload bridge carries local cards and overlay measurements", async () => {
   const ipc = new FakeIpcRenderer();
   const api = createDesktopApi(ipc);

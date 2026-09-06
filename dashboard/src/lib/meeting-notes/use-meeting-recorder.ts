@@ -1,5 +1,7 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 // Recording the meeting as it happens.
 //
 // This is the one part of meetily that could not be ported as logic, because
@@ -62,7 +64,7 @@ function pickMimeType(): string {
 /** Every track from every stream, stopped — the only way the OS indicator clears. */
 function stopStreams(streams: MediaStream[]): void {
   for (const stream of streams) {
-    for (const track of stream.getTracks()) track.stop();
+    stopForegroundStream(stream);
   }
 }
 
@@ -121,7 +123,7 @@ export function useMeetingRecorder(options: {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("This browser cannot record audio.");
       }
-      const mic = await navigator.mediaDevices.getUserMedia({
+      const mic = await requestForegroundMicrophone({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,

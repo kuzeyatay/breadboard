@@ -12,7 +12,7 @@
           "executableAuthority": "runtime-root",
           "allowedExecutable": "runtimes/python/python.exe",
           "arguments": [
-            { "kind": "app-path", "path": "chatmock/chatmock.py" },
+            { "kind": "app-path", "path": "chatmock/breadboard_runtime.py" },
             { "kind": "literal", "value": "serve" },
             { "kind": "literal", "value": "--port" },
             { "kind": "runtime-value", "value": "service-port" },
@@ -37,8 +37,12 @@
                 "path": "runtimes/python/python.exe"
               },
               {
+                "authority": "runtime-root",
+                "path": "runtimes/python/Lib/site-packages/breadboard-chatmock.pth"
+              },
+              {
                 "authority": "app-root",
-                "path": "chatmock/chatmock.py"
+                "path": "chatmock/breadboard_runtime.py"
               }
             ]
           },
@@ -51,7 +55,7 @@
       ],
       "readiness": {
         "path": "/health",
-        "expectedBodyContains": null,
+        "expectedBodyContains": "\"breadboard_subscription_voice\"",
         "requestTimeoutMs": 2000,
         "pollIntervalMs": 500,
         "startupTimeoutMs": 90000
@@ -2505,6 +2509,82 @@
         "initialBackoffMs": 1000,
         "maximumBackoffMs": 30000
       }
+    },
+    {
+      "id": "acestep",
+      "capabilityIds": [
+        "runtime-agent:music-producer"
+      ],
+      "requirement": "optional",
+      "launchProfiles": [
+        {
+          "modes": [
+            "lean",
+            "hot",
+            "packaged"
+          ],
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/services/acestep/.venv/Scripts/python.exe",
+          "arguments": [
+            {
+              "kind": "literal",
+              "value": "-s"
+            },
+            {
+              "kind": "app-path",
+              "path": "dashboard/scripts/acestep-managed-service.py"
+            }
+          ],
+          "environmentSource": "acestep",
+          "workingDirectory": {
+            "kind": "data-subdirectory",
+            "path": "runtime-v2/services/acestep"
+          },
+          "installProbe": {
+            "kind": "files-present",
+            "files": [
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/acestep/.venv/Scripts/python.exe"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/acestep/models-ready.json"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/acestep/api-key"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/acestep-managed-service.py"
+              }
+            ]
+          },
+          "resourceLimits": {
+            "estimatedColdStartCommitMb": 8192,
+            "softCommitLimitMb": 16384,
+            "hardCommitLimitMb": 24576
+          }
+        }
+      ],
+      "readiness": {
+        "path": "/health",
+        "expectedBodyContains": "\"ok\"",
+        "requestTimeoutMs": 4000,
+        "pollIntervalMs": 1000,
+        "startupTimeoutMs": 300000
+      },
+      "startupPolicy": "on-demand",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "maximumConcurrentLeases": 1,
+      "maximumLeaseMs": 1800000,
+      "idleTtlMs": 60000,
+      "gracefulShutdownMs": 10000,
+      "restartPolicy": "never",
+      "restartBounds": null,
+      "displayName": "Music generation (ACE-Step)"
     }
   ]
 }

@@ -19,6 +19,9 @@ import BrainMapPanel from "./brain-map-panel";
 import BrowserProfilePanel from "./browser-profile-panel";
 import ContactsPanel from "./contacts-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
+import ClapActionPanel from "./clap-action-panel";
+import VoiceAssistantPanel from "./voice-assistant-panel";
+import type { ClapActionSettings } from "@/lib/profile/clap-action";
 import type { BrowserProfileState } from "@/lib/agent-browser/service.ts";
 import type { Contact } from "@/lib/contacts/types.ts";
 import type { CalendarCollection } from "@/lib/calendar/types.ts";
@@ -2528,6 +2531,9 @@ function GardenRow({
 
 export default function ProfileClient({
   stats,
+  initialClapAction,
+  initialSnapAction,
+  clapActionUserId,
   initialShortcuts,
   initialNavbarFlowers,
   browserProfile,
@@ -2540,6 +2546,9 @@ export default function ProfileClient({
   initialBrainScope,
 }: {
   stats: ProfileStats;
+  initialClapAction: ClapActionSettings;
+  initialSnapAction: ClapActionSettings;
+  clapActionUserId: string;
   initialShortcuts: NavbarShortcuts;
   initialNavbarFlowers: boolean;
   browserProfile: BrowserProfileState;
@@ -2863,6 +2872,10 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
+            <VoiceAssistantPanel />
+          </Packed>
+
+          <Packed>
             <NavbarPanel
               initial={initialShortcuts}
               initialFlowers={initialNavbarFlowers}
@@ -2893,6 +2906,11 @@ export default function ProfileClient({
           <Packed>
             <BrowserNavigationPanel />
           </Packed>
+        </div>
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <ClapActionPanel initial={initialClapAction} userId={clapActionUserId} />
+          <ClapActionPanel control="snap" initial={initialSnapAction} userId={clapActionUserId} />
         </div>
 
         {/* ---------------------------------------- reliability and latency */}

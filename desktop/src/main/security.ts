@@ -40,8 +40,8 @@ export function revokeThemeLocationFor(webContentsId: number): void {
  * Mark a sandboxed WebContentsView as the in-app browser's untrusted page.
  *
  * The process-wide navigation guard protects product renderers by default. A
- * browser page is the one deliberate exception: it has no preload, no Node
- * integration, a separate session partition, and its own http(s)-only guard.
+ * browser page is the one deliberate exception: it has a narrow notification
+ * preload, no Node integration, a separate session, and its own http(s)-only guard.
  */
 export function allowExternalBrowserNavigationFor(webContentsId: number): void {
   externalBrowserWebContents.add(webContentsId);
@@ -112,7 +112,7 @@ export function isSafeBrowserUrl(targetUrl: string): boolean {
 }
 
 export interface ExternalBrowserHandlers {
-  /** Install the shared browser profile's narrow notification policy. */
+  /** Install the browser profile's notification and clipboard-write policy. */
   configurePermissions?: (session: Session) => void;
   onOpenWindow: (details: HandlerDetails) => WindowOpenHandlerResponse;
   /** One inert shell-owned document used to identify an automation target. */

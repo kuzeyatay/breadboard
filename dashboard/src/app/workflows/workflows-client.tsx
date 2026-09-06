@@ -350,11 +350,13 @@ function HomeView({
 
 export default function WorkflowsClient({
   workflowId,
+  clapReview = false,
   teachOnOpen = false,
   initialRunId = null,
   showNavbarFlowers,
 }: {
   workflowId: string | null;
+  clapReview?: boolean;
   teachOnOpen?: boolean;
   initialRunId?: string | null;
   showNavbarFlowers: boolean;
@@ -475,6 +477,7 @@ export default function WorkflowsClient({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
+        {clapReview && activeId && <p role="status" className="border-b border-[var(--line)] bg-[var(--paper-surface)] px-5 py-3 text-sm text-[var(--ink)]">Clap controls selected this workflow. Review its steps and required inputs, then press Run to confirm. Nothing has run yet.</p>}
         {teaching ? (
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
             <TeachWorkflow

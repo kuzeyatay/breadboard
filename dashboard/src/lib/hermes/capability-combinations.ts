@@ -22,6 +22,7 @@ import { AGENT_BROWSER_SLASH_COMMAND } from "../agent-browser/identity.ts";
 import { agencyAgentSlugFromToken } from "./agency-agent-command.ts";
 import { AGENT_REACH_COMMAND } from "../agent-reach/identity.ts";
 import { PARAMETRIC_CAD_COMMAND } from "../cad/identity.ts";
+import { MUSIC_PRODUCER_COMMAND } from "../music-producer/identity.ts";
 import { CAREER_OPS_COMMAND } from "../career-ops/identity.ts";
 import {
   OPENEXECUTIVE_AGENT_ID,
@@ -182,6 +183,7 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   profile("deep-tutor", DEEP_TUTOR_COMMAND, "Deep Tutor", {
     requiresLaunchApproval: false,
   }),
+  profile("music-producer", MUSIC_PRODUCER_COMMAND, "Music Producer"),
   profile("career-ops", CAREER_OPS_COMMAND, "Career Ops"),
   profile(OPENEXECUTIVE_AGENT_ID, OPENEXECUTIVE_COMMAND, OPENEXECUTIVE_AGENT_NAME, {
     // Advisory analysis stays inside the conversation and its isolated memory.

@@ -12,7 +12,7 @@ test("desktop notifications use one native overlay above every tab surface", () 
   const bridge = source("../src/lib/desktop-notification-overlay.ts");
   const styles = source("../src/app/globals.css");
 
-  assert.match(toast, /publishDesktopNotificationToast\(\{ message, type, title, chatId, response, website \}\)/);
+  assert.match(toast, /publishDesktopNotificationToast\(\{ message, type, title, chatId, response, website, notificationPermission \}\)/);
   assert.match(toast, /!desktopOverlay/);
   assert.match(toast, /mode\?: 'page' \| 'desktop-overlay'/);
   assert.match(toast, /z-\[10000\]/);

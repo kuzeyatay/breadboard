@@ -3037,20 +3037,39 @@ export function figurePlacementProblems(
     if (/^!\[/.test(block)) return false; // image
     if (/^#{1,6}\s/.test(block)) return false; // heading
     if (/^```/.test(block)) return false; // code / visual block
+    if (/^\$\$/.test(block)) return false; // display math
     if (/^\s*\*[^*]+\*\s*$/.test(block)) return false; // caption-only
     // Needs a real sentence's worth of words.
     return block.split(/\s+/).filter(Boolean).length >= 12;
   };
 
-  for (const index of imageBlockIndexes) {
-    let hasNearbyProse = false;
-    for (let d = 1; d <= maxDistance; d += 1) {
-      if (isProse(blocks[index - d] ?? "") || isProse(blocks[index + d] ?? "")) {
-        hasNearbyProse = true;
-        break;
+  // `maxDistanceParagraphs` is a prose distance, not a raw Markdown-block
+  // distance. Captions, equations, headings, and fenced visual payloads often
+  // sit between an image and the paragraph that interprets it; counting those
+  // blocks made correctly grounded figures look orphaned. Do not cross another
+  // image, though, because its prose belongs to a different visual contract.
+  const imageBlockIndexSet = new Set(imageBlockIndexes);
+  const nearbyProseBlocks = (index: number): string[] => {
+    const nearby: string[] = [];
+    for (const direction of [-1, 1] as const) {
+      let proseDistance = 0;
+      for (
+        let cursor = index + direction;
+        cursor >= 0 && cursor < blocks.length && proseDistance < maxDistance;
+        cursor += direction
+      ) {
+        if (imageBlockIndexSet.has(cursor)) break;
+        const candidate = blocks[cursor] ?? "";
+        if (!isProse(candidate)) continue;
+        nearby.push(candidate);
+        proseDistance += 1;
       }
     }
-    if (!hasNearbyProse) {
+    return nearby;
+  };
+
+  for (const index of imageBlockIndexes) {
+    if (nearbyProseBlocks(index).length === 0) {
       const url = (blocks[index].match(/!\[[^\]]*\]\(([^)]*)\)/) ?? [])[1] ?? "(image)";
       problems.push(`source figure ${url} has no interpretive prose within ${maxDistance} paragraphs`);
     }
@@ -3067,23 +3086,44 @@ export function figurePlacementProblems(
         .filter((word) => word.length >= 4 && !interpretationStopWords.has(word)),
     ),
   ];
+  const interpretationStem = (value: string): string => {
+    let stem = value;
+    const suffixes = [
+      "ational", "tional", "ization", "isation", "iveness", "fulness", "ousness",
+      "ations", "ation", "itions", "ition", "ments", "ment", "ness", "ingly", "edly",
+      "ences", "ence", "ances", "ance", "ities", "ity", "ions", "ion", "ing", "ent", "ed", "al",
+    ];
+    // Two conservative passes cover common compounds such as handedness ->
+    // handed -> hand while retaining a substantial lexical root.
+    for (let pass = 0; pass < 2; pass += 1) {
+      const suffix = suffixes.find((candidate) =>
+        stem.endsWith(candidate) && stem.length - candidate.length >= 4
+      );
+      if (!suffix) break;
+      stem = stem.slice(0, -suffix.length);
+    }
+    // Normalize spelling changes at a suffix boundary: cancellation -> cancel,
+    // and locate/locating -> locat. This is deliberately narrower than a fuzzy
+    // substring match so unrelated interpretation goals still fail closed.
+    if (/([bcdfghjklmnpqrstvwxyz])\1$/u.test(stem)) stem = stem.slice(0, -1);
+    if (stem.length > 4 && stem.endsWith("e")) stem = stem.slice(0, -1);
+    return stem;
+  };
   for (const requirement of options.requiredInterpretations ?? []) {
     const index = blocks.findIndex((block) => block.includes(requirement.url));
     if (index < 0) {
       problems.push(`required source figure ${requirement.sourceVisualId} is not embedded at ${requirement.url}`);
       continue;
     }
-    const nearbyProse: string[] = [];
-    for (let d = 1; d <= maxDistance; d += 1) {
-      for (const candidate of [blocks[index - d] ?? "", blocks[index + d] ?? ""]) {
-        if (isProse(candidate)) nearbyProse.push(candidate);
-      }
-    }
+    const nearbyProse = nearbyProseBlocks(index);
     const keywords = interpretationKeywords(requirement.interpretationGoal);
     const prose = nearbyProse.join(" ").toLowerCase();
-    const matchedKeywords = keywords.filter((keyword) =>
-      new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(prose)
-    );
+    const proseWords = new Set(prose.match(/[a-z0-9]+/g) ?? []);
+    const proseStems = new Set([...proseWords].map(interpretationStem));
+    const matchedKeywords = keywords.filter((keyword) => {
+      if (proseWords.has(keyword)) return true;
+      return proseStems.has(interpretationStem(keyword));
+    });
     const requiredMatches = keywords.length >= 3 ? 2 : keywords.length;
     if (requiredMatches > 0 && matchedKeywords.length < requiredMatches) {
       problems.push(

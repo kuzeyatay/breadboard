@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
+  type RefObject,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
@@ -37,11 +38,15 @@ import BrowserHomeAccessories from "./browser-home-accessories";
 import { browserAddressDisplayValue } from "./browser-address-display";
 import { useBrowserSavedItems } from "./use-browser-saved-items";
 import { useBrowserRecentSearches } from "./use-browser-recent-searches";
+import { useBrowserAddressSuggestions } from "./use-browser-address-suggestions";
 import { BrowserHistoryPanel } from "./browser-history-panel";
 import BrowserDownloadsPanel from "./browser-downloads";
+import BrowserDownloadsButton from "./browser-downloads-button";
 import BrowserMenuControls from "./browser-menu-controls";
+import privateStyles from "./browser-private.module.css";
 import BrowserTranslationControls from "./browser-translation-controls";
 import { useBrowserBookmarkReorder } from "./use-browser-bookmark-reorder";
+import { registerClapDock } from '@/lib/speech/clap/targets';
 
 const DashboardAgentTerminal = dynamic(
   () => import("@/app/components/hermes/dashboard-agent-terminal"),
@@ -268,6 +273,7 @@ function BrowserSuggestionList({
   onChoose,
   onRemoveHistory,
   address = false,
+  dropdownRef,
 }: {
   id: string;
   suggestions: readonly SearchSuggestion[];
@@ -276,9 +282,10 @@ function BrowserSuggestionList({
   onChoose: (suggestion: SearchSuggestion) => void;
   onRemoveHistory: (value: string) => void;
   address?: boolean;
+  dropdownRef?: RefObject<HTMLDivElement | null>;
 }) {
   return (
-    <div id={id} className={`browser-search-suggestions ${address ? "browser-address-suggestions" : ""}`} role="listbox" aria-label={address ? "Address suggestions and recent searches" : "Search suggestions and recent searches"}>
+    <div ref={dropdownRef} id={id} className={`browser-search-suggestions ${address ? "browser-address-suggestions" : ""}`} role="listbox" aria-label={address ? "Address suggestions and recent searches" : "Search suggestions and recent searches"}>
       {suggestions.map((suggestion, index) => (
         <div
           key={`${suggestion.source}-${suggestion.value}`}
@@ -340,6 +347,7 @@ export default function BrowserClient({
     tabs.selfId === undefined ? tabs.activeId : tabs.selfId
   ));
   const browser = pageTab?.browser;
+  const privateBrowsing = browser?.private === true;
   const isActive = Boolean(pageTab && pageTab.id === tabs?.activeId);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -356,7 +364,7 @@ export default function BrowserClient({
   const browserRepairAttemptedRef = useRef(false);
   const [draftAddress, setDraftAddress] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const recentSearchStore = useBrowserRecentSearches(restoreOwnerKey, browser?.address);
+  const recentSearchStore = useBrowserRecentSearches(restoreOwnerKey, browser?.address, privateBrowsing);
   const recentSearches = recentSearchStore.items;
   const bookmarkStore = useBrowserSavedItems(
     restoreOwnerKey,
@@ -397,8 +405,8 @@ export default function BrowserClient({
   const selectionKey = browser?.selection
     ? `${browser.selection.url}\n${browser.selection.text}`
     : "";
-  const googleSearchSuggestions = useGoogleSuggestions(searchFocused ? searchQuery : "");
-  const googleAddressSuggestions = useGoogleSuggestions(addressFocused ? addressLookupQuery : "");
+  const googleSearchSuggestions = useGoogleSuggestions(!privateBrowsing && searchFocused ? searchQuery : "");
+  const googleAddressSuggestions = useGoogleSuggestions(!privateBrowsing && addressFocused ? addressLookupQuery : "");
   const suggestions = useMemo(
     () => searchSuggestions(searchQuery, recentSearches, googleSearchSuggestions),
     [googleSearchSuggestions, recentSearches, searchQuery],
@@ -451,12 +459,9 @@ export default function BrowserClient({
     return () => window.cancelAnimationFrame(frame);
   }, [browser?.terminalWidth]);
 
-  useEffect(() => {
-    void sendDesktopTabsCommand({
-      type: "browser-address-suggestions",
-      open: Boolean(browser?.address && addressFocused && addressSuggestions.length),
-    });
-  }, [addressFocused, addressSuggestions.length, browser?.address]);
+  const addressSuggestionsRef = useBrowserAddressSuggestions(
+    Boolean(browser?.address && addressFocused && addressSuggestions.length),
+  );
 
   useEffect(() => {
     if (!extensionsOpen) return;
@@ -680,6 +685,14 @@ export default function BrowserClient({
     void sendDesktopTabsCommand({ type: "browser-terminal", open, width: terminalWidthRef.current });
   }
 
+  useEffect(() => registerClapDock(() => {
+    setTerminalLoaded(true);
+    setActivePanel('terminal');
+    setAddressFocused(false);
+    void sendDesktopTabsCommand({ type: 'browser-address-suggestions', open: false });
+    void sendDesktopTabsCommand({ type: 'browser-terminal', open: true, width: terminalWidthRef.current });
+  }, 1), []);
+
   function toggleToolPanel(panel: BrowserToolPanel) {
     const nextOpen = !terminalOpen || activePanel !== panel;
     if (panel === "terminal" && nextOpen) setTerminalLoaded(true);
@@ -805,8 +818,8 @@ export default function BrowserClient({
           <span className="browser-address-security" aria-hidden="true">
             {browser?.address ? (
               <BrowserSiteIcon
-                src={browser.favicon}
-                pageUrl={browser.address}
+                src={privateBrowsing ? undefined : browser.favicon}
+                pageUrl={privateBrowsing ? undefined : browser.address}
                 fallback={<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" {...STROKE} /><path d="M2.5 8h11M8 2.5c-2 2-2 9 0 11M8 2.5c2 2 2 9 0 11" {...STROKE} /></svg>}
               />
             ) : <GoogleGlyph />}
@@ -941,6 +954,7 @@ export default function BrowserClient({
           {addressFocused && addressSuggestions.length ? (
             <BrowserSuggestionList
               id="browser-address-suggestions"
+              dropdownRef={addressSuggestionsRef}
               address
               suggestions={addressSuggestions}
               highlighted={highlightedAddressSuggestion}
@@ -953,6 +967,11 @@ export default function BrowserClient({
             />
           ) : null}
         </form>
+        {privateBrowsing && <span className={privateStyles.badge} title="Private browsing: history and searches are not saved. Site data is cleared when the last private tab closes.">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 2.5 16 5v4.5c0 3.5-3 6.2-6 8-3-1.8-6-4.5-6-8V5Z" {...STROKE} /></svg>
+          Private
+        </span>}
+        <BrowserDownloadsButton active={isActive} open={browser?.downloadsOpen ?? false} />
         <BrowserMenuControls profileLabel={restoreOwnerKey} address={browser?.address ?? ""} matches={browser?.find} onPanel={panel => {
           setActivePanel(panel);
           setBrowserPanelOpen(true);
@@ -1014,7 +1033,7 @@ export default function BrowserClient({
         aria-live="polite"
         data-wallpaper-ready={personalization.ready}
         data-has-wallpaper={personalization.hasWallpaper}
-        data-wallpaper-tone={personalization.wallpaper?.tone ?? personalization.theme}
+        data-wallpaper-tone={personalization.wallpaperTone}
         style={personalization.ready && personalization.wallpaper ? {
           "--browser-wallpaper-image": `url("${personalization.wallpaper.src}")`,
         } as CSSProperties : undefined}
@@ -1022,7 +1041,8 @@ export default function BrowserClient({
         {!browser?.address && <PageAppearance page="browser" ownerKey={restoreOwnerKey} />}
         {!browser?.address ? (
           <div className="browser-start-copy">
-            <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />
+            {privateBrowsing ? <div className={`browser-greeting is-ready ${privateStyles.greeting}`}><h1>Private browsing</h1></div> : <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />}
+            {privateBrowsing && <p className={privateStyles.note}>History and searches aren’t saved. Site data is cleared when you close all private tabs.</p>}
             <form ref={searchFrameRef} className="browser-home-search" onSubmit={searchWeb}>
               <GoogleGlyph />
               <input

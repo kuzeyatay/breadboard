@@ -5,9 +5,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-for (const phase of ["ready", "close"]) test(phase === "ready"
-  ? "startup waits for every restored tab and browser page before revealing any window"
-  : "closing startup disposes all preloading tabs and secondary windows", {
+for (const phase of ["ready", "welcome", "close"]) test({
+  ready: "startup waits for every restored tab and browser page before revealing any window or notification",
+  welcome: "notifications stay hidden after startup paints until the user dismisses welcome",
+  close: "closing startup disposes all preloading tabs and secondary windows",
+}[phase]!, {
   skip: process.platform !== "win32",
 }, () => {
   const desktop = path.resolve(__dirname, "../..");

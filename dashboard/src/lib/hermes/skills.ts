@@ -107,6 +107,7 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // Desktop operation runs through Hermes Agent's pinned cua-driver backend;
   // the skill describes how to use that product runtime, not how to write code.
   "computer-use",
+  "breadboard-use",
 ]);
 
 export type SkillEligibility =

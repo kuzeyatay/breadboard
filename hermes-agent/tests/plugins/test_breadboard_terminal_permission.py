@@ -550,7 +550,7 @@ def test_manim_tool_is_registered_with_artifact_identity_and_render_timeout(monk
     ]
 
 
-def test_spotify_play_exposes_phone_playback_controls():
+def test_spotify_play_requires_hermes_to_choose_a_playback_target():
     registered = {}
 
     class _Context:
@@ -560,7 +560,7 @@ def test_spotify_play_exposes_phone_playback_controls():
     breadboard.register(_Context())
 
     parameters = registered["spotify_play"]["schema"]["parameters"]
-    assert parameters["required"] == []
+    assert parameters["required"] == ["target"]
     assert parameters["properties"]["action"]["enum"] == [
         "pause",
         "resume",
@@ -573,6 +573,30 @@ def test_spotify_play_exposes_phone_playback_controls():
     ]
     assert parameters["properties"]["volumePercent"]["minimum"] == 0
     assert parameters["properties"]["volumePercent"]["maximum"] == 100
+    for name in ["spotify_play", "spotify_create_playlist"]:
+        parameters = registered[name]["schema"]["parameters"]
+        assert "target" in parameters["required"]
+        assert set(parameters["properties"]["target"]["enum"]) == {"inline", "phone"}
+
+
+def test_spotify_preserves_the_target_chosen_by_hermes(monkeypatch):
+    _Connection.bodies = []
+    monkeypatch.setattr(breadboard, "HTTPConnection", _Connection)
+    monkeypatch.setenv("BREADBOARD_HERMES_TOOL_SECRET", "test-secret")
+    for target in ["inline", "phone"]:
+        for tool_name, args in [
+            ("spotify_play", {"query": "Shoot to Thrill AC/DC", "target": target}),
+            ("spotify_play", {"action": "pause", "target": target}),
+            ("spotify_create_playlist", {"name": "Rock", "queries": ["AC/DC", "rock"], "play": True, "target": target}),
+        ]:
+            breadboard._call_breadboard(
+                args,
+                tool_name=tool_name,
+                route="/api/hermes/tools/spotify",
+                route_kind="music",
+                task_id="session-1",
+            )
+            assert _Connection.bodies[-1]["args"] == args
 
 
 def test_product_search_is_registered_as_a_bounded_structured_tool():

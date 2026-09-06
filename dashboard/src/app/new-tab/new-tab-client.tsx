@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRef, useState } from "react";
-import { CalendarDays, ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Search, UserRound, UsersRound, X, type LucideIcon } from "lucide-react";
+import { CalendarDays, ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Search, Timer, UserRound, UsersRound, X, type LucideIcon } from "lucide-react";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import { BrowserSketchOutline } from "@/app/browser/browser-home-widgets";
 import LinkContextMenu from "@/app/components/link-context-menu";
@@ -13,7 +13,9 @@ import { openBrowserInDesktop } from "@/lib/desktop-browser-tabs";
 import styles from "./new-tab-controls.module.css";
 import { useNewTabAddressee } from "./use-new-tab-addressee";
 import NewTabGreeting from "./new-tab-greeting";
+import NewTabNotepad from "./new-tab-notepad";
 import PageAppearance from "@/app/components/page-appearance";
+import VoiceShortcut from "@/app/components/voice-shortcut";
 
 export interface NewTabGarden {
   slug: string;
@@ -34,6 +36,7 @@ const PLACES: Place[] = [
   { href: "/plan", label: "Plan", icon: ListTodo },
   { href: "/buzz", label: "Organization", icon: UsersRound },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/pomodoro", label: "Work Timer", icon: Timer },
   { href: "/profile", label: "Profile", icon: UserRound },
 ];
 
@@ -114,9 +117,10 @@ export default function NewTabClient({
   return (
     <main
       className={`${styles.surface} browser-home-widget-surface`}
+      data-wallpaper-ready={appearance.ready}
+      data-wallpaper-tone={backgroundImage ? appearance.wallpaperTone : undefined}
       style={backgroundImage ? { backgroundImage: `url("${backgroundImage}")`, backgroundSize: "cover", backgroundPosition: "center" } : undefined}
     >
-      <div className="browser-home-rings" aria-hidden="true" />
       <PageAppearance page="new-tab" ownerKey={widgetOwnerKey} />
       <div className={styles.launcher}>
         <header className={styles.heading}>
@@ -155,6 +159,7 @@ export default function NewTabClient({
             </LinkContextMenu>
           ))}
           <BrowserShortcut query={needle} />
+          {"voice".includes(needle) && <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />}
         </nav>
 
         <section aria-labelledby="new-tab-gardens" className={styles.gardens}>
@@ -212,6 +217,7 @@ export default function NewTabClient({
           )}
         </section>
       </div>
+      <NewTabNotepad key={widgetOwnerKey} ownerKey={widgetOwnerKey} />
       <BrowserHomeAccessories ownerKey={widgetOwnerKey} />
     </main>
   );

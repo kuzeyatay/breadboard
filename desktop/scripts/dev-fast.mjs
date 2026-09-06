@@ -14,8 +14,10 @@ import {
   reusableDashboardBuild,
 } from "./dashboard-build-cache.mjs";
 import {
+  claimDashboardBuildLease,
   claimLeanDesktopLease,
   duplicateLeanDesktopWarning,
+  releaseDashboardBuildLease,
   releaseLeanDesktopLease,
 } from "./lean-desktop-lease.mjs";
 
@@ -41,6 +43,15 @@ process.once("exit", () => {
   releaseLeanDesktopLease(repoRoot, leanLease);
 });
 
+// A direct packaging/QA build may be running without a lean launcher. Secure
+// its output lease before recovery can remove what looks like a partial build.
+const dashboardLease = claimDashboardBuildLease({ repoRoot });
+if (!dashboardLease.acquired) {
+  process.stderr.write(`[desktop] ${duplicateLeanDesktopWarning(dashboardLease.existing)}\n`);
+  process.exit(2);
+}
+process.once("exit", () => releaseDashboardBuildLease(repoRoot, dashboardLease.record));
+
 recoverInterruptedDashboardBuild(repoRoot);
 const forceRebuild = process.argv.includes("--rebuild");
 const rawBuildEstimate = process.env.BREADBOARD_LEAN_BUILD_ESTIMATE_MB?.trim();
@@ -58,7 +69,12 @@ async function runDashboardBuild() {
   const build = spawn(
     process.execPath,
     [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],
-    { cwd: repoRoot, stdio: "inherit", env: process.env, windowsHide: true },
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: { ...process.env, BREADBOARD_DASHBOARD_BUILD_CLAIM_ID: dashboardLease.record.claimId },
+      windowsHide: true,
+    },
   );
   let reserveCrossed = false;
   let sampling = false;
@@ -134,6 +150,8 @@ if (cached.reusable) {
     if (buildStatus !== 0) process.exit(buildStatus);
   }
 }
+
+releaseDashboardBuildLease(repoRoot, dashboardLease.record);
 
 const npmCli = process.env.npm_execpath?.trim();
 if (!npmCli) {

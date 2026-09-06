@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { generatedAudioTrack } from "@/lib/audio-analyzer/artifacts.ts";
 import {
   ApiError,
   apiErrorResponse,
@@ -141,7 +142,7 @@ export async function POST(request: Request) {
       session.user_id,
       listRecentConversationMessages(session.conversation_id, RECENT_MESSAGE_LOOKBACK),
     );
-    if (tracks.length === 0) {
+    if (tracks.length === 0 && !reference?.startsWith("artifact:")) {
       throw new ApiError(
         400,
         "audio_no_track",
@@ -162,6 +163,7 @@ export async function POST(request: Request) {
       gardenId: session.garden_id,
       conversationId: conversation.public_id,
     };
+    const scopedTrack = (name: string | undefined, field: string) => generatedAudioTrack(session.user_id!, conversation.public_id, name) ?? requireTrack(tracks, name, field);
 
     if (action === "audio_compare") {
       const against = typeof args.against === "string" ? args.against.slice(0, 240) : undefined;
@@ -172,8 +174,8 @@ export async function POST(request: Request) {
           "audio_compare needs both `track` and `against`, each naming an attached file.",
         );
       }
-      const first = requireTrack(tracks, reference, "track");
-      const second = requireTrack(tracks, against, "against");
+      const first = scopedTrack(reference, "track");
+      const second = scopedTrack(against, "against");
       if (first.blobId === second.blobId) {
         throw new ApiError(
           400,
@@ -204,7 +206,7 @@ export async function POST(request: Request) {
     }
 
     const options = parseAnalysisOptions(args);
-    const track = requireTrack(tracks, reference, "track");
+    const track = scopedTrack(reference, "track");
     recordAuditEvent({
       eventType: "audio.analysis_started",
       runtimeSessionId: session.id,

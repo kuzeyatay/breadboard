@@ -1,7 +1,10 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 import { speechRequest } from "@/lib/speech/request-client";
 import { playSubscriptionText } from "@/lib/speech/playback";
+import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -56,11 +59,14 @@ export default function ClickyPage() {
   const [target, setTarget] = useState<ClickyPoint | null>(null);
   const [speechNotice, setSpeechNotice] = useState<string | null>(null);
   const recordingRef = useRef<Recording | null>(null);
+  const subscriptionRef = useRef<SubscriptionVoice | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const toggleRef = useRef<() => void>(() => {});
   const conversationRef = useRef<HTMLElement | null>(null);
 
   function releaseRecording(): Recording | null {
+    void subscriptionRef.current?.close();
+    subscriptionRef.current = null;
     const capture = recordingRef.current;
     recordingRef.current = null;
     if (!capture) return null;
@@ -69,7 +75,7 @@ export default function ClickyPage() {
     capture.source.disconnect();
     capture.processor.disconnect();
     capture.sink.disconnect();
-    capture.stream.getTracks().forEach((track) => track.stop());
+    stopForegroundStream(capture.stream);
     void capture.context.close();
     return capture;
   }
@@ -248,6 +254,8 @@ export default function ClickyPage() {
   }
 
   async function finishRecording() {
+    const voice = subscriptionRef.current;
+    subscriptionRef.current = null;
     const capture = releaseRecording();
     const operation = controllerRef.current;
     setRecording(false);
@@ -259,7 +267,11 @@ export default function ClickyPage() {
       form.set("file", encodePcm16Wav(capture.chunks, capture.context.sampleRate), "clicky.wav");
       await prepareLocalSpeech(operation.signal);
       let transcript = "";
-      for (let attempt = 0; attempt < 120; attempt++) {
+      if (voice) {
+        try { transcript = await voice.finishTranscript(); }
+        finally { await voice.close(); }
+      }
+      for (let attempt = 0; !voice && attempt < 120; attempt++) {
         const response = await speechRequest("/api/speech/transcribe", { method: "POST", body: form, signal: operation.signal });
         if (response.status === 202) {
           setStage("Preparing the speech model…");
@@ -305,7 +317,7 @@ export default function ClickyPage() {
     let stream: MediaStream | null = null;
     let context: AudioContext | null = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await requestForegroundMicrophone({ audio: true });
       operation.signal.throwIfAborted();
       context = new AudioContext();
       await context.resume();
@@ -315,19 +327,22 @@ export default function ClickyPage() {
       const sink = context.createGain();
       sink.gain.value = 0;
       const capture: Recording = { stream, context, source, processor, sink, chunks: [], timer: null };
+      if (await subscriptionSelected(operation.signal)) {
+        subscriptionRef.current = await connectSubscriptionVoice({ microphone: stream, signal: operation.signal });
+      }
       processor.onaudioprocess = (event) => {
-        if (recordingRef.current === capture) capture.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        if (recordingRef.current === capture && !subscriptionRef.current) capture.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
       };
       source.connect(processor);
       processor.connect(sink);
       sink.connect(context.destination);
       recordingRef.current = capture;
-      capture.timer = setTimeout(() => toggleRef.current(), 60_000);
+      if (!subscriptionRef.current) capture.timer = setTimeout(() => toggleRef.current(), 60_000);
       setRecording(true);
       setBusy(false);
       setStage("Listening… click Stop & send when finished");
     } catch (failure) {
-      stream?.getTracks().forEach((track) => track.stop());
+      stopForegroundStream(stream);
       if (context && context.state !== "closed") void context.close();
       if (!operation.signal.aborted) setError(failure instanceof Error && failure.name === "NotAllowedError"
         ? "Allow desktop apps to use your microphone in Windows Settings → Privacy & security → Microphone."

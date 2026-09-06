@@ -211,8 +211,8 @@ export class WindowManager {
       loadingHtmlPath: () => this.loadingHtmlPath(),
       recoveryHtmlPath: () => this.recoveryHtmlPath(),
       theme: () => this.currentTheme,
-      openWindow: (url) => {
-        this.openPopupWindow(url);
+      openWindow: (url, privateBrowsing) => {
+        this.openPopupWindow(url, privateBrowsing);
       },
       openExternal: (url) => {
         void shell.openExternal(url);
@@ -913,14 +913,15 @@ export class WindowManager {
    * of the app (e.g. the Work timer / Paint Pomodoro), so it lives beside the
    * dashboard instead of navigating it away.
    */
-  openPopupWindow(targetUrl: string): BrowserWindow {
+  openPopupWindow(targetUrl: string, privateBrowsing = false): BrowserWindow {
     // A window opened for a page that paints its own palette should wait in
     // that palette, not in Breadboard's — the sheet Chromium paints between two
     // documents is the one thing the loading scene below cannot cover.
     const window = this.buildWindow(
       popupBackgroundColor(targetUrl, this.currentTheme),
     );
-    this.tabs.trackSessionWindow(window);
+    if (privateBrowsing) this.tabs.setPrivateWindow(window);
+    else this.tabs.trackSessionWindow(window);
     this.installLocalPageRecovery(window, targetUrl);
     this.revealWhenReady(window);
     void this.loadThroughLoadingScene(window, targetUrl);
@@ -1031,6 +1032,7 @@ export class WindowManager {
   }
 
   async showStartupScreen(): Promise<void> {
+    this.tabs.setNotificationsVisible(false);
     const window = this.createMainWindow();
     // A fresh startup screen means a fresh welcome to dismiss, and any dashboard
     // loaded ahead of a service that has since died is not worth keeping.
@@ -1202,6 +1204,7 @@ export class WindowManager {
   }
 
   async showDashboard(dashboardUrl: string, defaultScreenUrl = dashboardUrl): Promise<void> {
+    this.tabs.setNotificationsVisible(false);
     // LocalStorage belongs to an origin, and the supervised dashboard can use a
     // different port on the next launch. Give a fresh or previously reused
     // origin the durable shell preference before its first paint instead of
@@ -1224,6 +1227,7 @@ export class WindowManager {
       const outcome = await preload.settled;
       if (outcome === "loaded" && (await this.swapToDashboardPreload())) {
         this.startupShownAt = null;
+        this.tabs.setNotificationsVisible(true);
         return;
       }
       // A dashboard that would not load is reported by the window the person is
@@ -1243,8 +1247,13 @@ export class WindowManager {
       if (window.isDestroyed()) return;
     }
     await window.loadURL(launchUrl);
+    await Promise.all([
+      this.waitForFirstPaint(window),
+      this.restoreTabSession(dashboardUrl, defaultScreenUrl),
+    ]);
+    if (window.isDestroyed() || this.mainWindow !== window) return;
     this.startupShownAt = null;
-    await this.restoreTabSession(dashboardUrl, defaultScreenUrl);
+    this.tabs.setNotificationsVisible(true);
   }
 
   private async restoreTabSession(dashboardUrl: string, defaultScreenUrl: string): Promise<void> {

@@ -73,7 +73,8 @@ function fakeChild(output, after) {
 }
 
 test("the operation registry is closed and rejects extra request fields", () => {
-  assert.deepEqual(Object.keys(MANAGED_SETUP_OPERATIONS).sort(), [
+    assert.deepEqual(Object.keys(MANAGED_SETUP_OPERATIONS).sort(), [
+      "acestep",
     "audio-analyzer",
     "bolt-slides",
     "career-ops",

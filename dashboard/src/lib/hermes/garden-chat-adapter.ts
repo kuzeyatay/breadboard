@@ -123,6 +123,7 @@ import {
   computerUseCommandText,
   COMPUTER_USE_SKILL,
 } from "./computer-use-intent.ts";
+import { breadboardUseCommandText, BREADBOARD_USE_SKILL } from "./breadboard-use-intent.ts";
 import { imageTo3dCommandText, IMAGE_TO_3D_SKILL } from "./image-3d-intent.ts";
 import { diagramCommandText, DIAGRAM_DESIGN_SKILL } from "./diagram-intent.ts";
 import {
@@ -509,12 +510,14 @@ export async function openGardenAgentChat(
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
+      internalContinuation: payload.internalAgentContinuation === true,
     });
     const visualizerSelection = visualizerCommandText({
       text: patentDisclosureSelection.text,
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
+      internalContinuation: payload.internalAgentContinuation === true,
     });
     const agentLoopSelection = agentLoopCommandText({
       text: visualizerSelection.text,
@@ -604,8 +607,14 @@ export async function openGardenAgentChat(
       authenticated: true,
       priorMessages: messages,
     });
-    const computerUseSelection = computerUseCommandText({
+    const breadboardUseSelection = breadboardUseCommandText({
       text: humanizeSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const computerUseSelection = computerUseCommandText({
+      text: breadboardUseSelection.text,
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
@@ -644,7 +653,8 @@ export async function openGardenAgentChat(
         !diagramSelection.automatic &&
         !githubExplorerSelection.automatic &&
         !humanizeSelection.automatic &&
-        !computerUseSelection.automatic
+        !computerUseSelection.automatic &&
+        !breadboardUseSelection.automatic
       )
         throw error;
       return await resolveCommandMessage(
@@ -680,6 +690,8 @@ export async function openGardenAgentChat(
     const automaticComputerUse =
       computerUseSelection.automatic &&
       decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL);
+    const automaticBreadboardUse = breadboardUseSelection.automatic &&
+      decision.selectedConditionalSkills.includes(BREADBOARD_USE_SKILL);
     decision.selectedConnections = resolved.invocations
       .filter((item) => item.kind === "mcp")
       .map((item) => item.slug);
@@ -799,6 +811,7 @@ export async function openGardenAgentChat(
         automaticDiagramDesign: diagramSelection.automatic,
         automaticGithubExplorer: githubExplorerSelection.automatic,
         automaticComputerUse,
+        automaticBreadboardUse,
         ...(repository
           ? {
               connectedRepository: repository.repository.name,
@@ -864,6 +877,9 @@ export async function openGardenAgentChat(
       ...(repository?.tools ?? {}),
       ...(decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL)
         ? { computer_use: true }
+        : {}),
+      ...(decision.selectedConditionalSkills.includes(BREADBOARD_USE_SKILL)
+        ? { breadboard_use: true }
         : {}),
       ...(parametricCadSelected ? { agent_launch: true } : {}),
       ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
@@ -980,6 +996,7 @@ export async function openGardenAgentChat(
           ? [{ slug: GITHUB_EXPLORER_SKILL }]
           : []),
         ...(automaticComputerUse ? [{ slug: COMPUTER_USE_SKILL }] : []),
+        ...(automaticBreadboardUse ? [{ slug: BREADBOARD_USE_SKILL }] : []),
         ...(automaticPatentDisclosure
           ? [{ slug: PATENT_DISCLOSURE_SKILL }]
           : []),

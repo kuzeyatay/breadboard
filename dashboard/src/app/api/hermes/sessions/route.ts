@@ -164,6 +164,9 @@ export async function POST(request: Request) {
       userId,
       title,
       surface,
+      originLabel: surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
+        ? "Browser"
+        : undefined,
       temporary: body.temporary === true,
       scopeKind: surface === "quartz_ai" && garden
         ? "page"

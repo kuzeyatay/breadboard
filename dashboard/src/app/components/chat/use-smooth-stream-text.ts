@@ -100,6 +100,9 @@ export function armReveal(
   } else if (!pacing && shown !== target) {
     shown = target;
   }
+  // The first delivery is finished. Later history refreshes are saved text,
+  // even when this hook stays mounted on the same conversation.
+  if (!streaming && shown === target) pacing = false;
   return { shown, pacing, streaming, revealKey };
 }
 
@@ -152,7 +155,11 @@ export function useSmoothStreamText(
     }
     // One advance per committed frame; the state change re-runs this effect,
     // which schedules the next frame until the reveal has caught up.
+    let settled = false;
     const frame = window.requestAnimationFrame((now) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(fallback);
       const last = lastTickRef.current ?? now;
       lastTickRef.current = now;
       const revealed = window.matchMedia("(prefers-reduced-motion: reduce)")
@@ -161,7 +168,21 @@ export function useSmoothStreamText(
         : advanceReveal(shown, target, (now - last) / 1000, streaming);
       setState((current) => ({ ...current, shown: revealed }));
     });
-    return () => window.cancelAnimationFrame(frame);
+    // Chromium can suspend animation frames for an occluded desktop view even
+    // while document.visibilityState is "visible". Text has already arrived;
+    // animation must never keep a completed answer blank in that view.
+    const fallback = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.cancelAnimationFrame(frame);
+      lastTickRef.current = null;
+      setState((current) => ({ ...current, shown: target, pacing: false }));
+    }, 250);
+    return () => {
+      settled = true;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(fallback);
+    };
   }, [pacing, shown, target, streaming]);
 
   return shown;

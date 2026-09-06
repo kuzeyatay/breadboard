@@ -1,4 +1,5 @@
 "use client";
+import MusicProducerSetup from "@/app/components/agents/music-producer-setup";
 
 // One agent's settings, in the same panel every other agent's settings open in.
 //
@@ -192,6 +193,7 @@ export default function AgentSettingsDialog({
             </section>
           ) : null}
 
+          {agent.id === "music-producer" ? <MusicProducerSetup /> : null}
           <section className="space-y-2">
             <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-muted)]">
               Defaults

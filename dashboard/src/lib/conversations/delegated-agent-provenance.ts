@@ -114,7 +114,8 @@ function workerReceipt(
   // Both halves own the descriptor. Prefer the completed assistant half, then
   // fall back to the reserved user half if a failed worker never finalized it.
   const candidates = messages
-    .filter((message) => message.client_message_id === workerId)
+    .filter((message) => message.client_message_id === workerId ||
+      parseExternalAgentRun(parseMetadata(message).externalAgentRun)?.runId === workerId)
     .sort((left, right) => Number(right.role === "assistant") - Number(left.role === "assistant"));
   for (const message of candidates) {
     const metadata = parseMetadata(message);

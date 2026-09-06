@@ -28,6 +28,7 @@ function routeSource(...segments) {
 
 /** Every runtime agent's run route, so the declared traits stay checkable. */
 const RUN_ROUTES = {
+  "music-producer": ["music-producer", "runs"],
   codex: ["codex", "runs"],
   opencode: ["opencode", "runs"],
   ruflo: ["ruflo", "runs"],

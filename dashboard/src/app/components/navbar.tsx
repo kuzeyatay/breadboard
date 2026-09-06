@@ -5,6 +5,7 @@ import NavbarFlowerWind from "./navbar-flower-wind";
 import WorkTimerShortcut from "./work-timer-shortcut";
 import BrowserShortcut from "./browser-shortcut";
 import ClickyShortcut from "./clicky-shortcut";
+import VoiceShortcut from "./voice-shortcut";
 import LinkContextMenu from "./link-context-menu";
 import {
   DEFAULT_NAVBAR_SHORTCUTS,
@@ -15,6 +16,8 @@ interface Props {
   email: string;
   username?: string | null;
   showFlowers?: boolean;
+  /** Show the right-hand shortcuts and profile link. */
+  showActions?: boolean;
   /**
    * Which optional shortcuts this account has asked for. Read on the server so
    * the navbar is right on first paint rather than rearranging after hydration.
@@ -26,6 +29,7 @@ export default function NavBar({
   email,
   username,
   showFlowers = true,
+  showActions = true,
   shortcuts = DEFAULT_NAVBAR_SHORTCUTS,
 }: Props) {
   return (
@@ -51,7 +55,7 @@ export default function NavBar({
       </LinkContextMenu>
       {/* Agents live in the capability palette's Agents tab (the slash button),
           not in this navbar. */}
-      <div className="relative z-10 flex items-center gap-4">
+      {showActions && <div className="relative z-10 flex items-center gap-4">
         {/* Work timer, Clicky and Plan ship on by default; the rest stay opt-in.
             Every seat can be changed from the profile page. */}
         {shortcuts.workTimer && <WorkTimerShortcut />}
@@ -59,6 +63,7 @@ export default function NavBar({
         {shortcuts.browser && <BrowserShortcut />}
         {/* Clicky is available in the Windows and macOS desktop shells. */}
         {shortcuts.clicky && <ClickyShortcut />}
+        {shortcuts.voice && <VoiceShortcut />}
         {shortcuts.plan && (
           <LinkContextMenu href="/plan" label="Plan">
           <a
@@ -139,7 +144,7 @@ export default function NavBar({
           <span className="truncate font-medium">{username || email}</span>
         </Link>
         </LinkContextMenu>
-      </div>
+      </div>}
     </nav>
   );
 }

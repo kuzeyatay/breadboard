@@ -130,6 +130,11 @@ export function recordExternalAgentTurn(input: {
       deliveryChannel: input.deliveryChannel,
     },
   );
+  // A new hidden worker has no Super Agent preamble to replace. Persist its
+  // launch diagnostic in the same result field as a worker that actually ran.
+  if (input.delegatedAgentRun && input.assistantContent !== undefined) {
+    metadata.externalAgentResult = input.assistantContent;
+  }
   // A delegated worker is born while its parent Super Agent answer is still
   // pending. Persist its adjacent hidden pair and close the assistant half in
   // one transaction, so the parent remains the conversation's only observable

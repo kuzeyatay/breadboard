@@ -8,6 +8,9 @@ import { usePageLoadingPending } from './use-page-loading';
 const NAVIGATION_START_EVENT = 'breadboard:navigation-start';
 const NAVIGATION_CANCEL_EVENT = 'breadboard:navigation-cancel';
 const MAX_PENDING_PROGRESS = 92;
+const COMPLETION_SETTLE_MS = 100;
+const COMPLETION_DURATION_MS = 220;
+const FADE_DURATION_MS = 160;
 // A dev-mode route compile routinely takes 20-35s (the dashboard route has been
 // measured at 26s), so a short deadline here would abandon navigations that are
 // still perfectly alive. This is only a backstop for clicks that never became a
@@ -42,6 +45,8 @@ export default function NavigationProgress() {
   const abandonTimerRef = useRef<number | null>(null);
   const completionTimersRef = useRef<number[]>([]);
   const progressRef = useRef(0);
+  const pendingRef = useRef(false);
+  const [cycle, setCycle] = useState(0);
   const [visible, setVisible] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pending, setPending] = useState(false);
@@ -74,39 +79,55 @@ export default function NavigationProgress() {
   }, []);
 
   const finishNavigation = useCallback(() => {
-    if (trackedNavigationPendingRef.current) return;
-    clearProgressTimers();
-    clearCompletionTimers();
-    setPending(false);
-    setVisible(true);
-    applyProgress(100);
-
-    completionTimersRef.current = [
-      window.setTimeout(() => setVisible(false), 180),
-      window.setTimeout(() => applyProgress(0), 420),
-    ];
-  }, [applyProgress, clearCompletionTimers, clearProgressTimers]);
+    if (trackedNavigationPendingRef.current || !pendingRef.current || completionTimersRef.current.length) return;
+    // Chromium can stop and immediately restart loading during a redirect.
+    // Let those signals settle before completing the current bar.
+    completionTimersRef.current = [window.setTimeout(() => {
+      clearProgressTimers();
+      pendingRef.current = false;
+      setPending(false);
+      applyProgress(100);
+      completionTimersRef.current = [
+        window.setTimeout(() => setVisible(false), COMPLETION_DURATION_MS),
+        window.setTimeout(() => {
+          applyProgress(0);
+          completionTimersRef.current = [];
+        }, COMPLETION_DURATION_MS + FADE_DURATION_MS),
+      ];
+    }, COMPLETION_SETTLE_MS)];
+  }, [applyProgress, clearProgressTimers]);
 
   // A click that never became a navigation has to release the bar eventually,
   // but it must not claim the page arrived: run the bar out rather than filling
   // it. Completing here is what made a slow navigation look like a dead button —
   // the bar finished and vanished seconds before the page it was tracking.
   const abandonNavigation = useCallback(() => {
-    if (trackedNavigationPendingRef.current) return;
+    if (trackedNavigationPendingRef.current || !pendingRef.current) return;
     clearProgressTimers();
     clearCompletionTimers();
+    pendingRef.current = false;
     setPending(false);
     setVisible(false);
-    completionTimersRef.current = [window.setTimeout(() => applyProgress(0), 240)];
+    completionTimersRef.current = [window.setTimeout(() => {
+      applyProgress(0);
+      completionTimersRef.current = [];
+    }, FADE_DURATION_MS)];
   }, [applyProgress, clearCompletionTimers, clearProgressTimers]);
 
   const beginNavigation = useCallback(() => {
-    clearProgressTimers();
     clearCompletionTimers();
+    if (abandonTimerRef.current !== null) window.clearTimeout(abandonTimerRef.current);
+    abandonTimerRef.current = window.setTimeout(abandonNavigation, ABANDON_AFTER_MS);
+    // Repeated clicks and overlapping native/page signals belong to the same
+    // wait. In particular, don't keep postponing the next progress tick.
+    if (pendingRef.current) return;
+    pendingRef.current = true;
     setPending(true);
     setVisible(true);
-    const resumed = progressRef.current;
-    applyProgress(resumed > 0 && resumed < 100 ? resumed : 8);
+    // A fresh element starts at 8% without transitioning backwards from the
+    // previous cycle's 100%, even if its completion/fade was interrupted.
+    setCycle((current) => current + 1);
+    applyProgress(8);
 
     progressIntervalRef.current = window.setInterval(() => {
       const current = progressRef.current;
@@ -123,9 +144,7 @@ export default function NavigationProgress() {
       const step = Math.max(0.8, (MAX_PENDING_PROGRESS - current) * 0.1);
       applyProgress(Math.min(MAX_PENDING_PROGRESS, current + step));
     }, 260);
-
-    abandonTimerRef.current = window.setTimeout(abandonNavigation, ABANDON_AFTER_MS);
-  }, [abandonNavigation, applyProgress, clearCompletionTimers, clearProgressTimers]);
+  }, [abandonNavigation, applyProgress, clearCompletionTimers]);
 
   useEffect(() => {
     if (previousTrackedPendingRef.current === trackedNavigationPending) return;
@@ -176,7 +195,9 @@ export default function NavigationProgress() {
     }
 
     function handlePopState() {
-      beginNavigation();
+      // Hash-only history changes don't commit a new route to finish the bar.
+      const destination = `${window.location.pathname}?${window.location.search.slice(1)}`;
+      if (destination !== previousRouteRef.current) beginNavigation();
     }
 
     window.addEventListener(NAVIGATION_START_EVENT, beginNavigation);
@@ -202,7 +223,8 @@ export default function NavigationProgress() {
 
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 top-0 z-[10000] h-[4px] overflow-hidden"
+      className="bb-nav-progress pointer-events-none fixed inset-x-0 top-0 z-[10000] h-[4px] overflow-hidden"
+      style={{ opacity: visible ? 1 : 0 }}
       role="progressbar"
       aria-label="Loading page"
       aria-valuemin={0}
@@ -212,13 +234,12 @@ export default function NavigationProgress() {
       aria-hidden={!visible}
     >
       <div
-        className={`h-full bg-[#0969da] shadow-[0_0_8px_rgba(9,105,218,0.7)] will-change-[width,opacity] ${
+        key={cycle}
+        className={`bb-nav-progress-fill h-full w-full bg-[#0969da] shadow-[0_0_8px_rgba(9,105,218,0.7)] will-change-transform ${
           stalled ? 'bb-nav-progress-stalled' : ''
         }`}
         style={{
-          width: `${progress}%`,
-          opacity: visible ? 1 : 0,
-          transition: 'width 220ms ease-out, opacity 160ms ease-out',
+          transform: `translateX(${progress - 100}%)`,
         }}
       />
     </div>

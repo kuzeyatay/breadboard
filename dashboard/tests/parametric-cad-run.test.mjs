@@ -77,10 +77,11 @@ test("the CAD route persists ownership before responding and the launcher sends 
   );
   assert.match(launcher, /const normalizedBrief = brief\.trim\(\)/);
   assert.match(launcher, /const requestedClientMessageId = crypto\.randomUUID\(\)/);
-  assert.match(launcher, /const attachToExistingTurn = clientMessageId !== requestedClientMessageId/);
+  assert.match(launcher, /session\.externalAgentTurnPersistence\(clientMessageId\)/);
+  assert.doesNotMatch(launcher, /clientMessageId !== requestedClientMessageId/);
   assert.match(launcher, /brief: normalizedBrief/);
   assert.match(launcher, /clientMessageId,/);
-  assert.match(launcher, /attachToExistingTurn,/);
+  assert.match(launcher, /\.\.\.launchPersistence,/);
   assert.match(launcher, /branchGroupId: options\.branchGroupId/);
 
   const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");

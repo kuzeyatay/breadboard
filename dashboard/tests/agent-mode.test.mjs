@@ -154,8 +154,9 @@ test("the direct turn keeps the transcript and claims no tools", () => {
   assert.match(directService, /You have no tools in this turn/);
   assert.match(
     directService,
-    /Never claim to have read, written, run, saved, sent, or remembered anything\./,
+    /Never claim to have read external files, written, run, saved, sent, or remembered anything through tools\./,
   );
+  assert.match(directService, /You can read the messages supplied in this conversation/);
 });
 
 test("a live agent run blocks a direct turn in the same chat", () => {

@@ -93,6 +93,18 @@ app.whenReady().then(async () => {
   }, "browser chrome and page load");
   await until(() => chrome.executeJavaScript("Boolean(document.querySelector('[aria-label=\"Browser menu\"]'))"), "menu button renders");
   assert.equal(await page.executeJavaScript("typeof window.breadboardDesktop"), "undefined");
+  const pageView = () => window.contentView.children.find(view => view.webContents?.id === page.id);
+  await until(pageView, 'external view attached after first paint');
+  assert.ok(pageView(), 'external content is visible initially');
+  const originalUrl = page.getURL();
+  assert.equal(manager.handleCommand(page, { type: 'voice-overlay', open: true }), false, 'external pages cannot claim the overlay');
+  const notifications = webContents.getAllWebContents().find(contents => contents.getURL().includes('/notification-overlay'));
+  if (notifications) assert.equal(manager.handleCommand(notifications, { type: 'voice-overlay', open: true }), false, 'notification surface cannot claim voice');
+  assert.equal(manager.handleCommand(chrome, { type: 'voice-overlay', open: true }), true);
+  assert.equal(pageView(), undefined, 'voice removes native web content from the view tree');
+  assert.equal(page.getURL(), originalUrl, 'voice does not navigate the existing tab');
+  assert.equal(manager.handleCommand(chrome, { type: 'voice-overlay', open: false }), true);
+  assert.ok(pageView(), 'closing voice restores the same native page');
 
   let menu;
   const nativePopup = Menu.prototype.popup;

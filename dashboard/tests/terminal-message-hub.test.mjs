@@ -113,6 +113,42 @@ test("terminal opens another surface's exact transcript while enforcing ownershi
   assert.equal((await api.GET(new Request("http://localhost/chat?surface=dashboard_terminal"), { params: Promise.resolve({ sessionId: other.public_id }) })).status, 404);
 });
 
+test("browser-created chats keep their origin through history, rename, reopen and search", async () => {
+  const api = route("route.ts");
+  const create = async (body) => {
+    const response = await api.POST(new Request("http://localhost/api/hermes/sessions", {
+      method: "POST", body: JSON.stringify(body),
+    }));
+    assert.equal(response.status, 200);
+    const { session } = await response.json();
+    return store.getConversationForUser(session.id, 1);
+  };
+  const browser = await create({ surface: "dashboard_terminal", browser: true, title: "Reading notes" });
+  const terminal = await create({ surface: "dashboard_terminal", title: "General question" });
+  const page = await create({ surface: "quartz_ai", browser: true, title: "Page question" });
+  const temporary = await create({ surface: "dashboard_terminal", browser: true, temporary: true });
+  assert.equal(browser.surface, "dashboard_terminal");
+  assert.equal(presentation.presentHermesSessionSummary(browser).originLabel, "Browser");
+  assert.equal(presentation.presentHermesSessionSummary(terminal).originLabel, "Terminal");
+  assert.equal(presentation.presentHermesSessionSummary(page).originLabel, "Page AI");
+  finish(browser, "browser-first", "Summarize this page", "The main points");
+  store.renameConversation(browser, "Article takeaways");
+
+  const { sessions } = await (await api.GET(new Request("http://localhost/api/hermes/sessions?surface=dashboard_terminal"))).json();
+  assert.equal(sessions.find((chat) => chat.id === browser.public_id).originLabel, "Browser");
+  assert.equal(sessions.find((chat) => chat.id === browser.public_id).title, "Article takeaways");
+  assert.ok(!sessions.some((chat) => chat.id === temporary.public_id));
+
+  const reopened = await route("[sessionId]/route.ts").GET(
+    new Request("http://localhost/chat?surface=dashboard_terminal"),
+    { params: Promise.resolve({ sessionId: browser.public_id }) },
+  );
+  assert.equal(reopened.status, 200);
+  assert.deepEqual((await reopened.json()).session.messages.map((message) => message.content), ["Summarize this page", "The main points"]);
+  const { results } = await (await route("search/route.ts").GET(new Request("http://localhost/search?surface=dashboard_terminal&q=Browser"))).json();
+  assert.ok(results.some((hit) => hit.id === browser.public_id && hit.title === "Browser: Article takeaways"));
+});
+
 test("hub search finds message contents and source names while garden search stays local", async () => {
   const workspace = gardenChat();
   const assistant = gardenChat("assistant", 20);

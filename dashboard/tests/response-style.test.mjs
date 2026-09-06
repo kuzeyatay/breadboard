@@ -31,6 +31,24 @@ const KNOWLEDGE_DECISION = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
+test("chat references are resolved by meaning in every chat mode", () => {
+  const style = responseStylePrompt();
+  assert.match(style, /# references_to_chat_messages/);
+  assert.match(style, /latest completed assistant response/);
+  assert.match(style, /recognize equivalent wording and typos by meaning/);
+  assert.match(style, /use that specific referent instead/);
+  assert.match(style, /Do not give a generic answer or ask the user to paste text already supplied/);
+  assert.match(style, /never grants tool or mutation authority/);
+  assert.match(style, /If the referenced text is missing or truncated/);
+  for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
+    const prompt = composeHermesSystemPrompt({ surface, decision: KNOWLEDGE_DECISION });
+    assert.ok(prompt.includes(style), `${surface} needs the same reference policy`);
+  }
+  const direct = source("src/lib/conversations/direct-turn-service.ts");
+  assert.match(direct, /responseStylePrompt\(\)/);
+  assert.match(direct, /You can read the messages supplied in this conversation/);
+});
+
 test("prose is the default shape and lists are reserved for real lists", () => {
   const style = responseStylePrompt();
   assert.match(style, /Write in prose by default/);

@@ -10,6 +10,16 @@
 - **Diagnostics**: the failure screen's "Copy diagnostics" puts a redacted
   JSON summary on the clipboard (versions, service states, last error).
 
+## The window crashes after a screenshot
+
+For `0xC0000005` following a GPU-state warning, inspect the native dump rather
+than assuming a driver fault. The retained Electron 33.4.11 dumps identify a
+focus/visibility failure during screenshot completion, even with GPU acceleration
+disabled. Application captures now preserve view visibility. Restart Electron
+after rebuilding the desktop to load this fix; rebuilding the dashboard alone
+does not reload the main process. See [the investigation](ELECTRON_CAPTURE_CRASH.md)
+for the fault addresses, repair, and native regression coverage.
+
 ## A required service failed to start
 
 The startup screen names the failing service, shows the reason and the last

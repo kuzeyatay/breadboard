@@ -20,6 +20,8 @@ interface Options {
   temporary: boolean;
   /** The garden the chat is open inside — its questions and openers name it. */
   garden?: ChatGreetingGarden | null;
+  /** The browser drawer opens with questions about the current page. */
+  browser?: boolean;
 }
 
 export interface ChatGreetingState {
@@ -91,7 +93,7 @@ function normalizeSignals(value: unknown): ChatGreetingSignals {
  * what hour it is. A timer sleeping to the top of the hour then steps the
  * pools forward and re-reads the activity signals behind them.
  */
-export function useChatGreeting({ scope, temporary, garden }: Options): ChatGreetingState {
+export function useChatGreeting({ scope, temporary, garden, browser = false }: Options): ChatGreetingState {
   const [now, setNow] = useState<Date | null>(null);
   const [signals, setSignals] = useState<ChatGreetingSignals | null>(null);
   const [rotation, setRotation] = useState(0);
@@ -151,6 +153,7 @@ export function useChatGreeting({ scope, temporary, garden }: Options): ChatGree
       signals,
       scope,
       temporary,
+      browser,
       garden: gardenName && gardenSlug ? { name: gardenName, slug: gardenSlug } : null,
       now,
     };
@@ -159,5 +162,5 @@ export function useChatGreeting({ scope, temporary, garden }: Options): ChatGree
       greeting: resolveChatGreeting(input),
       suggestions: resolveChatSuggestions(input),
     };
-  }, [now, scope, signals, temporary, gardenName, gardenSlug]);
+  }, [now, scope, signals, temporary, gardenName, gardenSlug, browser]);
 }

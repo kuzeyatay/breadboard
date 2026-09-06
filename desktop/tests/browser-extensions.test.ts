@@ -3,19 +3,97 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { EventEmitter } from "node:events";
+import type { ClientRequest, ClientRequestConstructorOptions } from "electron";
+import { runElectronFixture } from "./helpers/run-electron-fixture";
 import {
   BROWSER_EXTENSIONS_STATE_FILE,
+  MAX_EXTENSION_ARCHIVE_BYTES,
   browserExtensionInstallId,
   browserWebStoreInstallBootstrapScript,
   browserWebStoreInstallCleanupScript,
   chromeExtensionIdFromPublicKey,
   chromeWebStoreDownloadUrl,
   chromeWebStoreExtensionId,
+  downloadChromeWebStorePackage,
   installChromeWebStorePackage,
   normalizeBrowserExtensionPaths,
   readBrowserExtensionPaths,
   writeBrowserExtensionPaths,
 } from "../src/main/browser-extensions";
+
+class DownloadRequest extends EventEmitter {
+  aborted = false;
+  followed = 0;
+  setHeader() {}
+  end() {}
+  abort() { this.aborted = true; this.emit("abort"); this.emit("close"); }
+  followRedirect() { this.followed += 1; }
+}
+
+function startDownload() {
+  const request = new DownloadRequest();
+  const promise = downloadChromeWebStorePackage("a".repeat(32), "130.0.0.0", (options: ClientRequestConstructorOptions) => {
+    assert.equal(options.redirect, "manual");
+    return request as unknown as ClientRequest;
+  });
+  const response = Object.assign(new EventEmitter(), { statusCode: 200, headers: {} as Record<string, string[]> });
+  return { request, response, promise };
+}
+
+test("Web Store downloads follow HTTPS redirects without relying on a fetch response URL", async () => {
+  const { request, response, promise } = startDownload();
+  request.emit("redirect", 302, "GET", "https://clients2.googleusercontent.com/package.crx", {});
+  assert.equal(request.followed, 1);
+  request.emit("close"); // Electron 33 closes the writable side before the response arrives.
+  request.emit("response", response);
+  response.emit("data", Buffer.from("Cr24"));
+  response.emit("data", Buffer.from("payload"));
+  response.emit("end");
+  request.emit("close");
+  assert.equal((await promise).toString(), "Cr24payload");
+  assert.equal(request.aborted, false);
+});
+
+test("unsafe redirects are aborted before they are followed", async () => {
+  for (const url of ["http://example.com/item.crx", "file:///private/item.crx", "https://user:pass@example.com/item.crx", "invalid URL"]) {
+    const { request, promise } = startDownload();
+    request.emit("redirect", 302, "GET", url, {});
+    await assert.rejects(promise);
+    assert.equal(request.followed, 0, url);
+    assert.equal(request.aborted, true, url);
+  }
+});
+
+test("failed, interrupted, looping and oversized downloads settle with an error", async () => {
+  for (const failure of ["http", "network", "interrupted", "cancelled", "declared-size", "streamed-size", "redirect-loop"]) {
+    const { request, response, promise } = startDownload();
+    if (failure === "http") response.statusCode = 404;
+    if (failure === "declared-size") response.headers["content-length"] = [String(MAX_EXTENSION_ARCHIVE_BYTES + 1)];
+    if (failure === "network") request.emit("error", new Error("Connection failed"));
+    if (failure === "cancelled") request.emit("abort");
+    if (failure === "redirect-loop") {
+      for (let i = 0; i < 11; i += 1) request.emit("redirect", 302, "GET", "https://example.com/loop", {});
+      assert.equal(request.followed, 10);
+    }
+    request.emit("response", response);
+    if (failure === "interrupted") response.emit("aborted");
+    if (failure === "streamed-size") {
+      const chunk = Buffer.alloc(1024 * 1024);
+      for (let i = 0; i < 101; i += 1) response.emit("data", chunk);
+    }
+    await assert.rejects(promise, /HTTP 404|Connection failed|interrupted|cancelled|too large|too many times/, failure);
+    assert.equal(request.aborted, true, failure);
+  }
+});
+
+test("a stalled download times out so the button can be retried", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { request, promise } = startDownload();
+  t.mock.timers.tick(60_000);
+  await assert.rejects(promise, /timed out/);
+  assert.equal(request.aborted, true);
+});
 
 function crc32(buffer: Buffer): number {
   let value = 0xffffffff;
@@ -179,5 +257,28 @@ test("Web Store packages cannot write outside their managed extension directory"
     assert.equal(fs.existsSync(path.join(fixture, "outside.txt")), false);
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("the Web Store button retries a failed download, installs and restores an extension in Electron", async () => {
+  const desktop = path.resolve(__dirname, "../..");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-web-store-install-"));
+  const publicKey = Buffer.from("web-store-integration-fixture");
+  const id = chromeExtensionIdFromPublicKey(publicKey);
+  const archive = crx2(publicKey, zip([
+    { name: "manifest.json", contents: Buffer.from(JSON.stringify({ manifest_version: 3, name: "Install fixture", version: "1.0" })) },
+  ]));
+  fs.writeFileSync(path.join(dir, "package.crx"), archive);
+  fs.writeFileSync(path.join(dir, "extension-id.txt"), id);
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.NODE_TEST_CONTEXT;
+  try {
+    const result = await runElectronFixture(require("electron") as string, [path.join(desktop, "tests/fixtures/browser-extensions.cjs"), dir], desktop, env, 60_000);
+    assert.equal(result.error, undefined, `${result.error?.message}\n${result.output}`);
+    assert.equal(result.status, 0, result.output);
+  } finally {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

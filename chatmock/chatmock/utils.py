@@ -408,6 +408,9 @@ def convert_tools_chat_to_responses(tools: Any) -> List[Dict[str, Any]]:
 def load_chatgpt_tokens(
     ensure_fresh: bool = True,
     selected: tuple[Dict[str, Any], str] | None = None,
+    *,
+    force_refresh: bool = False,
+    refresh_timeout: float = 30,
 ) -> tuple[str | None, str | None, str | None]:
     """Tokens for one account, refreshing them when they are close to expiry.
 
@@ -428,10 +431,12 @@ def load_chatgpt_tokens(
     refresh_token: Optional[str] = tokens.get("refresh_token")
     last_refresh = auth.get("last_refresh")
 
-    if ensure_fresh and isinstance(refresh_token, str) and refresh_token and CLIENT_ID_DEFAULT:
+    if (ensure_fresh or force_refresh) and isinstance(refresh_token, str) and refresh_token and CLIENT_ID_DEFAULT:
         needs_refresh = _should_refresh_access_token(access_token, last_refresh)
-        if needs_refresh or not (isinstance(access_token, str) and access_token):
-            refreshed = _refresh_chatgpt_tokens(refresh_token, CLIENT_ID_DEFAULT)
+        if force_refresh or needs_refresh or not (isinstance(access_token, str) and access_token):
+            refreshed = _refresh_chatgpt_tokens(refresh_token, CLIENT_ID_DEFAULT, timeout=refresh_timeout)
+            if force_refresh and not refreshed:
+                return None, None, None
             if refreshed:
                 access_token = refreshed.get("access_token") or access_token
                 id_token = refreshed.get("id_token") or id_token
@@ -453,6 +458,9 @@ def load_chatgpt_tokens(
                     auth, tokens = persisted
                 else:
                     tokens = updated_tokens
+    elif force_refresh:
+        # A rejected bearer must not be returned as a successful refresh.
+        return None, None, None
 
     if not isinstance(account_id, str) or not account_id:
         account_id = _derive_account_id(id_token)
@@ -485,7 +493,7 @@ def _should_refresh_access_token(access_token: Optional[str], last_refresh: Any)
     return False
 
 
-def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> Optional[Dict[str, Optional[str]]]:
+def _refresh_chatgpt_tokens(refresh_token: str, client_id: str, *, timeout: float = 30) -> Optional[Dict[str, Optional[str]]]:
     payload = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -494,7 +502,7 @@ def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> Optional[Dict
     }
 
     try:
-        resp = requests.post(OAUTH_TOKEN_URL, json=payload, timeout=30)
+        resp = requests.post(OAUTH_TOKEN_URL, json=payload, timeout=timeout)
     except requests.RequestException as exc:
         eprint(f"ERROR: failed to refresh ChatGPT token: {exc}")
         return None

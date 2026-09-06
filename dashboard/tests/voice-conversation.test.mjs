@@ -8,6 +8,7 @@ import {
   VOICE_NO_SPEECH_MS,
   VOICE_SILENCE_HOLD_MS,
   advanceVoiceTurn,
+  createVoiceNarrationQueue,
   frameLevel,
   haloRings,
   initialVoiceTurn,
@@ -113,6 +114,109 @@ test("the answer read out is the newest assistant message", () => {
   assert.equal(replyKey([{ role: "user", content: "hi" }]), null);
   // The key moves when a new turn lands, which is how one answer is spoken once.
   assert.notEqual(replyKey(messages), replyKey(messages.slice(0, 2)));
+});
+
+function narrationHarness(startIndex = 0) {
+  const spoken = [], idle = [], errors = [], completions = [];
+  const queue = createVoiceNarrationQueue({
+    startIndex,
+    speak(item, signal) {
+      spoken.push({ ...item, signal });
+      return new Promise((resolve, reject) => completions.push({ resolve, reject }));
+    },
+    onIdle: (answered) => idle.push(answered),
+    onError: (error) => errors.push(error.message),
+  });
+  return { queue, spoken, idle, errors, completions };
+}
+
+const flushNarration = () => new Promise((resolve) => setImmediate(resolve));
+const searchNote = 'Searching your recent chats for “fitness journey.”';
+const retryNote = 'No exact match. Trying the likely gym, fat-loss, and nutrition terms.';
+
+test("voice reads completed thinking updates during generation and queues the final answer in order", async () => {
+  const h = narrationHarness();
+  const message = { role: 'assistant', content: 'An unfinished answer', progressNotes: [searchNote] };
+  assert.equal(h.queue.update([message], true), false);
+  assert.deepEqual(h.spoken.map(item => item.text), [searchNote]);
+  message.progressNotes.push(retryNote);
+  h.queue.update([message], true);
+  h.queue.update([message], true); // Renders and reconnects must not replay notes.
+  message.content = 'I found your fitness chats.';
+  assert.equal(h.queue.update([message], false), true);
+  h.queue.update([message], false);
+  assert.equal(h.spoken.length, 1, 'the final answer must not interrupt progress audio');
+  h.completions[0].resolve();
+  await flushNarration();
+  assert.deepEqual(h.spoken.map(item => item.text), [searchNote, retryNote]);
+  assert.deepEqual(h.idle, [], 'do not reopen the microphone between queued messages');
+  h.completions[1].resolve();
+  await flushNarration();
+  assert.equal(h.spoken[2].kind, 'answer');
+  assert.equal(h.spoken[2].text, message.content);
+  h.completions[2].resolve();
+  await flushNarration();
+  assert.deepEqual(h.idle, [true]);
+});
+
+test("gaps between thinking updates keep waiting for the answer", async () => {
+  const h = narrationHarness();
+  const message = { role: 'assistant', content: '', progressNotes: [searchNote] };
+  h.queue.update([message], true);
+  h.completions[0].resolve();
+  await flushNarration();
+  assert.deepEqual(h.idle, [false]);
+  h.queue.update([message], true);
+  assert.equal(h.spoken.length, 1);
+  message.progressNotes.push(retryNote);
+  h.queue.update([message], true);
+  assert.equal(h.spoken[1].text, retryNote);
+});
+
+test("voice skips history, user notes, empty notes and raw reasoning", async () => {
+  const h = narrationHarness(2);
+  const messages = [
+    { role: 'user', content: 'old question' },
+    { role: 'assistant', content: 'old answer', progressNotes: ['Old progress'] },
+    { role: 'user', content: 'new question', progressNotes: ['User-supplied note'] },
+    { role: 'assistant', content: '', reasoning: 'Raw reasoning', progressNotes: [' ', searchNote, ` ${searchNote} `], delegatedAgentPreamble: searchNote },
+  ];
+  h.queue.update(messages, true);
+  h.completions[0].resolve();
+  await flushNarration();
+  assert.deepEqual(h.spoken.map(item => item.text), [searchNote]);
+  const plain = narrationHarness(2);
+  plain.queue.update(messages.slice(0, 3), false);
+  assert.equal(plain.spoken.length, 0, 'an old answer must never be reused');
+  messages[3] = { role: 'assistant', content: 'A normal answer' };
+  plain.queue.update(messages, false);
+  assert.equal(plain.spoken[0].text, 'A normal answer');
+});
+
+test("interrupting cancels pending speech and ignores late completion callbacks", async () => {
+  const h = narrationHarness();
+  const message = { role: 'assistant', content: 'Final answer', progressNotes: [searchNote, retryNote] };
+  h.queue.update([message], false);
+  h.queue.cancel();
+  assert.equal(h.spoken[0].signal.aborted, true);
+  h.completions[0].resolve();
+  await flushNarration();
+  h.queue.update([message], false);
+  assert.equal(h.spoken.length, 1);
+  assert.deepEqual(h.idle, []);
+  assert.deepEqual(h.errors, []);
+});
+
+test("a failed progress message does not lose subsequent updates or the answer", async () => {
+  const h = narrationHarness();
+  h.queue.update([{ role: 'assistant', content: 'Final answer', progressNotes: [searchNote] }], false);
+  h.completions[0].reject(new Error('Speech unavailable'));
+  await flushNarration();
+  assert.deepEqual(h.errors, ['Speech unavailable']);
+  assert.equal(h.spoken[1].text, 'Final answer');
+  h.completions[1].resolve();
+  await flushNarration();
+  assert.deepEqual(h.idle, [true]);
 });
 
 test("markdown is turned into something worth hearing", () => {
@@ -229,7 +333,7 @@ test("the halo is the same circle, lying on the line until a voice moves it", ()
 });
 
 test("double-tapping the microphone opens voice mode instead of the options", () => {
-  assert.match(dictation, /onOpenVoiceMode\?: \(\) => void/);
+  assert.match(dictation, /onOpenVoiceMode\?: \(greet\?: boolean\) => void/);
   assert.match(dictation, /onClick=\{handleTap\}/);
   // A tap that would open the options is the one that arms the window;
   // stopping a running recording never is.
@@ -257,7 +361,7 @@ test("a spoken turn is sent as an ordinary chat message", () => {
   );
   assert.match(composer, /onSubmitRef\.current\(\);/);
   assert.match(composer, /const sendSpokenTurn = useCallback\(/);
-  assert.match(composer, /onOpenVoiceMode=\{voiceMessages \? \(\) => setVoiceOpen\(true\) : undefined\}/);
+  assert.match(composer, /onOpenVoiceMode=\{voiceMessages \? \(greet = false\) => \{ setGreetVoice\(greet\); setVoiceOpen\(true\); \} : undefined\}/);
   assert.match(composer, /<VoiceConversationOverlay/);
   assert.match(composer, /messages=\{voiceMessages\}/);
   // Whatever the host calls its run flag, "a turn is in flight" has to reach the
@@ -276,14 +380,14 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
   assert.match(overlay, /event\.key === 'Escape'/);
   assert.match(overlay, /stopSpeechPlayback\(\);\s*\n\s*releaseMicrophone\(\);/);
   // Answers are spoken once, when they have settled.
-  assert.match(overlay, /if \(busy\) \{/);
-  assert.match(overlay, /answeredKeyRef\.current = key;/);
+  assert.match(overlay, /narration\.update\(messages, busy\)/);
+  assert.match(overlay, /if \(answered\) \{\s*awaitingRef\.current = false;/);
 });
 
 test("voice mode prepares the selected speech provider before it starts listening", () => {
   assert.match(
     overlay,
-    /await prepareLocalSpeech\(prepareController\.signal\)[\s\S]*?serviceReady = true;[\s\S]*?navigator\.mediaDevices\.getUserMedia/,
+    /await prepareLocalSpeech\(prepareController\.signal\)[\s\S]*?serviceReady = true;[\s\S]*?requestForegroundMicrophone/,
   );
   assert.match(overlay, /\[401, 403, 409, 429, 503\]\.includes\(response\.status\)[\s\S]*?enterStage\('unavailable'\)/);
   assert.match(overlay, /stage === 'blocked' \|\| stage === 'unavailable'/);
