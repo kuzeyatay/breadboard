@@ -21,7 +21,11 @@ import {
   sourceSetHashForBindingRecords,
 } from "@/lib/learn-source-normalization-receipt";
 import { failedGenerationRequiresReplanFromEvents } from "@/lib/learn-replan-recovery";
-import { cumulativeLearnWorkflowElapsedMs } from "@/lib/learn-timer";
+import {
+  cumulativeLearnWorkflowElapsedMs,
+  currentLearnWorkflowAttempts,
+  type LearnTimerAttempt,
+} from "@/lib/learn-timer";
 import type {
   SourceVisual,
   SourceVisualSourceIdentity,
@@ -790,19 +794,41 @@ function learnMapPlanningJob(
     : null;
 }
 
-function learnTokenUsageForWorkflow(job: LearnJob): LearnTokenUsage {
-  const jobIds = new Set([job.id]);
+function learnWorkflowAttempts(job: LearnJob): LearnTimerAttempt[] {
   const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
-  if (learningMapId && tableExists("learn_maps")) {
-    const owner = db
-      .prepare("SELECT garden_id, job_id FROM learn_maps WHERE id = ?")
-      .get(learningMapId) as
-      | { garden_id: string; job_id: string }
-      | undefined;
-    if (owner?.garden_id === job.gardenId && owner.job_id) jobIds.add(owner.job_id);
-  }
+  if (!learningMapId || !tableExists("learn_jobs")) return [];
+  const attempts = db
+    .prepare(
+      `SELECT id, status, active_elapsed_ms, created_at
+       FROM learn_jobs
+       WHERE garden_id = ?
+         AND (confirmed_learning_map_id = ? OR proposed_learning_map_id = ?)
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(job.gardenId, learningMapId, learningMapId) as Array<{
+      id: string;
+      status: LearnStatus;
+      active_elapsed_ms: number | null;
+      created_at: string;
+    }>;
+  return currentLearnWorkflowAttempts(
+    attempts.map((attempt) => ({
+      id: attempt.id,
+      status: attempt.status,
+      elapsedMs: Number(attempt.active_elapsed_ms ?? 0),
+      createdAt: attempt.created_at,
+    })),
+    job.id,
+  );
+}
+
+function learnTokenUsageForWorkflow(job: LearnJob): LearnTokenUsage {
+  const attempts = learnWorkflowAttempts(job);
+  const jobIds = attempts.length > 0
+    ? attempts.map((attempt) => attempt.id)
+    : [job.id];
   return sumLearnTokenUsage(
-    Array.from(jobIds, (jobId) => learnTokenUsageForJob(jobId)),
+    jobIds.map((jobId) => learnTokenUsageForJob(jobId)),
   );
 }
 
@@ -811,32 +837,9 @@ function learnTimerForWorkflow(job: LearnJob): {
   timerStartedAt?: string;
 } {
   let elapsedMs = job.elapsedMs;
-  const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
-  if (learningMapId && tableExists("learn_jobs")) {
-    const attempts = db
-      .prepare(
-        `SELECT id, status, active_elapsed_ms, created_at
-         FROM learn_jobs
-         WHERE garden_id = ?
-           AND (confirmed_learning_map_id = ? OR proposed_learning_map_id = ?)
-         ORDER BY created_at ASC, id ASC`,
-      )
-      .all(job.gardenId, learningMapId, learningMapId) as Array<{
-        id: string;
-        status: LearnStatus;
-        active_elapsed_ms: number | null;
-        created_at: string;
-      }>;
-    const cumulativeElapsedMs = cumulativeLearnWorkflowElapsedMs(
-      attempts.map((attempt) => ({
-        id: attempt.id,
-        status: attempt.status,
-        elapsedMs: Number(attempt.active_elapsed_ms ?? 0),
-        createdAt: attempt.created_at,
-      })),
-      job.id,
-    );
-    if (attempts.some((attempt) => attempt.id === job.id)) elapsedMs = cumulativeElapsedMs;
+  const attempts = learnWorkflowAttempts(job);
+  if (attempts.length > 0) {
+    elapsedMs = cumulativeLearnWorkflowElapsedMs(attempts, job.id);
   }
   return {
     elapsedMs,
