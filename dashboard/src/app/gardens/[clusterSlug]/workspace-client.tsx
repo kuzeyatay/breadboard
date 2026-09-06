@@ -1208,6 +1208,11 @@ interface LearnMapInfo {
 interface LearnStatusResponse {
   success?: boolean;
   job?: LearnJobInfo | null;
+  publicationRecovery?: {
+    active: true;
+    requestedAt: string;
+    updatedAt: string;
+  } | null;
   proposedLearningMap?: LearnMapInfo | null;
   confirmedLearningMapId?: string;
   confirmedLearningMapModel?: string;
@@ -4561,6 +4566,7 @@ export default function WorkspaceClient({
   useEffect(() => {
     const active =
       isLearnActive(learnState?.job?.status) ||
+      learnState?.publicationRecovery?.active === true ||
       learnState?.humanizer?.status === "running" ||
       learnState?.humanizer?.status === "restoring_ai" ||
       learnHumanizerRequestBusy ||
@@ -4579,6 +4585,7 @@ export default function WorkspaceClient({
     learnHumanizerRequestBusy,
     learnState?.humanizer?.status,
     learnState?.job?.status,
+    learnState?.publicationRecovery?.active,
   ]);
 
   useEffect(() => {
@@ -14129,7 +14136,9 @@ if (careerOpsAgent) {
   function renderLearnPanel() {
     const job = learnState?.job ?? null;
     const status = job?.status ?? "idle";
-    const active = isLearnActive(status);
+    const publicationRecoveryActive =
+      learnState?.publicationRecovery?.active === true;
+    const active = isLearnActive(status) || publicationRecoveryActive;
     const hasLearnUserInstruction = Boolean(learnUserInstruction.trim());
     const learnHumanizerStatus = learnState?.humanizer?.status;
     const learnHumanizerRunning = learnHumanizerStatus === "running";
@@ -14162,7 +14171,8 @@ if (careerOpsAgent) {
     // the new durable job is returned by status polling. Do not paint that old
     // failure as if it belonged to the retry now starting.
     const startingLearnAction = learnBusy && !isLearnActive(status);
-    const showFailedState = status === "failed" && !startingLearnAction;
+    const showFailedState =
+      status === "failed" && !startingLearnAction && !publicationRecoveryActive;
     const displayProgress = learnHumanizerActive
       ? 100
       : startingLearnAction
@@ -14175,7 +14185,8 @@ if (careerOpsAgent) {
     const paused = status === "paused";
     // Kept mounted across the request so the control does not flicker away
     // between the click and the next status poll.
-    const showPauseControl = paused || isLearnPausable(status);
+    const showPauseControl =
+      !publicationRecoveryActive && (paused || isLearnPausable(status));
     // While a run is in flight the chip must name the model actually placing
     // the calls, which is fixed for the life of that run. Once it settles the
     // chip names the model the next run will use, so changing the Intelligence
@@ -14232,8 +14243,10 @@ if (careerOpsAgent) {
     // every surface describes a Learn stage with the same words.
     const activeStageMessage: Partial<Record<LearnStatus, string>> =
       LEARN_ACTIVE_STAGE_LABELS;
-    const statusMessage = active
-      ? null
+    const statusMessage = publicationRecoveryActive
+      ? "Restoring the safe garden and republishing it before Learn resumes."
+      : active
+        ? null
       : status === "complete"
         ? null
         : status === "failed"
@@ -14247,7 +14260,9 @@ if (careerOpsAgent) {
               : learnState?.hasTextbook
                 ? "Ready to repair current validation issues."
                 : "Ready to generate lessons.";
-    const stageMessage = startingLearnAction
+    const stageMessage = publicationRecoveryActive
+      ? "Publication recovery is active."
+      : startingLearnAction
       ? status === "failed"
         ? "Starting Learn retry..."
         : "Starting Learn..."
@@ -15196,7 +15211,7 @@ if (careerOpsAgent) {
                     )}
                   </button>
                 )}
-                {active && (
+                {active && !publicationRecoveryActive && (
                   <button
                     type="button"
                     onClick={handleCancelLearn}

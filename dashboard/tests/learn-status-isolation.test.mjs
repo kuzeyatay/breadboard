@@ -225,6 +225,7 @@ test("the in-process projection preserves the empty Learn status DTO", async () 
     );
     const snapshot = projection.getLearnStatusSnapshot({ gardenId, contentPath });
     assert.deepEqual(snapshot.job, null);
+    assert.deepEqual(snapshot.publicationRecovery, null);
     assert.deepEqual(snapshot.proposedLearningMap, null);
     assert.equal(snapshot.hasSources, true);
     assert.equal(snapshot.sourceCount, 1);
@@ -364,6 +365,36 @@ test("the in-process projection preserves the empty Learn status DTO", async () 
     assert.equal(legacySnapshot.job.id, "legacy-job");
     assert.equal(legacySnapshot.job.model, "gpt-5.6-sol");
     assert.deepEqual(legacySnapshot.job.sourceIds, []);
+
+    database.default.exec(`
+      CREATE TABLE learn_publication_retries (
+        garden_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        last_error TEXT,
+        requested_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    database.default.prepare(
+      `INSERT INTO learn_publication_retries (
+         garden_id, reason, last_error, requested_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      gardenId,
+      "abandoned Learn job recovery",
+      "Publication pending",
+      "2026-01-02T03:06:05.000Z",
+      "2026-01-02T03:07:05.000Z",
+    );
+    const recoveringSnapshot = projection.getLearnStatusSnapshot({
+      gardenId,
+      contentPath,
+    });
+    assert.deepEqual(recoveringSnapshot.publicationRecovery, {
+      active: true,
+      requestedAt: "2026-01-02T03:06:05.000Z",
+      updatedAt: "2026-01-02T03:07:05.000Z",
+    });
   } finally {
     aliasHooks.deregister();
     try {
