@@ -857,6 +857,47 @@ Original contract-backed body.
     assert.match(provenance.modelFailureReason ?? "", /returned model candidate failed target or safety validation/);
     assert.equal(read(dir, pageRel), original, "the whole invalid candidate must be rolled back");
   });
+
+  test("model repair candidate cannot violate the injected final export audit", async () => {
+    const dir = mkTinyGarden("bb-critic-final-export-audit-");
+    const { pageRel, markdown } = writeTinyModelPage(dir);
+    const revised = markdown.replace(
+      "This opening paragraph",
+      "A semantically revised opening paragraph",
+    );
+    const bad = issue({
+      id: "full-export-boundary",
+      type: "repeated_opening",
+      repairTarget: "unit_page",
+      pagePath: pageRel,
+    });
+    let validationCalls = 0;
+    const repair = makeCriticArtifactRepair({
+      allowDeterministicRepairs: false,
+      modelRepair: (input) => ({
+        targetPath: input.repairRequest.targetPath,
+        revisedMarkdown: revised,
+      }),
+      validateModelCandidate: () => {
+        validationCalls += 1;
+        return false;
+      },
+    });
+
+    const outcome = await repair(dir, "test-2", criticIssuesToRepairRequests([bad]), {
+      round: 1,
+      issuesById: new Map([[bad.id, bad]]),
+    });
+
+    assert.equal(validationCalls, 1);
+    assert.equal(outcome.provenance[0].executorUsed, "none");
+    assert.equal(outcome.provenance[0].changed, false);
+    assert.match(
+      outcome.provenance[0].modelFailureReason ?? "",
+      /returned model candidate failed target or safety validation/,
+    );
+    assert.equal(read(dir, pageRel), markdown, "the export-invalid candidate must be rolled back");
+  });
 });
 
 describe("strict ChatMock critic response parsing", () => {

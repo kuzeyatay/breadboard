@@ -15350,6 +15350,14 @@ export async function runTextbookGeneration({
           repair: makeCriticArtifactRepair({
             modelRepair: finalCriticProviders.modelRepair,
             allowDeterministicRepairs: false,
+            validateModelCandidate: (candidateDir, candidateGardenSlug) =>
+              auditGardenForFinalization(candidateDir, candidateGardenSlug, {
+                strictModelApprovedVisuals: true,
+                expectedVisualContractExecutabilityContext:
+                  generationExecutabilityContext,
+                expectedSourceFormulaReviewContext:
+                  sourceFormulaReviewFinalizationContext,
+              }).passed,
           }),
           // Let the loop audit the live state so anchor resolution counts toward
           // publish-readiness. Deterministic critical failures already threw above.
