@@ -764,6 +764,7 @@ Return ONLY a JSON object: {"issues": CriticIssue[]}. Each issue:
   "repairTarget": unit_page|section_index|learning_unit_contract|source_anchor_ledger|source_coverage|planning_doc|visual_spec|repair_log|global,
   "suggestedRepair": one actionable instruction
 }
+Every fixable content issue must name exactly one concrete pagePath or sectionPath and its matching file-scoped repairTarget. Split a problem spanning multiple files into one issue per file; never aggregate file repairs under repairTarget "global".
 Use "blocking" only for genuine semantic errors; "warning"/"cosmetic" for polish. If the garden is clean, return {"issues": []}. Output JSON only, no prose.`;
 
 export function buildCriticUserPrompt(packet: CriticReviewPacket): string {
@@ -1194,52 +1195,117 @@ function sourceAnchorIssueNeedsExactTextRepair(issue: CriticIssue): boolean {
   return /\bexactText\b|verbatim|quoted?|passage|excerpt|source text|wrong source|does not support|irrelevant|mismatch/i.test(text);
 }
 
-/** Group blocking issues into targeted repair requests (one per target+path). */
-export function criticIssuesToRepairRequests(issues: CriticIssue[]): ArtifactRepairRequest[] {
+function concreteRepairTargets(
+  issue: CriticIssue,
+  state?: Pick<FinalGardenState, "pages" | "sourceUsages" | "formulas">,
+): Array<{
+  targetKind: CriticRepairTarget;
+  targetPath?: string;
+  anchorIds?: string[];
+}> {
+  const explicitPath = repairTargetPath(issue);
+  if (explicitPath || issue.repairTarget !== "global" || !state) {
+    return [{
+      targetKind: issue.repairTarget,
+      targetPath: explicitPath,
+      anchorIds: extractAnchorIds(issue),
+    }];
+  }
+  const anchorIds = new Set(issue.sourceAnchorIds ?? []);
+  if (anchorIds.size === 0) {
+    return [{ targetKind: issue.repairTarget }];
+  }
+  const anchorsByPage = new Map<string, Set<string>>();
+  const addPageAnchor = (pageRel: string, anchorId: string): void => {
+    if (!anchorIds.has(anchorId)) return;
+    const pageAnchors = anchorsByPage.get(pageRel) ?? new Set<string>();
+    pageAnchors.add(anchorId);
+    anchorsByPage.set(pageRel, pageAnchors);
+  };
+  for (const page of state.pages) {
+    for (const anchorId of [
+      ...page.sourceAnchors,
+      ...page.sourceFormulaAnchors,
+      ...page.sourceVisualIds,
+      ...page.formulas.flatMap((formula) =>
+        [formula.sourceAnchor, formula.basedOnFormula].filter(
+          (value): value is string => Boolean(value),
+        ),
+      ),
+    ]) {
+      addPageAnchor(page.rel, anchorId);
+    }
+  }
+  for (const usage of state.sourceUsages) {
+    addPageAnchor(usage.pageRel, usage.anchorId);
+  }
+  for (const formula of state.formulas) {
+    if (formula.sourceAnchor) addPageAnchor(formula.pageRel, formula.sourceAnchor);
+    if (formula.basedOnFormula) addPageAnchor(formula.pageRel, formula.basedOnFormula);
+  }
+  if (anchorsByPage.size === 0) {
+    return [{ targetKind: issue.repairTarget }];
+  }
+  return [...anchorsByPage].map(([targetPath, pageAnchors]) => ({
+    targetKind: "unit_page",
+    targetPath,
+    anchorIds: [...pageAnchors],
+  }));
+}
+
+/** Group blocking issues into targeted repair requests (one per target+path).
+ * A verified global finding with explicit anchors is expanded to the concrete
+ * lesson files that reference those anchors, so the model repair boundary
+ * never receives an unexecutable target. */
+export function criticIssuesToRepairRequests(
+  issues: CriticIssue[],
+  state?: Pick<FinalGardenState, "pages" | "sourceUsages" | "formulas">,
+): ArtifactRepairRequest[] {
   const groups = new Map<string, ArtifactRepairRequest>();
   for (const issue of issues) {
-    const targetPath = repairTargetPath(issue);
-    const key = `${issue.repairTarget}::${targetPath ?? ""}`;
-    let req = groups.get(key);
-    if (!req) {
-      req = {
-        id: `repair-${issue.repairTarget}-${groups.size + 1}`,
-        issueIds: [],
-        targetKind: issue.repairTarget,
-        targetPath,
-        affectedUnitIds: [],
-        affectedAnchorIds: [],
-        formulaKindRepairs: [],
-        textAnchorExactTextRepairs: [],
-        instructions: [],
-        evidence: [],
-      };
-      groups.set(key, req);
-    }
-    req.issueIds.push(issue.id);
-    if (issue.suggestedRepair) req.instructions.push(issue.suggestedRepair);
-    if (issue.evidence) req.evidence.push(issue.evidence);
-    const anchorIds = extractAnchorIds(issue);
-    for (const id of anchorIds) if (!req.affectedAnchorIds!.includes(id)) req.affectedAnchorIds!.push(id);
-    if (issue.type === "worked_example_misclassified") {
-      req.formulaKindRepairs!.push({
-        issueId: issue.id,
-        pagePath: issue.pagePath,
-        formulaIndex: extractFormulaIndex(issue),
-        sourceAnchorIds: anchorIds.filter((id) => /\.E\d+$/i.test(id)),
-        expectedKind: "worked_example",
-        basedOnFormula: anchorIds.find((id) => /\.E\d+$/i.test(id)),
-        evidence: issue.evidence,
-      });
-    }
-    if (sourceAnchorIssueNeedsExactTextRepair(issue) && anchorIds.length > 0) {
-      req.textAnchorExactTextRepairs!.push({
-        issueId: issue.id,
-        anchorIds,
-        pagePath: issue.pagePath,
-        evidence: issue.evidence,
-        problem: issue.problem,
-      });
+    for (const target of concreteRepairTargets(issue, state)) {
+      const key = `${target.targetKind}::${target.targetPath ?? ""}`;
+      let req = groups.get(key);
+      if (!req) {
+        req = {
+          id: `repair-${target.targetKind}-${groups.size + 1}`,
+          issueIds: [],
+          targetKind: target.targetKind,
+          targetPath: target.targetPath,
+          affectedUnitIds: [],
+          affectedAnchorIds: [],
+          formulaKindRepairs: [],
+          textAnchorExactTextRepairs: [],
+          instructions: [],
+          evidence: [],
+        };
+        groups.set(key, req);
+      }
+      req.issueIds.push(issue.id);
+      if (issue.suggestedRepair) req.instructions.push(issue.suggestedRepair);
+      if (issue.evidence) req.evidence.push(issue.evidence);
+      const anchorIds = target.anchorIds ?? extractAnchorIds(issue);
+      for (const id of anchorIds) if (!req.affectedAnchorIds!.includes(id)) req.affectedAnchorIds!.push(id);
+      if (issue.type === "worked_example_misclassified") {
+        req.formulaKindRepairs!.push({
+          issueId: issue.id,
+          pagePath: target.targetPath ?? issue.pagePath,
+          formulaIndex: extractFormulaIndex(issue),
+          sourceAnchorIds: anchorIds.filter((id) => /\.E\d+$/i.test(id)),
+          expectedKind: "worked_example",
+          basedOnFormula: anchorIds.find((id) => /\.E\d+$/i.test(id)),
+          evidence: issue.evidence,
+        });
+      }
+      if (sourceAnchorIssueNeedsExactTextRepair(issue) && anchorIds.length > 0) {
+        req.textAnchorExactTextRepairs!.push({
+          issueId: issue.id,
+          anchorIds,
+          pagePath: target.targetPath ?? issue.pagePath,
+          evidence: issue.evidence,
+          problem: issue.problem,
+        });
+      }
     }
   }
   return [...groups.values()].map((req) => ({
@@ -1379,7 +1445,7 @@ function buildModelRepairInput(state: FinalGardenState, gardenDir: string, reque
   const learningUnitContract = targetPage
     ? state.learningUnitContract.units.find((unit) => unit.id === targetPage.learningUnitId)
     : undefined;
-  const anchorIds = new Set(issue.sourceAnchorIds ?? request.affectedAnchorIds ?? []);
+  const anchorIds = new Set(request.affectedAnchorIds ?? issue.sourceAnchorIds ?? []);
   if (learningUnitContract) {
     for (const anchorId of learningUnitContract.sourceAnchors) anchorIds.add(anchorId);
     for (const artifact of learningUnitContract.sourceFigures) anchorIds.add(artifact.id);
@@ -2130,7 +2196,9 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
 
     const requestsByIssue = new Map<string, string>();
     let outcome: CriticRepairOutcome = { attempted: 0, resolved: 0, provenance: [] };
-    const genericRequests = genericBlocking.length > 0 ? criticIssuesToRepairRequests(genericBlocking) : [];
+    const genericRequests = genericBlocking.length > 0
+      ? criticIssuesToRepairRequests(genericBlocking, state)
+      : [];
     const allRequests = [...genericRequests, ...rejectedRequests].slice(0, options.maxTotalRepairAttempts - totalAttempts);
     if (allRequests.length > 0) {
       const issuesById = new Map(blocking.map((i) => [i.id, i]));
