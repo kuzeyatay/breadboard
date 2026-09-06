@@ -1,6 +1,11 @@
 "use client";
 
 import { GARDEN_SOURCE_IMPORTED_EVENT, handleGardenSourceImportResult } from "@/lib/hermes/garden-source-import-client";
+import {
+  learnCompletionChimeKey,
+  playLearnCompletionChime,
+  type LearnCompletionSnapshot,
+} from "@/lib/learn-completion-chime";
 
 import {
   memo,
@@ -4152,6 +4157,10 @@ export default function WorkspaceClient({
   const previousLearnHumanizerStatusRef = useRef<
     LearnHumanizerStatus | undefined
   >(undefined);
+  const previousLearnCompletionRef = useRef<LearnCompletionSnapshot | null>(
+    null,
+  );
+  const chimedLearnJobsRef = useRef(new Set<string>());
   const {
     model,
     setModel,
@@ -4571,6 +4580,25 @@ export default function WorkspaceClient({
     learnState?.humanizer?.status,
     learnState?.job?.status,
   ]);
+
+  useEffect(() => {
+    const current = learnState?.job
+      ? {
+          gardenId: clusterSlug,
+          jobId: learnState.job.id,
+          status: learnState.job.status,
+        }
+      : null;
+    const chimeKey = learnCompletionChimeKey(
+      previousLearnCompletionRef.current,
+      current,
+    );
+    previousLearnCompletionRef.current = current;
+    if (!chimeKey || chimedLearnJobsRef.current.has(chimeKey)) return;
+
+    chimedLearnJobsRef.current.add(chimeKey);
+    playLearnCompletionChime();
+  }, [clusterSlug, learnState?.job?.id, learnState?.job?.status]);
 
   useEffect(() => {
     const current = learnState?.humanizer?.status;
