@@ -646,8 +646,29 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
   }
   const sectionByDir = new Map(state.sections.map((s) => [s.rel.replace(/\/_index\.md$/i, ""), s]));
 
+  // Preserve the model-authored curriculum order. Lexicographic path sorting
+  // places a numbered chapter 10 between chapters 1 and 2, which makes an
+  // otherwise-correct export look structurally out of order to the semantic
+  // critic. Contract order is the durable authority even when section titles
+  // are not numbered; natural path order is only a fallback for pages absent
+  // from the contract.
+  const unitOrder = new Map(
+    state.learningUnitContract.units.map((unit, index) => [unit.id, index]),
+  );
+  const sectionContractOrder = (pages: FinalGardenState["pages"]): number => {
+    let earliest = Number.MAX_SAFE_INTEGER;
+    for (const page of pages) {
+      const order = unitOrder.get(page.learningUnitId);
+      if (order !== undefined && order < earliest) earliest = order;
+    }
+    return earliest;
+  };
+
   const sections = [...pagesBySection.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .sort((a, b) => {
+      const contractDelta = sectionContractOrder(a[1]) - sectionContractOrder(b[1]);
+      return contractDelta || a[0].localeCompare(b[0], undefined, { numeric: true });
+    })
     .map(([dir, pages]) => {
       const section = sectionByDir.get(dir);
       const sortedPages = [...pages].sort((a, b) => a.subsectionNumber.localeCompare(b.subsectionNumber, undefined, { numeric: true }));
