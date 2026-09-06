@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { localChatmockBaseUrl } from "@/lib/chatmock-server";
 import { RouteError } from "@/lib/server-auth";
+import { requireSameOrigin } from "@/lib/request-origin";
+import type { SpeechCredentialStatus } from "./providers";
 
 async function bridgeSecret(): Promise<string> {
   const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
@@ -40,14 +42,11 @@ export async function subscriptionBridge(userId: number, suffix: string, init: R
   return Response.json(body, { headers: { "Cache-Control": "no-store" } });
 }
 
-export async function subscriptionStatus(userId: number) {
-  try { return await (await subscriptionBridge(userId, "status")).json() as { configured: boolean; source: "subscription"; error?: string }; }
-  catch (error) { return { configured: false, source: "subscription" as const, error: error instanceof Error ? error.message : "Subscription voice is unavailable." }; }
+export async function subscriptionStatus(userId: number): Promise<SpeechCredentialStatus> {
+  try { return await (await subscriptionBridge(userId, "status")).json() as SpeechCredentialStatus; }
+  catch (error) { return { configured: false, source: "subscription", reason: "service_unavailable", error: error instanceof Error ? error.message : "Subscription voice is unavailable." }; }
 }
 
 export function requireVoiceOrigin(request: Request): void {
-  const origin = request.headers.get("origin");
-  if ((origin && origin !== new URL(request.url).origin) || request.headers.get("sec-fetch-site") === "cross-site") {
-    throw new RouteError(403, "Voice requests must come from Breadboard.");
-  }
+  requireSameOrigin(request, "Voice requests must come from Breadboard.");
 }

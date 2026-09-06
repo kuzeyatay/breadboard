@@ -38,12 +38,13 @@ export function patentDisclosureCommandText(input: {
   text: string;
   surface: HermesSurface;
   authenticated: boolean;
+  internalContinuation?: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
 }): { text: string; automatic: boolean } {
   const text = input.text.trim();
   const available = input.authenticated &&
     (input.surface === "dashboard_terminal" || input.surface === "garden_chat");
-  const automatic = available &&
+  const automatic = available && input.internalContinuation !== true &&
     Boolean(text) &&
     !text.startsWith("/") &&
     (

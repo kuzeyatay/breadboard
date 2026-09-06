@@ -1,0 +1,31 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #70449d;
+  background: #70449d14;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:global([data-theme="dark"]) .badge {
+  color: #cfb0f0;
+  background: #cfb0f01a;
+}
+
+:global(.browser-start-page) .greeting {
+  min-height: 0;
+  margin-bottom: 16px;
+}
+
+.note {
+  max-width: 440px;
+  margin: -4px auto 20px;
+  color: var(--ink-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: center;
+}

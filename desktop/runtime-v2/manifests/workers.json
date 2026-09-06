@@ -2253,6 +2253,39 @@
       "gracefulCancellationMs": 60000,
       "maximumRuntimeMs": 21600000,
       "exitAfterJob": true
+    },
+    {
+      "kind": "outer-music-producer-node",
+      "jobTypes": [
+        "music-producer-run"
+      ],
+      "capabilityIds": [
+        "runtime-agent:music-producer"
+      ],
+      "submissionAuthority": "user",
+      "environmentSource": "music-producer",
+      "serviceDependencies": [
+        {
+          "serviceId": "chatmock",
+          "condition": "always"
+        }
+      ],
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-music-producer-worker.mjs",
+      "protocolVersion": 1,
+      "resourceClass": "document-processing",
+      "estimatedColdStartCommitMb": 512,
+      "softCommitLimitMb": 1024,
+      "hardCommitLimitMb": 2048,
+      "maximumConcurrency": 1,
+      "minimumInputBlobs": 0,
+      "maximumInputBlobs": 0,
+      "workspacePolicy": "private-per-job",
+      "readyTimeoutMs": 30000,
+      "heartbeatTimeoutMs": 30000,
+      "gracefulCancellationMs": 60000,
+      "maximumRuntimeMs": 1800000,
+      "exitAfterJob": true
     }
   ]
 }

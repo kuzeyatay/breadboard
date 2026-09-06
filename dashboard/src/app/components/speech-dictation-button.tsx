@@ -1,8 +1,13 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 import { speechRequest } from "@/lib/speech/request-client";
 import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { CLAP_SETTINGS_EVENT, CLAP_STATUS_EVENT, clapWakeEnabled, clapWakeIssue, holdClapWake, setClapWakeEnabled } from "@/lib/speech/clap-wake";
+import { registerClapTarget } from '@/lib/speech/clap/targets';
+import { subscribeClapControls } from '@/lib/speech/clap/client';
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import MusicRecognitionButton from "@/app/components/music-recognition-button";
 import MicrophonePermissionHelp from "./microphone-permission-help";
@@ -48,7 +53,7 @@ interface SpeechDictationButtonProps {
    * conversation; without it the menu offers dictation and file transcription
    * alone, and there is no double-tap window to wait out.
    */
-  onOpenVoiceMode?: () => void;
+  onOpenVoiceMode?: (greet?: boolean) => void;
   /** Existing runtime session, used only to retain a direct recognition result in chat. */
   runtimeSessionId?: string | number | null;
 }
@@ -68,6 +73,19 @@ const PARTIAL_TRANSCRIPT_INTERVAL_MS = 2_750;
 const MIN_PARTIAL_SECONDS = 1.25;
 const MODEL_DOWNLOAD_RETRY_MS = 2_000;
 const MODEL_DOWNLOAD_WAIT_MS = 10 * 60_000;
+
+function subscribeClapSetting(changed: () => void) {
+  const unsubscribe = subscribeClapControls(changed);
+  window.addEventListener(CLAP_SETTINGS_EVENT, changed);
+  window.addEventListener(CLAP_STATUS_EVENT, changed);
+  window.addEventListener('storage', changed);
+  return () => {
+    unsubscribe();
+    window.removeEventListener(CLAP_SETTINGS_EVENT, changed);
+    window.removeEventListener(CLAP_STATUS_EVENT, changed);
+    window.removeEventListener('storage', changed);
+  };
+}
 
 function bestRecordingMimeType(): string | undefined {
   if (typeof MediaRecorder === "undefined") return undefined;
@@ -240,12 +258,34 @@ export default function SpeechDictationButton({
   const tapTimerRef = useRef<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [musicBusy, setMusicBusy] = useState(false);
+  const clapEnabled = useSyncExternalStore(subscribeClapSetting, clapWakeEnabled, () => false);
+  const clapIssue = useSyncExternalStore(subscribeClapSetting, clapWakeIssue, () => null);
+  useEffect(() => {
+    if (state === 'idle' && !musicBusy) return;
+    return holdClapWake();
+  }, [state, musicBusy]);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const pauseButtonRef = useRef<HTMLButtonElement>(null);
   const levelBarsRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const startingRef = useRef(false);
+  const supportsClapVoice = Boolean(onOpenVoiceMode);
+  const clapTargetRef = useRef({ disabled, runtimeSessionId, state, onOpenVoiceMode, start: startRecording });
+  clapTargetRef.current = { disabled, runtimeSessionId, state, onOpenVoiceMode, start: startRecording };
+  useEffect(() => registerClapTarget({
+    element: () => textareaRef.current,
+    eligible: () => !clapTargetRef.current.disabled && mountedRef.current,
+    voice: supportsClapVoice,
+    identity: () => `${location.pathname}:${clapTargetRef.current.runtimeSessionId ?? ''}`,
+    start: action => {
+      const target = clapTargetRef.current;
+      if (action === 'voice') { target.onOpenVoiceMode?.(true); return Boolean(target.onOpenVoiceMode); }
+      if (target.state !== 'idle' || startingRef.current) return true;
+      void target.start(); return true;
+    },
+  }), [textareaRef, supportsClapVoice]);
 
   const paintDictationLevel = useCallback((rms: number) => {
     const level = Math.min(1, Math.max(0, rms * 9));
@@ -266,7 +306,7 @@ export default function SpeechDictationButton({
     timeoutRef.current = null;
     if (partialTimerRef.current !== null) window.clearInterval(partialTimerRef.current);
     partialTimerRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    stopForegroundStream(streamRef.current);
     streamRef.current = null;
     recorderRef.current = null;
     paintDictationLevel(0);
@@ -479,10 +519,14 @@ export default function SpeechDictationButton({
   }
 
   async function startRecording() {
+    if (startingRef.current || clapTargetRef.current.state !== 'idle') return;
+    startingRef.current = true;
+    const targetIdentity = `${location.pathname}:${clapTargetRef.current.runtimeSessionId ?? ''}`;
     setError(null);
     setBlocked(null);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("Microphone recording is not supported in this browser.");
+      startingRef.current = false;
       return;
     }
     setState("requesting");
@@ -494,13 +538,17 @@ export default function SpeechDictationButton({
       } finally {
         if (prepareAbortRef.current === prepareController) prepareAbortRef.current = null;
       }
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || targetIdentity !== `${location.pathname}:${clapTargetRef.current.runtimeSessionId ?? ''}`) {
+        if (mountedRef.current) setState('idle');
+        return;
+      }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await requestForegroundMicrophone({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
-      if (!mountedRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
+      if (!mountedRef.current || targetIdentity !== `${location.pathname}:${clapTargetRef.current.runtimeSessionId ?? ''}`) {
+        stopForegroundStream(stream);
+        if (mountedRef.current) setState('idle');
         return;
       }
       streamRef.current = stream;
@@ -594,7 +642,7 @@ export default function SpeechDictationButton({
         return;
       }
       setError(speechErrorMessage(caught, "The microphone could not be opened."));
-    }
+    } finally { startingRef.current = false; }
   }
 
   function toggleRecordingPause() {
@@ -946,7 +994,7 @@ export default function SpeechDictationButton({
               <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
               <MicrophoneMenuItem
                 title="Talk to the assistant"
-                hint="Full-screen voice mode. Double-tap the microphone for this."
+                hint="Double-tap the microphone for voice mode."
                 accent
                 onClick={openVoiceModeFromMenu}
                 disabled={musicBusy}
@@ -960,6 +1008,19 @@ export default function SpeechDictationButton({
               />
             </>
           ) : null}
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={clapEnabled}
+            className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--paper-strong)]"
+            onClick={() => setClapWakeEnabled(!clapEnabled)}
+          >
+            <span>
+              Two-clap shortcut
+              <span className="block text-xs text-[var(--ink-muted)]">{clapEnabled && clapIssue ? clapIssue : 'Uses your microphone. Choose the action in Profile.'}</span>
+            </span>
+            <span>{clapEnabled ? 'On' : 'Off'}</span>
+          </button>
         </div>
       ) : null}
       {state === "reading-file" ? (

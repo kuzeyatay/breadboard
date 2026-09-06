@@ -564,6 +564,7 @@ impl fmt::Debug for DashboardControlEnvironment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrustedServiceEnvironmentProfile {
     Chatmock,
+    Acestep,
     Comfyui,
     Dashboard,
     Gbrain,
@@ -601,6 +602,7 @@ impl TrustedServiceEnvironmentProfile {
     pub const fn service_id(self) -> &'static str {
         match self {
             Self::Chatmock => "chatmock",
+            Self::Acestep => "acestep",
             Self::Comfyui => "comfyui",
             Self::Dashboard => "dashboard",
             Self::Gbrain => "gbrain",
@@ -638,6 +640,7 @@ impl TrustedServiceEnvironmentProfile {
     pub const fn source(self) -> TrustedServiceEnvironmentSource {
         match self {
             Self::Chatmock => TrustedServiceEnvironmentSource::Chatmock,
+            Self::Acestep => TrustedServiceEnvironmentSource::Acestep,
             Self::Comfyui => TrustedServiceEnvironmentSource::Comfyui,
             Self::Dashboard => TrustedServiceEnvironmentSource::Dashboard,
             Self::Gbrain => TrustedServiceEnvironmentSource::Gbrain,
@@ -675,6 +678,7 @@ impl TrustedServiceEnvironmentProfile {
     fn from_service_id(service_id: &str) -> Option<Self> {
         match service_id {
             "chatmock" => Some(Self::Chatmock),
+            "acestep" => Some(Self::Acestep),
             "comfyui" => Some(Self::Comfyui),
             "dashboard" => Some(Self::Dashboard),
             "gbrain" => Some(Self::Gbrain),
@@ -782,6 +786,7 @@ pub struct TrustedServiceEnvironmentSet {
     mode: RuntimeMode,
     _shared_temporary: TrustedDirectoryPin,
     chatmock: TrustedServiceEnvironment,
+    acestep: TrustedServiceEnvironment,
     comfyui: TrustedServiceEnvironment,
     dashboard: TrustedServiceEnvironment,
     gbrain: TrustedServiceEnvironment,
@@ -834,6 +839,7 @@ impl TrustedServiceEnvironmentSet {
         let config = load_required_desktop_config(config_root)?;
         write_runtime_endpoint_receipt(paths, endpoints, &config)?;
         write_hermes_runtime_config(mode, paths, endpoints, os_environment)?;
+        let acestep = build_acestep_environment(mode, paths, endpoints, os_environment)?;
         let comfyui = build_comfyui_environment(mode, paths, endpoints, os_environment)?;
         let telegram_gateway_token = derive_gateway_token(
             dashboard_control.token.as_bytes(),
@@ -1099,6 +1105,7 @@ impl TrustedServiceEnvironmentSet {
             mode,
             _shared_temporary: shared_temporary,
             chatmock,
+            acestep,
             comfyui,
             dashboard,
             gbrain,
@@ -1165,6 +1172,7 @@ impl TrustedServiceEnvironmentSet {
 
         let environment = match profile {
             TrustedServiceEnvironmentProfile::Chatmock => &self.chatmock,
+            TrustedServiceEnvironmentProfile::Acestep => &self.acestep,
             TrustedServiceEnvironmentProfile::Comfyui => &self.comfyui,
             TrustedServiceEnvironmentProfile::Dashboard => &self.dashboard,
             TrustedServiceEnvironmentProfile::Gbrain => &self.gbrain,
@@ -1395,6 +1403,7 @@ pub struct TrustedWorkerEnvironmentSet {
     scriberr_garden: TrustedWorkerEnvironment,
     watermark: TrustedWorkerEnvironment,
     outer_hardware_blueprint: TrustedWorkerEnvironment,
+    music_producer: TrustedWorkerEnvironment,
     get_doc: TrustedWorkerEnvironment,
     get_doc_download: TrustedWorkerEnvironment,
     meeting_notes: TrustedWorkerEnvironment,
@@ -3481,6 +3490,12 @@ impl TrustedWorkerEnvironmentSet {
             source: TrustedWorkerEnvironmentSource::OuterHardwareBlueprint,
             pairs: outer_hardware_blueprint_pairs,
         };
+        let mut music_pairs = tool_pairs.clone();
+        music_pairs.push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
+        for (name, value) in &services.dashboard.pairs {
+            if ["BREADBOARD_ACESTEP_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"].iter().any(|allowed| name.eq_ignore_ascii_case(OsStr::new(allowed))) { music_pairs.push((name.clone(), value.clone())); }
+        }
+        let music_producer = TrustedWorkerEnvironment { mode, source: TrustedWorkerEnvironmentSource::MusicProducer, pairs: music_pairs };
         let mut get_doc_pairs = tool_pairs.clone();
         get_doc_pairs.push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
         for name in [
@@ -4160,6 +4175,7 @@ impl TrustedWorkerEnvironmentSet {
             scriberr_garden,
             watermark,
             outer_hardware_blueprint,
+            music_producer,
             get_doc,
             get_doc_download,
             meeting_notes,
@@ -4270,6 +4286,7 @@ impl TrustedWorkerEnvironmentSet {
             TrustedWorkerEnvironmentSource::OuterHardwareBlueprint => {
                 self.outer_hardware_blueprint.mint_for_launch()
             }
+            TrustedWorkerEnvironmentSource::MusicProducer => self.music_producer.mint_for_launch(),
             TrustedWorkerEnvironmentSource::GetDoc => self.get_doc.mint_for_launch(),
             TrustedWorkerEnvironmentSource::GetDocDownload => {
                 self.get_doc_download.mint_for_launch()
@@ -6674,6 +6691,7 @@ fn build_gateway_environment(
             || name_text.starts_with("BREADBOARD_EMBEDDING_")
             || name_text.starts_with("BREADBOARD_SPOTIFY_")
             || name_text.starts_with("BREADBOARD_SOLIDWORKS_")
+            || name_text.starts_with("BREADBOARD_ACESTEP_")
             || matches!(
                 name_text.as_ref(),
                 "PORT"
@@ -6869,6 +6887,16 @@ fn build_chatmock_environment(
         )?;
         builder.insert("CLIPROXY_API_KEY", cliproxy_api_key)?;
     }
+    Ok(builder.finish())
+}
+
+fn build_acestep_environment(mode: RuntimeMode, paths: &RuntimePaths, endpoints: &ServiceEndpointMap, os_environment: &TrustedOsEnvironment) -> Result<TrustedServiceEnvironment, TrustedServiceEnvironmentError> {
+    let mut builder = build_common_environment(mode, TrustedServiceEnvironmentProfile::Acestep, paths, os_environment)?;
+    builder.insert("PYTHONUNBUFFERED", "1")?;
+    builder.insert("PYTHONDONTWRITEBYTECODE", "1")?;
+    builder.insert("BREADBOARD_ACESTEP_DIR", paths.data_root().join("runtime-v2/services/acestep").into_os_string())?;
+    builder.insert("BREADBOARD_ACESTEP_URL", endpoints.base_url(TrustedServiceEnvironmentSource::Acestep))?;
+    builder.insert("BREADBOARD_ACESTEP_PORT", endpoints.port_for(TrustedServiceEnvironmentSource::Acestep).to_string())?;
     Ok(builder.finish())
 }
 
@@ -7210,6 +7238,9 @@ fn build_dashboard_environment(
         os_environment,
     )?;
     let dashboard_url = endpoints.base_url(TrustedServiceEnvironmentSource::Dashboard);
+    builder.insert("BREADBOARD_ACESTEP_DIR", paths.data_root().join("runtime-v2/services/acestep").into_os_string())?;
+    builder.insert("BREADBOARD_ACESTEP_URL", endpoints.base_url(TrustedServiceEnvironmentSource::Acestep))?;
+    builder.insert("BREADBOARD_ACESTEP_PORT", endpoints.port_for(TrustedServiceEnvironmentSource::Acestep).to_string())?;
     let comfyui_url = endpoints.base_url(TrustedServiceEnvironmentSource::Comfyui);
     let gbrain_url = endpoints.base_url(TrustedServiceEnvironmentSource::Gbrain);
     let hermes_url = endpoints.base_url(TrustedServiceEnvironmentSource::Hermes);
@@ -8857,6 +8888,34 @@ mod tests {
     }
 
     #[test]
+    fn music_provider_and_worker_receive_only_sealed_runtime_authority() {
+        let (_temporary, paths, config, os_environment) = fixture();
+        let services = TrustedServiceEnvironmentSet::load(
+            RuntimeMode::Packaged, &paths, &config, &endpoints(), control(), &os_environment,
+        ).unwrap();
+        let service = values(&services.prepare_for_launch_profile(
+            "acestep", &launch_profile(RuntimeMode::Packaged, TrustedServiceEnvironmentSource::Acestep),
+        ).unwrap());
+        assert_exact_names(&service, &[
+            "SystemRoot", "USERPROFILE", "PATH", "TEMP", "TMP", "ComSpec", "PATHEXT",
+            "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "BREADBOARD_ACESTEP_DIR",
+            "BREADBOARD_ACESTEP_URL", "BREADBOARD_ACESTEP_PORT",
+        ]);
+        assert!(service["BREADBOARD_ACESTEP_DIR"].ends_with(r"data\runtime-v2\services\acestep"));
+        assert_eq!(service["BREADBOARD_ACESTEP_URL"], endpoints().base_url(TrustedServiceEnvironmentSource::Acestep));
+        let workers = TrustedWorkerEnvironmentSet::from_service_environments(
+            RuntimeMode::Packaged, &services, &paths, &os_environment,
+        );
+        let worker = worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::MusicProducer));
+        assert_eq!(worker["BREADBOARD_ACESTEP_DIR"], service["BREADBOARD_ACESTEP_DIR"]);
+        assert_eq!(worker["CHATMOCK_API_KEY"], "local");
+        assert!(worker.contains_key("BREADBOARD_LOCAL_MCP_BROKER_TOKEN"));
+        assert!(!worker.contains_key("NEXTAUTH_SECRET"));
+        assert!(!worker.contains_key("OPENAI_API_KEY"));
+        assert!(!service.contains_key("BREADBOARD_LOCAL_MCP_BROKER_TOKEN"));
+    }
+
+    #[test]
     fn get_doc_meeting_inbox_and_socials_workers_receive_only_their_closed_contracts() {
         let (_temporary, paths, config, _) = fixture();
         let os_environment = TrustedOsEnvironment::from_captured_values(
@@ -9774,6 +9833,9 @@ mod tests {
                 "COMFYUI_RUNTIME_DIR",
                 "COMFYUI_START_TIMEOUT_MS",
                 "COMFYUI_GENERATE_TIMEOUT_MS",
+                "BREADBOARD_ACESTEP_DIR",
+                "BREADBOARD_ACESTEP_URL",
+                "BREADBOARD_ACESTEP_PORT",
                 "UI_TARS_MODE",
                 "COLPALI_MODE",
                 "HUMANIZER_MODE",

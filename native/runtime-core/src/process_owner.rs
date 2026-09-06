@@ -919,6 +919,7 @@ impl TrustedProcessEnvironment {
                 breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterHardwareBlueprint => {
                     "outer-hardware-blueprint-worker"
                 }
+                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::MusicProducer => { "music-producer-worker" }
                 breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::GetDoc => {
                     "get-doc-worker"
                 }
@@ -1043,6 +1044,7 @@ const fn supervisor_service_environment_profile_argument(
     match profile {
         TrustedServiceEnvironmentProfile::Chatmock => "chatmock",
         TrustedServiceEnvironmentProfile::Comfyui => "comfyui",
+        TrustedServiceEnvironmentProfile::Acestep => "acestep",
         TrustedServiceEnvironmentProfile::Dashboard => "dashboard",
         TrustedServiceEnvironmentProfile::Gbrain => "gbrain",
         TrustedServiceEnvironmentProfile::Hermes => "hermes",

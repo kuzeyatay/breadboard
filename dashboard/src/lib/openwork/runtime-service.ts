@@ -119,7 +119,7 @@ function canonicalProfile(scope: OpenworkRunProfileScope, options: StartOptions)
 
 function samePath(left: string, right: string): boolean {
   const normalized = (value: string) => {
-    const resolved = path.normalize(path.resolve(value));
+    const resolved = path.toNamespacedPath(path.normalize(path.resolve(value)));
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   };
   return normalized(left) === normalized(right);

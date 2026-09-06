@@ -4,10 +4,7 @@ import { getServerSession } from "next-auth/next";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { getClusters } from "@/app/actions/clusters";
-import {
-  getNavbarFlowers,
-  getNavbarShortcuts,
-} from "@/lib/profile/navbar-shortcuts-store.ts";
+import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import NavBar from "@/app/components/navbar";
 import NewTabClient from "./new-tab-client";
 import { pickNewTabAddressee } from "./new-tab-greetings";
@@ -48,7 +45,7 @@ export default async function NewTabPage() {
       <NavBar
         email={email}
         username={username}
-        shortcuts={getNavbarShortcuts(userId)}
+        showActions={false}
         showFlowers={getNavbarFlowers(userId)}
       />
       <NewTabClient

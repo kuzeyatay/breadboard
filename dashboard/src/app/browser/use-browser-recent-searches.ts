@@ -6,7 +6,7 @@ import { browserRecentSearchesControl } from "@/lib/desktop-browser-tabs";
 import { normalizeRecentSearches } from "./browser-recent-searches";
 import { createBrowserRecentSearchesStore } from "./browser-recent-searches-store";
 
-export function useBrowserRecentSearches(ownerKey: string, pageAddress?: string) {
+export function useBrowserRecentSearches(ownerKey: string, pageAddress?: string, privateBrowsing = false) {
   const desktopReady = useDesktopTabs() !== null;
   const storageKey = `breadboard:browser-searches:${ownerKey}`;
   const store = useMemo(() => createBrowserRecentSearchesStore(() => ({
@@ -14,13 +14,13 @@ export function useBrowserRecentSearches(ownerKey: string, pageAddress?: string)
     legacyKey: `breadboard:browser-history:${ownerKey}`,
     label: "recent searches",
     storage: {
-      getItem: (key) => window.localStorage.getItem(key),
-      setItem: (key, value) => window.localStorage.setItem(key, value),
+      getItem: (key) => privateBrowsing ? null : window.localStorage.getItem(key),
+      setItem: (key, value) => { if (!privateBrowsing) window.localStorage.setItem(key, value); },
     },
-    control: browserRecentSearchesControl(ownerKey),
-    desktop: "breadboardDesktop" in window,
+    control: privateBrowsing ? null : browserRecentSearchesControl(ownerKey),
+    desktop: !privateBrowsing && "breadboardDesktop" in window,
     normalize: normalizeRecentSearches,
-  })), [ownerKey, storageKey]);
+  })), [ownerKey, storageKey, privateBrowsing]);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
 
   useEffect(() => {
@@ -40,8 +40,8 @@ export function useBrowserRecentSearches(ownerKey: string, pageAddress?: string)
   useEffect(() => {
     // Include searches submitted inside the web page and links opened into a
     // browser tab, as well as searches submitted through Breadboard's toolbar.
-    if (pageAddress) void store.remember(pageAddress);
-  }, [store, pageAddress]);
+    if (pageAddress && !privateBrowsing) void store.remember(pageAddress);
+  }, [store, pageAddress, privateBrowsing]);
 
-  return { ...state, remember: store.remember, remove: store.remove, clear: store.clear, retry: store.refresh };
+  return { ...state, remember: privateBrowsing ? async () => true : store.remember, remove: store.remove, clear: store.clear, retry: store.refresh };
 }

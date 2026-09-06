@@ -258,11 +258,12 @@ export default function SettingsSpeech() {
 
   useEffect(() => {
     mountedRef.current = true;
-    void load().then((next) => {
-      if (mountedRef.current && next?.settings.speechProvider === "local") void prepare();
-    });
+    // Loading settings never warms speech models. A speech action or Start does.
+    void load();
     return () => {
       mountedRef.current = false;
+      // Invalidate pending preparation work, including a Strict Mode remount.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       ++prepareVersionRef.current;
       stopSpeechPlayback();
     };
@@ -547,7 +548,7 @@ export default function SettingsSpeech() {
   }
 
   if (loading && !draft) {
-    return <div className="py-10 text-center text-sm text-[var(--ink-muted)]">Checking speech settings…</div>;
+    return <p className="py-4 text-sm text-[var(--ink-muted)]">Checking speech settings…</p>;
   }
 
   if (!draft) {

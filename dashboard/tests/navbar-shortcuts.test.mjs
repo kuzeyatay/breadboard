@@ -32,6 +32,7 @@ test("the work timer, Clicky and Plan sit by default; Buzz and Fast-read are ask
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -73,6 +74,7 @@ test("a patch only moves the keys it names, and only with booleans", () => {
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -82,6 +84,7 @@ test("a patch only moves the keys it names, and only with booleans", () => {
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -108,6 +111,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -117,6 +121,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -133,6 +138,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: false,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -143,6 +149,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: false,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -153,6 +160,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: false,
     browser: true,
     clicky: true,
+    voice: false,
     plan: false,
     fastRead: false,
     buzz: false,
@@ -163,6 +171,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: false,
     browser: true,
     clicky: true,
+    voice: false,
     plan: false,
     fastRead: true,
     buzz: false,
@@ -173,6 +182,7 @@ test("a toggle survives being written and read back, per user", () => {
     workTimer: false,
     browser: true,
     clicky: false,
+    voice: false,
     plan: false,
     fastRead: true,
     buzz: false,
@@ -187,10 +197,24 @@ test("applying the schema twice is safe", () => {
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: false,
   });
+});
+
+test('Voice can be shown in the navbar independently of other shortcuts and appearance', () => {
+  const db = createDatabase();
+  try {
+    assert.equal(readNavbarShortcuts(db, 1).voice, false);
+    assert.equal(writeNavbarShortcuts(db, 1, { voice: true }).voice, true);
+    writeNavbarFlowers(db, 1, false);
+    assert.equal(readNavbarShortcuts(db, 1).voice, true);
+    assert.equal(readNavbarShortcuts(db, 2).voice, false);
+    assert.equal(writeNavbarShortcuts(db, 1, { voice: false }).voice, false);
+    assert.equal(NAVBAR_SHORTCUTS.find(item => item.key === 'voice').label, 'Voice');
+  } finally { db.close(); }
 });
 
 test("a database from before those shortcuts were withdrawn still writes", () => {
@@ -217,6 +241,7 @@ test("a database from before those shortcuts were withdrawn still writes", () =>
     workTimer: true,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: true,
@@ -246,6 +271,7 @@ test("existing shortcut rows gain later entries without losing their choices", (
     workTimer: false,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: false,
     buzz: false,
@@ -258,6 +284,7 @@ test("existing shortcut rows gain later entries without losing their choices", (
     workTimer: false,
     browser: true,
     clicky: true,
+    voice: false,
     plan: true,
     fastRead: true,
     buzz: false,

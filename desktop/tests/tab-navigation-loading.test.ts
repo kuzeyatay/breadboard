@@ -150,6 +150,8 @@ app.whenReady().then(async () => {
   assert.equal(base.getURL(), origin + "/new-tab");
   assert.equal(Boolean(front()), false);
   assert.equal(active().loading, true);
+  assert.equal(manager.tabs.stateFor(firstBrowser.webContents).navigationPending, false,
+    "an unrelated background browser must not start a navigation bar");
   release();
   const baseReplacement = await until(() => front(), "base replacement revealed");
   await until(() => base.getURL() === "about:blank", "base retired after reveal");

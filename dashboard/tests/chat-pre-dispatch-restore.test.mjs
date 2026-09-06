@@ -65,6 +65,24 @@ function presentedAssistant(conversation) {
     .messages.find((message) => message.role === "assistant");
 }
 
+test("failed replies restore their diagnostics separately from answer content", () => {
+  for (const field of ["error", "runtimeError"]) {
+    const { conversation } = createInitialTurn(new Date().toISOString());
+    store.retryAssistantMessage(conversation.id, "first-turn");
+    store.failAssistantMessage({
+      conversationId: conversation.id,
+      clientMessageId: "first-turn",
+      status: "failed",
+      metadata: { [field]: "system_prompt is too large" },
+    });
+    const assistant = presentedAssistant(conversation);
+    assert.equal(assistant.failed, true);
+    assert.equal(assistant.content, "");
+    assert.equal(assistant.runtimeError, "system_prompt is too large");
+    assert.equal(assistant.metadata, undefined, "restore does not expose the full persistence envelope");
+  }
+});
+
 test("reopening a newly-created chat during dispatch still shows the original Thinking turn", () => {
   const responseStartedAt = new Date().toISOString();
   const created = createInitialTurn(responseStartedAt);

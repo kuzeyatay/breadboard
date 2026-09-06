@@ -62,6 +62,8 @@ export interface ChatGreetingInput {
    * rather than asking which of your gardens the conversation is about.
    */
   garden?: ChatGreetingGarden | null;
+  /** A chat opened alongside the current browser page. */
+  browser?: boolean;
   /** The reader's clock, not the server's — a greeting has to match their window. */
   now: Date;
 }
@@ -112,6 +114,7 @@ interface GreetingContext {
   signals: ChatGreetingSignals;
   scope: ChatGreetingScope;
   temporary: boolean;
+  browser: boolean;
   partOfDay: PartOfDay;
   /** 0 is Sunday, matching `Date.getDay()`. */
   weekday: number;
@@ -195,6 +198,7 @@ function buildContext(input: ChatGreetingInput): GreetingContext {
     scope,
     temporary ? "temporary" : "kept",
     ...(garden ? [`garden=${garden.slug}`] : []),
+    ...(input.browser ? ["browser"] : []),
     signals.name ?? "anonymous",
     String(signals.gardenCount),
   ].join(":");
@@ -203,6 +207,7 @@ function buildContext(input: ChatGreetingInput): GreetingContext {
     signals,
     scope,
     temporary,
+    browser: input.browser === true,
     partOfDay: partOfDay(now.getHours()),
     weekday,
     weekdayName: WEEKDAY_NAMES[weekday],
@@ -1322,7 +1327,33 @@ const GARDEN_SUGGESTIONS: SuggestionCandidate[] = [
   },
 ];
 
+const BROWSER_LEADS: LeadCandidate[] = [
+  { id: "browser-explore", when: (c) => !c.temporary, address: false, text: () => "Let's explore" },
+  { id: "browser-beside-you", when: (c) => !c.temporary, address: false, text: () => "Here while you browse" },
+  { id: "browser-closer-look", when: (c) => !c.temporary, address: false, text: () => "A closer look" },
+  { id: "browser-temporary", when: (c) => c.temporary, address: false, text: () => "An off-the-record chat" },
+];
+
+const BROWSER_QUESTIONS: QuestionCandidate[] = [
+  { id: "browser-caught-your-eye", when: always, text: () => "What caught your eye?" },
+  { id: "browser-unpack-page", when: always, text: () => "Shall we unpack this page?" },
+  { id: "browser-reading", when: always, text: () => "What are we reading today?" },
+  { id: "browser-understand", when: always, text: () => "What needs a closer look?" },
+];
+
+const BROWSER_SUGGESTIONS: SuggestionCandidate[] = [
+  { id: "browser-summary", family: "summary", when: always, text: () => "Summarize this page in a few key points." },
+  { id: "browser-explain", family: "explain", when: always, text: () => "Explain the main idea on this page in plain language." },
+  { id: "browser-claims", family: "critique", when: always, text: () => "Which claims on this page should I double-check?" },
+  { id: "browser-actions", family: "apply", when: always, text: () => "Turn the advice on this page into a practical checklist." },
+  { id: "browser-takeaways", family: "summary", when: always, text: () => "What is worth remembering from this page?" },
+  { id: "browser-jargon", family: "explain", when: always, text: () => "Explain the unfamiliar terms on this page." },
+  { id: "browser-gaps", family: "critique", when: always, text: () => "What questions does this page leave unanswered?" },
+  { id: "browser-next", family: "apply", when: always, text: () => "Based on this page, what should I explore next?" },
+];
+
 function suggestionPool(context: GreetingContext): SuggestionCandidate[] {
+  if (context.browser) return BROWSER_SUGGESTIONS;
   if (context.temporary) {
     return context.scope === "public" ? TEMPORARY_PUBLIC_SUGGESTIONS : TEMPORARY_OWN_SUGGESTIONS;
   }
@@ -1335,14 +1366,16 @@ function suggestionPool(context: GreetingContext): SuggestionCandidate[] {
 export function resolveChatGreeting(input: ChatGreetingInput): ChatGreeting {
   const context = buildContext(input);
 
-  const leads = eligiblePool(LEADS, context);
-  const questions = eligiblePool(QUESTIONS, context);
+  const leadPool = context.browser ? BROWSER_LEADS : LEADS;
+  const questionPool = context.browser ? BROWSER_QUESTIONS : QUESTIONS;
+  const leads = eligiblePool(leadPool, context);
+  const questions = eligiblePool(questionPool, context);
 
-  // Both pools carry unconditional entries, so neither fallback should ever be
-  // reachable. They exist so a future `when` that is wrong about its own window
+  // Each pool has eligible entries for every supported context, so neither
+  // fallback should be reachable. A future `when` with an incorrect window
   // degrades to a plain greeting instead of rendering nothing at all.
-  const lead = rotate(leads, "lead", context) ?? LEADS[LEADS.length - 1];
-  const question = rotate(questions, "question", context) ?? QUESTIONS[0];
+  const lead = rotate(leads, "lead", context) ?? leadPool[leadPool.length - 1];
+  const question = rotate(questions, "question", context) ?? questionPool[0];
 
   return {
     lead: lead.text(context),

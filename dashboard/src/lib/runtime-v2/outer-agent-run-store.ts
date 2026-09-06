@@ -32,6 +32,7 @@ export type OuterAgentKind =
   | "hardware-blueprint"
   | "inbox-zero"
   | "socials-manager"
+  | "music-producer"
   | "get-doc"
   | "get-doc-download"
   | "meeting-notes"
@@ -64,7 +65,7 @@ function ensureSchema(): void {
     CREATE TABLE IF NOT EXISTS runtime_v2_outer_agent_runs (
       job_id          TEXT PRIMARY KEY,
       owner_user_id   INTEGER NOT NULL,
-      agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'open-gym', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
+      agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'open-gym', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'music-producer', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
       request_id      TEXT NOT NULL,
       idempotency_key TEXT NOT NULL,
       garden_id       TEXT,
@@ -95,6 +96,7 @@ function ensureSchema(): void {
     !schema.sql.includes("'hardware-blueprint'") ||
     !schema.sql.includes("'inbox-zero'") ||
     !schema.sql.includes("'socials-manager'") ||
+    !schema.sql.includes("'music-producer'") ||
     !schema.sql.includes("'get-doc'") ||
     !schema.sql.includes("'get-doc-download'") ||
     !schema.sql.includes("'meeting-notes'") ||
@@ -115,7 +117,7 @@ function ensureSchema(): void {
         CREATE TABLE runtime_v2_outer_agent_runs (
           job_id          TEXT PRIMARY KEY,
           owner_user_id   INTEGER NOT NULL,
-          agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'open-gym', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
+          agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'open-gym', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'music-producer', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
           request_id      TEXT NOT NULL,
           idempotency_key TEXT NOT NULL,
           garden_id       TEXT,

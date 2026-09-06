@@ -2,6 +2,7 @@ import * as http from "node:http";
 import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { WebContents } from "electron";
+import { capturePagePreservingVisibility } from "./capture-page";
 
 export interface BrowserTerminalAccess { port: number; token: string }
 type Target = () => WebContents | null;
@@ -110,10 +111,10 @@ export class BrowserTerminalBridge {
       if (body.action === "screenshot") {
         // A newly attached view may not have a compositor surface yet.
         const captureDeadline = Date.now() + 1_000;
-        let capture = await bounded(target.capturePage());
+        let capture = await bounded(capturePagePreservingVisibility(target));
         while (capture.isEmpty() && Date.now() < captureDeadline && !navigated && grant.target() === target) {
           await new Promise(resolve => setTimeout(resolve, 50));
-          capture = await bounded(target.capturePage());
+          capture = await bounded(capturePagePreservingVisibility(target));
         }
         if (capture.isEmpty()) throw new Error("The browser screenshot is empty. Bring this tab into view and try again.");
         const size = capture.getSize();

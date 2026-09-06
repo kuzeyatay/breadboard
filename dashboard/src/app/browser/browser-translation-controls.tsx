@@ -16,7 +16,7 @@ export default function BrowserTranslationControls({ browser }: { browser: Deskt
       <Languages size={18} aria-hidden="true" />
     </button>
     <span className="sr-only" role="status" aria-live="polite">{label}</span>
-    {active ? <button type="button" className="browser-toolbar-button" aria-label="Show original page" title="Show original page" onClick={() => void sendDesktopTabsCommand({ type: "browser-translation-restore" })}><span className="text-xs">Original</span></button> : null}
+    {active ? <button type="button" className="shrink-0 rounded px-2 py-1 text-xs hover:bg-[var(--paper-strong)]" aria-label="Show original page" title="Show original page" onClick={() => void sendDesktopTabsCommand({ type: "browser-translation-restore" })}>Original</button> : null}
     {error || state?.error ? <span className="flex max-w-64 items-center gap-2 text-[11px] leading-3 text-[var(--danger)]" role="alert">
       {error || state?.error}
       <button type="button" onClick={() => { setError(""); void sendDesktopTabsCommand(state?.error ? { type: "browser-translate", language: state.language } : { type: "browser-translation-menu" }); }}>Retry</button>

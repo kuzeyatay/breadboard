@@ -8,6 +8,8 @@ import {
 } from "../profile/identity-store.ts";
 import type { ConversationRow, ConversationMessageRow } from "./store.ts";
 import { conversationIsTemporary, listRecentConversationMessages } from "./store.ts";
+import { conversationMessageText } from "./message-context.ts";
+import { composeRecentConversationContext } from "./recent-context.ts";
 import {
   isolatedGardenScopeIds,
   memoryVisibleInContext,
@@ -815,16 +817,15 @@ export function composeMemoryContext(
   bundle: ConversationMemoryBundle,
   options?: {
     recentMessages?: Array<
-      Pick<ConversationMessageRow, "role" | "surface" | "content">
+      Pick<ConversationMessageRow, "role" | "surface" | "content"> &
+        Partial<Pick<ConversationMessageRow, "metadata" | "client_message_id" | "status">>
     >;
     includeConversationState?: boolean;
   },
 ): string {
   const recentMessages = options?.recentMessages ?? bundle.recentMessages;
   const includeConversationState = options?.includeConversationState !== false;
-  const recent = recentMessages.map((message) =>
-    `${message.role.toUpperCase()} [${message.surface}]: ${redactSecrets(message.content)}`,
-  ).join("\n");
+  const recent = composeRecentConversationContext(recentMessages, redactSecrets);
   const durable = bundle.durableMemories.map((memory) =>
     memory.standing
       ? `- [${memory.state}; ${memory.scope}; standing ${memory.kind === "working_pattern" ? "habit" : "preference"}] ${redactSecrets(memory.content)}`
@@ -899,7 +900,7 @@ export function composeExplicitCrossConversationContext(
   let used = 0;
   const lines: string[] = [];
   for (const message of [...context.messages].reverse()) {
-    const content = redactSecrets(message.content).slice(0, 4_000);
+    const content = redactSecrets(conversationMessageText(message)).slice(0, 4_000);
     const line = `${message.role.toUpperCase()}: ${content}`;
     if (used > 0 && used + line.length > maximumCharacters) break;
     lines.push(line);

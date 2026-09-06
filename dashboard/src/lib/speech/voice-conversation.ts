@@ -1,8 +1,8 @@
 /**
  * Voice mode — the hands-free conversation behind the composer's microphone.
  *
- * Everything here is pure so the turn-taking rules and the hand-drawn geometry
- * can be exercised without a microphone, an audio context, or a browser.
+ * Turn-taking, narration scheduling and the hand-drawn geometry can be
+ * exercised without a microphone, an audio context, or a browser.
  */
 
 /**
@@ -123,6 +123,79 @@ export function frameLevel(samples: Float32Array | number[]): number {
 export interface VoiceMessage {
   readonly role: 'user' | 'assistant';
   readonly content: string;
+  /** Completed, user-visible narration shown in the thinking dropdown. */
+  readonly progressNotes?: readonly string[];
+  readonly delegatedAgentPreamble?: string;
+}
+
+export interface VoiceNarration {
+  readonly text: string;
+  readonly kind: 'progress' | 'answer';
+}
+
+/** One spoken turn: sealed progress notes first, then its settled answer. */
+export function createVoiceNarrationQueue(options: {
+  startIndex: number;
+  speak: (item: VoiceNarration, signal: AbortSignal) => Promise<void>;
+  onIdle: (answered: boolean) => void;
+  onError: (error: unknown, item: VoiceNarration) => void;
+}) {
+  const controller = new AbortController();
+  const pending: VoiceNarration[] = [];
+  const seen = new Set<string>();
+  let running = false;
+  let answerQueued = false;
+
+  async function drain() {
+    if (running || controller.signal.aborted || !pending.length) return;
+    running = true;
+    let answered = false;
+    try {
+      while (pending.length && !controller.signal.aborted) {
+        const item = pending.shift()!;
+        try {
+          await options.speak(item, controller.signal);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          options.onError(error, item);
+        }
+        answered = item.kind === 'answer';
+      }
+    } finally {
+      running = false;
+      if (!controller.signal.aborted) options.onIdle(answered);
+    }
+  }
+
+  return {
+    get speaking() { return running; },
+    update(messages: readonly VoiceMessage[], busy: boolean): boolean {
+      if (controller.signal.aborted || answerQueued) return answerQueued;
+      let latest: VoiceMessage | undefined;
+      for (let index = options.startIndex; index < messages.length; index += 1) {
+        const message = messages[index];
+        if (message.role !== 'assistant') continue;
+        latest = message;
+        for (const note of [...(message.progressNotes ?? []), message.delegatedAgentPreamble ?? '']) {
+          const text = note.trim();
+          const key = `${index}:${text}`;
+          if (!text || seen.has(key)) continue;
+          seen.add(key);
+          pending.push({ text, kind: 'progress' });
+        }
+      }
+      if (!busy && latest?.content.trim()) {
+        answerQueued = true;
+        pending.push({ text: latest.content.trim(), kind: 'answer' });
+      }
+      void drain();
+      return answerQueued;
+    },
+    cancel() {
+      pending.length = 0;
+      controller.abort();
+    },
+  };
 }
 
 /** The answer voice mode should read out: the newest assistant message. */

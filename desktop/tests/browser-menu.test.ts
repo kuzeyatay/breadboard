@@ -22,12 +22,13 @@ test("every browser menu action is wired and the menu reports the actual page zo
     item.click!({} as never, {} as never, {} as never);
   }
   assert.deepEqual(new Set(calls), new Set(actions.map(item => item.id)));
-  assert.equal(new Set(calls).size, 23);
+  assert.equal(new Set(calls).size, actions.length);
+  assert.deepEqual(items.slice(2, 6).map(item => item.id), ["new-tab", "new-window", "new-private-tab", "new-private-window"]);
 });
 
 test("page-only commands are unavailable on browser home and zoom stays within its bounds", () => {
   const home = flatten(browserMenuTemplate({ profileLabel: "Profile", hasPage: false, zoomPercent: 100, fullscreen: false }, () => {}));
-  for (const id of ["print", "save", "translate", "find", "zoom-in", "zoom-out", "zoom-reset", "developer-tools", "copy-link"]) {
+  for (const id of ["print", "save", "translate", "find", "zoom-in", "zoom-out", "zoom-reset", "developer-tools", "copy-link", "picture-in-picture"]) {
     assert.equal(home.find(item => item.id === id)!.enabled, false, id);
   }
   assert.equal(home.find(item => item.id === "downloads")!.enabled, true);
@@ -41,8 +42,14 @@ test("browser shortcuts and IPC reject malformed commands", () => {
   assert.equal(browserMenuShortcut({ ...key, key: "P" }), "print");
   assert.equal(browserMenuShortcut({ ...key, key: "f" }), "find");
   assert.equal(browserMenuShortcut({ ...key, key: "o", shift: true }), "bookmarks");
+  assert.equal(browserMenuShortcut({ ...key, key: "p", shift: true }), "new-private-tab");
+  assert.equal(browserMenuShortcut({ ...key, key: "n", shift: true }), "new-private-window");
   assert.equal(browserMenuShortcut({ ...key, isAutoRepeat: true }), null);
   assert.equal(browserMenuShortcut({ ...key, control: false }), null);
+  assert.equal(browserMenuShortcut({ ...key, key: "p", control: false, alt: true }), "picture-in-picture");
+  assert.equal(browserMenuShortcut({ ...key, key: "p", control: false, alt: true, shift: true }), null);
+  assert.equal(browserMenuShortcut({ ...key, key: "p", control: false, alt: true, type: "keyUp" }), null);
+  assert.equal(browserMenuShortcut({ ...key, key: "p", control: false, alt: true, isAutoRepeat: true }), null);
   assert.deepEqual(tabShortcutFor({ ...key, key: "+", shift: true }), { type: "zoom", direction: "in" });
   assert.equal(isTabsCommand({ type: "browser-menu", x: 100, y: 60, profileLabel: "Profile" }), true);
   for (const invalid of [{ type: "browser-menu", x: -1, y: 60, profileLabel: "Profile" }, { type: "browser-menu", x: 100, y: NaN, profileLabel: "Profile" }, { type: "browser-find", text: "x".repeat(1001) }, { type: "browser-find", text: "text", forward: "true" }]) {

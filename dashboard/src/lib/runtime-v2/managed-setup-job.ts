@@ -17,6 +17,7 @@ export type ManagedSetupServiceId =
   | "audio-analyzer"
   | "bolt-slides"
   | "career-ops"
+  | "acestep"
   | "comfyui"
   | "deep-tutor"
   | "deer-flow"

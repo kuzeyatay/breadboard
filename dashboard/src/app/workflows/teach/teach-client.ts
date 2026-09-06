@@ -1,5 +1,7 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 // The browser half of a teaching session.
 //
 // Two things happen here that cannot happen on the server: the microphone, which
@@ -178,7 +180,7 @@ function pickMimeType(): string | undefined {
  * `stop` hands back a blob the caller streams straight to the server.
  */
 export async function startNarrationRecorder(deviceId?: string): Promise<NarrationRecorder> {
-  const stream = await navigator.mediaDevices.getUserMedia({
+  const stream = await requestForegroundMicrophone({
     audio: {
       ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       echoCancellation: true,
@@ -204,7 +206,7 @@ export async function startNarrationRecorder(deviceId?: string): Promise<Narrati
   const startedAtEpochMs = Date.now();
 
   const release = (): void => {
-    for (const track of stream.getTracks()) track.stop();
+    stopForegroundStream(stream);
     void context.close().catch(() => undefined);
   };
 

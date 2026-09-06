@@ -1,11 +1,16 @@
 import { connectSubscriptionVoice, subscriptionSelected } from "./subscription-live";
+import { holdForegroundAudio } from './clap/audio-focus';
 
 let activeAudio: HTMLAudioElement | null = null;
 let activeSubscriptionStop: (() => void) | null = null;
 let activeUrl: string | null = null;
-let activeFinished: (() => void) | null = null;
+let activeFinished: ((error?: Error) => void) | null = null;
+let releaseClapPlayback: (() => void) | null = null;
 
-export function stopSpeechPlayback(): void {
+export function stopSpeechPlayback(): void { finishSpeechPlayback(); }
+
+function finishSpeechPlayback(error?: Error): void {
+  releaseClapPlayback?.(); releaseClapPlayback = null;
   const subscriptionStop = activeSubscriptionStop;
   activeSubscriptionStop = null;
   subscriptionStop?.();
@@ -35,20 +40,22 @@ export function stopSpeechPlayback(): void {
     } catch {}
   }
   if (url) URL.revokeObjectURL(url);
-  finished?.();
+  finished?.(error);
 }
 
 /** Start cloud audio directly from the remote track, without waiting for a blob. */
 export async function playSubscriptionText(text: string, onFinished: (error?: Error) => void, signal?: AbortSignal): Promise<boolean> {
   if (!await subscriptionSelected(signal)) return false;
   stopSpeechPlayback();
+  const release = holdForegroundAudio();
   const operation = new AbortController();
   const joined = signal ? AbortSignal.any([signal, operation.signal]) : operation.signal;
-  const voice = await connectSubscriptionVoice({ signal: joined });
+  const voice = await connectSubscriptionVoice({ signal: joined }).catch(error => { release(); throw error; });
   let finished = false;
   const finish = (error?: Error) => {
     if (finished) return;
     finished = true;
+    release();
     if (activeSubscriptionStop === stop) activeSubscriptionStop = null;
     void voice.close();
     onFinished(error);
@@ -59,23 +66,24 @@ export async function playSubscriptionText(text: string, onFinished: (error?: Er
   return true;
 }
 
-export async function playSpeechBlob(blob: Blob, onFinished: () => void): Promise<void> {
+export async function playSpeechBlob(blob: Blob, onFinished: (error?: Error) => void): Promise<void> {
   stopSpeechPlayback();
+  releaseClapPlayback = holdForegroundAudio();
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
   activeAudio = audio;
   activeUrl = url;
   activeFinished = onFinished;
-  const finish = () => {
+  const finish = (error?: Error) => {
     if (activeAudio !== audio) return;
-    stopSpeechPlayback();
+    finishSpeechPlayback(error);
   };
-  audio.addEventListener("ended", finish, { once: true });
-  audio.addEventListener("error", finish, { once: true });
+  audio.addEventListener("ended", () => finish(), { once: true });
+  audio.addEventListener("error", () => finish(new Error('The selected voice audio could not play.')), { once: true });
   try {
     await audio.play();
   } catch (error) {
-    finish();
+    finish(error instanceof Error ? error : new Error('Voice playback failed.'));
     throw error;
   }
 }

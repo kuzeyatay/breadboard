@@ -11,11 +11,16 @@ export interface DesktopNotificationToast {
   chatId?: string;
   response?: string;
   website?: { id: string; origin: string };
+  notificationPermission?: { id: string; origin: string };
   dismissed?: boolean;
 }
 
 export function handleWebsiteNotification(id: string, action: "click" | "close"): void {
   void sendDesktopTabsCommand({ type: "browser-notification-action", id, action });
+}
+
+export function respondToWebsiteNotificationPermission(id: string, permission: NotificationPermission): Promise<boolean> {
+  return sendDesktopTabsCommand({ type: "browser-notification-permission-response", id, permission });
 }
 
 interface DesktopNotificationBridge {

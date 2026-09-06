@@ -82,6 +82,7 @@ import {
   retrieveExplicitCrossConversationContext,
 } from "./memory.ts";
 import { parseChatReferenceCommand } from "./chat-reference.ts";
+import { conversationMessageText } from "./message-context.ts";
 import {
   generateAndApplyConversationTitle,
   shouldGenerateConversationTitleForTurn,
@@ -227,7 +228,7 @@ function directSystemPrompt(
       "You have no tools in this turn: no filesystem, terminal, web, Garden, artifact, memory, connection, skill, or subagent access, and nothing you say can start one.",
       "Answer from this conversation and your own knowledge. If the request genuinely needs an action rather than an answer, say plainly that it needs Agent mode switched back on, and give whatever part of the answer you can without it.",
       "A message beginning with a `/token` is a skill, connection, prompt, or agent the user picked from the palette. Except for a server-resolved `/reference:*` context selector, nothing resolved it for this turn, so read it as the name of what they wanted, say it needs Agent mode on, and answer the rest of the message normally.",
-      "Never claim to have read, written, run, saved, sent, or remembered anything.",
+      "You can read the messages supplied in this conversation. Never claim to have read external files, written, run, saved, sent, or remembered anything through tools.",
     ].join("\n"),
     currentLocationContext,
     referencedChatContext,
@@ -257,6 +258,7 @@ function historyInput(
   clientMessageId: string,
 ): EasyInputMessage[] {
   return listRecentConversationMessages(conversation.id, HISTORY_MESSAGES)
+    .map((message) => ({ ...message, content: conversationMessageText(message) }))
     .filter(
       (message) =>
         message.client_message_id !== clientMessageId &&

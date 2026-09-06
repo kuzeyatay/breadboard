@@ -471,6 +471,35 @@ test("branch context uses only the selected exact transcript and omits stale rol
   );
 });
 
+test("exact chat context includes the finished answer stored in delegated metadata", () => {
+  const chat = conversation();
+  store.reserveConversationTurn({
+    conversation: chat, clientMessageId: "delegated-context-1",
+    surface: "dashboard_terminal", content: "Compare the options",
+  });
+  store.completeAssistantMessage({
+    conversationId: chat.id, clientMessageId: "delegated-context-1",
+    content: "The comparison is ready.",
+    metadata: {
+      externalAgent: true,
+      delegatedAgentRun: true,
+      delegatedAgentPreamble: "The comparison is ready.",
+      externalAgentResult: "Option two uses a shared cache.",
+    },
+  });
+  const bundle = memory.loadConversationMemoryBundle({
+    conversation: chat, query: "based on the chat above, explain option two",
+    personalize: false,
+  });
+  const context = memory.composeMemoryContext(bundle);
+  assert.match(context, /The comparison is ready/);
+  assert.match(context, /Option two uses a shared cache/);
+  // A selected branch must not reintroduce the answer from the abandoned path.
+  assert.doesNotMatch(memory.composeMemoryContext(bundle, {
+    recentMessages: [], includeConversationState: false,
+  }), /Option two uses a shared cache/);
+});
+
 test("save_memory is authorized only on authenticated conversational surfaces", () => {
   assert.ok(toolScopes.allowedToolsForSurface("garden_chat").includes("save_memory"));
   assert.ok(toolScopes.allowedToolsForSurface("dashboard_terminal").includes("save_memory"));

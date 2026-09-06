@@ -114,17 +114,44 @@ test("a long exchange is trimmed from its oldest end, never its newest", () => {
     exchange(row, `message-${String(index).padStart(4, "0")}`, `question ${index} ${"x".repeat(900)}`, `answer ${index}`);
   }
   const prompt = context.withConversationContext("yes", row, { maxChars: 2500 });
-  assert.ok(prompt.length < 4000, `context stayed bounded, got ${prompt.length}`);
+  assert.ok(context.conversationContextTranscript(row, { maxChars: 2500 }).length <= 2500);
   assert.match(prompt, /answer 11/);
   assert.ok(!prompt.includes("question 0 "));
 });
 
 test("an oversized single message is clipped rather than dropped", () => {
   const row = conversation();
-  exchange(row, "message-0001", "short", "y".repeat(5000));
+  exchange(row, "message-0001", "short", `Beginning ${"y".repeat(30_000)} final conclusion`);
   const prompt = context.withConversationContext("continue", row);
   assert.match(prompt, /\[\.\.\.\]/);
+  assert.match(prompt, /Beginning/);
+  assert.match(prompt, /final conclusion/);
+  assert.ok(context.conversationContextTranscript(row).length <= 15_000);
   assert.match(prompt, /## Your task\n\ncontinue$/);
+});
+
+test("the latest response keeps the option beyond the old per-message cutoff", () => {
+  const row = conversation();
+  const answer = `First option: refactor.\n${"Details. ".repeat(600)}\nSecond option: replace the cache.`;
+  exchange(row, "message-0001", "Compare two options", answer);
+  const prompt = context.withConversationContext("based on the chat above, do the second option", row);
+  assert.ok(prompt.includes(answer), "the complete latest response should reach the agent");
+  assert.match(prompt, /# references_to_chat_messages/);
+});
+
+test("a delegated result and its parent answer both reach the next agent", () => {
+  const row = conversation();
+  exchange(row, "message-0001", "Compare options", "Here is the comparison.");
+  db.prepare("UPDATE conversation_messages SET metadata = ? WHERE conversation_id = ? AND role = 'assistant'")
+    .run(JSON.stringify({
+      externalAgent: true,
+      delegatedAgentRun: true,
+      delegatedAgentPreamble: "Here is the comparison.",
+      externalAgentResult: "The second option replaces the cache.",
+    }), row.id);
+  const prompt = context.withConversationContext("do the second option", row);
+  assert.match(prompt, /Here is the comparison/);
+  assert.match(prompt, /The second option replaces the cache/);
 });
 
 test("a conversation the user does not own yields no context", () => {

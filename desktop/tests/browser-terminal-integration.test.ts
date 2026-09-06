@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { runElectronFixture } from "./helpers/run-electron-fixture";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,13 +18,12 @@ test("browser Terminal reads and captures its own live tab through the preload a
       bundle: true, platform: "node", format: "cjs", outfile: path.join(dir, "transport.cjs"),
     });
     await esbuild.stop();
-    const result = spawnSync(require("electron") as string, [path.join(desktop, "tests/fixtures/browser-terminal.cjs"), dir], {
-      cwd: desktop, env, encoding: "utf8", windowsHide: true, timeout: 60_000,
-    });
-    assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const result = await runElectronFixture(require("electron") as string,
+      [path.join(desktop, "tests/fixtures/browser-terminal.cjs"), dir], desktop, env, 60_000);
+    assert.equal(result.error, undefined, `${result.error?.message}\n${result.output}`);
+    assert.equal(result.status, 0, result.output);
   } finally {
     assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

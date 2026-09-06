@@ -172,6 +172,11 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
       "Choose it when the deliverable is a scheduled or published post. Wording the user asked you for, to post themselves, is writing — do that here.",
   },
 
+  "music-producer": {
+    group: "work",
+    does: "Creates original instrumental or vocal musical audio and versions changes to a track in the owning chat.",
+    choose: "Choose for creating or changing musical audio using ACE-Step. Not music questions, transcription, song identification, Spotify playback or analysis-only requests. Resource2Skill handles REAPER project authoring; Music Producer returns playable audio. Setup must be explicitly performed by the user.",
+  },
   "career-ops": {
     group: "work",
     does: "The job-search desk: a router over roughly eighty-four deterministic scripts with its own persistent workspace, so searches, tailored applications, and tracking accumulate across runs.",
@@ -208,7 +213,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     group: "work",
     does: "Produces real files through real software: web pages, PowerPoint decks, Excel workbooks, Blender scenes, and REAPER audio projects, built by distilled skills rather than described in prose.",
     choose:
-      "Choose it when the deliverable is one of those five kinds. You can write the content of a deck yourself; you cannot produce the .pptx. It is the choice when the file format is the requirement; when the deck is to be presented or shared as a link, Bolt Slides builds it better.",
+      "Choose when an editable PowerPoint, spreadsheet, Blender scene, REAPER project or web page is the deliverable. Choose Music Producer for playable generated music. For an interactive slide deck presented as a link, choose Bolt Slides.",
   },
   "meeting-notes": {
     group: "work",

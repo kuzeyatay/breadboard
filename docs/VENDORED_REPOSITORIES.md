@@ -1,5 +1,15 @@
 # Integrated Upstream Source Snapshots
 
+Music Producer uses separately prepared runtime integrations rather than adding
+another vendored source tree. Its explicit setup downloads MIT ACE-Step source
+at `ca1e85fe9430179831e6bc6be790c332190a3866` and selected model assets from
+`ACE-Step/Ace-Step1.5` at `19671f406d603126926c1b7e2adc169acbcade22`, retaining
+notices in user data. Optional separately installed AGPL Resonant is reviewed
+against `6ffe24328dce838b261c8ab5e0586bfa08e31b4f`; its implementation is not
+copied into Breadboard. See [Music Producer](MUSIC_PRODUCER.md) for contracts,
+license links and setup boundaries. A process boundary alone does not settle
+licensing obligations.
+
 Breadboard commits the upstream projects it integrates as ordinary files. A
 fresh clone therefore contains the source needed to inspect, build, and adapt
 those integrations without initializing Git submodules or cloning dozens of
@@ -51,6 +61,7 @@ compression) after those exclusions.
 
 | Directory | Upstream origin | Branch | Base revision |
 | --- | --- | --- | --- |
+| `dashboard/src/lib/speech/clap/upstream` (detector source + license only) | https://github.com/TzurSoffer/clapDetection | `master` | `4464865ba69dbe96462ccc678fb3c75b5515f647` |
 | `agent-loop-engineering-kit` | https://github.com/AlekseiUL/agent-loop-engineering-kit.git | `main` | `d8c814e9259824ee57018d2b6fde88b2dc5840d2` |
 | `agent-reach` | https://github.com/Panniantong/agent-reach | `main` | `241b02870892525e009bceaa7823d3f7b6c6f617` |
 | `agent-skills` | https://github.com/addyosmani/agent-skills | `main` | `d2478bf0c73a6357df39a3ed6aff16acaa218843` |

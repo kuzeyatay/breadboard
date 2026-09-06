@@ -11,5 +11,7 @@ export interface SpeechCredentialStatus {
   source: "stored" | "environment" | "subscription" | null;
   canStore?: boolean;
   hasStoredKey?: boolean;
+  signedIn?: boolean;
+  reason?: "ready" | "sign_in_required" | "runtime_missing" | "service_unavailable";
   error?: string;
 }

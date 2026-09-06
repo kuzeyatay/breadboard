@@ -54,7 +54,7 @@ function runtimeDataRoot(): string {
 }
 
 function normalizePath(value: string): string {
-  const resolved = path.normalize(path.resolve(value));
+  const resolved = path.toNamespacedPath(path.normalize(path.resolve(value)));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 

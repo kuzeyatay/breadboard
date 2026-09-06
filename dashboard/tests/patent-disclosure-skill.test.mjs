@@ -24,6 +24,17 @@ import {
   listFirstPartySkills,
 } from "../src/lib/hermes/skills.ts";
 import { assertPinnedCleanCheckout } from "../../desktop/scripts/pinned-source-checkout.mjs";
+
+test("a delegated research report mentioning claims is not a patent request", () => {
+  const text = "Review the scientific evidence and explain which claims about hypertrophy hold up.";
+  const result = patentDisclosureCommandText({
+    text,
+    surface: "garden_chat",
+    authenticated: true,
+    internalContinuation: true,
+  });
+  assert.deepEqual(result, { text, automatic: false });
+});
 import {
   isPatentDisclosurePackageFile,
   PATENT_DISCLOSURE_REQUIRED_FILES,

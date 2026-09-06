@@ -574,6 +574,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     healthCheck: {
       type: "http",
       url: `${urls.chatmock}/health`,
+      expectBodyIncludes: '"breadboard_subscription_voice"',
       timeoutMs: 2_000,
       intervalMs: 500,
     },

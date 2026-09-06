@@ -5,11 +5,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
+import pytest
 
 import plugins.breadboard as breadboard
 
 
-def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp_path):
+@pytest.mark.parametrize("tool_name, route, action", [
+    ("browser_terminal", "/api/hermes/tools/browser-terminal", "read"),
+    ("breadboard_use", "/api/hermes/tools/breadboard-use", "snapshot"),
+])
+def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp_path, tool_name, route, action):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("BREADBOARD_HERMES_TOOL_SECRET", "browser-test-secret")
     received = []
@@ -19,7 +24,7 @@ def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            assert self.path == "/api/hermes/tools/browser-terminal"
+            assert self.path == route
             assert self.headers["Authorization"] == "Bearer browser-test-secret"
             assert self.headers["X-Agent-Session-Id"] == "browser-test-session"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -43,9 +48,9 @@ def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp
     monkeypatch.setattr(breadboard, "_connection_target", lambda: server.server_address)
     registered = {}
     breadboard.register(SimpleNamespace(register_tool=lambda **tool: registered.update({tool["name"]: tool})))
-    tool = registered["browser_terminal"]
+    tool = registered[tool_name]
     try:
-        read = json.loads(tool["handler"]({"action": "read"}, task_id="browser-test-session"))
+        read = json.loads(tool["handler"]({"action": action}, task_id="browser-test-session"))
         assert read["selection"] == "Selected words"
         capture = tool["handler"]({"action": "screenshot"}, task_id="browser-test-session")
         assert capture["_multimodal"] is True

@@ -148,6 +148,8 @@ export async function POST(request: Request) {
             conversation,
             clientMessageId,
             run: externalRun,
+            delegatedAgentReason: typeof body.delegatedAgentReason === "string"
+              ? body.delegatedAgentReason : undefined,
           });
         } else {
           recordExternalAgentTurn({
@@ -157,6 +159,9 @@ export async function POST(request: Request) {
             userContent: hardwareBlueprintUserMessage(brief),
             run: externalRun,
             ...(branchGroupId ? { branchGroupId } : {}),
+            delegatedAgentRun: body.delegatedAgentRun === true,
+            delegatedAgentReason: typeof body.delegatedAgentReason === "string"
+              ? body.delegatedAgentReason : undefined,
           });
         }
         setRunTerminalHandler(userId, run.runId, async (result) => {

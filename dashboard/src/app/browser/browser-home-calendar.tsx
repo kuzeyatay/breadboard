@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ArrowUpRight, CalendarDays, ChevronUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import OverflowMarquee from "@/app/components/overflow-marquee";
 import type { CalendarCollection, CalendarOccurrence } from "@/lib/calendar/types";
 import { formatShortDate, formatTimeRange, monthAbbreviation } from "@/lib/calendar/format";
 import { addDays, dateOf, nowStamp, startOfDay, todayDate } from "@/lib/calendar/wallclock";
@@ -105,9 +106,11 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
               <strong>{date ? Number(date.slice(8, 10)) : "—"}</strong>
             </span>
             <span className="browser-home-calendar-copy">
-              <span className="browser-home-calendar-when">{happeningNow ? "Now" : next ? dayLabel(date) : "This week"}{eventTime && ` · ${eventTime}`}</span>
-              <strong title={next?.title}>{status === "error" ? "Couldn’t load events" : status === "loading" ? "Your upcoming events" : next?.title ?? "No upcoming events"}</strong>
-              <span className="browser-home-calendar-detail">{status === "error" ? "Open to try again" : next?.location || "View upcoming events"}</span>
+              <OverflowMarquee className="browser-home-calendar-when">{happeningNow ? "Now" : next ? dayLabel(date) : "This week"}{eventTime && ` · ${eventTime}`}</OverflowMarquee>
+              <strong title={next?.title}>
+                <OverflowMarquee>{status === "error" ? "Couldn’t load events" : status === "loading" ? "Your upcoming events" : next?.title ?? "No upcoming events"}</OverflowMarquee>
+              </strong>
+              <OverflowMarquee className="browser-home-calendar-detail">{status === "error" ? "Open to try again" : next?.location || "View upcoming events"}</OverflowMarquee>
             </span>
           </span>
         </button>

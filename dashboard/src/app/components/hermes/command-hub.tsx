@@ -37,6 +37,7 @@ import {
 import { AGENT_TARS_SLASH_COMMAND } from "@/lib/ui-tars/identity.ts";
 import { AGENT_BROWSER_SLASH_COMMAND } from "@/lib/agent-browser/identity.ts";
 import { AGENT_REACH_COMMAND } from "@/lib/agent-reach/identity.ts";
+import { MUSIC_PRODUCER_COMMAND } from "@/lib/music-producer/identity.ts";
 import { CAREER_OPS_COMMAND } from "@/lib/career-ops/identity.ts";
 import { OPENEXECUTIVE_COMMAND } from "@/lib/openexecutive/identity.ts";
 import { OPEN_GYM_COMMAND } from "@/lib/open-gym/identity.ts";
@@ -257,6 +258,7 @@ interface Props {
   /** When provided, selecting Deep Tutor inserts its canonical command. */
   onSelectDeepTutor?: () => void;
   /** When provided, selecting Career Ops inserts its canonical command. */
+  onSelectMusicProducer?: () => void;
   onSelectCareerOps?: () => void;
   /** When provided, selecting OpenExecutive inserts its canonical command. */
   onSelectOpenExecutive?: () => void;
@@ -485,6 +487,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectGetDoc,
       onSelectMeetingNotes,
       onSelectDeepTutor,
+      onSelectMusicProducer,
       onSelectCareerOps,
       onSelectOpenExecutive,
       onSelectOpenGym,
@@ -800,7 +803,15 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         AGENT_REACH_COMMAND,
         "internet twitter reddit youtube github bilibili xiaohongshu linkedin rss v2ex web page transcript",
       );
-    const showCareerOps =
+    const showMusicProducer =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectMusicProducer) &&
+      matchesAgentSearch(
+        "Music Producer",
+        MUSIC_PRODUCER_COMMAND,
+        "music song lyrics instrumental ambient piano compose generate audio cover remix variation repaint",
+      );
+const showCareerOps =
       surface !== "quartz_ai" &&
       Boolean(onSelectCareerOps) &&
       matchesAgentSearch(
@@ -1112,6 +1123,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showAgentBrowser ||
       showAgentReach ||
       showGetDoc ||
+      showMusicProducer ||
       showCareerOps ||
       showOpenExecutive ||
       showOpenGym ||
@@ -1871,7 +1883,42 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                       </li>
                       ) }]
                       : []),
-                    ...(showCareerOps
+                    ...(showMusicProducer
+                      ? [{ name: "Music Producer", node: (
+                      <li key="music-producer"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:music-producer"))}
+                      >
+                        <button
+                          id="music-producer-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectMusicProducer?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MUSIC_PRODUCER_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Create original music, write vocal songs, or revise a track into playable audio versions.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="Music Producer"
+                          onOpen={() => {
+                            setAgentSettingsFor("music-producer");
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:music-producer")}
+                          onColorChange={(color) => setHighlightId("agent:music-producer", color)}
+                          label="Choose Music Producer highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+...(showCareerOps
                       ? [{ name: "Career Ops", node: (
                       <li key="career-ops"
                         className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"

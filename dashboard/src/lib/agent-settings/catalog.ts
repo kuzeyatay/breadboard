@@ -116,6 +116,15 @@ const MONEY_PRINTER_VOICE_OPTIONS: SelectOption[] = MONEY_PRINTER_VOICES.map((vo
  */
 export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
   {
+    id: "music-producer", name: "Music Producer", command: "/agents:music-producer",
+    summary: "Create musical audio or revise a track into playable versions.",
+    appliesWhen: "Applies to one draft per music request. Explicit requests and flags override these defaults.",
+    fields: [
+      { key: "duration", kind: "number", label: "Draft duration (seconds)", help: "Duration conditioning; the card reports measured duration.", flag: "--duration 60", min: 10, max: 600, default: 60 },
+      { key: "vocalMode", kind: "select", label: "Default vocal mode", help: "Vocal songs require original or supplied lyrics in the requested language.", flag: "--instrumental", default: "instrumental", options: [{ value: "instrumental", label: "Instrumental" }, { value: "vocal", label: "Vocal song" }] },
+    ],
+  },
+  {
     id: "deep-research",
     name: "Deep Research",
     command: "/agents:deep-research",

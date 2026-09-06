@@ -82,6 +82,14 @@ test("a saved Max Research turn restores the original launch receipt", () => {
   assert.deepEqual(calls, [{ ...launchCall, carried: true }]);
 });
 
+test("legacy Garden hand-backs keyed by runtime job id restore the same worker", () => {
+  const calls = carriedExternalAgentsForContinuation({
+    continuationText: "<!-- agent-launch-result:job_max_research -->\nMax Research finished.",
+    messages: [originalAnswer, workerAnswer],
+  });
+  assert.deepEqual(calls, [{ ...launchCall, carried: true }]);
+});
+
 test("a durable worker still appears after the live launch queue is gone", () => {
   const calls = carriedExternalAgentsForContinuation({
     continuationText: continuation,

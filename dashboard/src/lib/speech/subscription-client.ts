@@ -2,7 +2,7 @@ import { connectSubscriptionVoice } from "./subscription-live";
 
 /** Buffered downloads/uploads; live microphone and playback use the persistent connection directly. */
 export async function subscriptionSpeech(input: { text: string } | { file: Blob }, signal?: AbortSignal | null): Promise<Blob | string> {
-  const voice = await connectSubscriptionVoice({ signal: signal || undefined, capture: "text" in input });
+  const voice = await connectSubscriptionVoice({ signal: signal || undefined, capture: "text" in input, mode: "text" in input ? "speak" : "transcribe" });
   try {
     if ("file" in input) return await voice.transcribeFile(input.file);
     if (!input.text.trim()) throw new Error("There is no text to speak.");

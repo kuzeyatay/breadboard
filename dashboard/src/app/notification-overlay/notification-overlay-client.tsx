@@ -13,7 +13,8 @@ export default function NotificationOverlayClient() {
 
   useEffect(() => {
     return onDesktopNotificationToast((notice) => {
-      if (notice.dismissed && notice.website) { dismissToast(`website:${notice.website.id}`); return; }
+      if (notice.dismissed && notice.notificationPermission) { dismissToast(`website-permission:${notice.notificationPermission.id}`, false); return; }
+      if (notice.dismissed && notice.website) { dismissToast(`website:${notice.website.id}`, false); return; }
       addToast(
         notice.message,
         notice.type,
@@ -21,6 +22,7 @@ export default function NotificationOverlayClient() {
         notice.chatId,
         notice.response,
         notice.website,
+        notice.notificationPermission,
       );
     }) ?? undefined;
   }, [addToast, dismissToast]);

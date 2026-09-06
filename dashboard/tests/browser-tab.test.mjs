@@ -36,7 +36,7 @@ test("the embedded browser is opened and controlled through the desktop tabs bri
   );
   assert.match(bridge, /\| \{ type: "browser-navigate"; input: string \}/);
   assert.match(bridge, /\| \{ type: "browser-terminal"; open: boolean; width\?: number \}/);
-  assert.match(bridge, /\| \{ type: "browser-address-suggestions"; open: boolean \}/);
+  assert.match(bridge, /\| \{ type: "browser-address-suggestions"; open: boolean; bottom\?: number \}/);
   assert.match(bridge, /export function openBrowserInDesktop/);
   assert.match(shortcut, /openBrowserInDesktop\(\)/);
   assert.match(newTab, /openBrowserInDesktop\(\{ replaceCurrent: true \}\)/);
@@ -118,7 +118,7 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(client, /role="listbox"/);
   assert.match(client, /searchSuggestions\(searchQuery, recentSearches, googleSearchSuggestions\)/);
   assert.match(client, /searchSuggestions\(addressLookupQuery, recentSearches, googleAddressSuggestions\)/);
-  assert.match(client, /useBrowserRecentSearches\(restoreOwnerKey, browser\?\.address\)/);
+  assert.match(client, /useBrowserRecentSearches\(restoreOwnerKey, browser\?\.address, privateBrowsing\)/);
   assert.match(read("../src/app/browser/use-browser-recent-searches.ts"), /breadboard:browser-searches:/);
   assert.doesNotMatch(client, /rememberSearch\(browser\.address\)/);
   assert.match(client, /browser-address-suggestions/);

@@ -202,7 +202,7 @@ test("standalone refresh stages an exact runnable esbuild closure", () => {
       [
         'import { bundleCustomInteractiveVisualizer } from "./lib/hermes/interactive-visualizer-custom.ts";',
         "const result = await bundleCustomInteractiveVisualizer({",
-        '  manifest: { mode: "3d", title: "Staged compiler probe" },',
+        `  manifest: { mode: "3d", title: "Staged compiler probe", runtime: { threeVersion: ${JSON.stringify(closures.three.version)} } },`,
         "  files: {",
         '    "index.html": "<main id=\\"app\\"><canvas></canvas></main><script src=\\"main.js\\"></script>",',
         '    "styles.css": "canvas{display:block}",',

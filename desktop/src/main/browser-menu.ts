@@ -1,9 +1,9 @@
 import type { MenuItemConstructorOptions } from "electron";
 
 export type BrowserMenuAction =
-  | "profile" | "new-tab" | "new-window" | "history" | "bookmarks" | "downloads"
+  | "profile" | "new-tab" | "new-window" | "new-private-tab" | "new-private-window" | "history" | "bookmarks" | "downloads"
   | "extensions" | "appearance" | "print" | "save" | "translate" | "find"
-  | "zoom-in" | "zoom-out" | "zoom-reset" | "fullscreen" | "settings"
+  | "zoom-in" | "zoom-out" | "zoom-reset" | "fullscreen" | "picture-in-picture" | "settings"
   | "developer-tools" | "copy-link" | "help" | "report" | "about" | "quit";
 
 export interface BrowserMenuContext {
@@ -26,6 +26,8 @@ export function browserMenuTemplate(
     { type: "separator" },
     item("New Tab", "new-tab", "CommandOrControl+T"),
     item("New Window", "new-window", "CommandOrControl+N"),
+    item("New Private Tab", "new-private-tab", "CommandOrControl+Shift+P"),
+    item("New Private Window", "new-private-window", "CommandOrControl+Shift+N"),
     { type: "separator" },
     item("History", "history", "CommandOrControl+H"),
     item("Bookmarks", "bookmarks", "CommandOrControl+Shift+O"),
@@ -45,6 +47,7 @@ export function browserMenuTemplate(
       item("Reset to 100%", "zoom-reset", "CommandOrControl+0", context.hasPage),
     ] },
     { ...item("Full Screen", "fullscreen", "F11"), type: "checkbox", checked: context.fullscreen },
+    item("Picture in Picture", "picture-in-picture", "Alt+P", context.hasPage),
     { type: "separator" },
     item("Settings", "settings"),
     { label: "More Tools", submenu: [
@@ -64,10 +67,13 @@ export function browserMenuTemplate(
 export function browserMenuShortcut(input: {
   type: string; key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean; isAutoRepeat: boolean;
 }): BrowserMenuAction | null {
+  if (input.type === "keyDown" && !input.isAutoRepeat && input.alt && !input.control && !input.meta && !input.shift && input.key.toLowerCase() === "p") {
+    return "picture-in-picture";
+  }
   if (input.type !== "keyDown" || input.isAutoRepeat || input.alt || !(input.control || input.meta)) return null;
   const key = input.key.toLowerCase();
   if (input.shift) {
-    const actions: Record<string, BrowserMenuAction> = { o: "bookmarks", a: "extensions", i: "developer-tools", q: "quit" };
+    const actions: Record<string, BrowserMenuAction> = { p: "new-private-tab", n: "new-private-window", o: "bookmarks", a: "extensions", i: "developer-tools", q: "quit" };
     return actions[key] ?? null;
   }
   const actions: Record<string, BrowserMenuAction> = { n: "new-window", h: "history", j: "downloads", p: "print", s: "save", f: "find" };

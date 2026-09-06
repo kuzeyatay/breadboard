@@ -211,7 +211,9 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /seenTargetsRef/);
   assert.doesNotMatch(toast, /line-clamp/);
   assert.doesNotMatch(toast, /setTimeout/);
-  assert.doesNotMatch(toast, /<svg/);
+  // Permission requests have a bell; ordinary completion cards keep their dot.
+  const completionCard = toast.slice(toast.indexOf('function ToastCard('));
+  assert.doesNotMatch(completionCard, /<svg/);
   assert.doesNotMatch(toast, /neu-inset/);
   assert.doesNotMatch(toast, /bg-gray-950/);
 

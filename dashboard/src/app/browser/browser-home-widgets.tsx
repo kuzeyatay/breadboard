@@ -1,4 +1,6 @@
 "use client";
+import { holdForegroundAudio } from '@/lib/speech/clap/audio-focus';
+import { spotifyHistoryTracks } from '@/lib/spotify/history';
 
 import {
   BatteryCharging,
@@ -543,35 +545,13 @@ interface SpotifyDockTrack {
 }
 
 const SPOTIFY_HISTORY_KEY = "breadboard:spotify-listening-history:v1";
-const SPOTIFY_HISTORY_LIMIT = 12;
 const SPOTIFY_SEARCH_HISTORY_KEY = "breadboard:spotify-search-history:v1";
 const SPOTIFY_SEARCH_HISTORY_LIMIT = 8;
-
-function isSpotifyDockTrack(value: unknown): value is SpotifyDockTrack {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const track = value as Record<string, unknown>;
-  return (
-    typeof track.id === "string" &&
-    /^[A-Za-z0-9]{10,64}$/.test(track.id) &&
-    track.uri === `spotify:track:${track.id}` &&
-    typeof track.name === "string" &&
-    Boolean(track.name.trim()) &&
-    typeof track.artist === "string" &&
-    Boolean(track.artist.trim()) &&
-    typeof track.album === "string" &&
-    (track.imageUrl === null || typeof track.imageUrl === "string") &&
-    typeof track.durationMs === "number" &&
-    Number.isFinite(track.durationMs) &&
-    track.durationMs > 0
-  );
-}
 
 function readSpotifyHistory(): SpotifyDockTrack[] {
   try {
     const stored = JSON.parse(window.localStorage.getItem(SPOTIFY_HISTORY_KEY) ?? "[]");
-    return (Array.isArray(stored) ? stored : [])
-      .filter(isSpotifyDockTrack)
-      .slice(0, SPOTIFY_HISTORY_LIMIT);
+    return spotifyHistoryTracks(stored);
   } catch {
     return [];
   }
@@ -611,6 +591,7 @@ interface SpotifyDockState {
   playlistAccess: boolean;
   playlistWriteAccess: boolean;
   savedTrack: boolean;
+  history: SpotifyDockTrack[];
   engine: {
     ready: boolean;
     deviceId: string | null;
@@ -661,10 +642,30 @@ function useSpotifyDock() {
     const viewId = viewIdRef.current;
     let cancelled = false;
     let running = false;
+    let historyMigrated = false;
     const load = async () => {
       if (running) return;
       running = true;
       try {
+        if (!historyMigrated) {
+          const tracks = readSpotifyHistory();
+          if (!tracks.length) historyMigrated = true;
+          else {
+            try {
+              const response = await fetch("/api/browser/spotify", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "import-history", tracks }),
+              });
+              if (response.ok) {
+                historyMigrated = true;
+                window.localStorage.removeItem(SPOTIFY_HISTORY_KEY);
+              }
+            } catch {
+              // Keep the original entries and retry migration on the next poll.
+            }
+          }
+        }
         const statusResponse = await fetch("/api/browser/spotify", { cache: "no-store" });
         if (!statusResponse.ok) throw new Error("Spotify status unavailable");
         let next = (await statusResponse.json()) as SpotifyDockState;
@@ -693,9 +694,14 @@ function useSpotifyDock() {
     };
     void load();
     const timer = window.setInterval(() => void load(), 8_000);
+    const refreshPlayback = () => { void load(); };
+    window.addEventListener('breadboard:spotify-playback-changed', refreshPlayback);
+    window.addEventListener('focus', refreshPlayback);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener('breadboard:spotify-playback-changed', refreshPlayback);
+      window.removeEventListener('focus', refreshPlayback);
       if (connectedRef.current) {
         void fetch("/api/hermes/connections/spotify/engine", {
           method: "DELETE",
@@ -726,6 +732,7 @@ function useSpotifyDock() {
         engine?: SpotifyDockState["engine"];
         playback?: SpotifyDockState["playback"];
         savedTrack?: boolean;
+        history?: SpotifyDockTrack[];
       };
       if (!response.ok) throw new Error(payload.message ?? payload.error ?? "Spotify could not do that.");
       setSpotify((current) => current ? {
@@ -733,6 +740,7 @@ function useSpotifyDock() {
         engine: payload.engine ?? current.engine,
         playback: payload.playback ?? current.playback,
         savedTrack: payload.savedTrack ?? current.savedTrack,
+        history: payload.history ?? current.history,
       } : current);
       return true;
     } catch (reason) {
@@ -814,7 +822,7 @@ function BrowserSpotifyDock({
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SpotifyDockTrack[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  const [history, setHistory] = useState<SpotifyDockTrack[]>([]);
+  const history = spotify?.history ?? [];
   const [playlists, setPlaylists] = useState<SpotifyDockPlaylist[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState<SpotifyDockPlaylist | null>(null);
   const [playlistTracks, setPlaylistTracks] = useState<SpotifyDockTrack[]>([]);
@@ -833,6 +841,7 @@ function BrowserSpotifyDock({
 
   const track = spotify?.playback?.track ?? null;
   const isPlaying = spotify?.playback?.isPlaying === true;
+  useEffect(() => { if (isPlaying) return holdForegroundAudio(); }, [isPlaying]);
   const playbackDeviceName = spotify?.playback?.deviceName?.trim() || (
     spotify?.engine.deviceId && spotify.playback?.deviceId === spotify.engine.deviceId
       ? "Breadboard"
@@ -842,7 +851,6 @@ function BrowserSpotifyDock({
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      setHistory(readSpotifyHistory());
       setRecentSearches(readSpotifySearchHistory());
     });
     return () => window.cancelAnimationFrame(frame);
@@ -864,28 +872,6 @@ function BrowserSpotifyDock({
       return next;
     });
   }, []);
-
-  const rememberTrack = useCallback((nextTrack: SpotifyDockTrack) => {
-    setHistory((current) => {
-      if (current[0]?.uri === nextTrack.uri) return current;
-      const next = [
-        nextTrack,
-        ...current.filter((item) => item.uri !== nextTrack.uri),
-      ].slice(0, SPOTIFY_HISTORY_LIMIT);
-      try {
-        window.localStorage.setItem(SPOTIFY_HISTORY_KEY, JSON.stringify(next));
-      } catch {
-        // Listening history is an enhancement; private browsing can disable storage.
-      }
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!track) return;
-    const frame = window.requestAnimationFrame(() => rememberTrack(track));
-    return () => window.cancelAnimationFrame(frame);
-  }, [rememberTrack, track]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1041,14 +1027,12 @@ function BrowserSpotifyDock({
     queue: SpotifyDockTrack[],
     autoplay = false,
   ) => {
-    const played = await control("play-track", {
+    return control("play-track", {
       trackUri: nextTrack.uri,
       ...(autoplay
         ? { autoplay: true }
         : { queueUris: queue.map((item) => item.uri) }),
     });
-    if (played) rememberTrack(nextTrack);
-    return played;
   };
   const beginAddToPlaylist = (nextTrack: SpotifyDockTrack) => {
     setTrackToAdd(nextTrack);

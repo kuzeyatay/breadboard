@@ -4,10 +4,9 @@ import {
   getConversationForLegacyChatSession,
   getConversationForUser,
   listRecentConversationMessages,
-  type ConversationMessageRow,
   type ConversationRow,
 } from "./store.ts";
-import { externalAgentCardContent, externalAgentMessageFields } from "./external-agent-runs.ts";
+import { CONVERSATION_REFERENCE_POLICY, conversationMessageText } from "./message-context.ts";
 
 /**
  * An external agent is launched with a task string and nothing else, so a
@@ -25,7 +24,7 @@ import { externalAgentCardContent, externalAgentMessageFields } from "./external
 const DEFAULT_MESSAGE_LIMIT = 20;
 /** Total budget for the rendered transcript. Roughly 4k tokens. */
 const DEFAULT_MAX_CHARS = 15_000;
-/** No single message may crowd out the rest of the exchange. */
+/** Older messages leave room for the latest response a follow-up refers to. */
 const PER_MESSAGE_MAX_CHARS = 2500;
 
 const CONTEXT_HEADING = "## Conversation so far";
@@ -40,31 +39,13 @@ const PREAMBLE =
 function clip(value: string, maxLength: number): string {
   const text = value.trim();
   if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength).trimEnd()} [...]`;
-}
-
-/**
- * What a message contributes to the transcript. External agent turns keep the
- * worker's output outside `content`, so they are read through the same accessor
- * the cards use rather than off the row.
- */
-function messageText(row: ConversationMessageRow): string {
-  let metadata: Record<string, unknown> = {};
-  if (row.metadata) {
-    try {
-      const parsed = JSON.parse(row.metadata) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        metadata = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // A row with unreadable metadata still has usable content.
-    }
-  }
-  if (row.role === "assistant") {
-    const fields = externalAgentMessageFields(metadata);
-    return externalAgentCardContent({ content: row.content, ...fields });
-  }
-  return row.content;
+  const marker = " [...] ";
+  if (maxLength <= marker.length) return marker.trim().slice(0, maxLength);
+  // Keep the conclusion as well as the beginning when a response cannot fit.
+  const available = maxLength - marker.length;
+  const head = Math.ceil(available / 2);
+  const tail = Math.floor(available / 2);
+  return `${text.slice(0, head)}${marker}${tail ? text.slice(-tail) : ""}`;
 }
 
 /**
@@ -124,24 +105,25 @@ export function conversationContextTranscript(
     conversation.id,
     options.messageLimit ?? DEFAULT_MESSAGE_LIMIT,
     database,
-  );
+  ).filter((row) => !options.clientMessageId || row.client_message_id !== options.clientMessageId);
+  const latestAssistant = rows.findLast((row) => row.role === "assistant");
   const lines: string[] = [];
-  for (const row of rows) {
-    if (options.clientMessageId && row.client_message_id === options.clientMessageId) continue;
-    const text = clip(messageText(row), PER_MESSAGE_MAX_CHARS);
+  let remaining = Math.max(0, options.maxChars ?? DEFAULT_MAX_CHARS);
+  // Allocate from the newest end. The latest answer can use the remaining
+  // budget, so its conclusion is not silently lost after 2,500 characters.
+  for (const row of [...rows].reverse()) {
+    const prefix = `${row.role === "user" ? "User" : "Assistant"}: `;
+    const separator = lines.length ? 2 : 0;
+    const available = remaining - prefix.length - separator;
+    if (available <= 0) break;
+    const text = clip(
+      conversationMessageText(row),
+      row === latestAssistant ? available : Math.min(PER_MESSAGE_MAX_CHARS, available),
+    );
     if (!text) continue;
-    lines.push(`${row.role === "user" ? "User" : "Assistant"}: ${text}`);
-  }
-  // Trim from the front: the turns nearest the request are the ones that
-  // explain it, so an over-budget transcript loses its oldest end.
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  let total = lines.reduce((sum, line) => sum + line.length + 2, 0);
-  while (lines.length > 1 && total > maxChars) {
-    total -= lines[0].length + 2;
-    lines.shift();
-  }
-  if (lines.length === 1 && lines[0].length > maxChars) {
-    lines[0] = clip(lines[0], maxChars);
+    const line = `${prefix}${text}`;
+    lines.unshift(line);
+    remaining -= line.length + separator;
   }
   return lines.join("\n\n");
 }
@@ -208,5 +190,5 @@ export function promptWithContext(
  */
 export function contextSection(transcript: string | null | undefined): string {
   if (!transcript?.trim()) return "";
-  return [CONTEXT_HEADING, "", PREAMBLE, "", transcript.trim()].join("\n");
+  return [CONTEXT_HEADING, "", PREAMBLE, "", CONVERSATION_REFERENCE_POLICY, "", transcript.trim()].join("\n");
 }

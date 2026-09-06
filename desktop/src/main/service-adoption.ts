@@ -56,7 +56,8 @@ export function adoptionProbe(
       // dashboard because adopting it would leave no PID for tree accounting.
       return { type: "http", url: `${base}/api/health`, expectBodyIncludes: '"status":"ok"', timeoutMs: 2_500 };
     case "chatmock":
-      return { type: "http", url: `${base}/health`, timeoutMs: 2_500 };
+      // Legacy gateways answer /health even though every voice route is 404.
+      return { type: "http", url: `${base}/health`, expectBodyIncludes: '"breadboard_subscription_voice"', timeoutMs: 2_500 };
     case "hermes":
       // /api/status is a public liveness probe, so it cannot tell our Hermes
       // from a dev stack's. Any other /api/ path is gated on the session token

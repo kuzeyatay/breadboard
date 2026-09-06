@@ -5,15 +5,18 @@ export async function subscriptionSelected(signal?: AbortSignal): Promise<boolea
   const response = await fetch("/api/speech/settings", { cache: "no-store", signal });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || "Speech settings are unavailable.");
+  if (body.settings?.speechProvider !== 'chatgpt' && body.settings?.speechProvider !== 'local') throw new Error('Choose OpenAI or Voicebox in Voice settings before starting voice.');
   return body.settings?.speechProvider === "chatgpt";
 }
 
 /** One duplex call for a whole voice conversation, not one call per recording. */
 export async function connectSubscriptionVoice(options: {
   microphone?: MediaStream;
+  mode?: 'speak' | 'transcribe' | 'conversation';
   signal?: AbortSignal;
   onTranscript?: (text: string) => void;
   capture?: boolean;
+  listening?: boolean;
 } = {}) {
   const controller = new AbortController();
   const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
@@ -27,6 +30,7 @@ export async function connectSubscriptionVoice(options: {
   silence.connect(context.destination);
   silent.start();
   const inputGain = context.createGain();
+  inputGain.gain.value = options.listening === false ? 0 : 1;
   inputGain.connect(destination);
   const microphone = options.microphone ? context.createMediaStreamSource(options.microphone) : null;
   microphone?.connect(inputGain);
@@ -106,7 +110,8 @@ export async function connectSubscriptionVoice(options: {
     await until(() => context.state === "running", 5000);
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    const session = await request("/api/speech/subscription", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sdp: offer.sdp, mode: "conversation" }) });
+    const mode = options.mode ?? (options.microphone ? 'conversation' : 'speak');
+    const session = await request("/api/speech/subscription", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sdp: offer.sdp, mode }) });
     id = session.id;
     polling = (async () => {
       let cursor = 0;

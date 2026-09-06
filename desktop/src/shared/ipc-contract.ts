@@ -96,10 +96,12 @@ export interface TabView {
   loading: boolean;
   /** Present only for a sandboxed web page beneath trusted browser chrome. */
   browser?: {
+    private?: boolean;
     address: string;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
+    downloadsOpen?: boolean;
     terminalWidth: number;
     zoomPercent?: number;
     translation?: BrowserTranslationState;
@@ -119,6 +121,7 @@ export interface TabView {
  * the front already has the strip drawn by the time it is seen.
  */
 export interface TabsState {
+  windowFocused?: boolean;
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
   activeId: number | null;
@@ -246,6 +249,7 @@ export interface DesktopNotificationToast {
   chatId?: string;
   response?: string;
   website?: { id: string; origin: string };
+  notificationPermission?: { id: string; origin: string };
   dismissed?: boolean;
 }
 
@@ -260,6 +264,7 @@ export function isDesktopNotificationToast(value: unknown): value is DesktopNoti
   const notice = value as Record<string, unknown>;
   const optionalText = (field: unknown, maximum: number) =>
     field === undefined || (typeof field === "string" && field.length <= maximum);
+  const permission = notice.notificationPermission;
   return (
     typeof notice.message === "string" &&
     notice.message.length > 0 &&
@@ -269,6 +274,12 @@ export function isDesktopNotificationToast(value: unknown): value is DesktopNoti
     optionalText(notice.chatId, 256) &&
     optionalText(notice.response, 100_000) &&
     (notice.dismissed === undefined || typeof notice.dismissed === "boolean") &&
+    (permission === undefined || (typeof permission === "object" && permission !== null &&
+      typeof (permission as Record<string, unknown>).id === "string" &&
+      String((permission as Record<string, unknown>).id).length > 0 &&
+      String((permission as Record<string, unknown>).id).length <= 100 &&
+      notificationOrigin((permission as Record<string, unknown>).origin) !== null &&
+      notificationOrigin((permission as Record<string, unknown>).origin) === (permission as Record<string, unknown>).origin)) &&
     (notice.website === undefined || (typeof notice.website === "object" && notice.website !== null &&
       typeof (notice.website as Record<string, unknown>).id === "string" &&
       String((notice.website as Record<string, unknown>).id).length <= 100 &&
@@ -293,11 +304,14 @@ export function isNotificationOverlaySize(value: unknown): value is Notification
 
 /** What a page may ask the shell to do with the tabs of its own window. */
 export type TabsCommand =
+  | { type: "voice-overlay"; open: boolean }
+  | { type: "voice-open" }
   | BrowserPreferenceCommand
   | { type: "browser-translate"; language: string }
   | { type: "browser-translation-menu" }
   | { type: "browser-translation-restore" }
   | { type: "browser-notification-action"; id: string; action: "click" | "close" }
+  | { type: "browser-notification-permission-response"; id: string; permission: NotificationPermission }
   | { type: "open"; url: string; background?: boolean }
   | { type: "new" }
   | { type: "activate"; id: number }
@@ -317,8 +331,12 @@ export type TabsCommand =
   | { type: "browser-menu"; x: number; y: number; profileLabel: string }
   | { type: "browser-find"; text: string; forward?: boolean; findNext?: boolean }
   | { type: "browser-find-close" }
+  | { type: "browser-downloads-popover"; x: number; y: number }
+  | { type: "browser-downloads-resize"; height: number }
+  | { type: "browser-downloads-close" }
+  | { type: "browser-downloads-show-all" }
   | { type: "browser-terminal"; open: boolean; width?: number }
-  | { type: "browser-address-suggestions"; open: boolean }
+  | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
   | { type: "browser-extension-reload"; id: string }
   | { type: "browser-extension-remove"; id: string }
@@ -345,6 +363,9 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
         ["default", "granted", "denied"].includes(String(command.permission));
     case "browser-notification-action":
       return typeof command.id === "string" && command.id.length <= 100 && ["click", "close"].includes(String(command.action));
+    case "browser-notification-permission-response":
+      return typeof command.id === "string" && command.id.length > 0 && command.id.length <= 100 &&
+        (command.permission === "default" || command.permission === "granted" || command.permission === "denied");
     case "open":
       return (
         typeof command.url === "string" &&
@@ -378,6 +399,10 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
       return typeof command.text === "string" && command.text.length <= 1_000 &&
         (command.forward === undefined || typeof command.forward === "boolean") &&
         (command.findNext === undefined || typeof command.findNext === "boolean");
+    case "browser-downloads-popover":
+      return [command.x, command.y].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 20_000);
+    case "browser-downloads-resize":
+      return typeof command.height === "number" && Number.isFinite(command.height) && command.height > 0 && command.height <= 600;
     case "browser-terminal":
       return (
         typeof command.open === "boolean" &&
@@ -389,6 +414,11 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
             command.width <= 1_600))
       );
     case "browser-address-suggestions":
+      return typeof command.open === "boolean" &&
+        (command.bottom === undefined ||
+          (typeof command.bottom === "number" && Number.isFinite(command.bottom) &&
+            command.bottom >= 0 && command.bottom <= 20_000));
+    case "voice-overlay":
       return typeof command.open === "boolean";
     case "browser-extension-reload":
     case "browser-extension-remove":
@@ -398,6 +428,7 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "notification-overlay-resize":
       return isNotificationOverlaySize(command.size);
     case "new":
+    case "voice-open":
     case "browser-translation-menu":
     case "browser-translation-restore":
     case "reopen":
@@ -406,6 +437,8 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "reload":
     case "browser-stop":
     case "browser-find-close":
+    case "browser-downloads-close":
+    case "browser-downloads-show-all":
     case "browser-extension-load":
       return true;
     default:

@@ -138,6 +138,7 @@ import {
   computerUseCommandText,
   COMPUTER_USE_SKILL,
 } from "../hermes/computer-use-intent.ts";
+import { breadboardUseCommandText, BREADBOARD_USE_SKILL } from "../hermes/breadboard-use-intent.ts";
 import {
   hasReconstructableAttachment,
   hasReconstructableImages,
@@ -837,6 +838,7 @@ export async function startConversationTurn(
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
+    internalContinuation: input.internalAgentContinuation === true,
   });
   // A model-to-model continuation is exempt: the text is the last agent's
   // report handed back for synthesis, and a report that happens to say
@@ -964,8 +966,14 @@ export async function startConversationTurn(
   // skill still checks for an API/service/browser route before it invokes the
   // ambient Hermes tool, and Super Agent applies an even stricter last-resort
   // rule in its system directive.
-  const computerUseSelection = computerUseCommandText({
+  const breadboardUseSelection = breadboardUseCommandText({
     text: humanizeSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
+  const computerUseSelection = computerUseCommandText({
+    text: breadboardUseSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -1026,6 +1034,7 @@ export async function startConversationTurn(
       !githubExplorerSelection.automatic &&
       !humanizeSelection.automatic &&
       !computerUseSelection.automatic &&
+      !breadboardUseSelection.automatic &&
       !goalSelection.automatic
     ) {
       throw error;
@@ -1093,6 +1102,9 @@ export async function startConversationTurn(
       (invocation) =>
         invocation.kind === "skill" && invocation.slug === COMPUTER_USE_SKILL,
     );
+  const automaticBreadboardUse = breadboardUseSelection.automatic && resolved.invocations.some(
+    invocation => invocation.kind === "skill" && invocation.slug === BREADBOARD_USE_SKILL,
+  );
   // However the skill got here — typed as `/goal`, or selected from the
   // wording above — this is the turn that starts a goal.
   const goalSkillSelected = resolved.invocations.some(
@@ -1139,6 +1151,7 @@ export async function startConversationTurn(
       automaticDiagramDesign,
       automaticGithubExplorer,
       automaticComputerUse,
+      automaticBreadboardUse,
       automaticGoal,
       activeAgencyAgentSlug: activeAgencyAgent?.slug ?? null,
     },
@@ -1493,6 +1506,9 @@ export async function startConversationTurn(
     ...(decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL)
       ? { computer_use: true }
       : {}),
+    ...(decision.selectedConditionalSkills.includes(BREADBOARD_USE_SKILL)
+      ? { breadboard_use: true }
+      : {}),
     ...(parametricCadSelected ? { agent_launch: true } : {}),
     ...(goalMode ? { mcp_call: true } : {}),
     ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
@@ -1568,12 +1584,10 @@ export async function startConversationTurn(
       renderSkillShortlistDirective(skillShortlist),
       composeMemoryContext(
         memory,
-        input.branchHistory
-          ? {
-              recentMessages: input.branchHistory,
-              includeConversationState: false,
-            }
-          : undefined,
+        {
+          recentMessages: currentConversationMessages,
+          includeConversationState: input.branchHistory === undefined,
+        },
       ),
       // Directly after memory, as in Garden Chat: the repository is something
       // the assistant knows about the active Garden, not a late tool notice.
@@ -1774,6 +1788,7 @@ export async function startConversationTurn(
         : []),
       ...(automaticGithubExplorer ? [{ slug: GITHUB_EXPLORER_SKILL }] : []),
       ...(automaticComputerUse ? [{ slug: COMPUTER_USE_SKILL }] : []),
+      ...(automaticBreadboardUse ? [{ slug: BREADBOARD_USE_SKILL }] : []),
       ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
       ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
       ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),

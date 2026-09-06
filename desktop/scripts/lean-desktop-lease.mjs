@@ -46,8 +46,8 @@ function sameCheckout(left, right) {
 
 function strictLeaseFailure(cause) {
   return new Error(
-    "Breadboard could not secure the lean desktop lease for this checkout. " +
-      "Stop any other lean Breadboard command and make sure the checkout's .runtime folder is writable.",
+    "Breadboard could not secure the dashboard build or lean desktop lease for this checkout. " +
+      "Stop any other Breadboard build/launch command and make sure the checkout's .runtime folder is writable.",
     { cause },
   );
 }
@@ -78,6 +78,10 @@ function markerOwnerPid(contents) {
 
 export function leanDesktopLeasePath(repoRoot) {
   return path.join(repoRoot, LEAN_DESKTOP_LEASE_RELATIVE);
+}
+
+export function dashboardBuildLeasePath(repoRoot) {
+  return path.join(repoRoot, ".runtime", "dashboard-build.lock.json");
 }
 
 /** Signal zero checks liveness without interrupting the incumbent process. */
@@ -111,6 +115,14 @@ export function readLeanDesktopLease(
  */
 export function claimLeanDesktopLease({
   repoRoot,
+  ...options
+}) {
+  return claimCheckoutLease({ ...options, repoRoot, lockPath: leanDesktopLeasePath(repoRoot) });
+}
+
+function claimCheckoutLease({
+  repoRoot,
+  lockPath,
   pid = process.pid,
   now = new Date(),
   claimId = randomUUID(),
@@ -120,7 +132,6 @@ export function claimLeanDesktopLease({
     fs.writeFileSync(file, contents, { encoding: "utf8", flag: "wx" }),
   removeFile = (file) => fs.rmSync(file, { force: true }),
 }) {
-  const lockPath = leanDesktopLeasePath(repoRoot);
   const record = {
     pid,
     startedAt: now.toISOString(),
@@ -177,7 +188,7 @@ export function claimLeanDesktopLease({
         const markerPid = marker === null ? null : markerOwnerPid(marker.raw);
         if (markerPid !== null && markerPid !== pid && isAlive(markerPid)) {
           throw strictLeaseFailure(
-            new Error("another lean launch is replacing an abandoned lease"),
+            new Error("another build or launch is replacing an abandoned lease"),
           );
         }
         try {
@@ -219,11 +230,21 @@ export function claimLeanDesktopLease({
 
 export function releaseLeanDesktopLease(
   repoRoot,
+  ...args
+) {
+  releaseCheckoutLease(leanDesktopLeasePath(repoRoot), ...args);
+}
+
+export function releaseDashboardBuildLease(repoRoot, ...args) {
+  releaseCheckoutLease(dashboardBuildLeasePath(repoRoot), ...args);
+}
+
+function releaseCheckoutLease(
+  lockPath,
   { pid = process.pid, claimId },
   readFile = (file) => fs.readFileSync(file, "utf8"),
   removeFile = (file) => fs.rmSync(file, { force: true }),
 ) {
-  const lockPath = leanDesktopLeasePath(repoRoot);
   const existing = readLeanDesktopLease(lockPath, readFile);
   if (existing?.pid !== pid || existing.claimId !== claimId) return;
   try {
@@ -233,9 +254,38 @@ export function releaseLeanDesktopLease(
   }
 }
 
+/**
+ * All output recovery and build work shares a lease separate from Electron's
+ * lifetime. This also permits an in-app rebuild after initial startup.
+ * Only the launcher's immediate build child may borrow its output lease.
+ */
+export function claimDashboardBuildLease({
+  repoRoot,
+  parentPid = process.ppid,
+  inheritedClaimId = process.env.BREADBOARD_DASHBOARD_BUILD_CLAIM_ID,
+  isAlive = processIsAlive,
+  ...options
+}) {
+  const lockPath = dashboardBuildLeasePath(repoRoot);
+  const existing = readLeanDesktopLease(lockPath);
+  if (
+    inheritedClaimId &&
+    existing?.claimId === inheritedClaimId &&
+    existing.pid === parentPid &&
+    sameCheckout(existing.checkout, repoRoot) &&
+    isAlive(parentPid)
+  ) {
+    return { acquired: true, existing, record: existing, inherited: true };
+  }
+  return {
+    ...claimCheckoutLease({ ...options, repoRoot, lockPath, isAlive }),
+    inherited: false,
+  };
+}
+
 export function duplicateLeanDesktopWarning(existing) {
   return (
-    `Another Breadboard lean desktop command is already running ` +
+    `Another Breadboard dashboard build or lean desktop command is already running ` +
     `(pid=${existing.pid}, started=${existing.startedAt}). ` +
     `Close that Breadboard instance or stop its command before rebuilding.`
   );

@@ -133,6 +133,77 @@ test("the tail of a finished turn stays paced", () => {
   assert.equal(settling.pacing, true);
 });
 
+test("finished delivery disarms animation for later history refreshes", () => {
+  const finished = armReveal(
+    { shown: "Saved answer", pacing: true, streaming: true },
+    "Saved answer",
+    false,
+  );
+  assert.equal(finished.pacing, false);
+  const refreshed = armReveal(finished, "Saved answer with restored details", false);
+  assert.equal(refreshed.shown, "Saved answer with restored details");
+  assert.equal(refreshed.pacing, false);
+});
+
+test("a suspended desktop animation frame cannot hide an answer or replay restored text", async () => {
+  const { chromium } = await import("playwright");
+  const { build } = await import("esbuild");
+  const bundle = await build({
+    stdin: {
+      resolveDir: path.resolve(dashboard, ".."),
+      loader: "tsx",
+      contents: `
+        import React, { useState } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { useSmoothStreamText } from './src/app/components/chat/use-smooth-stream-text.ts';
+        function App() {
+          const [value, setValue] = useState({ text: '', streaming: false, key: 'chat-a' });
+          window.deliver = setValue;
+          const shown = useSmoothStreamText(value.text, value.streaming, value.key);
+          return <output>{shown}</output>;
+        }
+        createRoot(document.getElementById('root')).render(<App />);
+      `,
+    },
+    bundle: true, write: false, platform: "browser", format: "iife",
+    define: { "process.env.NODE_ENV": '"production"' },
+  });
+  const executablePath = [
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+    "/usr/bin/chromium",
+  ].find(fs.existsSync);
+  const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<div id="root"></div>');
+    await page.evaluate(() => {
+      // Reproduce the Electron view: visible document, timers running, no frames.
+      window.requestAnimationFrame = () => 1;
+      window.cancelAnimationFrame = () => {};
+    });
+    await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.waitForFunction(() => typeof window.deliver === "function", null, { polling: 25 });
+    await page.evaluate(() => window.deliver({ text: "", streaming: true, key: "chat-a" }));
+    await page.waitForTimeout(30);
+    await page.evaluate(() => window.deliver({ text: "Complete research answer", streaming: false, key: "chat-a" }));
+    await page.waitForFunction(() => document.querySelector('output').textContent === "Complete research answer", null, { timeout: 2000, polling: 25 });
+    await page.evaluate(() => window.deliver({ text: "", streaming: true, key: "chat-a" }));
+    await page.waitForTimeout(30);
+    await page.evaluate(() => window.deliver({ text: "This pending reveal belongs to chat A", streaming: true, key: "chat-a" }));
+    await page.waitForTimeout(30);
+    assert.equal(await page.locator('output').textContent(), "", "first delivery still starts with animation");
+    await page.evaluate(() => window.deliver({ text: "Saved answer from another chat", streaming: false, key: "chat-b" }));
+    await page.waitForTimeout(30);
+    assert.equal(await page.locator('output').textContent(), "Saved answer from another chat");
+    // A stale fallback belonging to chat A must not overwrite chat B.
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('output').textContent(), "Saved answer from another chat");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("switching to another chat disarms the pacing", () => {
   const switched = armReveal(
     { shown: "The answer to the last turn", pacing: true, streaming: false },

@@ -140,6 +140,8 @@ export interface CreateImportedArtifactInput extends Omit<
   CreateArtifactInput,
   "rendererId" | "mimeType" | "content"
 > {
+  /** Synchronous ownership/cancellation fence inside the publication transaction. */
+  beforePublish?: () => void;
   authorizedRoot: string;
   filePath: string;
   /**
@@ -942,6 +944,7 @@ export async function createImportedArtifact(
   // rollback to it look like a rollback to something unfinished.
   const status = input.status ?? "ready";
   const transaction = database.transaction(() => {
+    input.beforePublish?.();
     database.prepare(`
       INSERT INTO hermes_artifacts (
         id, user_id, runtime_session_id, hermes_session_id, conversation_id,
@@ -1064,6 +1067,8 @@ export async function createImportedArtifact(
 }
 
 export interface ImportArtifactVersionInput {
+  /** Recheck the launching operation before committing a binary revision. */
+  beforePublish?: () => void;
   artifact: ArtifactRow;
   /** The workspace the file must live inside. Nothing outside it is read. */
   authorizedRoot: string;
@@ -1266,6 +1271,7 @@ export async function importArtifactVersion(input: ImportArtifactVersionInput): 
     const current = database.prepare(`
       SELECT current_version FROM hermes_artifacts WHERE id = ?
     `).get(artifact.id) as { current_version: number } | undefined;
+    input.beforePublish?.();
     if (!current || current.current_version !== artifact.current_version) {
       throw new ArtifactStoreError(
         409,

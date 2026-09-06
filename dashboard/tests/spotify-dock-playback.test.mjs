@@ -6,11 +6,22 @@ import test from "node:test";
 // Exercise the real route and Spotify response mapping without touching an
 // account, playback device, database, or local playback engine.
 const fixture = `
+  import { DatabaseSync } from 'node:sqlite';
+  import { ensureSpotifySchema } from '${fileURLToPath(new URL("../src/lib/spotify/schema.ts", import.meta.url)).replaceAll("\\", "/")}';
+  export const db = new DatabaseSync(':memory:');
+  db.transaction = operation => ({ immediate() {
+    db.exec('BEGIN IMMEDIATE');
+    try { const result = operation(); db.exec('COMMIT'); return result; }
+    catch (error) { db.exec('ROLLBACK'); throw error; }
+  }});
+  db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY); CREATE TABLE conversations (id INTEGER PRIMARY KEY); INSERT INTO users VALUES (7);');
+  ensureSpotifySchema(db);
   export let playback = null;
   export let engine = null;
   export const requests = [];
   export function reset(value, localEngine = {ready:false,deviceId:null,status:'starting',error:null}) {
     playback = value; engine = localEngine; requests.length = 0;
+    db.exec('DELETE FROM spotify_listening_history');
   }
   export function providerRequest({request}) {
     requests.push(request);
@@ -41,7 +52,7 @@ const stubs = {
   "@/lib/hermes/route-helpers.ts": helpers,
   "../hermes/route-core.ts": helpers,
   "@/lib/spotify/playback-engine.ts": "import {engine} from 'test-fixture'; export async function spotifyPlaybackEngineStatus() { return engine; }",
-  "../db.ts": "export default {};",
+  "../db.ts": "export {db as default} from 'test-fixture';",
   "../connected-apps/broker.ts": "export {providerRequest as embeddedProviderRequest} from 'test-fixture'; export async function connectedAppTokensFor() { throw new Error('Unexpected token request'); }",
   "../connected-apps/vault.ts": "export function readConnectedAppTokens() { return {scope:'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state user-library-read user-library-modify playlist-read-private'}; }",
   "../nango/catalog.ts": "export function findNangoIntegration() { return {slug:'spotify'}; }",
@@ -59,7 +70,7 @@ const bundle = await build({
   plugins: [{ name: "spotify-dock-fixture", setup(builder) {
     builder.onResolve({ filter: /.*/ }, args => Object.hasOwn(stubs, args.path)
       ? {path: args.path, namespace: "fixture"} : undefined);
-    builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({contents: stubs[args.path], loader: "js"}));
+    builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({contents: stubs[args.path], loader: "js", resolveDir: fileURLToPath(new URL("../", import.meta.url))}));
   } }],
 });
 const dock = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
@@ -89,6 +100,36 @@ test("the dock reports phone playback and its display name while the local engin
   assert.equal(state.playback.isPlaying, true);
   assert.equal(state.playback.deviceName, "My iPhone");
   assert.equal(state.playback.deviceId, "phone-123");
+  assert.equal(state.history[0].uri, state.playback.track.uri);
+});
+
+test("history imports survive later empty or paused playback without provider calls during import", async () => {
+  dock.reset(phonePlayback());
+  const track = (await dock.spotifyCurrentPlaybackState(7)).track;
+  dock.reset(null);
+  const imported = await dock.POST(new Request("http://localhost/api/browser/spotify", {
+    method: "POST", body: JSON.stringify({action: "import-history", tracks: [track]}),
+  }));
+  assert.equal(imported.status, 200);
+  assert.deepEqual((await imported.json()).history, [track]);
+  assert.equal(dock.requests.length, 0);
+  const state = await (await dock.GET(new Request("http://localhost/api/browser/spotify"))).json();
+  assert.equal(state.playback, null);
+  assert.deepEqual(state.history, [track]);
+});
+
+test("a paused track is not recorded as a new listen", async () => {
+  dock.reset({...phonePlayback(), is_playing: false});
+  const state = await (await dock.GET(new Request("http://localhost/api/browser/spotify"))).json();
+  assert.deepEqual(state.history, []);
+});
+
+test("history import rejects attempts to select another user", async () => {
+  dock.reset(null);
+  const response = await dock.POST(new Request("http://localhost/api/browser/spotify", {
+    method: "POST", body: JSON.stringify({action: "import-history", tracks: [], userId: 99}),
+  }));
+  assert.equal(response.status, 400);
 });
 
 test("device names are trimmed and missing names stay unknown", async () => {

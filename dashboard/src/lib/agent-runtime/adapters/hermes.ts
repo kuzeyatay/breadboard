@@ -6,6 +6,7 @@ import {
   normalizeAssistantModelId,
 } from "../../ai-models.ts";
 import { BREAD_ASSISTANT_IDENTITY } from "../../assistant-identity.ts";
+import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT } from "../../hermes/prompt-budget.ts";
 import {
   attachmentOrderManifest,
   productAttachmentPromptText,
@@ -345,11 +346,15 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     identity: HermesModelIdentity,
     additional?: string,
   ): string {
-    return [
+    const required = [
       BASE_SYSTEM_PROMPT,
       hermesModelIdentityPrompt(identity),
-      additional?.trim(),
     ].filter(Boolean).join("\n\n");
+    // Defense in depth for every caller, including ones that append context
+    // after composeHermesSystemPrompt. The current user text is never clipped.
+    const context = boundPromptContext(additional?.trim() ?? "",
+      HERMES_SYSTEM_PROMPT_LIMIT - required.length - 2);
+    return [required, context].filter(Boolean).join("\n\n");
   }
 
   get enabled(): boolean {

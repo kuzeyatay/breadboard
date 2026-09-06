@@ -43,6 +43,7 @@ export type SupervisedServiceId =
   | "hermes"
   | "quartz"
   | "gbrain"
+  | "acestep"
   | "comfyui"
   | "ui-tars"
   | "cad"

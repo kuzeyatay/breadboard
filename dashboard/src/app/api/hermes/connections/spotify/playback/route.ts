@@ -14,20 +14,12 @@ import {
   spotifyConnectionStatus,
   spotifyCurrentPlaybackState,
   spotifyLibraryContains,
-  spotifyPhonePlaybackDevice,
 } from "@/lib/spotify/service.ts";
+import { spotifyTargetDevice } from "@/lib/spotify/playback-target.ts";
 import { spotifyQueueStep } from "@/lib/spotify/queue.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-function deviceId(value: unknown): string {
-  const id = typeof value === "string" ? value.trim() : "";
-  if (!/^[A-Za-z0-9_-]{8,200}$/.test(id)) {
-    throw new ApiError(400, "invalid_spotify_device", "The browser player is not ready.");
-  }
-  return id;
-}
 
 function trackId(value: unknown): string {
   const id = typeof value === "string" ? value.trim() : "";
@@ -83,16 +75,16 @@ export async function GET(request: Request) {
     const conversation = getConversationForUser(publicId, userId);
     const status = spotifyConnectionStatus(userId);
     const intent = getSpotifyPlaybackIntent(userId, conversation.id);
-    const [current, phone] = status.connected && intent
+    const [current, device] = status.connected && intent
       ? await Promise.all([
           spotifyCurrentPlaybackState(userId).catch(() => null),
-          spotifyPhonePlaybackDevice(userId).catch(() => null),
+          spotifyTargetDevice(userId, intent.target).catch(() => null),
         ])
       : [null, null];
     const playback =
       current &&
-      phone?.isActive &&
-      current.deviceId === phone.id &&
+      device &&
+      current.deviceId === device.id &&
       intent?.queueUris.includes(current.track.uri)
         ? current
         : null;
@@ -100,8 +92,8 @@ export async function GET(request: Request) {
       ...status,
       intent,
       playback,
-      phone: phone
-        ? { name: phone.name, type: phone.type, isActive: phone.isActive }
+      device: device
+        ? { name: device.name, type: device.type }
         : null,
       library: status.connected
         ? await libraryState(userId, playback?.track.id ?? intent?.track.id).catch(
@@ -122,17 +114,24 @@ export async function POST(request: Request) {
     const publicId = typeof body.conversation === "string" ? body.conversation : "";
     const conversation = getConversationForUser(publicId, userId);
     const action = typeof body.action === "string" ? body.action : "";
+    const target = getSpotifyPlaybackIntent(userId, conversation.id)?.target ?? "inline";
     const playerDeviceId = async (options?: {
       activate?: boolean;
       play?: boolean;
     }) => {
-      const phone = await spotifyPhonePlaybackDevice(userId);
-      if (!phone) return deviceId(body.deviceId);
-      if (options?.activate === false || phone.isActive) return phone.id;
+      if (!spotifyConnectionStatus(userId).connected) {
+        throw new ApiError(409, "spotify_connection_required", "Connect Spotify from Settings → Connections before using the player.");
+      }
+      const device = await spotifyTargetDevice(userId, target);
+      if (!device) {
+        throw new ApiError(409, target === "phone" ? "spotify_phone_unavailable" : "spotify_engine_starting",
+          target === "phone" ? "Spotify is not currently available on your phone. Open Spotify on the phone and try again." : "Breadboard's Spotify player is still starting. Try playback again.");
+      }
+      if (target === "inline" || options?.activate === false || device.isActive) return device.id;
       return (
         await activateSpotifyPhonePlayback({
           userId,
-          device: phone,
+          device,
           play: options?.play === true,
         })
       ).id;

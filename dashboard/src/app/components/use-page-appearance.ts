@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useWallpaperTone } from "./use-wallpaper-tone";
 import {
   APP_THEME_CHANGE_EVENT,
   APP_THEME_MODE_CHANGE_EVENT,
@@ -35,9 +36,10 @@ export function usePageAppearance(ownerKey: string, page: AppearancePage) {
   }, [snapshot]);
   const theme = appTheme;
   const wallpaper = resolveWallpaper(preference.backgrounds[theme], theme);
+  const wallpaperTone = useWallpaperTone(wallpaper?.src, wallpaper?.tone ?? theme);
   const save = (patch: Parameters<typeof writePageAppearance>[3]) => {
     writePageAppearance(window.localStorage, ownerKey, page, patch);
     window.dispatchEvent(new Event(PAGE_APPEARANCE_CHANGE_EVENT));
   };
-  return { preference, appTheme, theme, wallpaper, ready, hasWallpaper: Boolean(wallpaper), save };
+  return { preference, appTheme, theme, wallpaper, wallpaperTone, ready, hasWallpaper: Boolean(wallpaper), save };
 }

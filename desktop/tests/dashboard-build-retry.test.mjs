@@ -26,3 +26,25 @@ test("does not retry source, type, or unrelated filesystem failures", () => {
   assert.equal(isTransientDashboardBuildFailure("ENOENT: missing dashboard/src/app/page.tsx"), false);
   assert.equal(isTransientDashboardBuildFailure("EPERM: rename C:\\unrelated.tmp"), false);
 });
+
+test("retries the missing generated pages manifest from the Windows build log", () => {
+  assert.equal(isTransientDashboardBuildFailure(
+    "Error: ENOENT: no such file or directory, open 'C:\\Users\\20252082\\breadboard\\dashboard\\.next-desktop\\server\\pages-manifest.json'",
+  ), true);
+  assert.equal(isTransientDashboardBuildFailure(
+    "Error: ENOENT: no such file or directory, open '/repo/dashboard/.next-desktop/server/pages-manifest.json'",
+  ), true);
+});
+
+test("does not mistake other missing inputs for a generated manifest failure", () => {
+  for (const missing of [
+    "dashboard/src/pages-manifest.json",
+    "dashboard/.next-desktop-other/server/pages-manifest.json",
+    "dashboard/.next-desktop/server/application-data.json",
+    "dashboard/.next-desktop-last-good/server/pages-manifest.json",
+  ]) {
+    assert.equal(isTransientDashboardBuildFailure(
+      `Compiled into dashboard/.next-desktop\nError: ENOENT: no such file or directory, open '${missing}'`,
+    ), false);
+  }
+});

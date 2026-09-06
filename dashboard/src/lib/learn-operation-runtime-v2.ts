@@ -197,6 +197,35 @@ function latestLearnJobFence(gardenId: string): LearnJobFence | null {
   };
 }
 
+/**
+ * A rollback can finish before its compensating Quartz publication does. The
+ * startup sweeper owns that publication under the same fenced garden lease, so
+ * admitting a Runtime worker during this interval only creates a job that is
+ * guaranteed to fail on lease acquisition. Keep the conflict at the HTTP
+ * admission boundary instead; callers can safely retry the unchanged request.
+ */
+function hasPendingLearnPublication(gardenId: string): boolean {
+  try {
+    return Boolean(
+      db.prepare(
+        `SELECT 1
+         FROM learn_publication_retries
+         WHERE garden_id = ?
+         LIMIT 1`,
+      ).get(gardenId),
+    );
+  } catch (error) {
+    const candidate = error as NodeJS.ErrnoException;
+    if (
+      candidate.code === "SQLITE_ERROR" &&
+      /no such table:\s*learn_publication_retries/i.test(candidate.message)
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function correlatedLearnJob(
   receipt: RuntimeV2LearnReceipt,
   candidate: LearnJobFence | null,
@@ -989,6 +1018,11 @@ export async function executeLearnOperationForRoute<T>(
   label: string,
 ): Promise<LearnTaskHandoff<T>> {
   void label;
+  if (hasPendingLearnPublication(request.gardenId)) {
+    throw new LearnWorkerConflictError(
+      "Learn is finishing publication recovery for this garden. Try again in a few seconds.",
+    );
+  }
   const authority = runtimeAuthority(request.userId, request.gardenId);
   const payload = requestPayload(request);
   const digest = requestDigest(payload);

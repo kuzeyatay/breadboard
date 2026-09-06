@@ -22,10 +22,12 @@ export interface DesktopTabView {
   url: string;
   loading: boolean;
   browser?: {
+    private?: boolean;
     address: string;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
+    downloadsOpen?: boolean;
     terminalWidth: number;
     zoomPercent?: number;
     translation?: { status: "original" | "translating" | "translated" | "error"; language: string; translated: number; error?: string };
@@ -40,6 +42,7 @@ export interface DesktopTabView {
 }
 
 export interface DesktopTabsState {
+  windowFocused?: boolean;
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
   activeId: number | null;
@@ -59,6 +62,8 @@ export interface DesktopBrowserExtension {
 }
 
 export type DesktopTabsCommand =
+  | { type: "voice-overlay"; open: boolean }
+  | { type: "voice-open" }
   | { type: "browser-notifications-enabled"; enabled: boolean }
   | { type: "browser-notification-permission"; origin: string; permission: "default" | "granted" | "denied" }
   | { type: "browser-translation-language"; language: string }
@@ -66,6 +71,7 @@ export type DesktopTabsCommand =
   | { type: "browser-translation-menu" }
   | { type: "browser-translation-restore" }
   | { type: "browser-notification-action"; id: string; action: "click" | "close" }
+  | { type: "browser-notification-permission-response"; id: string; permission: NotificationPermission }
   | { type: "open"; url: string; background?: boolean }
   | { type: "new" }
   | { type: "activate"; id: number }
@@ -83,8 +89,12 @@ export type DesktopTabsCommand =
   | { type: "browser-menu"; x: number; y: number; profileLabel: string }
   | { type: "browser-find"; text: string; forward?: boolean; findNext?: boolean }
   | { type: "browser-find-close" }
+  | { type: "browser-downloads-popover"; x: number; y: number }
+  | { type: "browser-downloads-resize"; height: number }
+  | { type: "browser-downloads-close" }
+  | { type: "browser-downloads-show-all" }
   | { type: "browser-terminal"; open: boolean; width?: number }
-  | { type: "browser-address-suggestions"; open: boolean }
+  | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
   | { type: "browser-extension-reload"; id: string }
   | { type: "browser-extension-remove"; id: string };

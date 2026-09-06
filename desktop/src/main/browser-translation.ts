@@ -16,7 +16,19 @@ export class BrowserTranslation {
   private characters = 0;
   constructor(private readonly contents: WebContents, private readonly translate: TranslatePageBatch, private readonly changed: () => void) {
     contents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
-      if (mainFrame && !inPlace) this.reset();
+      if (mainFrame && !inPlace) {
+        // Do not execute scripts in a frame while Chromium is tearing it down.
+        // Keep originals until commit so a cancelled navigation can still restore.
+        this.generation++;
+        clearTimeout(this.timer);
+        this.controller?.abort();
+      }
+    });
+    contents.on("did-navigate", () => this.reset());
+    contents.on("did-stop-loading", () => {
+      if (this.key && this.controller?.signal.aborted) this.publish({
+        ...this.state, status: "error", error: "Translation paused when navigation stopped. Retry to continue.",
+      });
     });
     contents.once("destroyed", () => this.reset());
   }
@@ -30,7 +42,7 @@ export class BrowserTranslation {
     this.characters = 0;
     this.publish({ status: "original", language: this.state.language, translated: 0 });
   }
-  private execute(frame: WebFrameMain, operation: "collect" | "apply" | "restore", payload?: unknown, key = this.key): Promise<unknown> {
+  private async execute(frame: WebFrameMain, operation: "collect" | "apply" | "restore", payload?: unknown, key = this.key): Promise<unknown> {
     const script = translationDocumentScript(key, operation, payload);
     return frame === this.contents.mainFrame
       ? this.contents.executeJavaScriptInIsolatedWorld(1004, [{ code: script }])
@@ -56,6 +68,7 @@ export class BrowserTranslation {
     try {
       let hadWork = false;
       const frames = this.contents.mainFrame.framesInSubtree;
+      for (const frame of this.documents) if (!frames.includes(frame)) this.documents.delete(frame);
       for (const frame of frames) {
         if (!live()) return;
         // Include same-origin and cross-origin embedded documents, never local files.

@@ -39,7 +39,8 @@ function request(overrides = {}) {
 
 test("OpenWork seals one immutable private profile before idempotent submission", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-openwork-profile-"));
-  const env = { ...process.env, BREADBOARD_DATA_DIR: root };
+  const env = { ...process.env, BREADBOARD_DATA_DIR: path.toNamespacedPath(root) };
+  delete env.BREADBOARD_AGENT_SERVICE_STATE_ROOT;
   const scope = { userId: 42, runId: "message_openwork_1" };
   const options = {
     baseUrl: "http://127.0.0.1:4010/v1",
@@ -130,6 +131,24 @@ test("the exact sealed zero-input OpenWork adapter preserves Runtime identity", 
     request({ conversationContext: "x".repeat(15_001) }),
   ]) {
     assert.throws(() => adapters.validateRuntimeV2OpenworkRequest(invalid));
+  }
+});
+
+test("extended Windows paths do not allow an indirect OpenWork profile directory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-openwork-indirect-"));
+  try {
+    const external = path.join(root, "external");
+    const state = path.join(root, "state");
+    fs.mkdirSync(external);
+    fs.mkdirSync(state);
+    fs.symlinkSync(external, path.join(state, "openwork"), process.platform === "win32" ? "junction" : "dir");
+    assert.throws(() => prepareOpenworkRunProfile({ userId: 1, runId: "design" }, {
+      baseUrl: "http://127.0.0.1:4010/v1", apiKey: "local-test", model: "test-model",
+      prompt: { deliverFiles: true, allowCommands: false },
+    }, { ...process.env, BREADBOARD_AGENT_SERVICE_STATE_ROOT: path.toNamespacedPath(state) }), /directory is indirect/);
+    assert.deepEqual(fs.readdirSync(external), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -233,7 +252,7 @@ test("the adapter reaches real completion and awaits manager cancellation", asyn
 
 async function runRealOpenwork(mode) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `breadboard-openwork-${mode}-`));
-  const runtimeWorkspacePath = path.join(root, "runtime-workspace");
+  const runtimeWorkspacePath = path.toNamespacedPath(path.join(root, "runtime-workspace"));
   const serviceWorkspacePath = path.join(root, "service-workspace");
   fs.mkdirSync(runtimeWorkspacePath, { recursive: true });
   fs.mkdirSync(serviceWorkspacePath, { recursive: true });

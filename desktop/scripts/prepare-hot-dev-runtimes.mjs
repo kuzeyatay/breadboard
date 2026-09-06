@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureChatMockSourceHook } from "./chatmock-python-source-hook.mjs";
 import { ensureHermesSourceHook } from "./hermes-python-source-hook.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -286,6 +287,7 @@ export function prepareHotDevRuntimes({
   // Migrate it even when no download/reassembly is necessary.
   const pythonRoot = path.join(runtimeRoot, "runtimes", "python");
   if (requiredTargets.includes("python") && fs.existsSync(path.join(pythonRoot, "python.exe"))) {
+    ensureChatMockSourceHook(pythonRoot);
     ensureHermesSourceHook(pythonRoot);
   }
   const missingTargets = initiallyMissing.filter((target) =>

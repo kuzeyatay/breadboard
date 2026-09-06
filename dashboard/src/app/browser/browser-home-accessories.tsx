@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BrowserDock } from "./browser-home-widgets";
 import { BrowserDailyQuote } from "./browser-personalization";
 import BrowserHomeCalendar from "./browser-home-calendar";
@@ -21,6 +21,9 @@ const SettingsDialog = dynamic(() => import("@/app/components/settings-dialog"),
 export default function BrowserHomeAccessories({ ownerKey }: { ownerKey: string }) {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [openPanel, setOpenPanel] = useState<DockPanel | null>(null);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('panel') === 'spotify') setOpenPanel('spotify');
+  }, []);
   const setPanelOpen = useCallback((panel: DockPanel, open: boolean) => {
     setOpenPanel((current) => open ? panel : current === panel ? null : current);
   }, []);

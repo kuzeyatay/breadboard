@@ -22,7 +22,7 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, l
       <div>
         <h3 className="text-sm font-medium text-[var(--ink-heading)]">ChatGPT subscription speech · Experimental</h3>
         <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-          Uses the ChatGPT account selected in Accounts through the native Codex voice connection.
+          Automatically reuses your connected ChatGPT account from Accounts. No separate voice sign-in is needed.
           No API key or separately billed Audio API is used. Subscription access and limits apply.
           Your selected chat model stays the same. Audio and text are sent to OpenAI; voices are AI-generated.
         </p>
@@ -30,7 +30,7 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, l
       <div className="space-y-2">
         <p role="status" className="text-xs leading-5 text-[var(--ink)]">{cloud?.error || (cloud?.configured ? "ChatGPT account connected. Preview a voice to test realtime access." : "Checking the subscription connection…")}</p>
         <button type="button" className={buttonClass} disabled={busy} onClick={() => void onCredentialsChanged()}>Re-check connection</button>
-        {!cloud?.configured ? <p className="text-xs text-[var(--ink-muted)]">Sign in under Accounts. Restart Breadboard after this update to load the voice service.</p> : null}
+        {!cloud?.configured && cloud?.reason !== "sign_in_required" ? <p className="text-xs text-[var(--ink-muted)]">An unavailable voice service does not mean you are signed out. Your existing account will be reused when it connects.</p> : null}
       </div>
       <fieldset disabled={busy} className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -51,9 +51,9 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, l
           Enable speech and dictation
         </label>
         <label className="block text-xs text-[var(--ink-muted)]">Preview text
-          <textarea rows={2} className={fieldClass} value={previewText} onChange={(event) => onPreviewText(event.target.value)} />
+          <textarea aria-label="Preview text" rows={2} className={fieldClass} value={previewText} onChange={(event) => onPreviewText(event.target.value)} />
         </label>
-        <button type="button" className={buttonClass} disabled={!cloud?.configured || !enabled || !previewText.trim()} onClick={onPreview}>Preview subscription voice</button>
+        <button type="button" className={buttonClass} disabled={!cloud?.configured || !enabled || !previewText.trim()} onClick={onPreview}>Preview voice</button>
         <p className="text-xs leading-5 text-[var(--ink-muted)]">Microphone audio is sent live; speech plays as it arrives. Longer text is split automatically, with no 4,000-character limit. Uploaded recordings are processed in real time. Your subscription’s limits still apply. Local voices stay saved when you switch back.</p>
       </fieldset>
     </section>

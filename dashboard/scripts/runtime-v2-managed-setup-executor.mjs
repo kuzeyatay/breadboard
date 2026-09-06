@@ -9,6 +9,7 @@ export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   "bolt-slides": Object.freeze(["install-dependencies"]),
   "career-ops": Object.freeze(["install", "browsers", "scaffold"]),
   "claude-code": Object.freeze(["status", "logout"]),
+  acestep: Object.freeze(["install"]),
   comfyui: Object.freeze(["install"]),
   "deep-tutor": Object.freeze(["install", "reinstall", "remove"]),
   "deer-flow": Object.freeze(["install", "reinstall", "remove"]),
@@ -3423,6 +3424,13 @@ export async function executeManagedSetup(request, options) {
   if (canonical.operation === "bolt-slides") return boltSlidesSetup(context);
   if (canonical.operation === "wardrobe") return wardrobeSetup(context);
   if (canonical.operation === "career-ops") return careerOpsSetup(canonical.action, context);
+  if (canonical.operation === "acestep") {
+    const uv = resolveOnPath("uv", context.env);
+    if (!uv) fail("Install the Runtime uv toolchain before preparing ACE-Step.",503,"setup_uv_missing");
+    const script = directPath(path.join(context.appRoot,"dashboard","scripts","acestep-setup.py"),"isFile","ACE-Step setup entrypoint");
+    const result = await runManagedSetupCommand(uv,["run","--no-project","--python","3.11",script,context.dataRoot,uv],{cwd:context.dataRoot,env:inheritedToolEnvironment(context.env),signal:context.signal,timeoutMs:50*60_000,spawnImpl:context.spawnImpl});
+    return {ok:result.code===0,message:result.code===0?"ACE-Step environment and turbo model prepared.":"ACE-Step setup failed.",detail:commandTail(result)};
+  }
   if (canonical.operation === "comfyui") return comfyUiSetup(context);
   if (canonical.operation === "openmontage") return openMontageSetup(canonical.action, context);
   if (canonical.operation === "resource2skill") {

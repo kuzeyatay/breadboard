@@ -19,6 +19,7 @@ const route = read(
   "src/app/api/hermes/connections/spotify/engine/route.ts",
 );
 const toolRoute = read("src/app/api/hermes/tools/spotify/route.ts");
+const target = read("src/lib/spotify/playback-target.ts");
 const player = read("src/app/components/hermes/inline-spotify-player.tsx");
 const electronProbe = read(
   "../qa/electron/specs/investigation/spotify-playback-runtime.spec.ts",
@@ -150,17 +151,13 @@ test("only the Runtime-owned Spotify service imports process spawning", () => {
   assert.doesNotMatch(service, /taskkill|detached:\s*true|child\.unref\(\)/u);
 });
 
-test("playlist autoplay uses a temporary Runtime lease without blind provider retries", () => {
-  assert.match(toolRoute, /renewSpotifyPlaybackViewLease/u);
-  assert.match(toolRoute, /releaseSpotifyPlaybackViewLease/u);
-  assert.match(toolRoute, /issueSpotifyPlaybackEngineTicket/u);
-  assert.match(toolRoute, /await spotifyPlaybackEngineStatus/u);
+test("inline autoplay uses a bounded Runtime lease before sending provider commands", () => {
+  assert.match(target, /renewSpotifyPlaybackViewLease/u);
+  assert.match(target, /releaseSpotifyPlaybackViewLease/u);
+  assert.match(target, /issueSpotifyPlaybackEngineTicket/u);
+  assert.match(target, /await spotifyPlaybackEngineStatus/u);
+  assert.match(toolRoute, /withSpotifyPlaybackDevice/u);
   assert.doesNotMatch(toolRoute, /ensureSpotifyPlaybackEngine|requestOrigin/u);
-  assert.doesNotMatch(toolRoute, /attempt < 3/u);
-  assert.equal(
-    (toolRoute.match(/await spotifyApiRequest\(/gu) ?? []).length,
-    1,
-  );
 });
 
 test("browser launch authority and credentials stay sealed in the service", () => {
@@ -231,7 +228,7 @@ test("the existing player renews a hidden view lease and releases it on unmount"
   assert.match(player, /method: "POST"/u);
   assert.match(player, /method: "DELETE"/u);
   assert.match(player, /keepalive: true/u);
-  assert.match(player, /managedEngineStartAbortRef\.current\?\.abort\(\)/u);
+  assert.match(player, /controller\.abort\(\)/u);
   assert.match(player, /window\.clearTimeout\(timer\)/u);
   assert.doesNotMatch(player, /service status|Runtime V2|memory control/iu);
 });

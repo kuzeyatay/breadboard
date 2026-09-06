@@ -156,11 +156,11 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
       {state.tabs.map((tab) => {
         const active = tab.id === state.activeId;
         const dragging = drag?.dragging === true && drag.id === tab.id;
-        const label = tabLabel(tab.title, tab.url);
+        const label = `${tab.browser?.private && tab.title !== "Private Tab" ? "Private · " : ""}${tabLabel(tab.title, tab.url)}`;
         const kind = tab.browser ? "browser" : describeTabUrl(tab.url).kind;
         const reportedFavicon = tab.browser?.favicon;
         const fallbackFavicon = browserTabFaviconFallback(tab.browser?.address);
-        const favicon = reportedFavicon ?? fallbackFavicon;
+        const favicon = tab.browser?.private ? undefined : reportedFavicon ?? fallbackFavicon;
         return (
           <div
             key={tab.id}
@@ -217,6 +217,7 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
             <button
               type="button"
               className="bb-tab-anchor"
+              hidden={tab.browser?.private === true}
               aria-label={`${tab.anchored ? "Unanchor" : "Anchor"} ${label}`}
               aria-pressed={tab.anchored === true}
               title={tab.anchored ? "Unanchor tab to allow closing" : "Anchor tab to keep it open"}

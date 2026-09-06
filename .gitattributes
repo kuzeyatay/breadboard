@@ -92,3 +92,4 @@ Vvvebjs/** linguist-vendored=true -whitespace
 wardrobe/** linguist-vendored=true -whitespace
 watch/** linguist-vendored=true -whitespace
 watermarks-remover/** linguist-vendored=true -whitespace
+dashboard/src/lib/speech/clap/upstream/** linguist-vendored

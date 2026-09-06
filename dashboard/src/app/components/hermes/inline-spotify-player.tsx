@@ -1,4 +1,5 @@
 "use client";
+import { holdForegroundAudio } from '@/lib/speech/clap/audio-focus';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -27,6 +28,7 @@ interface SpotifyTrack {
 }
 
 interface PlaybackIntent {
+  target: "inline" | "phone";
   revision: string;
   track: SpotifyTrack;
   queueUris: string[];
@@ -39,10 +41,9 @@ interface PlaybackResponse {
   status: "connected" | "needs_reauth" | "not_connected";
   intent: PlaybackIntent | null;
   playback: ManagedPlaybackState | null;
-  phone: {
+  device: {
     name: string;
     type: string;
-    isActive: boolean;
   } | null;
   library: SpotifyLibraryState | null;
 }
@@ -69,6 +70,7 @@ interface SpotifyLibraryState {
 
 const POLL_INTERVAL_MS = 1_800;
 const MAX_INTENT_POLLS = 6;
+const ENGINE_VIEW_HEARTBEAT_MS = 20_000;
 
 function belongsToRequest(intent: PlaybackIntent | null, requestedAt?: string): boolean {
   if (!intent || !requestedAt) return Boolean(intent);
@@ -94,7 +96,7 @@ function responseMessage(payload: unknown, fallback: string): string {
 function SpotifyPlayerLoading() {
   return (
     <section
-      aria-label="Loading Spotify phone remote"
+      aria-label="Loading Spotify player"
       aria-busy="true"
       className="mb-4 flex min-h-[178px] w-full items-center justify-center rounded-[20px] border shadow-[0_16px_40px_rgba(20,20,20,0.10)]"
       style={{
@@ -108,7 +110,7 @@ function SpotifyPlayerLoading() {
         className="grid size-10 animate-pulse place-items-center rounded-full"
         style={{ backgroundColor: DEFAULT_PLAYER_PALETTE.buttonBackground }}
       >
-        <span className="sr-only">Loading Spotify phone remote</span>
+        <span className="sr-only">Loading Spotify player</span>
       </div>
     </section>
   );
@@ -142,6 +144,7 @@ export default function InlineSpotifyPlayer({
     ? connection?.intent ?? null
     : null;
   const intentRevision = intent?.revision;
+  const playbackTarget = intent?.target ?? "inline";
 
   useEffect(() => {
     playingRevisionRef.current = null;
@@ -179,13 +182,11 @@ export default function InlineSpotifyPlayer({
         attempts += 1;
         // Wait for each request to settle before scheduling another one. A cold
         // Next.js compile used to let setInterval accumulate dozens of pending
-        // playback reads, which made the local dashboard even slower precisely
-        // while a chat turn was trying to start. Once the tool intent exists,
-        // there is nothing left to poll for.
+        // playback reads. Continue observing the selected device after finding
+        // the intent so the controls follow actual playback and track changes.
         if (
           !cancelled &&
-          !foundIntent &&
-          (turnPending || attempts < MAX_INTENT_POLLS)
+          (foundIntent || turnPending || attempts < MAX_INTENT_POLLS)
         ) {
           timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
         } else if (!cancelled) {
@@ -202,16 +203,57 @@ export default function InlineSpotifyPlayer({
 
   useEffect(() => {
     if (!connection?.connected || !intentRevision) return;
-    if (!connection.phone) {
-      setDeviceReady(false);
-      setError(
-        "Spotify is not currently available on your phone. Open Spotify on the phone and try again.",
-      );
-      return;
-    }
-    setDeviceReady(true);
-    setError(null);
-  }, [connection?.connected, connection?.phone, intentRevision]);
+    if (playbackTarget !== "phone") return;
+    setDeviceReady(Boolean(connection.device));
+    setError(connection.device ? null : "Spotify is not currently available on your phone. Open Spotify on the phone and try again.");
+  }, [connection?.connected, connection?.device, intentRevision, playbackTarget]);
+
+  useEffect(() => {
+    if (!connection?.connected || !intentRevision || playbackTarget === "phone") return;
+    const viewId = crypto.randomUUID();
+    const controller = new AbortController();
+    let cancelled = false;
+    let timer: number | null = null;
+    setDeviceReady(false);
+    const renew = async () => {
+      try {
+        const response = await fetch("/api/hermes/connections/spotify/engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ viewId }),
+          signal: controller.signal,
+        });
+        const payload = await response.json();
+        if (cancelled) return;
+        if (!response.ok) throw new Error(responseMessage(payload, "Breadboard's Spotify player could not start."));
+        setDeviceReady(payload.ready === true);
+        setError(payload.error ?? null);
+        timer = window.setTimeout(() => void renew(), payload.ready ? ENGINE_VIEW_HEARTBEAT_MS : POLL_INTERVAL_MS);
+      } catch (reason) {
+        if (cancelled) return;
+        setDeviceReady(false);
+        setError(reason instanceof Error ? reason.message : "Spotify playback failed.");
+        timer = window.setTimeout(() => void renew(), ENGINE_VIEW_HEARTBEAT_MS);
+      }
+    };
+    const release = () => {
+      void fetch("/api/hermes/connections/spotify/engine", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ viewId }),
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+    window.addEventListener("pagehide", release);
+    void renew();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener("pagehide", release);
+      release();
+    };
+  }, [connection?.connected, intentRevision, playbackTarget]);
 
   useEffect(() => {
     if (!managedPlaying) return;
@@ -272,6 +314,7 @@ export default function InlineSpotifyPlayer({
       !playback ||
       !intent?.queueUris.includes(playback.track.uri)
     ) {
+      setManagedPlaying(false);
       return;
     }
     playingRevisionRef.current = intentRevision;
@@ -348,6 +391,7 @@ export default function InlineSpotifyPlayer({
 
   const duration = visibleTrack?.durationMs ?? 0;
   const isPlaying = managedPlaying;
+  useEffect(() => { if (isPlaying) return holdForegroundAudio(); }, [isPlaying]);
   const connectionRequired = connection !== null && !connection.connected;
   const paletteReady = Boolean(
     visibleTrack && paletteSource === (visibleTrack.imageUrl ?? null),
@@ -363,7 +407,7 @@ export default function InlineSpotifyPlayer({
 
   return (
     <section
-      aria-label="Spotify phone remote"
+      aria-label="Spotify player"
       className="relative isolate mb-4 w-full overflow-hidden rounded-[20px] border shadow-[0_16px_40px_rgba(20,20,20,0.18)]"
       style={
         {

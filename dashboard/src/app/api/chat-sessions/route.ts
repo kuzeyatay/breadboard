@@ -47,6 +47,7 @@ interface QuartzInlineSelectionReference {
 
 type ChatMessage = {
   id?: string;
+  clientMessageId?: string;
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
@@ -583,6 +584,9 @@ function readSessions(
     existing.push({
       ...(message.canonical_message_id !== null
         ? { id: `msg_${message.canonical_message_id}` }
+        : {}),
+      ...(message.client_message_id
+        ? { clientMessageId: message.client_message_id }
         : {}),
       role: message.role,
       ...delegatedAgentPresentation(message.content, externalAgent),

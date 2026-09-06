@@ -59,6 +59,13 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
   if (current.dirty) {
     current.dirty = false;
     for (const [id, entry] of current.entries) if (!entry.node.isConnected) current.entries.delete(id);
+    if ([...current.roots].some(root => !root.isConnected)) {
+      current.observer.disconnect();
+      for (const root of current.roots) {
+        if (!root.isConnected) current.roots.delete(root);
+        else current.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
+      }
+    }
     const remember = (node: Node, attribute: string, value: string) => {
       if (!value.trim() || !/\p{L}/u.test(value) || value.length > 12000) return;
       let ids = current.nodes.get(node);
@@ -107,8 +114,16 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
     if (entry.pending || entry.done || !entry.node.isConnected) continue;
     // Mark unchanged translations complete too; they must not be resubmitted forever.
     const element = entry.node.nodeType === Node.ELEMENT_NODE ? entry.node as Element : entry.node.parentElement;
-    if (!element || excluded(element) || !element.getClientRects().length) continue;
-    const context = element.closest("p,li,h1,h2,h3,h4,label,button,td,th,figcaption")?.textContent?.slice(0, 300) ?? "";
+    if (!element || excluded(element) || !(element.closest("select") ?? element).getClientRects().length) continue;
+    const contextRoot = element.closest("p,li,h1,h2,h3,h4,label,button,td,th,figcaption");
+    let context = "";
+    if (contextRoot) {
+      const contextWalker = document.createTreeWalker(contextRoot, NodeFilter.SHOW_TEXT, { acceptNode: node =>
+        node.parentElement && !excluded(node.parentElement) && !node.parentElement.closest("[hidden],[aria-hidden='true']")
+          ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+      let node: Node | null;
+      while (context.length < 300 && (node = contextWalker.nextNode())) context += (node.nodeValue ?? "").slice(0, 300 - context.length);
+    }
     const length = entry.original.length + context.length;
     if (batch.length && (size + length > 12000 || batch.length >= 40)) break;
     entry.pending = true;

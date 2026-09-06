@@ -1,5 +1,7 @@
 "use client";
 
+import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReclaimingAudio } from "@/app/components/reclaiming-media";
 import MicrophonePermissionHelp from "./microphone-permission-help";
@@ -85,7 +87,7 @@ export default function VoiceSampleRecorder({ passage, onRecorded, disabled = fa
     frameRef.current = null;
     tickRef.current = null;
     stopTimerRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    stopForegroundStream(streamRef.current);
     streamRef.current = null;
     recorderRef.current = null;
     void audioContextRef.current?.close().catch(() => {});
@@ -155,11 +157,11 @@ export default function VoiceSampleRecorder({ passage, onRecorded, disabled = fa
       // No noise suppression or auto gain: those reshape exactly the timbre
       // the clone is meant to copy. Echo cancellation stays on because a
       // laptop speaker bleeding into the take is worse.
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await requestForegroundMicrophone({
         audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
       });
       if (!mountedRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
+        stopForegroundStream(stream);
         return;
       }
       const mimeType = bestRecordingMimeType();

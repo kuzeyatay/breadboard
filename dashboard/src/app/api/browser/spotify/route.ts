@@ -16,6 +16,7 @@ import {
   spotifyCurrentPlaybackState,
   spotifyDeletePlaylist,
   spotifyLibraryContains,
+  spotifyListeningHistory,
   spotifyPlaylistTracks,
   spotifyRecommendedTracks,
   spotifyRemoveTrackFromPlaylist,
@@ -91,6 +92,7 @@ export async function GET(request: Request) {
         engine: { ready: false, deviceId: null, status: "unavailable", error: null },
         playback: null,
         savedTrack: false,
+        history: spotifyListeningHistory.read(userId),
       });
     }
     const [engine, playback] = await Promise.all([
@@ -101,7 +103,7 @@ export async function GET(request: Request) {
       ? await spotifyLibraryContains(userId, playback.track.id).catch(() => false)
       : false;
     return NextResponse.json(
-      { ...connection, engine, playback, savedTrack },
+      { ...connection, engine, playback, savedTrack, history: spotifyListeningHistory.read(userId) },
       { headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } },
     );
   } catch (error) {
@@ -113,8 +115,14 @@ export async function POST(request: Request) {
   try {
     requireEnabled();
     const userId = await requireUserId();
-    const body = await readJsonBody(request, 16 * 1024);
+    const body = await readJsonBody(request, 64 * 1024);
     const action = typeof body.action === "string" ? body.action : "";
+    if (action === "import-history") {
+      if (!Array.isArray(body.tracks) || Object.keys(body).some((key) => key !== "action" && key !== "tracks")) {
+        throw new ApiError(400, "invalid_spotify_history", "The saved Spotify history is invalid.");
+      }
+      return NextResponse.json({ history: spotifyListeningHistory.importLegacy(userId, body.tracks) });
+    }
     if (!ACTIONS.has(action)) {
       throw new ApiError(400, "invalid_spotify_dock_action", "That music control is not supported.");
     }
@@ -238,6 +246,7 @@ export async function POST(request: Request) {
         ok: true,
         engine,
         playback: await stateAfterChange(userId),
+        history: spotifyListeningHistory.read(userId),
       });
     }
     if (!engine.ready || !engine.deviceId) {
@@ -272,6 +281,7 @@ export async function POST(request: Request) {
         ok: true,
         engine,
         playback: await stateAfterChange(userId, trackUri),
+        history: spotifyListeningHistory.read(userId),
       });
     }
     if (action === "play-playlist") {
@@ -286,6 +296,7 @@ export async function POST(request: Request) {
         ok: true,
         engine,
         playback: await stateAfterChange(userId),
+        history: spotifyListeningHistory.read(userId),
       });
     }
 
@@ -312,6 +323,7 @@ export async function POST(request: Request) {
       ok: true,
       engine,
       playback: await stateAfterChange(userId),
+      history: spotifyListeningHistory.read(userId),
     });
   } catch (error) {
     return apiErrorResponse(error);

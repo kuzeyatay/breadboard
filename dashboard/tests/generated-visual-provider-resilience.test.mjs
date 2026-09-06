@@ -227,7 +227,7 @@ function passingBrowserPreview(outputDir) {
 
 test("Learn gives model-authored visual repair the bounded semantic ceiling", () => {
   assert.equal(GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS, 1);
-  assert.equal(GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS, 8);
+  assert.equal(GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS, 12);
   assert.equal(
     GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
     GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,

@@ -387,6 +387,10 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       proposal: metadata.proposal,
       pending: messagePending,
       failed: presented.status === "failed",
+      ...(presented.role === "assistant" && presented.status === "failed" &&
+        (typeof metadata.error === "string" || typeof metadata.runtimeError === "string")
+        ? { runtimeError: typeof metadata.error === "string" ? metadata.error : metadata.runtimeError as string }
+        : {}),
       interrupted: presented.status === "aborted" && !recoveringPreDispatch,
       ...(presented.role === "assistant" && recoveringPreDispatch
         ? { preDispatchRecovery }

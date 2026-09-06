@@ -266,6 +266,10 @@ export const OUTER_AGENT_RUNTIME_ADAPTERS = Object.freeze({
     scopePrefix: "oa_socials_manager",
     timeoutMs: 60 * 60 * 1_000,
   }),
+  "music-producer": Object.freeze({
+    kind: "music-producer", jobType: "music-producer-run", workerKind: "outer-music-producer-node",
+    resourceClass: "document-processing", scopePrefix: "oa_music_producer", timeoutMs: 30 * 60_000,
+  }),
   "get-doc": Object.freeze({
     kind: "get-doc",
     jobType: "get-doc-run",
@@ -575,7 +579,7 @@ function synthesizedTerminalEvent(
   at: string,
 ): OuterAgentEvent {
   if (job?.state === "succeeded") {
-    const summary = adapter.kind === "ruflo"
+    const summary = adapter.kind === "music-producer" ? "Music collection ended. Provider computation may continue if interrupted." : adapter.kind === "ruflo"
       ? "The Ruflo swarm finished."
       : adapter.kind === "deep-tutor"
         ? "The tutor finished without an answer."

@@ -6,11 +6,11 @@
     "node": "^22.15.0 || >=23.5.0"
   },
   "scripts": {
-    "predev": "npm run sync:quartz-topology",
+    "predev": "npm run sync:quartz-topology && npm run build:clap-worklet",
     "dev": "next dev",
     "dev:turbo": "next dev --turbopack",
     "dev:webpack": "next dev --webpack",
-    "prebuild": "npm run sync:quartz-topology",
+    "prebuild": "npm run sync:quartz-topology && npm run build:clap-worklet",
     "build": "next build",
     "typecheck:knowledge": "tsc -p tsconfig.brain-map.json",
     "typecheck:brain": "npm run typecheck:knowledge",
@@ -35,7 +35,8 @@
     "evaluate:retrieval": "node --experimental-strip-types ../scripts/evaluate-semantic-retrieval.ts",
     "prose:score": "node --experimental-strip-types scripts/prose-score.mjs",
     "vendor:slop-rules": "node scripts/vendor-slop-rules.mjs",
-    "learn:waive-legacy-planning": "node --experimental-strip-types scripts/create-learn-planning-legacy-waiver.mjs"
+    "learn:waive-legacy-planning": "node --experimental-strip-types scripts/create-learn-planning-legacy-waiver.mjs",
+    "build:clap-worklet": "node scripts/build-clap-worklet.mjs"
   },
   "dependencies": {
     "@cantoo/pdf-lib": "^2.8.2",

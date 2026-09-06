@@ -13,6 +13,8 @@ import { classifyResearch } from "../research/classify.ts";
 import { researchAnswerContract } from "../research/directive.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import { unlazySystemSection } from "./unlazy.ts";
+import { CONVERSATION_REFERENCE_POLICY } from "../conversations/message-context.ts";
+import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT } from "./prompt-budget.ts";
 
 function readSystemPrompt(name: string): string {
   const file = path.join(
@@ -30,7 +32,7 @@ function readSystemPrompt(name: string): string {
  * their own system prompts and must answer in the same voice.
  */
 export function responseStylePrompt(): string {
-  return readSystemPrompt("response-style");
+  return [readSystemPrompt("response-style"), CONVERSATION_REFERENCE_POLICY].join("\n\n");
 }
 
 /**
@@ -253,13 +255,18 @@ export function composeHermesSystemPrompt(input: {
     skillSelected: input.goalSkillSelected === true,
   });
   if (goalMode) sections.push(goalMode);
-  if (input.additional?.trim()) sections.push(input.additional.trim());
   // Persona overlays are deliberately last and explicitly subordinate. They
   // can shape voice and approach, but never the server-authored sections above.
-  if (input.persona?.trim()) sections.push(input.persona.trim());
+  const suffix = [boundPromptContext(input.persona?.trim() ?? "", 8_000)];
   // Final on purpose: this governs how already-decided content is explained.
   // Concise, retrieved evidence and a specialist persona may shape the
   // answer, but none may turn it back into unexplained analyst shorthand.
-  sections.push(readerComprehensionPrompt());
-  return sections.join("\n\n");
+  suffix.push(readerComprehensionPrompt());
+  const policy = sections.join("\n\n");
+  const ending = suffix.filter(Boolean).join("\n\n");
+  // Budget evidence after assembling policy, so a long report cannot evict
+  // capability boundaries or the final response contract.
+  const context = boundPromptContext(input.additional?.trim() ?? "",
+    COMPOSED_SYSTEM_PROMPT_LIMIT - policy.length - ending.length - 4);
+  return [policy, context, ending].filter(Boolean).join("\n\n");
 }

@@ -45,7 +45,7 @@ def create_app(
     @app.get("/")
     @app.get("/health")
     def health():
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "breadboard_subscription_voice": 1})
 
     @app.after_request
     def _cors(resp):
