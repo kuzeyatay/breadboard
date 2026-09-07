@@ -21,6 +21,7 @@ import {
   makeCriticArtifactRepair,
   computeIssueResolutions,
   parseModelRepairOutput,
+  verifyCriticIssueAgainstFinalState,
   DEFAULT_CRITIC_LOOP_OPTIONS,
   writeCriticReports,
 } from "../src/lib/critic-loop.ts";
@@ -454,6 +455,32 @@ describe("critic request fail-closed boundaries", () => {
 });
 
 describe("targeted critic metadata repairs", () => {
+  test("exact identity-reviewed numeric source formula is not a worked-example misclassification", () => {
+    const exactText = "V_1 = \\frac{1}{4}(0 + 100 + 0 + 0) = 25 V";
+    const result = verifyCriticIssueAgainstFinalState(issue({
+      id: "reviewed-numeric-source-formula",
+      type: "worked_example_misclassified",
+      pagePath: "learning/6. Numerics/6.4 Node update.md",
+      sourceAnchorIds: ["S7.P50.E1"],
+    }), {
+      formulas: [{
+        pageRel: "learning/6. Numerics/6.4 Node update.md",
+        structuralKind: "worked_example",
+        declaredKind: "source_definition",
+        groundingStatus: "source-anchored",
+        sourceAnchor: "S7.P50.E1",
+        text: exactText,
+      }],
+      sourceAnchors: {
+        "S7.P50.E1": { kind: "formula", exactText },
+      },
+    });
+
+    assert.equal(result.verified, false);
+    assert.equal(result.severity, "unsupported");
+    assert.match(result.reason, /exact identity-reviewed source projection/);
+  });
+
   test("critic repair propagates ambiguous model failures by exact identity and stops later rounds", async () => {
     for (const [label, providerError] of ambiguousModelFailures()) {
       const dir = mkTinyGarden(`bb-critic-${label.replace(/\W+/g, "-")}-`);
@@ -897,6 +924,59 @@ Original contract-backed body.
       /returned model candidate failed target or safety validation/,
     );
     assert.equal(read(dir, pageRel), markdown, "the export-invalid candidate must be rolled back");
+  });
+
+  test("model repair gets one bounded fresh retry with exact validation feedback", async () => {
+    const dir = mkTinyGarden("bb-critic-validation-feedback-");
+    const { pageRel, markdown } = writeTinyModelPage(dir);
+    const candidates = [
+      markdown.replace("This opening paragraph", "First candidate opening paragraph"),
+      markdown.replace("This opening paragraph", "Second candidate opening paragraph"),
+    ];
+    const modelInputs = [];
+    let validationCalls = 0;
+    const bad = issue({
+      id: "feedback-retry",
+      type: "repeated_opening",
+      repairTarget: "unit_page",
+      pagePath: pageRel,
+    });
+    const repair = makeCriticArtifactRepair({
+      allowDeterministicRepairs: false,
+      maxModelCandidateAttempts: 2,
+      modelRepair: (input) => {
+        modelInputs.push(input);
+        return {
+          targetPath: input.repairRequest.targetPath,
+          revisedMarkdown: candidates[modelInputs.length - 1],
+        };
+      },
+      validateModelCandidate: () => {
+        validationCalls += 1;
+        return validationCalls === 1
+          ? { passed: false, problems: ["reviewed formula projection changed"] }
+          : { passed: true, problems: [] };
+      },
+    });
+
+    const outcome = await repair(dir, "test-2", criticIssuesToRepairRequests([bad]), {
+      round: 1,
+      issuesById: new Map([[bad.id, bad]]),
+    });
+
+    assert.equal(modelInputs.length, 2);
+    assert.equal(validationCalls, 2);
+    assert.equal(modelInputs[0].candidateAttempt, 1);
+    assert.equal(modelInputs[1].candidateAttempt, 2);
+    assert.deepEqual(modelInputs[1].priorCandidateValidationFeedback, [
+      "candidate failed final-export validation: reviewed formula projection changed",
+    ]);
+    assert.match(read(dir, pageRel), /Second candidate opening paragraph/);
+    assert.equal(outcome.provenance[0].executorUsed, "model");
+    assert.equal(outcome.provenance[0].modelCandidateAttempts, 2);
+    assert.deepEqual(outcome.provenance[0].modelValidationFeedback, [
+      "candidate failed final-export validation: reviewed formula projection changed",
+    ]);
   });
 });
 

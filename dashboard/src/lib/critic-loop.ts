@@ -271,6 +271,14 @@ function normalizedProblemKey(problem: string): string {
   return String(problem ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ").slice(0, 160);
 }
 
+function exactSourceFormulaProjectionKey(text: string | undefined): string {
+  return String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function criticIssueStableIdentity(issue: CriticIssue): CriticIssueStableIdentity {
   return {
     issueType: issue.type,
@@ -440,6 +448,8 @@ export interface RepairProvenanceRecord {
   executorAttempted: Array<"model" | "deterministic">;
   executorUsed: "model" | "deterministic" | "none";
   modelFailureReason?: string;
+  modelCandidateAttempts?: number;
+  modelValidationFeedback?: string[];
   changed: boolean;
 }
 
@@ -522,6 +532,12 @@ export interface ModelRepairInput {
   sourceAnchors?: unknown[];
   previousPageSummary?: string;
   nextPageSummary?: string;
+  /** A rejected candidate gets one bounded, fresh semantic retry carrying the
+   * exact validation findings. Including the attempt in the request payload
+   * also prevents durable Council receipt reuse from replaying the same invalid
+   * answer. */
+  candidateAttempt?: number;
+  priorCandidateValidationFeedback?: string[];
 }
 
 export interface ModelRepairOutput {
@@ -532,6 +548,16 @@ export interface ModelRepairOutput {
 }
 
 export type ModelRepairFn = (input: ModelRepairInput) => Promise<ModelRepairOutput | null> | ModelRepairOutput | null;
+
+export interface ModelCandidateValidationResult {
+  passed: boolean;
+  problems?: string[];
+}
+
+export type ModelCandidateValidator = (
+  gardenDir: string,
+  gardenSlug: string,
+) => boolean | ModelCandidateValidationResult;
 
 // ---------------------------------------------------------------------------
 // Review packet
@@ -967,11 +993,29 @@ export function verifyCriticIssueAgainstFinalState(issue: CriticIssue, state: Fi
     const pool = pageFormulas(issue.pagePath);
     const files = issue.pagePath ? [issue.pagePath] : [...new Set(pool.map((f) => f.pageRel))];
     if (pool.length === 0) return trust(files, "no formulas located to check; trusting the critic verdict");
-    const misclassified = pool.filter((f) => f.structuralKind === "worked_example" && f.declaredKind === "source_definition");
+    // The canonical export contract deliberately preserves an identity-reviewed
+    // source formula verbatim. Some source formulas are themselves concrete
+    // numerical examples, so structural arithmetic alone cannot contradict the
+    // `source_definition` metadata role when the entry is an exact reviewed
+    // projection. The finalizer makes the same exemption; keeping the critic's
+    // independent verifier aligned prevents an impossible repair loop where the
+    // critic demands relabeling and the strict source-projection gate rejects it.
+    const misclassified = pool.filter((f) => {
+      if (f.structuralKind !== "worked_example" || f.declaredKind !== "source_definition") {
+        return false;
+      }
+      const sourceAnchor = String(f.sourceAnchor ?? "").trim();
+      const reviewedExactText = sourceAnchor
+        ? state.sourceAnchors[sourceAnchor]?.exactText
+        : undefined;
+      const reviewedGrounding = /^(source-anchored|source-derived)$/.test(String(f.groundingStatus ?? "").trim());
+      return !reviewedGrounding || !reviewedExactText ||
+        exactSourceFormulaProjectionKey(f.text) !== exactSourceFormulaProjectionKey(reviewedExactText);
+    });
     if (misclassified.length > 0) {
       return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: files, fullStateEvidence: misclassified.map((f) => f.text), reason: "a numeric worked example is labeled source_definition in the full record" };
     }
-    return { issueId, verified: false, severity: "unsupported", checkedFiles: files, reason: "no numeric substitution is mislabeled as source_definition in the full formula records" };
+    return { issueId, verified: false, severity: "unsupported", checkedFiles: files, reason: "no noncanonical numeric substitution is mislabeled as source_definition; any numeric source_definition is an exact identity-reviewed source projection" };
   }
 
   // (c) Source-anchor mismatch — inspect the full canonical anchor record.
@@ -1345,8 +1389,10 @@ export const MODEL_REPAIR_SYSTEM_PROMPT = `You repair one file of a Breadboard l
 Hard requirements:
 - Return the ENTIRE target file, not a diff.
 - Preserve the YAML frontmatter block and every required key (title, knowledge_type/breadboardType, learningUnitId, generated_by, tags, sourceAnchors, sourceFormulaAnchors, formulas, visualIds). Change only what the issue requires.
+- Unless the issue explicitly targets metadata, preserve the YAML frontmatter verbatim and change only learner-facing prose or display math in the body.
 - Preserve source anchors and formula anchors UNLESS the issue is a source/formula anchor mismatch, in which case ground to the correct one named in the issue.
 - Never add a source or formula anchor that is absent from the target page's Learning Unit Contract. If a critic asks for excluded material, repair the prose within the existing contract instead of expanding the source scope.
+- Preserve every existing exact source-formula transcription and its metadata. If the source transcription itself contains a typo, convention conflict, or misleading special case, keep the exact source display visibly labeled as the source form and add the corrected relationship as unanchored explanatory math; never silently rewrite the source projection.
 - Preserve every \`\`\`breadboard-visual\`\`\` block verbatim.
 - Preserve contract-backed Zettelkasten tags, unless the issue is a template handle — then replace only the flagged handle with a concrete durable claim.
 - Remove exactly the flagged issue; do not introduce generic scaffold prose ("introduces the core idea", "so the pieces connect into one picture", "one step at a time").
@@ -1355,6 +1401,9 @@ Output the revised file content only.`;
 
 export function buildModelRepairPrompt(input: ModelRepairInput): { system: string; user: string } {
   const { issue, repairRequest } = input;
+  const validationFeedback = (input.priorCandidateValidationFeedback ?? [])
+    .map((problem) => String(problem).trim())
+    .filter(Boolean);
   const user = [
     `Target file: ${repairRequest.targetPath ?? "(unknown)"}`,
     `Issue type: ${issue.type}`,
@@ -1365,6 +1414,14 @@ export function buildModelRepairPrompt(input: ModelRepairInput): { system: strin
     input.sourceAnchors ? `Relevant source anchors: ${JSON.stringify(input.sourceAnchors).slice(0, 1200)}` : "",
     input.previousPageSummary ? `Previous page: ${input.previousPageSummary}` : "",
     input.nextPageSummary ? `Next page: ${input.nextPageSummary}` : "",
+    validationFeedback.length > 0
+      ? [
+          `Candidate attempt ${Math.max(2, input.candidateAttempt ?? 2)} must differ from the rejected candidate.`,
+          "The previous candidate was rolled back because it failed these exact validation checks:",
+          ...validationFeedback.map((problem) => `- ${problem}`),
+          "Repair the original issue while preserving every contract/source projection named above.",
+        ].join("\n")
+      : "",
     "",
     "Current file content:",
     "-----",
@@ -1533,15 +1590,41 @@ function introducedAuditProblems(before: FinalAuditResult | null, after: FinalAu
   return after.problems.filter((problem) => !existing.has(problem));
 }
 
+interface ModelRepairApplicationResult {
+  accepted: boolean;
+  feedback: string[];
+}
+
+function normalizeModelCandidateValidation(
+  result: boolean | ModelCandidateValidationResult,
+): ModelCandidateValidationResult {
+  if (typeof result === "boolean") return { passed: result };
+  if (result && typeof result.passed === "boolean") {
+    return {
+      passed: result.passed,
+      problems: (result.problems ?? []).map((problem) => String(problem).trim()).filter(Boolean),
+    };
+  }
+  return { passed: false, problems: ["candidate validator returned an invalid result"] };
+}
+
 function applyModelRepairOutput(
   gardenDir: string,
   gardenSlug: string,
   out: ModelRepairOutput,
-  validateCandidate?: (gardenDir: string, gardenSlug: string) => boolean,
-): boolean {
+  validateCandidate?: ModelCandidateValidator,
+): ModelRepairApplicationResult {
   const abs = path.join(gardenDir, out.targetPath);
-  if (!fs.existsSync(path.dirname(abs))) return false;
+  const reject = (...feedback: string[]): ModelRepairApplicationResult => ({
+    accepted: false,
+    feedback: feedback.map((problem) => String(problem).trim()).filter(Boolean),
+  });
+  if (!fs.existsSync(path.dirname(abs))) return reject(`target directory does not exist: ${path.dirname(out.targetPath)}`);
   const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : null;
+  const restore = (): void => {
+    if (before !== null) fs.writeFileSync(abs, before, "utf-8");
+    else fs.rmSync(abs, { force: true });
+  };
   let beforeAudit: FinalAuditResult | null = null;
   try {
     beforeAudit = auditFinalGardenState(buildFinalGardenState(gardenDir, gardenSlug));
@@ -1550,35 +1633,45 @@ function applyModelRepairOutput(
     // post-write parse boundary below still applies in that case.
   }
   if (out.revisedMarkdown !== undefined) {
-    if (!/^---\r?\n[\s\S]*?\r?\n---/.test(out.revisedMarkdown)) return false; // must keep frontmatter
-    if (modelMarkdownHasInvalidAnchorLabels(out.revisedMarkdown)) return false;
-    if (before !== null && out.revisedMarkdown.trim() === before.trim()) return false;
+    if (!/^---\r?\n[\s\S]*?\r?\n---/.test(out.revisedMarkdown)) return reject("candidate markdown is missing its YAML frontmatter block");
+    if (modelMarkdownHasInvalidAnchorLabels(out.revisedMarkdown)) return reject("candidate introduces an invalid source-anchor label");
+    if (before !== null && out.revisedMarkdown.trim() === before.trim()) return reject("candidate is unchanged from the current target file");
     if (before !== null) {
       const revisedKeys = markdownFrontmatterKeys(out.revisedMarkdown);
       for (const key of markdownFrontmatterKeys(before)) {
-        if (!revisedKeys.has(key)) return false;
+        if (!revisedKeys.has(key)) return reject(`candidate removed required frontmatter key: ${key}`);
       }
     }
     fs.writeFileSync(abs, out.revisedMarkdown.endsWith("\n") ? out.revisedMarkdown : `${out.revisedMarkdown}\n`, "utf-8");
   } else if (out.revisedJson !== undefined) {
-    if (modelJsonHasInvalidAnchorLabels(out.revisedJson)) return false;
+    if (modelJsonHasInvalidAnchorLabels(out.revisedJson)) return reject("candidate introduces an invalid source-anchor label");
     fs.writeFileSync(abs, `${JSON.stringify(out.revisedJson, null, 2)}\n`, "utf-8");
   } else {
-    return false;
+    return reject("candidate contains neither revisedMarkdown nor revisedJson");
   }
   try {
     const afterAudit = auditFinalGardenState(buildFinalGardenState(gardenDir, gardenSlug));
-    if (
-      introducedAuditProblems(beforeAudit, afterAudit).length > 0 ||
-      (validateCandidate && !validateCandidate(gardenDir, gardenSlug))
-    ) {
-      if (before !== null) fs.writeFileSync(abs, before, "utf-8");
-      return false;
+    const feedback = introducedAuditProblems(beforeAudit, afterAudit).map(
+      (problem) => `candidate introduced final-state audit problem: ${problem}`,
+    );
+    if (validateCandidate) {
+      const validation = normalizeModelCandidateValidation(validateCandidate(gardenDir, gardenSlug));
+      if (!validation.passed) {
+        feedback.push(
+          ...(validation.problems?.length
+            ? validation.problems.map((problem) => `candidate failed final-export validation: ${problem}`)
+            : ["candidate failed final-export validation"]),
+        );
+      }
     }
-    return true;
-  } catch {
-    if (before !== null) fs.writeFileSync(abs, before, "utf-8");
-    return false;
+    if (feedback.length > 0) {
+      restore();
+      return reject(...feedback);
+    }
+    return { accepted: true, feedback: [] };
+  } catch (error) {
+    restore();
+    return reject(`candidate validation threw: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -1633,10 +1726,15 @@ export function makeCriticArtifactRepair(opts: {
   /** Optional production hard gate for the complete export contract. Active
    * Learn supplies the same strict formula/visual audit used before promotion,
    * so a semantic repair cannot introduce a later finalization failure. */
-  validateModelCandidate?: (gardenDir: string, gardenSlug: string) => boolean;
+  validateModelCandidate?: ModelCandidateValidator;
+  /** Number of distinct candidates allowed for one critic target. Attempts after
+   * the first receive the exact rejection findings and use a fresh request
+   * payload. The default remains one for backward-compatible callers. */
+  maxModelCandidateAttempts?: number;
   allowDeterministicRepairs?: boolean;
 } = {}): ArtifactRepairFn {
   const allowDeterministicRepairs = opts.allowDeterministicRepairs !== false;
+  const maxModelCandidateAttempts = Math.max(1, Math.floor(opts.maxModelCandidateAttempts ?? 1));
   const finalize = opts.deterministicFinalize ?? ((gardenDir: string, gardenSlug: string) => {
     try { finalizeGardenExport({ gardenDir, gardenSlug }); }
     catch { try { reconcileFinalGardenState(gardenDir, gardenSlug); } catch { /* best effort */ } }
@@ -1670,35 +1768,56 @@ export function makeCriticArtifactRepair(opts: {
         let used: RepairProvenanceRecord["executorUsed"] = "none";
         let modelFailureReason: string | undefined;
         let changed = false;
+        let modelCandidateAttempts = 0;
+        let modelValidationFeedback: string[] = [];
         // A thrown provider/model request is not semantic evidence and cannot
         // authorize another critic round. Preserve the exact thrown object by
         // allowing it to escape this repair boundary unchanged.
-        const out = await Promise.resolve(
-          opts.modelRepair(buildModelRepairInput(state, gardenDir, req, issue)),
-        );
-        if (!out) {
-          if (!allowDeterministicRepairs) {
-            throw new Error(
-              `Model repair for ${req.targetPath ?? req.id} returned no nonempty candidate; no semantic retry was issued.`,
-            );
+        const baseInput = buildModelRepairInput(state, gardenDir, req, issue);
+        for (let candidateAttempt = 1; candidateAttempt <= maxModelCandidateAttempts; candidateAttempt += 1) {
+          modelCandidateAttempts = candidateAttempt;
+          const out = await Promise.resolve(opts.modelRepair({
+            ...baseInput,
+            candidateAttempt,
+            priorCandidateValidationFeedback: candidateAttempt > 1 ? modelValidationFeedback : undefined,
+          }));
+          if (!out) {
+            if (!allowDeterministicRepairs) {
+              throw new Error(
+                `Model repair for ${req.targetPath ?? req.id} returned no nonempty candidate; no semantic retry was issued.`,
+              );
+            }
+            modelFailureReason = "model returned no valid candidate";
+            break;
           }
-          modelFailureReason = "model returned no valid candidate";
-        } else if (applyModelRepairOutput(
-          gardenDir,
-          gardenSlug,
-          out,
-          opts.validateModelCandidate,
-        )) {
-          used = "model";
-          changed = true;
-        } else {
-          // This is a real returned candidate rejected by deterministic target
-          // and safety validation. A later critic round may retry only after it
-          // re-observes the still-concrete blocker.
-          modelFailureReason = "returned model candidate failed target or safety validation";
+          const application = applyModelRepairOutput(
+            gardenDir,
+            gardenSlug,
+            out,
+            opts.validateModelCandidate,
+          );
+          if (application.accepted) {
+            used = "model";
+            changed = true;
+            break;
+          }
+          modelValidationFeedback = application.feedback;
+          modelFailureReason = `returned model candidate failed target or safety validation${
+            modelValidationFeedback.length ? `: ${modelValidationFeedback.join("; ")}` : ""
+          }`;
         }
         if (!changed && allowDeterministicRepairs) attempted.push("deterministic");
-        provenance.push({ requestId: req.id, targetKind: req.targetKind, targetPath: req.targetPath, executorAttempted: attempted, executorUsed: used, modelFailureReason, changed });
+        provenance.push({
+          requestId: req.id,
+          targetKind: req.targetKind,
+          targetPath: req.targetPath,
+          executorAttempted: attempted,
+          executorUsed: used,
+          modelFailureReason,
+          modelCandidateAttempts,
+          modelValidationFeedback: modelValidationFeedback.length ? modelValidationFeedback : undefined,
+          changed,
+        });
         handledByModel.add(req.id);
       }
     }
