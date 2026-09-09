@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   normalizeTopicTags,
   refreshClusterIndex,
@@ -115,9 +115,11 @@ export async function createGardenDocument(
       };
     },
   );
-  await publishQuartzAfterMutation(
+  // The note is already durable. A slow or failed static rebuild must not
+  // turn that successful save into a timeout (and a duplicate on retry).
+  void publishQuartzAfterMutation(
     `create document ${clusterSlug}/${created.relPath.replace(/\.md$/i, "")}`,
     { userId: input.userId, gardenSlug: clusterSlug },
-  );
+  ).catch((error) => console.error("[garden] Note saved; publication failed:", error));
   return created;
 }

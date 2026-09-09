@@ -88,10 +88,12 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
       return;
     }
     let cancelled = false;
-    fetch(`/api/documents?clusterSlug=${encodeURIComponent(targetSlug)}`)
+    setSelectedFolder('');
+    fetch(`/api/folders?clusterSlug=${encodeURIComponent(targetSlug)}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
-        if (!cancelled) setFolders(Array.isArray(d.folders) ? d.folders : []);
+        if (!cancelled) setFolders(Array.isArray(d.folders)
+          ? d.folders.map((entry: { folder: string }) => entry.folder) : []);
       })
       .catch(() => {
         if (!cancelled) setFolders([]);
@@ -136,6 +138,9 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data.error ?? 'Failed to save'); return; }
+      window.dispatchEvent(new CustomEvent('sb:note-created', {
+        detail: { cluster: slug, title: title.trim(), ...data },
+      }));
       setOpen(false);
     } catch {
       setError('Failed to save note');
@@ -177,7 +182,10 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
               {needsPicker && clusters.length > 0 && (
                 <label className="markdown-editor-field">
                   <span>Garden</span>
-                  <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
+                  <select value={targetSlug} onChange={(e) => {
+                    setSelectedSlug(e.target.value);
+                    setActiveSlug(e.target.value);
+                  }}>
                     {clusters.map((c) => (
                       <option key={c.slug} value={c.slug}>{c.name}</option>
                     ))}

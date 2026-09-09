@@ -22,6 +22,8 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
   assert.ok(discovered.includes("dashboard-test-runner.test.mjs"));
   assert.deepEqual(partition.browser, [...SERIAL_BROWSER_TEST_FILES]);
   assert.deepEqual(partition.browser, [
+    "garden-folder-creation.test.mjs",
+    "garden-note-creation.test.mjs",
     "wallpaper-tone-ui.test.mjs",
     "cloud-speech-ui.test.mjs",
     "voice-narration-ui.test.mjs",
@@ -48,7 +50,7 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
   );
   assert.throws(
     () => partitionDashboardTestFiles(
-      discovered.filter((file) => file !== SERIAL_BROWSER_TEST_FILES[0]),
+      discovered.filter((file) => file !== "wallpaper-tone-ui.test.mjs"),
     ),
     /missing required file.*wallpaper-tone-ui/u,
   );

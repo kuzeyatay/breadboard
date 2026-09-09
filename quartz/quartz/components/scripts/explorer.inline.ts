@@ -5,7 +5,7 @@ import {
   isVirtualGardenClusterNode,
 } from "../../util/gardenExplorerGroups"
 import { isVisibleGardenRootEntry } from "../../util/explorerScope"
-import { FullSlug, resolveRelative, simplifySlug } from "../../util/path"
+import { FilePath, FullSlug, resolveRelative, simplifySlug, slugifyFilePath } from "../../util/path"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
 import { TOPOLOGY_SOURCE_COLORS, topologySourceKind } from "./sourceNodeVisual"
 
@@ -209,11 +209,49 @@ interface CreateFolderDialog {
   pendingFolder: string
   pending: boolean
   retryTimer: number | null
+  timeoutTimer: number | null
   returnFocus: HTMLElement | null
 }
 
 let createFolderDialog: CreateFolderDialog | null = null
 let createFolderResultListenerBound = false
+let explorerSlug: FullSlug | null = null
+const canonicalFolders = new Map<string, Map<string, string>>()
+const canonicalDocuments = new Map<FullSlug, ContentDetails>()
+const unpublishedDocuments = new Set<FullSlug>()
+const unpublishedFolders = new Set<string>()
+const boundExplorerToggles = new WeakSet<HTMLElement>()
+const folderSnapshotRetries = new Map<string, number>()
+
+function requestFolderSnapshot(cluster: string, attempt = 0) {
+  const previous = folderSnapshotRetries.get(cluster)
+  if (previous !== undefined) window.clearTimeout(previous)
+  window.parent.postMessage({ type: "second-brain:request-folders", cluster }, "*")
+  // The iframe can finish before the dashboard hydrates its message listener.
+  // Retry the read until acknowledged instead of losing saved folders on reload.
+  if (attempt < 5) {
+    folderSnapshotRetries.set(cluster, window.setTimeout(() => {
+      requestFolderSnapshot(cluster, attempt + 1)
+    }, 2_000))
+  } else {
+    folderSnapshotRetries.delete(cluster)
+  }
+}
+
+function rememberFolder(cluster: string, folder: string, name?: string) {
+  if (!cluster || !folder || folder.split("/").some((part) => !part || part === "." || part === "..")) return
+  const folders = canonicalFolders.get(cluster) ?? new Map<string, string>()
+  folders.set(folder, name || folder.split("/").pop()!.split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
+  canonicalFolders.set(cluster, folders)
+}
+
+function clearCreateFolderTimers(dialog: CreateFolderDialog) {
+  if (dialog.retryTimer !== null) window.clearTimeout(dialog.retryTimer)
+  if (dialog.timeoutTimer !== null) window.clearTimeout(dialog.timeoutTimer)
+  dialog.retryTimer = null
+  dialog.timeoutTimer = null
+}
 
 function setCreateFolderDialogError(dialog: CreateFolderDialog, message = "", waiting = false) {
   dialog.error.textContent = message
@@ -236,8 +274,7 @@ function setCreateFolderDialogPending(
 function closeCreateFolderDialog(force = false) {
   const dialog = createFolderDialog
   if (!dialog || (dialog.pending && !force)) return
-  if (dialog.retryTimer !== null) window.clearTimeout(dialog.retryTimer)
-  dialog.retryTimer = null
+  clearCreateFolderTimers(dialog)
   dialog.overlay.hidden = true
   dialog.input.value = ""
   dialog.pendingFolder = ""
@@ -256,17 +293,74 @@ function bindCreateFolderResultListener() {
     const data = event.data as
       | {
           type?: string
+          cluster?: string
           folder?: string
+          normalizedFolder?: string
+          folders?: Array<{ folder: string; name: string }>
+          documents?: Array<{ relPath: string; title: string; type?: string; sourceType?: string }>
+          reveal?: string
           ok?: boolean
           error?: string
           retryable?: boolean
           retryAfterMs?: number
         }
       | undefined
+    if (data?.type === "second-brain:documents" && typeof data.cluster === "string" && Array.isArray(data.documents)) {
+      for (const entry of data.documents) {
+        if (typeof entry.relPath !== "string" || typeof entry.title !== "string" ||
+            entry.relPath.split("/").some(part => !part || part === "." || part === "..")) continue
+        const filePath = `${data.cluster}/${entry.relPath}` as FilePath
+        const slug = slugifyFilePath(filePath)
+        canonicalDocuments.set(slug, { slug, filePath, title: entry.title,
+          knowledgeType: entry.type, sourceType: entry.sourceType, links: [], tags: [], content: "" })
+      }
+      if (data.reveal) {
+        const slug = slugifyFilePath(`${data.cluster}/${data.reveal}` as FilePath)
+        const segments = slug.split("/")
+        for (let depth = 1; depth < segments.length; depth++) {
+          const path = `${segments.slice(0, depth).join("/")}/index`
+          const entry = currentExplorerState.find(item => item.path === path)
+          if (entry) entry.collapsed = false
+          else currentExplorerState.push({ path, collapsed: false })
+        }
+        localStorage.setItem("fileTree", JSON.stringify(currentExplorerState))
+      }
+      if (explorerSlug) void setupExplorer(explorerSlug)
+      return
+    }
+    if (data?.type === "second-brain:folders" && typeof data.cluster === "string" && Array.isArray(data.folders)) {
+      const retry = folderSnapshotRetries.get(data.cluster)
+      if (retry !== undefined) window.clearTimeout(retry)
+      folderSnapshotRetries.delete(data.cluster)
+      for (const entry of data.folders) {
+        if (typeof entry.folder === "string" && typeof entry.name === "string") {
+          rememberFolder(data.cluster, entry.folder, entry.name)
+        }
+      }
+      if (explorerSlug) void setupExplorer(explorerSlug)
+      return
+    }
+    // Update the tree even if the user closed the dialog while the save ran.
+    if (data?.type === "second-brain:create-folder-result" && data.ok &&
+        typeof data.cluster === "string" && typeof data.normalizedFolder === "string") {
+      rememberFolder(data.cluster, data.normalizedFolder)
+      // Expand the ancestors so the newly saved folder is actually visible.
+      const states: FolderState[] = JSON.parse(localStorage.getItem("fileTree") || "[]")
+      const parts = `${data.cluster}/${data.normalizedFolder}`.split("/")
+      for (let depth = 1; depth < parts.length; depth++) {
+        const path = `${parts.slice(0, depth).join("/")}/index`
+        const state = states.find((entry) => entry.path === path)
+        if (state) state.collapsed = false
+        else states.push({ path, collapsed: false })
+      }
+      localStorage.setItem("fileTree", JSON.stringify(states))
+      if (explorerSlug) void setupExplorer(explorerSlug)
+    }
     const dialog = createFolderDialog
     if (
       !dialog?.pending ||
       data?.type !== "second-brain:create-folder-result" ||
+      (data.cluster !== undefined && data.cluster !== dialog.cluster) ||
       data.folder !== dialog.pendingFolder
     ) {
       return
@@ -293,6 +387,7 @@ function bindCreateFolderResultListener() {
       return
     }
 
+    clearCreateFolderTimers(dialog)
     setCreateFolderDialogPending(dialog, false)
     setCreateFolderDialogError(dialog, data.error || "Could not create folder.")
     dialog.input.focus()
@@ -347,6 +442,7 @@ function ensureCreateFolderDialog(): CreateFolderDialog {
     pendingFolder: "",
     pending: false,
     retryTimer: null,
+    timeoutTimer: null,
     returnFocus: null,
   }
 
@@ -369,6 +465,13 @@ function ensureCreateFolderDialog(): CreateFolderDialog {
     dialog.pendingFolder = folder
     if (dialog.retryTimer !== null) window.clearTimeout(dialog.retryTimer)
     dialog.retryTimer = null
+    if (dialog.timeoutTimer !== null) window.clearTimeout(dialog.timeoutTimer)
+    dialog.timeoutTimer = window.setTimeout(() => {
+      clearCreateFolderTimers(dialog)
+      setCreateFolderDialogPending(dialog, false)
+      setCreateFolderDialogError(dialog, "Could not confirm folder creation. Try again; an existing folder will be reused.")
+      dialog.input.focus()
+    }, 30_000)
     setCreateFolderDialogError(dialog)
     setCreateFolderDialogPending(dialog, true)
     sendCreateFolder(dialog.cluster, folder)
@@ -474,21 +577,46 @@ function ensureDndStyles() {
 }
 
 let currentExplorerState: Array<FolderState>
+const explorerMobileLayouts = new WeakMap<HTMLElement, boolean>()
+
+function setExplorerExpanded(explorer: HTMLElement, expanded: boolean) {
+  explorer.classList.toggle("collapsed", !expanded)
+  explorer.setAttribute("aria-expanded", String(expanded))
+  for (const element of explorer.querySelectorAll(".explorer-toggle, .explorer-content")) {
+    element.setAttribute("aria-expanded", String(expanded))
+  }
+}
+
+function syncExplorerScrollLock() {
+  const mobileMenuOpen = Array.from(document.querySelectorAll(".explorer")).some(
+    (explorer) =>
+      explorer.querySelector(".mobile-explorer")?.checkVisibility() &&
+      !explorer.classList.contains("collapsed"),
+  )
+  document.documentElement.classList.toggle("mobile-no-scroll", mobileMenuOpen)
+}
+
+function syncExplorerViewport(reset = false) {
+  for (const explorer of document.querySelectorAll<HTMLElement>(".explorer")) {
+    const mobileButton = explorer.querySelector(".mobile-explorer")
+    if (!mobileButton) continue
+
+    const mobile = mobileButton.checkVisibility()
+    // An iframe can cross the breakpoint when its assistant pane is resized.
+    // A collapsed mobile menu must not become a 1.2rem desktop navigation tree.
+    if (reset || explorerMobileLayouts.get(explorer) !== mobile) {
+      setExplorerExpanded(explorer, !mobile)
+    }
+    explorerMobileLayouts.set(explorer, mobile)
+  }
+  syncExplorerScrollLock()
+}
+
 function toggleExplorer(this: HTMLElement) {
   const nearestExplorer = this.closest(".explorer") as HTMLElement
   if (!nearestExplorer) return
-  const explorerCollapsed = nearestExplorer.classList.toggle("collapsed")
-  nearestExplorer.setAttribute(
-    "aria-expanded",
-    nearestExplorer.getAttribute("aria-expanded") === "true" ? "false" : "true",
-  )
-
-  if (!explorerCollapsed) {
-    // Stop <html> from being scrollable when mobile explorer is open
-    document.documentElement.classList.add("mobile-no-scroll")
-  } else {
-    document.documentElement.classList.remove("mobile-no-scroll")
-  }
+  setExplorerExpanded(nearestExplorer, nearestExplorer.classList.contains("collapsed"))
+  syncExplorerScrollLock()
 }
 
 function toggleFolder(evt: MouseEvent) {
@@ -571,6 +699,12 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   a.href = resolveRelative(currentSlug, node.slug)
   a.dataset.for = node.slug
   a.textContent = node.displayName
+  if (unpublishedDocuments.has(node.slug)) {
+    // The canonical file is saved, but its static URL does not exist yet.
+    a.removeAttribute("href")
+    a.title = "Saved. The reading page is being published."
+    a.setAttribute("aria-disabled", "true")
+  }
   makeFileDraggable(li, node.slug)
 
   if (currentSlug === node.slug) {
@@ -672,6 +806,7 @@ function createFolderNode(
   const { cluster, relFolder } = clusterAndRelFolder(folderPath)
   const isGardenRoot = relFolder.length === 0
   const isVirtualCluster = isVirtualGardenClusterNode(node)
+  const isUnpublished = unpublishedFolders.has(folderPath)
   // Existing emitted pages may outlive an asset-only rebuild, so apply the
   // clipping hook at runtime as well as in Explorer's template.
   titleContainer.classList.add("folder-title-clip")
@@ -720,7 +855,7 @@ function createFolderNode(
   }
 
   let folderTitle: HTMLElement
-  if (opts.folderClickBehavior === "link" && !isVirtualCluster) {
+  if (opts.folderClickBehavior === "link" && !isVirtualCluster && !isUnpublished) {
     // Replace button with link for link behavior
     const button = titleContainer.querySelector(".folder-button") as HTMLElement
     const a = document.createElement("a")
@@ -735,8 +870,8 @@ function createFolderNode(
     const span = titleContainer.querySelector(".folder-title") as HTMLElement
     span.textContent = node.displayName
     folderTitle = span
-    if (isVirtualCluster && opts.folderClickBehavior === "link") {
-      button.ariaLabel = `Toggle cluster ${node.displayName}`
+    if ((isVirtualCluster || isUnpublished) && opts.folderClickBehavior === "link") {
+      button.ariaLabel = `Toggle ${isVirtualCluster ? "cluster" : "folder"} ${node.displayName}`
       button.addEventListener("click", toggleFolder)
       window.addCleanup(() => button.removeEventListener("click", toggleFolder))
     }
@@ -782,6 +917,8 @@ function reviveDataFn(source: string | undefined) {
 }
 
 async function setupExplorer(currentSlug: FullSlug) {
+  explorerSlug = currentSlug
+  bindCreateFolderResultListener()
   ensureDndStyles()
   const allExplorers = document.querySelectorAll("div.explorer") as NodeListOf<HTMLElement>
 
@@ -807,6 +944,30 @@ async function setupExplorer(currentSlug: FullSlug) {
     const data = await fetchData
     const entries = [...Object.entries(data)] as [FullSlug, ContentDetails][]
     const trie = FileTrieNode.fromEntries(entries)
+    for (const [slug, document] of canonicalDocuments) {
+      if (data[slug]) {
+        unpublishedDocuments.delete(slug)
+      } else {
+        unpublishedDocuments.add(slug)
+        trie.add(document)
+      }
+    }
+    for (const [cluster, folders] of canonicalFolders) {
+      for (const [folder, title] of folders) {
+        // The snapshot contains disk paths; Quartz URLs replace spaces and
+        // other characters. Match the published node instead of adding a
+        // second tree for folders such as EM1's numbered learning sections.
+        const filePath = `${cluster}/${folder}/_index.md` as FilePath
+        const slug = slugifyFilePath(filePath)
+        if (data[slug]) {
+          unpublishedFolders.delete(slug)
+          continue
+        }
+        unpublishedFolders.add(slug)
+        trie.add({ slug, title, filePath,
+          links: [], tags: [], content: "" })
+      }
+    }
     applyGardenExplorerScope(explorer, trie)
 
     // Apply functions in order
@@ -847,7 +1008,9 @@ async function setupExplorer(currentSlug: FullSlug) {
 
       fragment.appendChild(node)
     }
-    explorerUl.insertBefore(fragment, explorerUl.firstChild)
+    const overflowEnd = explorerUl.querySelector(":scope > .overflow-end")
+    explorerUl.replaceChildren(fragment)
+    if (overflowEnd) explorerUl.appendChild(overflowEnd)
 
     // restore explorer scrollTop position if it exists
     const scrollTop = sessionStorage.getItem("explorerScrollTop")
@@ -857,7 +1020,13 @@ async function setupExplorer(currentSlug: FullSlug) {
       // try to scroll to the active element if it exists
       const activeElement = explorerUl.querySelector(".active")
       if (activeElement) {
-        activeElement.scrollIntoView({ behavior: "smooth" })
+        // Scroll only the tree, including while the mobile drawer is hidden.
+        // scrollIntoView also scrolls the document and can hide the page title.
+        const activeBounds = activeElement.getBoundingClientRect()
+        const listBounds = explorerUl.getBoundingClientRect()
+        if (activeBounds.top < listBounds.top || activeBounds.bottom > listBounds.bottom) {
+          explorerUl.scrollTop += activeBounds.top - listBounds.top - explorerUl.clientHeight / 2
+        }
       }
     }
 
@@ -866,8 +1035,13 @@ async function setupExplorer(currentSlug: FullSlug) {
       "explorer-toggle",
     ) as HTMLCollectionOf<HTMLElement>
     for (const button of explorerButtons) {
+      if (boundExplorerToggles.has(button)) continue
+      boundExplorerToggles.add(button)
       button.addEventListener("click", toggleExplorer)
-      window.addCleanup(() => button.removeEventListener("click", toggleExplorer))
+      window.addCleanup(() => {
+        button.removeEventListener("click", toggleExplorer)
+        boundExplorerToggles.delete(button)
+      })
     }
 
     // Set up folder click handlers
@@ -892,6 +1066,8 @@ async function setupExplorer(currentSlug: FullSlug) {
 }
 
 document.addEventListener("prenav", async () => {
+  for (const retry of folderSnapshotRetries.values()) window.clearTimeout(retry)
+  folderSnapshotRetries.clear()
   // save explorer scrollTop position
   const explorer = document.querySelector(".explorer-ul")
   if (!explorer) return
@@ -901,33 +1077,25 @@ document.addEventListener("prenav", async () => {
 document.addEventListener("nav", async (e: CustomEventMap["nav"]) => {
   const currentSlug = e.detail.url
   await setupExplorer(currentSlug)
+  if (insideDashboard) {
+    const clusters = new Set<string>()
+    for (const root of document.querySelectorAll<HTMLElement>(".explorer .garden-root")) {
+      const { cluster } = clusterAndRelFolder(root.dataset.folderpath || "")
+      if (cluster) clusters.add(cluster)
+    }
+    for (const cluster of clusters) {
+      requestFolderSnapshot(cluster)
+    }
+  }
 
-  // if mobile hamburger is visible, collapse by default
   for (const explorer of document.getElementsByClassName("explorer")) {
     const mobileExplorer = explorer.querySelector(".mobile-explorer")
-    if (!mobileExplorer) return
-
-    if (mobileExplorer.checkVisibility()) {
-      explorer.classList.add("collapsed")
-      explorer.setAttribute("aria-expanded", "false")
-
-      // Allow <html> to be scrollable when mobile explorer is collapsed
-      document.documentElement.classList.remove("mobile-no-scroll")
-    }
-
-    mobileExplorer.classList.remove("hide-until-loaded")
+    mobileExplorer?.classList.remove("hide-until-loaded")
   }
+  syncExplorerViewport(true)
 })
 
-window.addEventListener("resize", function () {
-  // Desktop explorer opens by default, and it stays open when the window is resized
-  // to mobile screen size. Applies `no-scroll` to <html> in this edge case.
-  const explorer = document.querySelector(".explorer")
-  if (explorer && !explorer.classList.contains("collapsed")) {
-    document.documentElement.classList.add("mobile-no-scroll")
-    return
-  }
-})
+window.addEventListener("resize", () => syncExplorerViewport())
 
 function setFolderState(folderElement: HTMLElement, collapsed: boolean) {
   return collapsed ? folderElement.classList.remove("open") : folderElement.classList.add("open")

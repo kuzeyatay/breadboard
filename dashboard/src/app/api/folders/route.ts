@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import {
   GardenFilesystemError,
   createGardenFolder,
+  listGardenFolders,
   deleteGardenFolder,
   moveGardenDocument,
   renameGardenFolder,
@@ -13,7 +14,7 @@ export const dynamic = 'force-dynamic';
 
 const API_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, PUT, PATCH, DELETE, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
@@ -59,6 +60,19 @@ function failure(error: unknown): NextResponse {
     );
   }
   return routeErrorResponse(error);
+}
+
+// Empty folders must remain visible even while the static site is rebuilding.
+export async function GET(request: Request): Promise<NextResponse> {
+  const context = await getContext(new URL(request.url).searchParams.get('clusterSlug'));
+  if ('error' in context) return context.error;
+  try {
+    return json({ folders: listGardenFolders(context.clusterSlug) }, {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  } catch (error) {
+    return failure(error);
+  }
 }
 
 // Create an (empty) folder. A placeholder `_index.md` keeps it visible in Quartz.

@@ -16,6 +16,7 @@ import {
   quartzTopologyInvestigationRequest,
   type QuartzTopologyInvestigationRequest,
 } from '@/lib/quartz-topology-investigation';
+import { useCanonicalGardenFolders } from './use-canonical-garden-folders';
 import { useQuartzViewLease } from './use-quartz-view-lease';
 
 interface Props {
@@ -299,6 +300,7 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
         if (!folder) return;
         fetch('/api/folders', {
           method: 'POST',
+          signal: AbortSignal.timeout(15_000),
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ clusterSlug: folderCluster, folder }),
         })
@@ -307,20 +309,22 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
             const ok = response.ok && body.success;
             postToQuartz({
               type: 'second-brain:create-folder-result',
+              cluster: folderCluster,
               folder,
+              normalizedFolder: body.folder,
               ok,
               error: body.error,
               retryable: body.retryable === true,
               retryAfterMs: body.retryAfterMs,
             });
-            if (ok) reloadGarden();
           })
           .catch(() => {
             postToQuartz({
               type: 'second-brain:create-folder-result',
+              cluster: folderCluster,
               folder,
               ok: false,
-              error: 'Could not create folder',
+              error: 'Could not confirm folder creation. Try again; an existing folder will be reused.',
             });
           });
         return;
@@ -435,6 +439,8 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
     window.addEventListener('sb:markdown-updated', handleMarkdownUpdated);
     return () => window.removeEventListener('sb:markdown-updated', handleMarkdownUpdated);
   }, [activeMarkdownCluster]);
+
+  useCanonicalGardenFolders(iframeRef, quartzOrigin);
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden bg-gray-950">

@@ -9,8 +9,9 @@
 // directory, and every mutation refreshes the cluster index and republishes
 // Quartz so the site never serves a page at a path that moved.
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import db from "./db.ts";
 import {
   refreshClusterIndex,
@@ -107,7 +108,7 @@ function removePublicArtifacts(
 function walkFolders(clusterDir: string): string[] {
   const folders: string[] = [];
   const walk = (dir: string, relDir: string) => {
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
@@ -123,6 +124,14 @@ function walkFolders(clusterDir: string): string[] {
   };
   walk(clusterDir, "");
   return folders.sort((left, right) => left.localeCompare(right));
+}
+
+/** Read canonical folder paths without scanning or rebuilding note contents. */
+export function listGardenFolders(clusterSlug: string): { folder: string; name: string }[] {
+  return walkFolders(gardenDirectory(clusterSlug)).map((folder) => ({
+    folder,
+    name: gardenFolderTitle(folder),
+  }));
 }
 
 /**
@@ -181,17 +190,20 @@ export async function createGardenFolder(input: {
       );
     }
 
-    refreshClusterIndex(contentPath, input.clusterSlug);
+    // Empty folders do not change the root's note index. Scanning every note
+    // here made a tiny mkdir depend on the size of the entire Garden.
   } finally {
     lease.release();
   }
-  await publishQuartzAfterMutation(
+  // A saved folder is usable immediately. Publication is derived work and can
+  // take minutes; the Explorer reads canonical folders while it catches up.
+  void publishQuartzAfterMutation(
     `create folder ${input.clusterSlug}/${folder}`,
     {
       userId: input.userId,
       gardenSlug: input.clusterSlug,
     },
-  );
+  ).catch((error) => console.error("[garden] Folder saved; publication failed:", error));
   return { folder };
 }
 
