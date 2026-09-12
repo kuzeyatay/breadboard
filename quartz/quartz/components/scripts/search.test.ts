@@ -1,5 +1,7 @@
 import test, { describe } from "node:test"
 import assert from "node:assert"
+import { FullSlug } from "../../util/path"
+import { scopeSearchEntries, searchScope } from "./searchScope"
 
 // Inline the encoder function from search.inline.ts for testing
 const encoder = (str: string): string[] => {
@@ -159,5 +161,29 @@ describe("search encoder", () => {
       const result = encoder("hello  ")
       assert.deepStrictEqual(result, ["hello"])
     })
+  })
+})
+
+describe("search scope", () => {
+  const data = {
+    "electromagnetism-1": { title: "EM 1" },
+    "electromagnetism-1/learning/fields": { title: "Fields" },
+    "telecom-1/learning/signals": { title: "Signals" },
+    index: { title: "Library" },
+  }
+
+  test("garden pages index only their own garden", () => {
+    const slug = "electromagnetism-1/learning/fields" as FullSlug
+    assert.equal(searchScope(slug), "electromagnetism-1")
+    assert.deepEqual(
+      scopeSearchEntries(data, slug).map(([entrySlug]) => entrySlug),
+      ["electromagnetism-1", "electromagnetism-1/learning/fields"],
+    )
+  })
+
+  test("library pages retain site-wide search", () => {
+    const slug = "index" as FullSlug
+    assert.equal(searchScope(slug), null)
+    assert.equal(scopeSearchEntries(data, slug).length, Object.keys(data).length)
   })
 })

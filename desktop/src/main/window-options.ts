@@ -114,6 +114,16 @@ export function rendererWebPreferences(
   };
 }
 
+/** Let Chromium park timers and animation frames in inactive tab views. */
+export function tabRendererWebPreferences(
+  preloadPath: string,
+): NonNullable<BrowserWindowConstructorOptions["webPreferences"]> {
+  return {
+    ...rendererWebPreferences(preloadPath),
+    backgroundThrottling: true,
+  };
+}
+
 export function mainWindowOptions(
   preloadPath: string,
   iconPath?: string,

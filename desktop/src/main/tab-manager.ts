@@ -34,6 +34,7 @@ import {
   BREADBOARD_TITLE_BAR,
   backgroundColorForTheme,
   rendererWebPreferences,
+  tabRendererWebPreferences,
   type BreadboardWindowTheme,
 } from "./window-options";
 import { waitForFirstPaint, waitForRevealFrame } from "./first-paint";
@@ -237,7 +238,7 @@ const BROWSER_WEB_PREFERENCES = {
   sandbox: true,
   webviewTag: false,
   spellcheck: true,
-  backgroundThrottling: false,
+  backgroundThrottling: true,
   // The tab manager owns HTML fullscreen so it can expand the page view and
   // restore the window's previous F11 state independently of video fullscreen.
   disableHtmlFullscreenWindowResize: true,
@@ -1857,7 +1858,7 @@ export class TabManager {
   /** A view with a hardened page loading `url`, tracked but not yet a tab. */
   private createView(host: Host, url: string): Tab {
     const view = new WebContentsView({
-      webPreferences: rendererWebPreferences(this.options.preloadPath),
+      webPreferences: tabRendererWebPreferences(this.options.preloadPath),
     });
     view.setBackgroundColor(backgroundColorForTheme(this.options.theme()));
     const tab: Tab = {

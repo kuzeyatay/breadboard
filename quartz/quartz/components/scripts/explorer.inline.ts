@@ -51,7 +51,7 @@ const GARDEN_TITLE_MARQUEE_SPEED_PX_PER_SEC = 42
 /** Share of the animation spent travelling one way; the rest is the pause at each end. */
 const GARDEN_TITLE_MARQUEE_TRAVEL_SHARE = 0.36
 
-function bindGardenTitleMarquee(trigger: HTMLElement, title: HTMLElement) {
+function bindGardenTitleMarquee(trigger: HTMLElement, title: HTMLElement, signal: AbortSignal) {
   const hoverQuery = window.matchMedia("(hover: hover) and (pointer: fine)")
   const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)")
   let timer: number | null = null
@@ -81,13 +81,9 @@ function bindGardenTitleMarquee(trigger: HTMLElement, title: HTMLElement) {
     }, GARDEN_TITLE_MARQUEE_DELAY_MS)
   }
 
-  trigger.addEventListener("mouseenter", start)
-  trigger.addEventListener("mouseleave", stop)
-  window.addCleanup(() => {
-    trigger.removeEventListener("mouseenter", start)
-    trigger.removeEventListener("mouseleave", stop)
-    stop()
-  })
+  trigger.addEventListener("mouseenter", start, { signal })
+  trigger.addEventListener("mouseleave", stop, { signal })
+  signal.addEventListener("abort", stop, { once: true })
 }
 
 function parseJsonArray(value: string | undefined): string[] {
@@ -107,6 +103,18 @@ function currentClusterFromUrl(): string {
   return parts[0] ?? ""
 }
 
+function gardenExplorerClusters(explorer: HTMLElement): string[] | null {
+  const allowedClusters = parseJsonArray(explorer.dataset.graphClusters)
+  const hasGardenScope =
+    explorer.dataset.gardenScope === "private" || explorer.dataset.gardenScope === "public"
+  const urlCluster = currentClusterFromUrl()
+  return hasGardenScope && allowedClusters.length > 0
+    ? allowedClusters
+    : urlCluster
+      ? [urlCluster]
+      : null
+}
+
 function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<ContentDetails>) {
   const allowedClusters = parseJsonArray(explorer.dataset.graphClusters)
   const hasGardenScope =
@@ -114,12 +122,7 @@ function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<Cont
 
   // Fall back to URL-based cluster detection when frontmatter doesn't provide a scope
   const urlCluster = currentClusterFromUrl()
-  const effectiveAllowed =
-    hasGardenScope && allowedClusters.length > 0
-      ? allowedClusters
-      : urlCluster
-        ? [urlCluster]
-        : null
+  const effectiveAllowed = gardenExplorerClusters(explorer)
 
   trie.children = trie.children.filter((node) => {
     if (GENERATED_GARDEN_ROOTS.has(node.slugSegment)) return false
@@ -221,6 +224,9 @@ const canonicalDocuments = new Map<FullSlug, ContentDetails>()
 const unpublishedDocuments = new Set<FullSlug>()
 const unpublishedFolders = new Set<string>()
 const boundExplorerToggles = new WeakSet<HTMLElement>()
+const explorerRenderControllers = new WeakMap<HTMLElement, AbortController>()
+const explorerRenderVersions = new WeakMap<HTMLElement, number>()
+const boundExplorerRenderCleanup = new WeakSet<HTMLElement>()
 const folderSnapshotRetries = new Map<string, number>()
 
 function requestFolderSnapshot(cluster: string, attempt = 0) {
@@ -230,19 +236,35 @@ function requestFolderSnapshot(cluster: string, attempt = 0) {
   // The iframe can finish before the dashboard hydrates its message listener.
   // Retry the read until acknowledged instead of losing saved folders on reload.
   if (attempt < 5) {
-    folderSnapshotRetries.set(cluster, window.setTimeout(() => {
-      requestFolderSnapshot(cluster, attempt + 1)
-    }, 2_000))
+    folderSnapshotRetries.set(
+      cluster,
+      window.setTimeout(() => {
+        requestFolderSnapshot(cluster, attempt + 1)
+      }, 2_000),
+    )
   } else {
     folderSnapshotRetries.delete(cluster)
   }
 }
 
 function rememberFolder(cluster: string, folder: string, name?: string) {
-  if (!cluster || !folder || folder.split("/").some((part) => !part || part === "." || part === "..")) return
+  if (
+    !cluster ||
+    !folder ||
+    folder.split("/").some((part) => !part || part === "." || part === "..")
+  )
+    return
   const folders = canonicalFolders.get(cluster) ?? new Map<string, string>()
-  folders.set(folder, name || folder.split("/").pop()!.split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
+  folders.set(
+    folder,
+    name ||
+      folder
+        .split("/")
+        .pop()!
+        .split("-")
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" "),
+  )
   canonicalFolders.set(cluster, folders)
 }
 
@@ -305,21 +327,37 @@ function bindCreateFolderResultListener() {
           retryAfterMs?: number
         }
       | undefined
-    if (data?.type === "second-brain:documents" && typeof data.cluster === "string" && Array.isArray(data.documents)) {
+    if (
+      data?.type === "second-brain:documents" &&
+      typeof data.cluster === "string" &&
+      Array.isArray(data.documents)
+    ) {
       for (const entry of data.documents) {
-        if (typeof entry.relPath !== "string" || typeof entry.title !== "string" ||
-            entry.relPath.split("/").some(part => !part || part === "." || part === "..")) continue
+        if (
+          typeof entry.relPath !== "string" ||
+          typeof entry.title !== "string" ||
+          entry.relPath.split("/").some((part) => !part || part === "." || part === "..")
+        )
+          continue
         const filePath = `${data.cluster}/${entry.relPath}` as FilePath
         const slug = slugifyFilePath(filePath)
-        canonicalDocuments.set(slug, { slug, filePath, title: entry.title,
-          knowledgeType: entry.type, sourceType: entry.sourceType, links: [], tags: [], content: "" })
+        canonicalDocuments.set(slug, {
+          slug,
+          filePath,
+          title: entry.title,
+          knowledgeType: entry.type,
+          sourceType: entry.sourceType,
+          links: [],
+          tags: [],
+          content: "",
+        })
       }
       if (data.reveal) {
         const slug = slugifyFilePath(`${data.cluster}/${data.reveal}` as FilePath)
         const segments = slug.split("/")
         for (let depth = 1; depth < segments.length; depth++) {
           const path = `${segments.slice(0, depth).join("/")}/index`
-          const entry = currentExplorerState.find(item => item.path === path)
+          const entry = currentExplorerState.find((item) => item.path === path)
           if (entry) entry.collapsed = false
           else currentExplorerState.push({ path, collapsed: false })
         }
@@ -328,7 +366,11 @@ function bindCreateFolderResultListener() {
       if (explorerSlug) void setupExplorer(explorerSlug)
       return
     }
-    if (data?.type === "second-brain:folders" && typeof data.cluster === "string" && Array.isArray(data.folders)) {
+    if (
+      data?.type === "second-brain:folders" &&
+      typeof data.cluster === "string" &&
+      Array.isArray(data.folders)
+    ) {
       const retry = folderSnapshotRetries.get(data.cluster)
       if (retry !== undefined) window.clearTimeout(retry)
       folderSnapshotRetries.delete(data.cluster)
@@ -341,8 +383,12 @@ function bindCreateFolderResultListener() {
       return
     }
     // Update the tree even if the user closed the dialog while the save ran.
-    if (data?.type === "second-brain:create-folder-result" && data.ok &&
-        typeof data.cluster === "string" && typeof data.normalizedFolder === "string") {
+    if (
+      data?.type === "second-brain:create-folder-result" &&
+      data.ok &&
+      typeof data.cluster === "string" &&
+      typeof data.normalizedFolder === "string"
+    ) {
       rememberFolder(data.cluster, data.normalizedFolder)
       // Expand the ancestors so the newly saved folder is actually visible.
       const states: FolderState[] = JSON.parse(localStorage.getItem("fileTree") || "[]")
@@ -469,7 +515,10 @@ function ensureCreateFolderDialog(): CreateFolderDialog {
     dialog.timeoutTimer = window.setTimeout(() => {
       clearCreateFolderTimers(dialog)
       setCreateFolderDialogPending(dialog, false)
-      setCreateFolderDialogError(dialog, "Could not confirm folder creation. Try again; an existing folder will be reused.")
+      setCreateFolderDialogError(
+        dialog,
+        "Could not confirm folder creation. Try again; an existing folder will be reused.",
+      )
       dialog.input.focus()
     }, 30_000)
     setCreateFolderDialogError(dialog)
@@ -738,25 +787,31 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
     }
   }
 
-  for (const color of FLAG_COLORS) {
-    const option = document.createElement("button")
-    option.type = "button"
-    option.className = `explorer-flag-option${flagColor === color ? " active" : ""}`
-    option.dataset.flagColor = color
-    option.style.backgroundColor = color
-    option.title = color
-    option.ariaLabel = `Flag ${color}`
-    option.addEventListener("click", (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      swatch.style.backgroundColor = color
-      flag.title = `Flagged ${color}`
-      clear.hidden = false
-      setActiveOption(color)
-      flagMenu.classList.remove("open")
-      sendFlagColor(node.slug, color)
-    })
-    palette.appendChild(option)
+  let paletteReady = false
+  const ensurePalette = () => {
+    if (paletteReady) return
+    paletteReady = true
+    for (const color of FLAG_COLORS) {
+      const option = document.createElement("button")
+      option.type = "button"
+      option.className = `explorer-flag-option${flagColor === color ? " active" : ""}`
+      option.dataset.flagColor = color
+      option.style.backgroundColor = color
+      option.title = color
+      option.ariaLabel = `Flag ${color}`
+      option.addEventListener("click", (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        swatch.style.backgroundColor = color
+        flag.title = `Flagged ${color}`
+        clear.hidden = false
+        setActiveOption(color)
+        flagMenu.classList.remove("open")
+        sendFlagColor(node.slug, color)
+      })
+      palette.appendChild(option)
+    }
+    palette.appendChild(clear)
   }
 
   clear.addEventListener("click", (event) => {
@@ -774,6 +829,7 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
     event.preventDefault()
     event.stopPropagation()
     const willOpen = !flagMenu.classList.contains("open")
+    if (willOpen) ensurePalette()
     for (const menu of document.querySelectorAll(".explorer-flag-menu.open")) {
       if (menu !== flagMenu) menu.classList.remove("open")
     }
@@ -783,7 +839,6 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   flag.appendChild(swatch)
   flagMenu.appendChild(flag)
   flagMenu.appendChild(palette)
-  palette.appendChild(clear)
   li.insertBefore(flagMenu, a)
 
   return li
@@ -793,6 +848,7 @@ function createFolderNode(
   currentSlug: FullSlug,
   node: FileTrieNode,
   opts: ParsedOptions,
+  signal: AbortSignal,
 ): HTMLLIElement {
   const template = document.getElementById("template-folder") as HTMLTemplateElement
   const clone = template.content.cloneNode(true) as DocumentFragment
@@ -872,8 +928,7 @@ function createFolderNode(
     folderTitle = span
     if ((isVirtualCluster || isUnpublished) && opts.folderClickBehavior === "link") {
       button.ariaLabel = `Toggle ${isVirtualCluster ? "cluster" : "folder"} ${node.displayName}`
-      button.addEventListener("click", toggleFolder)
-      window.addCleanup(() => button.removeEventListener("click", toggleFolder))
+      button.addEventListener("click", toggleFolder, { signal })
     }
   }
 
@@ -881,7 +936,7 @@ function createFolderNode(
 
   if (isGardenRoot) {
     folderContainer.classList.add("garden-root")
-    bindGardenTitleMarquee(titleContainer, folderTitle)
+    bindGardenTitleMarquee(titleContainer, folderTitle, signal)
   }
 
   // if the saved state is collapsed or the default state is collapsed
@@ -901,7 +956,7 @@ function createFolderNode(
 
   for (const child of node.children) {
     const childNode = child.isFolder
-      ? createFolderNode(currentSlug, child, opts)
+      ? createFolderNode(currentSlug, child, opts, signal)
       : createFileNode(currentSlug, child)
     ul.appendChild(childNode)
   }
@@ -923,6 +978,8 @@ async function setupExplorer(currentSlug: FullSlug) {
   const allExplorers = document.querySelectorAll("div.explorer") as NodeListOf<HTMLElement>
 
   for (const explorer of allExplorers) {
+    const renderVersion = (explorerRenderVersions.get(explorer) ?? 0) + 1
+    explorerRenderVersions.set(explorer, renderVersion)
     const dataFns = JSON.parse(explorer.dataset.dataFns || "{}")
     const opts: ParsedOptions = {
       folderClickBehavior: (explorer.dataset.behavior || "collapse") as "collapse" | "link",
@@ -942,9 +999,37 @@ async function setupExplorer(currentSlug: FullSlug) {
     )
 
     const data = await fetchData
-    const entries = [...Object.entries(data)] as [FullSlug, ContentDetails][]
+    if (explorerRenderVersions.get(explorer) !== renderVersion || !explorer.isConnected) continue
+
+    explorerRenderControllers.get(explorer)?.abort()
+    const renderController = new AbortController()
+    const { signal } = renderController
+    explorerRenderControllers.set(explorer, renderController)
+    if (!boundExplorerRenderCleanup.has(explorer)) {
+      boundExplorerRenderCleanup.add(explorer)
+      window.addCleanup(() => {
+        explorerRenderControllers.get(explorer)?.abort()
+        explorerRenderControllers.delete(explorer)
+        boundExplorerRenderCleanup.delete(explorer)
+      })
+    }
+
+    const allowedClusters = gardenExplorerClusters(explorer)
+    const isAllowed = (filePath: string, slug: string) =>
+      !allowedClusters ||
+      allowedClusters.some(
+        (cluster) =>
+          filePath === cluster ||
+          filePath.startsWith(`${cluster}/`) ||
+          slug === cluster ||
+          slug.startsWith(`${cluster}/`),
+      )
+    const entries = Object.entries(data).filter(([slug, entry]) =>
+      isAllowed(entry.filePath ?? "", slug),
+    ) as [FullSlug, ContentDetails][]
     const trie = FileTrieNode.fromEntries(entries)
     for (const [slug, document] of canonicalDocuments) {
+      if (!isAllowed(document.filePath, slug)) continue
       if (data[slug]) {
         unpublishedDocuments.delete(slug)
       } else {
@@ -953,6 +1038,7 @@ async function setupExplorer(currentSlug: FullSlug) {
       }
     }
     for (const [cluster, folders] of canonicalFolders) {
+      if (allowedClusters && !allowedClusters.includes(cluster)) continue
       for (const [folder, title] of folders) {
         // The snapshot contains disk paths; Quartz URLs replace spaces and
         // other characters. Match the published node instead of adding a
@@ -964,8 +1050,7 @@ async function setupExplorer(currentSlug: FullSlug) {
           continue
         }
         unpublishedFolders.add(slug)
-        trie.add({ slug, title, filePath,
-          links: [], tags: [], content: "" })
+        trie.add({ slug, title, filePath, links: [], tags: [], content: "" })
       }
     }
     applyGardenExplorerScope(explorer, trie)
@@ -1003,7 +1088,7 @@ async function setupExplorer(currentSlug: FullSlug) {
     const fragment = document.createDocumentFragment()
     for (const child of trie.children) {
       const node = child.isFolder
-        ? createFolderNode(currentSlug, child, opts)
+        ? createFolderNode(currentSlug, child, opts, signal)
         : createFileNode(currentSlug, child)
 
       fragment.appendChild(node)
@@ -1037,11 +1122,14 @@ async function setupExplorer(currentSlug: FullSlug) {
     for (const button of explorerButtons) {
       if (boundExplorerToggles.has(button)) continue
       boundExplorerToggles.add(button)
-      button.addEventListener("click", toggleExplorer)
-      window.addCleanup(() => {
-        button.removeEventListener("click", toggleExplorer)
-        boundExplorerToggles.delete(button)
-      })
+      button.addEventListener("click", toggleExplorer, { signal })
+      signal.addEventListener(
+        "abort",
+        () => {
+          boundExplorerToggles.delete(button)
+        },
+        { once: true },
+      )
     }
 
     // Set up folder click handlers
@@ -1050,8 +1138,7 @@ async function setupExplorer(currentSlug: FullSlug) {
         "folder-button",
       ) as HTMLCollectionOf<HTMLElement>
       for (const button of folderButtons) {
-        button.addEventListener("click", toggleFolder)
-        window.addCleanup(() => button.removeEventListener("click", toggleFolder))
+        button.addEventListener("click", toggleFolder, { signal })
       }
     }
 
@@ -1059,8 +1146,7 @@ async function setupExplorer(currentSlug: FullSlug) {
       "folder-icon",
     ) as HTMLCollectionOf<HTMLElement>
     for (const icon of folderIcons) {
-      icon.addEventListener("click", toggleFolder)
-      window.addCleanup(() => icon.removeEventListener("click", toggleFolder))
+      icon.addEventListener("click", toggleFolder, { signal })
     }
   }
 }

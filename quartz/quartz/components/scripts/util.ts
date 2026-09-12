@@ -1,4 +1,8 @@
-export function registerEscapeHandler(outsideContainer: HTMLElement | null, cb: () => void) {
+export function registerEscapeHandler(
+  outsideContainer: HTMLElement | null,
+  cb: () => void,
+  signal?: AbortSignal,
+) {
   if (!outsideContainer) return
   function click(this: HTMLElement, e: HTMLElementEventMap["click"]) {
     if (e.target !== this) return
@@ -13,10 +17,12 @@ export function registerEscapeHandler(outsideContainer: HTMLElement | null, cb: 
     cb()
   }
 
-  outsideContainer?.addEventListener("click", click)
-  window.addCleanup(() => outsideContainer?.removeEventListener("click", click))
-  document.addEventListener("keydown", esc)
-  window.addCleanup(() => document.removeEventListener("keydown", esc))
+  outsideContainer?.addEventListener("click", click, signal ? { signal } : undefined)
+  document.addEventListener("keydown", esc, signal ? { signal } : undefined)
+  if (!signal) {
+    window.addCleanup(() => outsideContainer?.removeEventListener("click", click))
+    window.addCleanup(() => document.removeEventListener("keydown", esc))
+  }
 }
 
 export function removeAllChildren(node: HTMLElement) {

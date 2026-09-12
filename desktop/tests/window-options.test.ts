@@ -10,6 +10,7 @@ import {
   isWindowSurface,
   mainWindowOptions,
   popupBackgroundColor,
+  tabRendererWebPreferences,
   titleBarForSurface,
   titleBarForTheme,
 } from "../src/main/window-options";
@@ -110,6 +111,14 @@ test("non-Windows windows retain native title bars", () => {
   const options = mainWindowOptions("/app/preload.js", undefined, "darwin");
   assert.equal(options.titleBarStyle, undefined);
   assert.equal(options.titleBarOverlay, undefined);
+});
+
+test("inactive tab renderers use Chromium background throttling", () => {
+  const options = tabRendererWebPreferences("C:\\app\\preload.js");
+  assert.equal(options.backgroundThrottling, true);
+  assert.equal(options.contextIsolation, true);
+  assert.equal(options.sandbox, true);
+  assert.equal(options.preload, "C:\\app\\preload.js");
 });
 
 test("dark window chrome meshes with the charcoal application palette", () => {
