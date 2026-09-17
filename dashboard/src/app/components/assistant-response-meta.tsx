@@ -8,6 +8,7 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import { parseChatTimestamp } from "@/lib/chat-time-separators";
+import ThinkingOrb from "@/app/components/effects/thinking-orb";
 
 function timestamp(value: string | number | undefined): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -107,13 +108,14 @@ export default function AssistantResponseMeta({
       responseTokens >= 0
       ? `↓ ${tokensEstimated ? "~" : ""}${formatTokenCount(
           responseTokens,
-        ).toLowerCase()} tokens`
+        ).toLowerCase()} ${usage?.partial ? "recorded tokens" : "tokens"}`
       : active
-        ? "↓ counting tokens..."
+        ? "↓ usage pending"
         : null
     : null;
   const usageBreakdown = usage && !sessionSnapshot && !noTokenReport
     ? [
+        usage.partial ? "Partial usage: some research or response phases did not report tokens" : null,
         `${formatExactTokenCount(usage.inputTokens)} input processed`,
         `${formatExactTokenCount(usage.outputTokens)} generated`,
         usage.contextUsedTokens !== undefined &&
@@ -141,6 +143,13 @@ export default function AssistantResponseMeta({
     : label;
   const metaContents = (
     <>
+      {/* The orb only exists while something is actually happening: a finished
+          turn says "Thought", and a still picture of a thought orb beside it
+          would claim otherwise. The label already carries the meaning, so the
+          orb is decoration and stays out of the accessibility tree. */}
+      {active ? (
+        <ThinkingOrb state="composing" size={20} className="self-center" />
+      ) : null}
       <span className={`assistant-response-label ${shimmer ? "thinking-shimmer" : ""}`}>{displayLabel}</span>
       {metadata ? (
         <span className="assistant-response-metrics" title={usageBreakdown}>

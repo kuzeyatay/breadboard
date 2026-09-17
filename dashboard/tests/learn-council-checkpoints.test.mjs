@@ -263,6 +263,11 @@ describe("ordinary Learn Council checkpoints", () => {
       false,
       "a structurally valid result may not forge different attempt usage",
     );
+    assert.doesNotThrow(() => parseLearnCouncilReceiptAttempts(
+      [{ ...completed, dispatchGeneration: 1, usage: { ...completed.usage, totalTokens: 630, outputTokens: 29, reasoningTokens: 500 } }],
+      1,
+      "completed",
+    ), "reasoning tokens may legitimately exceed visible output tokens");
     assert.throws(
       () => parseLearnCouncilReceiptAttempts(
         [{ ...failed, dispatchGeneration: 2 }, completed],
@@ -1746,4 +1751,34 @@ describe("ordinary Learn Council checkpoints", () => {
       1,
     );
   });
+});
+
+it("an attempt ChatMock settled for an orphaned process proves a no-answer call and authorizes redispatch", () => {
+  // 2026-09-17: ChatMock restarted mid-call; its sweep failed the in-flight
+  // receipt with provider "orphaned_process_restart" and no model binding,
+  // which the exact-route check rejected and every resume died on.
+  const orphan = {
+    dispatchGeneration: 1,
+    outcome: "failed_no_final_answer",
+    councilRunId: "crun_orphan_1",
+    finalAnswerPresent: false,
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, callCount: 1, reportedCallCount: 0 },
+    usageEstimated: true,
+    modelRouting: [{
+      schemaVersion: 1, at: "2026-09-17T07:46:00.000Z", requestId: "crun_orphan_1", endpoint: "council",
+      requestedModel: "unknown", resolvedModel: "unknown", upstreamModel: "unknown",
+      provider: "orphaned_process_restart", outcome: "failed", fallback: false,
+    }],
+    requestedModel: "unknown",
+    resolvedModel: "unknown",
+    createdAt: "2026-09-17T06:27:36.000Z",
+    updatedAt: "2026-09-17T07:46:00.000Z",
+    failureCode: "council_no_final_answer",
+  };
+  const [attempt] = parseLearnCouncilReceiptAttempts([orphan], 1, "failed");
+  assert.doesNotThrow(() => assertExactOrdinaryLearnCouncilReceiptAttempt(attempt, "openaiweb/gpt-5-6-thinking"));
+  // A genuine route with the wrong model is still rejected.
+  const wrong = { ...orphan, modelRouting: [{ ...orphan.modelRouting[0], provider: "openaiweb" }] };
+  const [wrongAttempt] = parseLearnCouncilReceiptAttempts([wrong], 1, "failed");
+  assert.throws(() => assertExactOrdinaryLearnCouncilReceiptAttempt(wrongAttempt, "openaiweb/gpt-5-6-thinking"), /does not prove/);
 });

@@ -113,7 +113,7 @@ export function resolveAgentRunStreamError({
   onUnavailable,
 }: {
   source: EventSource;
-  /** The run's route root, e.g. `/api/open-gym/runs/<id>`. */
+  /** The run's route root, e.g. `/api/deep-research/runs/<id>`. */
   base: string;
   replayEnding?: (event: AgentRunStreamEvent) => void;
   onUnavailable: (reason: AgentRunStreamFailure) => void;

@@ -119,7 +119,8 @@ test("a failed run is still reported as a failure, cited or not", () => {
     content: `Partial finding [S1].\n\n${REGISTRY}`,
   });
   assert.match(handback, /did not finish/);
-  assert.match(handback, /Say what failed/);
+  assert.match(handback, /say in ordinary language what prevented it from completing/);
+  assert.match(handback, /Do not relaunch it without being asked/);
 });
 
 test("the writing standard reaches a turn holding a cited report and no web tool", () => {

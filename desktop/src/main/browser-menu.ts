@@ -40,7 +40,7 @@ export function browserMenuTemplate(
     item("Print…", "print", "CommandOrControl+P", context.hasPage),
     item("Save Page As…", "save", "CommandOrControl+S", context.hasPage),
     item("Translate Page…", "translate", undefined, context.hasPage),
-    item("Find in Page…", "find", "CommandOrControl+F", context.hasPage),
+    item("Find in Page…", "find", "CommandOrControl+F"),
     { label: `Zoom · ${context.zoomPercent}%`, submenu: [
       item("Zoom In", "zoom-in", "CommandOrControl+Plus", context.hasPage && context.zoomPercent < 300),
       item("Zoom Out", "zoom-out", "CommandOrControl+-", context.hasPage && context.zoomPercent > 25),

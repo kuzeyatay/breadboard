@@ -19,7 +19,7 @@ export async function aceStepStatus(userId: number) {
     if (config.managed) {
       const prepared = preparedAceStep(config.directory);
       if (!prepared)
-        return { state: "missing-models", message: "Prepare or repair ACE-Step and its model explicitly in settings.", settings: publicSettings, resonant };
+        return { state: "missing-models", message: "Local models are not prepared. Use Download and prepare ACE-Step below, or connect an external ACE-Step provider.", settings: publicSettings, resonant };
       hardware = prepared.hardware;
       const snapshot = await readSupervisedServiceSnapshot("acestep");
       if (snapshot?.state === "resource-blocked")

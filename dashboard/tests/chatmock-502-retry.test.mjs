@@ -9,6 +9,7 @@ import {
   isAmbiguousModelTransportFailure,
   isExplicitProviderQuotaResetError,
   isModelTransportBoundaryFailure,
+  isProviderQuotaOrCreditError,
   isRetryableModelTransportError,
   isStrictPreAcceptConnectionRefusal,
   modelTransportRetryCause,
@@ -781,4 +782,39 @@ test('Learn source exposes structured terminal transport telemetry', () => {
   assert.match(trackingSource, /learn_model_transport_failure/);
   assert.match(trackingSource, /rejectionCause/);
   assert.doesNotMatch(trackingSource, /learn_model_transport_retry|recoveryReceiptId/);
+});
+
+test('a council 502 that names quota or credit refusals is a provider quota error', () => {
+  // The exact wording ChatMock's council returns once every route has
+  // refused (see `_exhausted_route_message`), wrapped in the SDK's 502.
+  const councilExhausted = errorWithStatus(
+    502,
+    'The council could not produce an answer because every candidate model ' +
+      'was out of quota or credits: openrouter/stealth/union-alpha has reached ' +
+      'its usage limit (HTTP 429); openrouter/anthropic/claude-sonnet-4.5 needs ' +
+      'more provider credits (HTTP 402). Add credits or wait for the limit to ' +
+      'reset, or choose a model from another provider, then try again.',
+  );
+  assert.equal(isProviderQuotaOrCreditError(councilExhausted), true);
+  // The dashboard's retry gate already treats this wording as terminal.
+  assert.equal(isExplicitProviderQuotaResetError(councilExhausted), true);
+
+  // OpenRouter's own 402 body, as a cause under a wrapper without a status.
+  const wrapped = new Error('Concept extraction failed for section 1 of 42', {
+    cause: errorWithStatus(
+      402,
+      'This request requires more credits, or fewer max_tokens. You requested up to 64000 tokens, but can only afford 1185.',
+    ),
+  });
+  assert.equal(isProviderQuotaOrCreditError(wrapped), true);
+  assert.equal(isProviderQuotaOrCreditError(errorWithStatus(429)), true);
+
+  for (const other of [
+    errorWithStatus(502, 'The council could not produce an answer because all candidate models failed.'),
+    errorWithStatus(503),
+    new Error('fetch failed'),
+    Object.assign(new Error('Request timed out.'), { name: 'APIConnectionTimeoutError' }),
+  ]) {
+    assert.equal(isProviderQuotaOrCreditError(other), false);
+  }
 });

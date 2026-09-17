@@ -12,6 +12,7 @@ import {
   setHermesUserSettings,
 } from "@/lib/hermes/runtime-store";
 import { pickComposerSwitches } from "@/lib/hermes/composer-switches";
+import { providerErrorResponseInit, setDefaultModel } from "@/lib/chatmock-providers";
 import { corsHeaders } from "@/lib/hermes/quartz-support";
 import {
   ApiError,
@@ -115,6 +116,17 @@ export async function PATCH(request: Request) {
       switches === undefined
     ) {
       throw new ApiError(400, "preference_required", "A model or intelligence level is required.");
+    }
+    // The profile fallback also governs background generation, including
+    // Thought Topology. Validate routing before saving the account preference;
+    // explicit chat and Learn selections are passed with their own requests.
+    if (model !== undefined) {
+      try {
+        await setDefaultModel(request, model);
+      } catch (error) {
+        const { status, message } = providerErrorResponseInit(error);
+        throw new ApiError(status, "model_unavailable", message);
+      }
     }
     setHermesUserSettings(userId, {
       ...(model !== undefined ? { defaultModel: model } : {}),

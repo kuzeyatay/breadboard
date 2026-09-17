@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  activateAccount,
   CliproxyRequestError,
   CliproxyUnavailableError,
   deleteAccount,
@@ -48,6 +49,26 @@ export async function DELETE(request: Request) {
         () => deleteAccount(userId, name, request.signal),
       );
     }
+    return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * Make one signed-in account the one its provider serves from. The siblings
+ * stay signed in — only which of them answers changes — so unlike DELETE this
+ * needs no confirmation and is undone by switching back.
+ */
+export async function PATCH(request: Request) {
+  try {
+    await requireUserId();
+
+    const payload = (await request.json().catch(() => ({}))) as { file?: unknown };
+    const file = typeof payload.file === "string" ? payload.file.trim() : "";
+    if (!file) throw new RouteError(400, "A credential file is required.");
+
+    await withCliproxyLease("subscription-switch", () => activateAccount(file));
     return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return failure(error);

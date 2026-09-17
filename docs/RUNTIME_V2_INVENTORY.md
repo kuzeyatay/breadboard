@@ -215,7 +215,6 @@ join key is `runtime-agent:<profile-id>`; all 37 primary IDs exist in the finali
 | `runtime-agent:get-doc` | `get_doc` | `/api/get-doc/runs` |
 | `runtime-agent:deep-tutor` | `deep_tutor` | `/api/deep-tutor/runs` |
 | `runtime-agent:career-ops` | `career_ops` | `/api/career-ops/runs` |
-| `runtime-agent:open-gym` | `open_gym` | `/api/open-gym/runs` |
 | `runtime-agent:meeting-notes` | `meeting_notes` | `/api/meeting-notes/runs` |
 | `runtime-agent:trading-agent` | `trading_agents` | `/api/tradingagents/runs` |
 | `runtime-agent:vibe-trading` | `vibe_trading` | `/api/vibe-trading/runs` |

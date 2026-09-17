@@ -22,8 +22,9 @@ from .http import build_cors_headers
 from .model_identity import with_resolved_model_identity
 from .model_registry import list_public_models, uses_codex_instructions
 from .model_telemetry import record_model_attempt
+from .usage_ledger import request_origin, tap_chatgpt_response
 from .providers import dispatch as provider_dispatch
-from .providers.registry import ResolvedModel, model_entries, resolve_model
+from .providers.registry import NoDefaultModelError, ResolvedModel, model_entries, resolve_model
 from .providers.store import is_default_sentinel
 from .responses_api import (
     ResponsesRequestError,
@@ -45,7 +46,12 @@ from .session import (
     note_responses_stream_event,
     prepare_responses_request_for_session,
 )
-from .upstream import normalize_model_name, start_upstream_raw_request, start_upstream_request
+from .upstream import (
+    normalize_model_name,
+    quota_refusal_message,
+    start_upstream_raw_request,
+    start_upstream_request,
+)
 from .utils import (
     convert_chat_messages_to_responses_input,
     convert_tool_choice_chat_to_responses,
@@ -57,6 +63,14 @@ from .utils import (
 
 
 openai_bp = Blueprint("openai", __name__)
+
+
+@openai_bp.errorhandler(NoDefaultModelError)
+def no_default_model(error: NoDefaultModelError) -> Response:
+    response = make_response(jsonify({"error": {"message": str(error), "code": error.code}}), 400)
+    for key, value in build_cors_headers().items():
+        response.headers.setdefault(key, value)
+    return response
 
 
 def _log_json(prefix: str, payload: Any) -> None:
@@ -135,6 +149,36 @@ def _record_chatgpt_dispatch(
         fallback=False,
     )
     return request_id
+
+
+def _tap_chatgpt_usage(
+    upstream: Any,
+    *,
+    request_id: str,
+    endpoint: str,
+    payload: Dict[str, Any],
+    requested_model: str | None,
+    upstream_model: str,
+    started_at: float,
+) -> Any:
+    """Arrange the usage-ledger row for one ChatGPT HTTP response.
+
+    The origin is read here, in the request thread, because the row itself is
+    written when the body has been consumed — possibly from a streaming
+    generator that no longer has the Flask request context.
+    """
+    if upstream is None:
+        return upstream
+    return tap_chatgpt_response(
+        upstream,
+        request_id=request_id,
+        endpoint=endpoint,
+        model=upstream_model,
+        requested_model=requested_model,
+        origin=request_origin(payload),
+        started_at=started_at,
+        kind=endpoint.split(".")[0] if endpoint else "chat",
+    )
 
 
 def _service_tier_from_payload(
@@ -311,12 +355,6 @@ def chat_completions() -> Response:
 
     messages = resolved_messages
 
-    if isinstance(messages, list):
-        sys_idx = next((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "system"), None)
-        if isinstance(sys_idx, int):
-            sys_msg = messages.pop(sys_idx)
-            content = sys_msg.get("content") if isinstance(sys_msg, dict) else ""
-            messages.insert(0, {"role": "user", "content": content})
     is_stream = bool(payload.get("stream"))
     stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
     include_usage = bool(stream_options.get("include_usage", False))
@@ -393,12 +431,13 @@ def chat_completions() -> Response:
     if tier_error is not None:
         return tier_error
 
-    _record_chatgpt_dispatch(
+    dispatch_id = _record_chatgpt_dispatch(
         endpoint="chat.completions",
         requested_model=requested_model_alias,
         resolved=resolved_model,
         upstream_model=model,
     )
+    dispatched_at = time.time()
 
     upstream, error_resp = start_upstream_request(
         model,
@@ -410,6 +449,15 @@ def chat_completions() -> Response:
         reasoning_param=reasoning_param,
         service_tier=service_tier,
         strict_single_attempt=learn_strict_route,
+    )
+    upstream = _tap_chatgpt_usage(
+        upstream,
+        request_id=dispatch_id,
+        endpoint="chat.completions",
+        payload=payload,
+        requested_model=requested_model_alias,
+        upstream_model=model,
+        started_at=dispatched_at,
     )
     if error_resp is not None:
         if verbose:
@@ -449,6 +497,15 @@ def chat_completions() -> Response:
                 reasoning_param=reasoning_param,
                 service_tier=service_tier,
             )
+            upstream2 = _tap_chatgpt_usage(
+                upstream2,
+                request_id=dispatch_id,
+                endpoint="chat.completions",
+                payload=payload,
+                requested_model=requested_model_alias,
+                upstream_model=model,
+                started_at=dispatched_at,
+            )
             record_rate_limits_from_response(upstream2)
             if err2 is not None:
                 # The repaired POST may have been accepted even though its
@@ -471,7 +528,11 @@ def chat_completions() -> Response:
         else:
             if verbose:
                 print("Upstream error status=", upstream.status_code)
-            err = {"error": {"message": upstream_error_message(err_body)}}
+            err = {
+                "error": {
+                    "message": quota_refusal_message(upstream) or upstream_error_message(err_body)
+                }
+            }
             if verbose:
                 _log_json("OUT POST /v1/chat/completions", err)
             return jsonify(err), upstream.status_code
@@ -677,18 +738,28 @@ def completions() -> Response:
     service_tier, tier_error = _service_tier_from_payload(model, payload, verbose=verbose)
     if tier_error is not None:
         return tier_error
-    _record_chatgpt_dispatch(
+    dispatch_id = _record_chatgpt_dispatch(
         endpoint="completions",
         requested_model=requested_model_alias,
         resolved=resolved_model,
         upstream_model=model,
     )
+    dispatched_at = time.time()
     upstream, error_resp = start_upstream_request(
         model,
         input_items,
         instructions=_instructions_for_model(model),
         reasoning_param=reasoning_param,
         service_tier=service_tier,
+    )
+    upstream = _tap_chatgpt_usage(
+        upstream,
+        request_id=dispatch_id,
+        endpoint="completions",
+        payload=payload,
+        requested_model=requested_model_alias,
+        upstream_model=model,
+        started_at=dispatched_at,
     )
     if error_resp is not None:
         if verbose:
@@ -712,7 +783,9 @@ def completions() -> Response:
             err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
         except Exception:
             err_body = {"raw": upstream.text}
-        err = {"error": {"message": upstream_error_message(err_body)}}
+        err = {
+            "error": {"message": quota_refusal_message(upstream) or upstream_error_message(err_body)}
+        }
         if verbose:
             _log_json("OUT POST /v1/completions", err)
         return jsonify(err), upstream.status_code
@@ -902,7 +975,7 @@ def responses_create() -> Response:
     actual_upstream_model = upstream_payload.get("model")
     if not isinstance(actual_upstream_model, str) or not actual_upstream_model.strip():
         actual_upstream_model = responses_model.upstream_model
-    _record_chatgpt_dispatch(
+    dispatch_id = _record_chatgpt_dispatch(
         endpoint="responses",
         requested_model=(
             payload.get("model") if isinstance(payload.get("model"), str) else None
@@ -910,10 +983,22 @@ def responses_create() -> Response:
         resolved=responses_model,
         upstream_model=actual_upstream_model,
     )
+    dispatched_at = time.time()
     upstream, error_resp = start_upstream_raw_request(
         upstream_payload,
         session_id=normalized.session_id,
         stream=True,
+    )
+    upstream = _tap_chatgpt_usage(
+        upstream,
+        request_id=dispatch_id,
+        endpoint="responses",
+        payload=payload,
+        requested_model=(
+            payload.get("model") if isinstance(payload.get("model"), str) else None
+        ),
+        upstream_model=actual_upstream_model,
+        started_at=dispatched_at,
     )
     if error_resp is not None:
         clear_responses_reuse_state(normalized.session_id)
@@ -939,6 +1024,9 @@ def responses_create() -> Response:
             err_body = {"error": {"message": upstream.text or "Upstream error"}}
         finally:
             upstream.close()
+        refusal = quota_refusal_message(upstream)
+        if refusal:
+            err_body = {"error": {"message": refusal, "code": "usage_limit_reached"}}
         clear_responses_reuse_state(normalized.session_id)
         if verbose:
             _log_json("OUT POST /v1/responses", err_body)

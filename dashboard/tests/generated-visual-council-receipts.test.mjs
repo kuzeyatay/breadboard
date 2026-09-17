@@ -248,6 +248,10 @@ class FakeCouncilBoundary {
       redispatchAllowed: generation === 1,
       failureCode: "council_no_final_answer",
       attempts: [...priorAttempts, failedAttempt(body, generation)],
+      // ChatMock stamps the claimed generation's start boundary on the
+      // metadata; a client that reads it as corrupt cannot recover (2026-09-16).
+      createdAt: "2026-09-16T14:55:17.369985+00:00",
+      updatedAt: "2026-09-16T14:55:25.051931+00:00",
     };
     this.receipts.set(body.clientRequestId, {
       state: "failed",

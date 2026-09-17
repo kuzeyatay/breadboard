@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -54,9 +55,11 @@ export default function BrainMapClient({
   const [scopeKey, setScopeKey] = useState(() => normalizedScope(initialScope));
   const [graph, setGraph] = useState<BrainGraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  useStartupLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const [rendererFailed, setRendererFailed] = useState(false);
   const fetchRef = useRef<AbortController | null>(null);
+  const revisionRef = useRef<string | null>(null);
 
   const load = useCallback(async (nextScope: string, background = false) => {
     // A poll should never cancel the foreground request that owns the loading
@@ -71,6 +74,16 @@ export default function BrainMapClient({
       setError(null);
     }
     try {
+      // A background poll asks for the revision alone first and only pulls
+      // the full graph when it moved; the graph runs to several megabytes.
+      if (background && revisionRef.current) {
+        const probe = await fetch(
+          `/api/profile/brain-graph?${scopeQuery(nextScope)}&revisionOnly=1`,
+          { signal: controller.signal, cache: "no-store" },
+        );
+        const summary = (await probe.json().catch(() => ({}))) as { revision?: string };
+        if (!probe.ok || summary.revision === revisionRef.current) return;
+      }
       const response = await fetch(`/api/profile/brain-graph?${scopeQuery(nextScope)}`, {
         signal: controller.signal,
         cache: "no-store",
@@ -80,6 +93,7 @@ export default function BrainMapClient({
       };
       if (!response.ok) throw new Error(payload.error || "Thought Topology could not be loaded.");
       if (!controller.signal.aborted) {
+        revisionRef.current = payload.revision;
         setGraph((current) => current?.revision === payload.revision ? current : payload);
       }
     } catch (cause) {
@@ -112,6 +126,7 @@ export default function BrainMapClient({
     rememberScope(nextScope);
     onScopeChange?.(nextScope);
     setRendererFailed(false);
+    revisionRef.current = null;
     setScopeKey(nextScope);
   }, [onScopeChange]);
 

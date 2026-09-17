@@ -1,13 +1,24 @@
 /** Browser-safe model defaults shared by every Breadboard AI surface. */
 export const DEFAULT_MODEL = 'gpt-5.6-sol';
 
+/** An explicit opt-out, persisted and routed without choosing a fallback. */
+export const NO_MODEL_SENTINEL = 'none';
+export const NO_DEFAULT_MODEL_MESSAGE = 'No default model is selected. Choose a model for this task or set a default model in your profile.';
+
 /**
- * Model id meaning "whatever the user picked as the global background model" in
- * Settings -> Providers. ChatMock expands it per request, so a subsystem that
+ * Model id meaning "whatever the user picked as the default model" on the
+ * profile page. ChatMock expands it per request, so a subsystem that
  * sends this (Hermes, OpenCode, UI-TARS, deep research) follows the choice
  * without being restarted. With no choice stored it resolves to DEFAULT_MODEL.
  */
 export const GLOBAL_MODEL_SENTINEL = 'default';
+
+/**
+ * Model id for a concrete model pinned by a running chat. It follows the
+ * global default until the runtime pins a turn's provider-prefixed model.
+ * Profile changes leave this runtime pin intact.
+ */
+export const CHAT_MODEL_SENTINEL = 'chat';
 
 /**
  * Provider id for ChatMock, Breadboard's local OpenAI-compatible gateway. Agent
@@ -22,6 +33,7 @@ export const DEFAULT_ASSISTANT_MODELS: readonly string[] = [
   DEFAULT_MODEL,
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  'gpt-5.6-luna-reserve',
   'gpt-5.5',
   'gpt-5.4',
 ];
@@ -65,6 +77,7 @@ const VENDOR_LABELS: Readonly<Record<string, string>> = {
 const PROVIDER_VENDOR: Readonly<Record<string, string>> = {
   chatgpt: 'openai',
   openai: 'openai',
+  openaiweb: 'openai',
   anthropic: 'anthropic',
   google: 'google',
   xai: 'xai',
@@ -150,12 +163,29 @@ const GATEWAY_GROUPS: Readonly<Record<string, string>> = {
   custom: 'Custom endpoint',
 };
 
+/**
+ * ChatMock's provider id for chatgpt.com driven in a signed-in browser tab.
+ * The same plan as the OAuth `chatgpt` route, but the website's own models
+ * and the website's own limits, so it gets a section of its own rather than
+ * being mixed into OpenAI's.
+ */
+export const CHATGPT_WEB_PROVIDER_ID = 'openaiweb';
+export const CHATGPT_WEB_GROUP_LABEL = 'OpenAI (web)';
+
+/** Whether a model id is served by the chatgpt.com tab. */
+export function isChatgptWebModel(modelId: string): boolean {
+  return modelId.toLowerCase().startsWith(`${CHATGPT_WEB_PROVIDER_ID}/`);
+}
+
 /** The section a model belongs to in the Intelligence menu. */
 export function assistantModelGroup(
   modelId: string,
 ): { id: string; label: string } {
   const slash = modelId.indexOf('/');
   const provider = slash < 0 ? '' : modelId.slice(0, slash).toLowerCase();
+  if (provider === CHATGPT_WEB_PROVIDER_ID) {
+    return { id: CHATGPT_WEB_PROVIDER_ID, label: CHATGPT_WEB_GROUP_LABEL };
+  }
   const gateway = provider ? GATEWAY_GROUPS[provider] : undefined;
   if (gateway) return { id: provider, label: gateway };
   return assistantModelVendor(modelId);
@@ -219,7 +249,43 @@ function formatClaudeModelName(bare: string): string {
  * and never the part being chosen between. The full id is still what gets
  * selected and sent.
  */
+/**
+ * chatgpt.com's picker slugs: `gpt-5-2-thinking` -> `GPT-5.2 Thinking`,
+ * `gpt-4o` -> `GPT-4o`, `o3-pro` -> `o3 Pro`, `auto` -> `Auto`. Digit runs
+ * rejoin on a dot the way the Claude formatter does; a version fused to a
+ * word (`4o`, `5t`) is left as the site spells it.
+ */
+function formatChatgptWebModelName(slug: string): string {
+  const words: string[] = [];
+  for (const segment of slug.split('-')) {
+    const previous = words.length > 0 ? words[words.length - 1] : '';
+    if (/^\d+$/.test(segment) && /^\d+(\.\d+)*$/.test(previous)) {
+      words[words.length - 1] = `${previous}.${segment}`;
+      continue;
+    }
+    if (/^gpt$/i.test(segment)) {
+      words.push('GPT');
+      continue;
+    }
+    if (/^o\d/i.test(segment) && words.length === 0) {
+      words.push(segment.toLowerCase());
+      continue;
+    }
+    words.push(/^\d/.test(segment) ? segment : segment.charAt(0).toUpperCase() + segment.slice(1));
+  }
+  // `GPT 5.2 Thinking` -> `GPT-5.2 Thinking`: the family and its version are
+  // one token in every name OpenAI prints.
+  return words.join(' ').replace(/^GPT (\S+)/, 'GPT-$1');
+}
+
 export function formatAssistantModelName(modelId: string): string {
+  if (modelId === NO_MODEL_SENTINEL) return 'No default model';
+  // The chatgpt.com tab: the site's own slug, marked so it never reads as the
+  // OAuth route's model of the same name.
+  if (isChatgptWebModel(modelId)) {
+    const slug = modelId.slice(modelId.indexOf('/') + 1);
+    return `${formatChatgptWebModelName(slug)} (web)`;
+  }
   // Routes may be nested (`openrouter/google/gemini-…`). Every path segment
   // before the last one is routing/vendor metadata already expressed by the
   // picker section heading, so none of it belongs in the row label.
@@ -230,8 +296,9 @@ export function formatAssistantModelName(modelId: string): string {
   if (bare === 'gpt-6-astra') return 'GPT-6 Astra';
   if (bare === 'gpt-5.6-sol' || bare === 'gpt-5.6') return 'GPT-5.6 Sol';
   if (bare === 'gpt-5.6-terra') return 'GPT-5.6 Terra';
+  if (bare === 'gpt-5.6-luna-reserve') return 'GPT-5.6 Luna (Reserve)';
   if (bare === 'gpt-5.6-luna') return 'GPT-5.6 Luna';
-  if (bare === GLOBAL_MODEL_SENTINEL) return 'Background model';
+  if (bare === GLOBAL_MODEL_SENTINEL) return 'Default model';
   // A route rather than a version, so it reads as an aside instead of turning
   // into a version number the way `formatClaudeModelName` would spell it.
   if (/^claude-/i.test(bare) && bare.endsWith('-efficient')) {

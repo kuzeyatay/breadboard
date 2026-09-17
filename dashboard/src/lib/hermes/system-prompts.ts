@@ -15,6 +15,7 @@ import { repositoryRoot } from "../runtime-paths.ts";
 import { unlazySystemSection } from "./unlazy.ts";
 import { CONVERSATION_REFERENCE_POLICY } from "../conversations/message-context.ts";
 import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT } from "./prompt-budget.ts";
+import { EXPLANATION_TURN_CONTRACT } from "./explanation-turn.ts";
 
 function readSystemPrompt(name: string): string {
   const file = path.join(
@@ -99,6 +100,8 @@ export function composeHermesSystemPrompt(input: {
    * do that comparison in arithmetic instead of leaving it to the model.
    */
   suppliedEvidence?: string;
+  /** A repair has its own causal contract and bounded evidence packet. */
+  explanationFocus?: boolean;
 }): string {
   const decision = input.decision;
   const sections = [
@@ -119,10 +122,10 @@ export function composeHermesSystemPrompt(input: {
   // capability. The skill itself keeps trivial turns lightweight, while every
   // substantial turn gets the same acceptance and verification contract on
   // Terminal, Garden Chat and Quartz.
-  sections.push(unlazySystemSection());
+  if (!input.explanationFocus) sections.push(unlazySystemSection());
   // Meta prompting is innate rather than opt-in: the discipline ships on every
   // surface and every capability mode. See lib/hermes/meta-prompting.ts.
-  if (metaPromptingEnabled()) {
+  if (!input.explanationFocus && metaPromptingEnabled()) {
     sections.push(readSystemPrompt("meta-prompting"));
   }
   if (decision.mode === "scoped_implementation") {
@@ -170,18 +173,18 @@ export function composeHermesSystemPrompt(input: {
   // where selecting the important details is the server's job rather than the
   // asker's. Cheap: a pure function over the request text.
   // See lib/hermes/answer-depth.ts.
-  const answerDepth = answerDepthSection({ userText: input.userText });
+  const answerDepth = input.explanationFocus ? "" : answerDepthSection({ userText: input.userText });
   if (answerDepth) sections.push(answerDepth);
   // The image-results display contract ships whenever image_search is on the
   // turn: the fenced-block shape is Breadboard's own convention, so without
   // this section the model has only the tool description to learn it from.
-  if (decision.allowedTools.includes("image_search")) {
+  if (!input.explanationFocus && decision.allowedTools.includes("image_search")) {
     sections.push(readSystemPrompt("image-results"));
   }
   // Weather is a compact native resource too. The tool returns measured/model
   // data and the prompt teaches the assistant to preserve that object exactly
   // so one requested day always maps to one card.
-  if (decision.allowedTools.includes("weather_forecast")) {
+  if (!input.explanationFocus && decision.allowedTools.includes("weather_forecast")) {
     sections.push(readSystemPrompt("weather-results"));
   }
   // Product results are a native resource, not prose with shopping links. The
@@ -192,19 +195,22 @@ export function composeHermesSystemPrompt(input: {
   // choice; this section tells it which of the overlapping search tools owns a
   // shopping/recommendation request and which requests should remain ordinary
   // conversation or web research.
-  if (decision.allowedTools.includes("product_search")) {
+  if (!input.explanationFocus && decision.allowedTools.includes("product_search")) {
     sections.push(readSystemPrompt("product-search"));
   }
   // Past-chat lookup has its own private index and native navigation result.
   // Make the intent boundary explicit so requests such as "where was the chat
   // about Kirchhoff?" do not get answered from memory or generic search.
-  if (decision.allowedTools.includes("chat_search")) {
+  if (!input.explanationFocus && decision.allowedTools.includes("chat_search")) {
     sections.push(readSystemPrompt("chat-search"));
+  }
+  if (!input.explanationFocus && decision.allowedTools.includes("notifications_read")) {
+    sections.push(readSystemPrompt("notifications"));
   }
   // "How is the upload going?" must be answered from the job tables, not from
   // whatever the model remembers of the conversation. Ship the boundary with
   // the tool so the model reads it alongside the tool description.
-  if (decision.allowedTools.includes("breadboard_process_status")) {
+  if (!input.explanationFocus && decision.allowedTools.includes("breadboard_process_status")) {
     sections.push(readSystemPrompt("process-status"));
   }
   sections.push(
@@ -223,7 +229,7 @@ export function composeHermesSystemPrompt(input: {
   );
   // The turn's structure sits after the policy record and before the evidence,
   // so the model reads context already holding the frame it will fill.
-  const metaPrompt = metaPromptSection({
+  const metaPrompt = input.explanationFocus ? "" : metaPromptSection({
     userText: input.userText,
     surface: input.surface,
     decision,
@@ -258,10 +264,14 @@ export function composeHermesSystemPrompt(input: {
   // Persona overlays are deliberately last and explicitly subordinate. They
   // can shape voice and approach, but never the server-authored sections above.
   const suffix = [boundPromptContext(input.persona?.trim() ?? "", 8_000)];
+  // Skills and source documents may guide the work, but cannot turn a request
+  // for prose into an unsolicited file. Keep delivery policy after them.
+  suffix.push(readSystemPrompt("artifact-delivery"));
   // Final on purpose: this governs how already-decided content is explained.
   // Concise, retrieved evidence and a specialist persona may shape the
   // answer, but none may turn it back into unexplained analyst shorthand.
   suffix.push(readerComprehensionPrompt());
+  if (input.explanationFocus) suffix.push(EXPLANATION_TURN_CONTRACT);
   const policy = sections.join("\n\n");
   const ending = suffix.filter(Boolean).join("\n\n");
   // Budget evidence after assembling policy, so a long report cannot evict

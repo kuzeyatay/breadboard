@@ -3,14 +3,44 @@ import {
   acquireGardenMutationLease,
   isGardenMutationBusyError,
   type GardenMutationLease,
-} from "./garden-mutation-lease.ts";
+  type GardenMutationLeaseOptions,
+} from "./garden-mutation-lease-core.ts";
+import type { GardenLearnLock } from "./learn-atomic-promotion.ts";
+import { dashboardDataDir } from "./runtime-paths.ts";
 import {
   knowledgeWriteTransactionRegistryRoot,
   recoverKnowledgeWriteTransactions,
-} from "./knowledge.ts";
+} from "./knowledge-write-transaction.ts";
 
 function isLiveIngestionRecoveryConflict(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+/** The recovery routine acquires its own fence before inspecting any journal. */
+export function recoverGardenIngestionConflict(
+  gardenDir: string,
+  conflict: GardenLearnLock,
+  dataRoot: string = dashboardDataDir(),
+): boolean {
+  if (!/^mutation:document-ingestion(?:-recovery|-commit-recovery)?:/.test(conflict.jobId)) {
+    return false;
+  }
+  const resolvedGarden = path.resolve(gardenDir);
+  const contentPath = path.dirname(resolvedGarden);
+  const clusterSlug = path.basename(resolvedGarden);
+  // New owners record the exact journal store. Older locks use the configured
+  // dashboard/desktop data root, the same fallback as the ingestion worker.
+  const registryRoot = conflict.ingestionRecovery?.registryRoot ??
+    knowledgeWriteTransactionRegistryRoot(dataRoot, contentPath, clusterSlug);
+  const runtimeJobsRoot = conflict.ingestionRecovery?.runtimeJobsRoot ??
+    path.join(dataRoot, "runtime", "jobs");
+  try {
+    recoverKnowledgeWriteTransactions(contentPath, clusterSlug, registryRoot, runtimeJobsRoot);
+    return true;
+  } catch (error) {
+    if (isLiveIngestionRecoveryConflict(error)) return false;
+    throw error;
+  }
 }
 
 /**
@@ -26,35 +56,21 @@ export function acquireGardenMutationLeaseWithIngestionRecovery(input: {
   dataRoot: string;
   clusterSlug: string;
   operation: string;
+  options?: GardenMutationLeaseOptions;
 }): GardenMutationLease {
   const clusterDir = path.join(input.contentPath, input.clusterSlug);
   try {
-    return acquireGardenMutationLease(clusterDir, input.operation);
+    return acquireGardenMutationLease(clusterDir, input.operation, input.options);
   } catch (error) {
     if (
       !isGardenMutationBusyError(error) ||
-      !error.conflict.jobId.startsWith("mutation:document-ingestion:")
+      input.options?.recoverStaleProcessBoundLease === true
     ) {
       throw error;
     }
 
-    try {
-      const registryRoot = knowledgeWriteTransactionRegistryRoot(
-        input.dataRoot,
-        input.contentPath,
-        input.clusterSlug,
-      );
-      recoverKnowledgeWriteTransactions(
-        input.contentPath,
-        input.clusterSlug,
-        registryRoot,
-        path.join(input.dataRoot, "runtime", "jobs"),
-      );
-    } catch (recoveryError) {
-      if (isLiveIngestionRecoveryConflict(recoveryError)) throw error;
-      throw recoveryError;
-    }
+    if (!recoverGardenIngestionConflict(clusterDir, error.conflict, input.dataRoot)) throw error;
 
-    return acquireGardenMutationLease(clusterDir, input.operation);
+    return acquireGardenMutationLease(clusterDir, input.operation, input.options);
   }
 }

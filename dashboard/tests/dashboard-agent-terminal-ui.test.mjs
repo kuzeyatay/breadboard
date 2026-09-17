@@ -528,7 +528,7 @@ test("a message queues while its chat is still loading", () => {
   // agent cannot bind its run to a conversation that has not settled either.
   assert.match(
     terminal,
-    /const submit = useCallback\([\s\S]{0,800}if \(session\.loadingSession \|\| openGymRoutingRef\.current\) return;/,
+    /const submit = useCallback\([\s\S]{0,800}if \(session\.loadingSession\) return;/,
   );
   // The terminal's empty-state openers used to be a second dispatch path and
   // carried the same guard. They now only fill the composer, so submit is the

@@ -24,6 +24,8 @@ import {
 } from "./first-paint";
 import { isFullScreenShortcut } from "./tab-model";
 import { TabManager } from "./tab-manager";
+import { rebaseDashboardUrl } from "./tab-session";
+import { installRendererRecovery } from "./renderer-recovery";
 
 export { FIRST_PAINT_MAX_WAIT_MS, FIRST_PAINT_PROBE_MAX_WAIT_MS, isFullScreenShortcut };
 
@@ -52,6 +54,7 @@ export interface WindowManagerOptions {
   browserVisitedLinksConfigDir?: string;
   browserHistoryConfigDir?: string;
   tabSessionConfigDir?: string;
+  startupPageLoadMaxWaitMs?: number;
   onBrowserAgentPageReady?: (runId: string, targetUrl: string) => Promise<boolean>;
 }
 
@@ -175,6 +178,7 @@ export function dashboardUrlWithTheme(
 export class WindowManager {
   private readonly options: WindowManagerOptions;
   private mainWindow: BrowserWindow | null = null;
+  private dashboardUrl: string | null = null;
   /**
    * Set only by the native `close` event for the window that is still current.
    * A renderer/GPU failure can make Electron emit `closed` without that user
@@ -184,6 +188,8 @@ export class WindowManager {
   private mainWindowCloseRequested = false;
   private startupShownAt: number | null = null;
   private startupContinued = false;
+  /** Survives startup renderer reloads and service recovery for this launch. */
+  private startupSoundAvailable = true;
   private readonly startupContinueWaiters = new Set<() => void>();
   private dashboardPreload: DashboardPreload | null = null;
   /** The floating recording controller, while a demonstration is being taught. */
@@ -212,7 +218,7 @@ export class WindowManager {
       recoveryHtmlPath: () => this.recoveryHtmlPath(),
       theme: () => this.currentTheme,
       openWindow: (url, privateBrowsing) => {
-        this.openPopupWindow(url, privateBrowsing);
+        return this.openPopupWindow(url, privateBrowsing);
       },
       openExternal: (url) => {
         void shell.openExternal(url);
@@ -222,6 +228,7 @@ export class WindowManager {
       browserVisitedLinksConfigDir: options.browserVisitedLinksConfigDir,
       browserHistoryConfigDir: options.browserHistoryConfigDir,
       tabSessionConfigDir: options.tabSessionConfigDir,
+      startupPageLoadMaxWaitMs: options.startupPageLoadMaxWaitMs,
       log: options.log,
       onBrowserAgentPageReady: options.onBrowserAgentPageReady,
     });
@@ -255,7 +262,9 @@ export class WindowManager {
 
   private revealWhenReady(window: BrowserWindow): void {
     const reveal = () => {
-      if (!window.isDestroyed() && !window.isVisible()) window.show();
+      if (window.isDestroyed()) return;
+      this.ensureWindowOnScreen(window);
+      if (!window.isVisible()) window.show();
     };
     const fallback = setTimeout(reveal, WINDOW_VISIBILITY_FALLBACK_MS);
     window.once("ready-to-show", () => {
@@ -263,6 +272,18 @@ export class WindowManager {
       reveal();
     });
     window.once("closed", () => clearTimeout(fallback));
+  }
+
+  private ensureWindowOnScreen(window: BrowserWindow): void {
+    const bounds = window.getBounds();
+    const onScreen = screen.getAllDisplays().some(({ workArea }) =>
+      bounds.x < workArea.x + workArea.width && bounds.x + bounds.width > workArea.x &&
+      bounds.y < workArea.y + workArea.height && bounds.y + bounds.height > workArea.y,
+    );
+    if (!onScreen) {
+      window.center();
+      this.log("moved an off-screen window back onto a connected display");
+    }
   }
 
   /** A hardened, still-hidden Breadboard window. Callers decide when it shows. */
@@ -339,6 +360,7 @@ export class WindowManager {
   /** Restore native styles before waiting for the final frame: on Windows,
    * changing the mouse-event style can also change the client-area rounding. */
   private prepareWindowReveal(window: BrowserWindow): void {
+    this.ensureWindowOnScreen(window);
     window.setIgnoreMouseEvents(false);
     window.setSkipTaskbar(false);
   }
@@ -555,8 +577,8 @@ export class WindowManager {
     window.webContents.on("did-navigate", (_event, url) => {
       rememberAllowedUrl(url);
     });
-    window.webContents.on("did-navigate-in-page", (_event, url) => {
-      rememberAllowedUrl(url);
+    window.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
+      if (isMainFrame) rememberAllowedUrl(url);
     });
     // Once a replacement owns the retry loop, this window has been retired to
     // the reconnect scene and shares nothing with the attempt in flight but the
@@ -590,7 +612,7 @@ export class WindowManager {
         this.scheduleLocalPageRecovery(window, state);
       },
     );
-    window.webContents.on("render-process-gone", () => {
+    installRendererRecovery(window.webContents, () => {
       if (retired()) {
         // Navigating a live http: page to the local reconnect scene retires its
         // renderer, and Chromium reports that teardown here. Put the scene back
@@ -721,6 +743,7 @@ export class WindowManager {
     state: LocalPageRecoveryState,
   ): void {
     if (failedWindow.isDestroyed() || state.replacement) return;
+    this.startupSoundAvailable = false;
 
     if (state.timer !== null) clearTimeout(state.timer);
     state.timer = null;
@@ -746,7 +769,8 @@ export class WindowManager {
       state.paintToken += 1;
       retry();
     });
-    replacement.webContents.on("render-process-gone", () => {
+    const disposeRendererRecovery = installRendererRecovery(replacement.webContents, () => {
+      if (state.replacement !== replacement) return;
       this.clearLoadWatchdog(state);
       state.paintToken += 1;
       retry();
@@ -781,6 +805,7 @@ export class WindowManager {
           retry();
           return;
         }
+        disposeRendererRecovery();
         this.swapToRecoveredMainWindow(failedWindow, replacement, state);
       });
     });
@@ -860,7 +885,6 @@ export class WindowManager {
     // window gets a fresh recovery state below; leaving both sets installed
     // would make every later navigation run an obsolete paint probe as well.
     replacement.webContents.removeAllListeners("did-fail-load");
-    replacement.webContents.removeAllListeners("render-process-gone");
     replacement.webContents.removeAllListeners("did-finish-load");
     this.prepareWindowReveal(replacement);
     this.unparkWindow(replacement);
@@ -881,6 +905,7 @@ export class WindowManager {
       // has become current. Their close events must not turn that handoff into
       // an application quit request.
       if (this.mainWindow === window) {
+        this.log(`main window ${window.id} received a close request`);
         this.mainWindowCloseRequested = true;
         this.options.onMainWindowCloseRequested?.();
       }
@@ -1048,6 +1073,7 @@ export class WindowManager {
   /** The startup renderer reporting that its welcome dissolve has finished. */
   markStartupContinued(): void {
     this.startupContinued = true;
+    this.startupSoundAvailable = false;
     const waiters = [...this.startupContinueWaiters];
     this.startupContinueWaiters.clear();
     for (const resolve of waiters) resolve();
@@ -1092,17 +1118,18 @@ export class WindowManager {
       // Deliberately not `ready-to-show`: it fires at the first paint of the
       // shell, long before the page it is meant to be handing over has content.
       window.webContents.once("did-finish-load", () => {
-        void Promise.all([
-          this.waitForFirstPaint(window),
-          this.tabs.restoreSession(window, dashboardUrl, () => {
+        void (async () => {
+          await this.tabs.prepareStartupWindow(window);
+          if (window.isDestroyed()) return;
+          await this.tabs.restoreSession(window, dashboardUrl, () => {
             const restored = this.buildWindow();
             restoredWindows.push(restored);
             this.parkOffscreen(restored);
             this.installLocalPageRecovery(restored, launchUrl);
             void restored.loadURL(launchUrl).catch(() => undefined);
             return restored;
-          }, true),
-        ]).then(() => resolve("loaded"), () => resolve("failed"));
+          }, true);
+        })().then(() => resolve("loaded"), () => resolve("failed"));
       });
       window.webContents.on("did-fail-load", (_event, errorCode, _description, _url, isMainFrame) => {
         // -3 is ABORTED, which a redirect raises on its way to a good page.
@@ -1139,13 +1166,36 @@ export class WindowManager {
   }
 
   /**
-   * Hold the welcome until all startup tabs have loaded and painted. There is
-   * no elapsed-time bypass: a slow tab must finish behind the loading screen.
+   * Hold the welcome while startup tabs load and paint. Restored background
+   * pages have a bounded load wait so one stalled request cannot hide the app.
    */
   async waitForDashboardPaint(): Promise<void> {
     const preload = this.dashboardPreload;
     if (!preload || preload.window.isDestroyed()) return;
     await preload.settled;
+  }
+
+  /** A persisted sound preference is not permission to replay it on reconnect. */
+  async claimStartupSound(senderId: number): Promise<boolean> {
+    const window = this.mainWindow;
+    const preload = this.dashboardPreload;
+    const isCurrentStartup = () =>
+      this.startupSoundAvailable &&
+      this.startupShownAt !== null &&
+      this.mainWindow === window &&
+      window !== null && !window.isDestroyed() &&
+      !window.webContents.isDestroyed() &&
+      window.webContents.id === senderId &&
+      window.webContents.getURL().split(/[?#]/)[0] ===
+        pathToFileURL(this.options.startupHtmlPath).toString();
+    if (!isCurrentStartup() || !preload || preload.window.isDestroyed()) return false;
+    const outcome = await preload.settled;
+    // A service failure, navigation, or another claimant may have retired this
+    // startup while its dashboard was painting.
+    if (outcome !== "loaded" || this.dashboardPreload !== preload ||
+        preload.window.isDestroyed() || !isCurrentStartup()) return false;
+    this.startupSoundAvailable = false;
+    return true;
   }
 
   private discardDashboardPreload(): void {
@@ -1171,6 +1221,7 @@ export class WindowManager {
     // at zero opacity. In the normal path this is already settled because
     // parkOffscreen staged the native state before the page started loading.
     if (startup && !startup.isDestroyed() && startup !== dashboard) {
+      this.ensureWindowOnScreen(startup);
       await this.matchWindowState(dashboard, startup);
     } else {
       dashboard.center();
@@ -1192,6 +1243,7 @@ export class WindowManager {
     this.dashboardPreload = null;
     this.mainWindowCloseRequested = false;
     this.mainWindow = dashboard;
+    this.startupSoundAvailable = false;
     this.installMainWindowLifetime(dashboard);
     for (const window of windows) {
       if (!window.isDestroyed()) this.unparkWindow(window);
@@ -1205,6 +1257,25 @@ export class WindowManager {
 
   async showDashboard(dashboardUrl: string, defaultScreenUrl = dashboardUrl): Promise<void> {
     this.tabs.setNotificationsVisible(false);
+    const previousDashboardUrl = this.dashboardUrl;
+    this.dashboardUrl = dashboardUrl;
+    if (previousDashboardUrl) {
+      // The startup handoff creates a fresh window and destroys the previous
+      // one. During recovery that window already owns live chats/browser tabs.
+      // Resume it in place instead of replaying the first-launch handoff.
+      this.discardDashboardPreload();
+      this.startupShownAt = null;
+      this.markStartupContinued();
+    }
+    if (previousDashboardUrl && new URL(previousDashboardUrl).origin !== new URL(dashboardUrl).origin) {
+      // Runtime restart keeps the live views. Their URLs and outstanding retry
+      // targets must move before a replacement main window adopts those views.
+      for (const window of BrowserWindow.getAllWindows()) {
+        const recovery = this.localPageRecovery.get(window);
+        if (recovery) recovery.url = rebaseDashboardUrl(recovery.url, previousDashboardUrl, dashboardUrl);
+      }
+      await this.tabs.reconnectDashboard(previousDashboardUrl, dashboardUrl);
+    }
     // LocalStorage belongs to an origin, and the supervised dashboard can use a
     // different port on the next launch. Give a fresh or previously reused
     // origin the durable shell preference before its first paint instead of
@@ -1248,11 +1319,12 @@ export class WindowManager {
     }
     await window.loadURL(launchUrl);
     await Promise.all([
-      this.waitForFirstPaint(window),
+      this.tabs.prepareStartupWindow(window),
       this.restoreTabSession(dashboardUrl, defaultScreenUrl),
     ]);
     if (window.isDestroyed() || this.mainWindow !== window) return;
     this.startupShownAt = null;
+    this.startupSoundAvailable = false;
     this.tabs.setNotificationsVisible(true);
   }
 

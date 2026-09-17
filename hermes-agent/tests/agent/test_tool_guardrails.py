@@ -2,6 +2,28 @@
 
 import json
 
+
+def test_rephrasing_discovery_without_new_tools_triggers_finalization():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(
+        hard_stop_enabled=True, no_progress_block_after=3))
+    for query in ["OCR", "read photo", "inspect the attached picture"]:
+        controller.after_call("tool_search", {"query": query},
+            json.dumps({"matches": [{"name": "attachment_image"}]}), failed=False)
+    assert controller.halt_decision.code == "discovery_no_progress"
+    assert controller.before_call("terminal", {"command": "anything"}).action == "block"
+    controller.reset_for_turn()
+    assert controller.before_call("terminal", {}).action == "allow"
+
+
+def test_image_exploration_budget_bounds_different_searches_but_allows_a_crop():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(
+        hard_stop_enabled=True, exploration_limit=2))
+    for i in range(2):
+        controller.after_call("web_search", {"query": str(i)}, json.dumps({"result": i}), failed=False)
+    assert controller.before_call("attachment_image", {"image": 1}).action == "allow"
+    assert controller.before_call("web_search", {"query": "another"}).code == "exploration_limit"
+
+
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -160,9 +182,9 @@ def test_same_tool_varying_args_warns_by_default_without_halting():
     assert first.action == "allow"
     assert [second.action, third.action, fourth.action] == ["warn", "warn", "warn"]
     assert {second.code, third.code, fourth.code} == {"same_tool_failure_warning"}
-    assert "Do not switch to text-only replies" in second.message
-    assert "keep using tools" in second.message
-    assert "diagnose before retrying" in second.message
+    assert "give the supported answer" in second.message
+    assert "ask the user" in second.message
+    assert "Inspect the error before retrying" in second.message
     assert "different tool" in second.message
     assert controller.halt_decision is None
 

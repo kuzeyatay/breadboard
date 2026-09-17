@@ -1,16 +1,6 @@
-// Server-side resolution of "the model the user has currently selected".
-//
-// The Intelligence picker writes the choice to the signed-in user's Hermes
-// settings (`default_model`), and every chat surface already follows it. The
-// document ingestion pipeline and the Learn panel used to hardcode a model
-// instead, so changing the picker had no effect on either. They resolve
-// through here now, so one choice governs every AI call Breadboard makes on
-// the user's behalf.
-//
-// A provider model that the runtime cannot name by id is stored as the
-// `default` sentinel, which ChatMock expands to the configured background
-// model — so passing the stored value straight through is correct in both
-// cases.
+// Server-side resolution of the profile default. Chat and Learn requests can
+// supply explicit overrides without writing this account preference. Background
+// tasks and requests without a local selection use this fallback.
 
 import { DEFAULT_MODEL, normalizeAssistantModelId } from "./ai-models.ts";
 import { getHermesUserSettings } from "./hermes/runtime-store.ts";

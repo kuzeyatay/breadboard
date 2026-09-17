@@ -1,14 +1,10 @@
 import crypto from "node:crypto";
 
 import {
-  humanizerDevice,
-  humanizerMode,
-  humanizerModel,
-  humanizerRevision,
   HUMANIZER_MAX_TEXT_CHARS,
 } from "../humanizer/config.ts";
 import { describeWarnings, scoreReview } from "../humanizer/review.ts";
-import { humanizerHealth, humanizerRewrite } from "../humanizer/service.ts";
+import { humanizerToolStatus, humanizerRewrite } from "../humanizer/service.ts";
 import { listMcpConnections } from "./mcp-connections.ts";
 import {
   listSkillLessons,
@@ -215,7 +211,7 @@ export function genOfficeWritingTools(
         function: {
           name: "humanize_status",
           description:
-            "Check whether Breadboard's optional local Humanize model is ready. Use after opening the humanize skill.",
+            "Prepare Breadboard's local Humanize service and check whether it can rewrite. Starts the service if idle. Use after opening the humanize skill.",
           parameters: {
             type: "object",
             additionalProperties: false,
@@ -265,38 +261,9 @@ function toolArgs(raw: string): Record<string, unknown> {
 }
 
 async function humanizeStatus(): Promise<GenOfficeWritingToolResult> {
-  const health = await humanizerHealth();
-  const state =
-    humanizerMode() === "disabled"
-      ? "disabled"
-      : health.status === "unreachable"
-        ? "unavailable"
-        : health.status === "degraded"
-          ? "error"
-          : health.modelState === "not_installed"
-            ? "not_installed"
-            : "ready";
   return {
     ok: true,
-    data: {
-      state,
-      ready: state === "ready",
-      modelId: health.modelId || humanizerModel(),
-      modelRevision: health.modelRevision || humanizerRevision(),
-      requestedDevice: humanizerDevice(),
-      device: health.device,
-      busy: health.busy,
-      summary:
-        state === "ready"
-          ? `The local rewriter is ready (${health.modelId} on ${health.device}).`
-          : state === "not_installed"
-            ? "The rewriting model has not been downloaded on this machine. It is an explicit opt-in: `npm run setup:humanizer -- --download-model`."
-            : state === "disabled"
-              ? "Local rewriting is switched off in this installation's settings."
-              : state === "error"
-                ? "The local rewriter is installed but not usable right now."
-                : "The local rewriter is not running on this machine. It is an optional local service: `npm run setup:humanizer`, then start Breadboard again.",
-    },
+    data: await humanizerToolStatus(),
   };
 }
 

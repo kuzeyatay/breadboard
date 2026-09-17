@@ -10,7 +10,7 @@ import {
 } from "../src/lib/telegram/delegated-follow-up.ts";
 import { normalizeInbound } from "../src/lib/telegram/gateway.ts";
 import {
-  conversationIsWarm,
+  conversationIsSameDay,
   messageText,
   HELP_TEXT,
 } from "../src/lib/telegram/inbound-policy.ts";
@@ -80,6 +80,7 @@ test("a photo with a caption arrives as media, not as an empty message", () => {
 test("a message goes through the same authenticated turn pipeline as the browser", () => {
   assert.match(inbound, /createConversation\(/);
   assert.match(inbound, /startConversationTurn\(/);
+  assert.match(inbound, /prepareTelegramAttachments\(settings\.ownerUserId, message\)/);
   assert.match(inbound, /resolveConversationRuntime\(/);
   // The chat must be a Terminal chat, which is what makes it show up in the
   // desktop app's Recents rather than living only inside Telegram.
@@ -333,18 +334,19 @@ test("a failed Telegram synthesis falls back to the complete worker result", asy
   assert.equal(telegramDelegatedWorkers(messages, 3).length, 0);
 });
 
-test("chats reuse a warm thread and open a new one after a quiet spell", () => {
-  const now = new Date("2026-07-30T12:00:00Z");
-  const ago = (minutes) =>
-    new Date(now.getTime() - minutes * 60_000).toISOString().replace("T", " ").slice(0, 19);
-  assert.equal(conversationIsWarm(ago(5), now), true);
-  assert.equal(conversationIsWarm(ago(60), now), true);
-  // Default window is 6 hours.
-  assert.equal(conversationIsWarm(ago(7 * 60), now), false);
-  assert.equal(conversationIsWarm("not a date", now), false);
+test("chats continue throughout the local day and start fresh after midnight", () => {
+  const now = new Date(2026, 6, 30, 23, 59);
+  const morning = new Date(2026, 6, 30, 0, 1);
+  const yesterday = new Date(2026, 6, 29, 23, 59);
+  assert.equal(conversationIsSameDay(morning.toISOString(), now), true);
+  assert.equal(conversationIsSameDay(yesterday.toISOString(), now), false);
+  assert.equal(conversationIsSameDay("not a date", now), false);
+  assert.match(inbound, /conversationIsSameDay\(existing\.created_at, now\)/);
+  assert.match(inbound, /originLabel: "Telegram"/);
+  assert.match(inbound, /!forceNew && chat\.conversation_id !== null/);
 });
 
-test("media is described rather than silently dropped", () => {
+test("captions are retained and attachments travel separately", () => {
   const withCaption = messageText({
     body: "what does this say?",
     hasMedia: true,
@@ -352,7 +354,7 @@ test("media is described rather than silently dropped", () => {
     fileName: "",
   });
   assert.match(withCaption, /what does this say\?/);
-  assert.match(withCaption, /cannot open Telegram attachments yet/);
+  assert.equal(withCaption, "what does this say?");
   assert.equal(messageText({ body: " hi ", hasMedia: false }), "hi");
 });
 

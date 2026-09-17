@@ -5,11 +5,10 @@
 // Coordinates: the map is planned in "world" units with the Garden at (0, 0).
 // The renderer maps world to screen with a single zoom transform.
 
-// @ts-expect-error The direct Node test loader requires the explicit extension;
+// The direct Node test loader requires the explicit extension;
 // Quartz's bundler resolves the same TypeScript module at build time.
 import { topologySourceKind, type TopologySourceKind } from "./sourceNodeVisual.ts"
 
-// @ts-expect-error See the import above.
 export { topologySourceKind, type TopologySourceKind } from "./sourceNodeVisual.ts"
 
 export type TopologyEnrichmentText = { state: string; text: string }
@@ -78,6 +77,7 @@ export type TopologyPayload = {
     message: string
     progress?: number
   }
+  retryGardens?: string[]
 }
 
 export type AggregateTopologyEntry = {
@@ -204,6 +204,7 @@ export function aggregateThoughtTopologies(
     folders,
     nodes,
     edges,
+    retryGardens: entries.flatMap(({ topology }) => topology.retryGardens ?? []),
     build: {
       state: building ? "building" : partial || degraded ? "degraded" : "ready",
       threshold: thresholds.length > 0 ? Math.min(...thresholds) : 0.68,
@@ -420,6 +421,9 @@ export interface PlanOptions {
   previewPageBudget?: number
   /** Maximum cross-folder bridges kept in preview mode. */
   previewBridgeBudget?: number
+  /** Pages kept in preview mode regardless of the budget, such as the page
+   * whose sidebar shows the map. */
+  previewKeepPageIds?: Iterable<string>
   /** User-authored home positions, created by a deliberate right-button drag. */
   positionOverrides?: Record<string, { x: number; y: number }>
   /** Folder path relative to the Garden root. Only this subtree is planned. */
@@ -956,11 +960,14 @@ export function planThoughtTopology(
       .slice(0, bridgeBudget)
     keptEdgeIds = new Set(bridges.map((edge) => edge.id))
     keptPageIds = new Set(bridges.flatMap((edge) => [edge.source, edge.target]))
+    for (const id of options.previewKeepPageIds ?? []) {
+      if (pageById.has(id)) keptPageIds.add(id)
+    }
     const ranked = [...pages].sort(
       (left, right) =>
         importanceOf(right) - importanceOf(left) || naturalCompare(left.title, right.title),
     )
-    if (keptPageIds.size === 0) {
+    if (bridges.length === 0) {
       // Without bridges, keep the highest-value page or two from every folder.
       const perFolder = new Map<string, number>()
       for (const page of ranked) {
@@ -974,6 +981,19 @@ export function planThoughtTopology(
     for (const page of ranked) {
       if (keptPageIds.size >= pageBudget) break
       keptPageIds.add(page.id)
+    }
+    if (bridges.length === 0) {
+      // A single-folder scope has no bridges; show its strongest
+      // connections among the kept pages instead of a bare hierarchy.
+      const kept = keptPageIds
+      const local = semanticEdges
+        .filter((edge) => kept.has(edge.source) && kept.has(edge.target))
+        .sort(
+          (left, right) =>
+            (right.score ?? 0) - (left.score ?? 0) || left.id.localeCompare(right.id),
+        )
+        .slice(0, bridgeBudget)
+      for (const edge of local) keptEdgeIds.add(edge.id)
     }
   }
 

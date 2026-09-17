@@ -1,3 +1,7 @@
+import { prepareExplanationTurn } from "../hermes/explanation-review-context.ts";
+import { explanationTurnPrompt } from "../hermes/explanation-turn.ts";
+import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
+import { agentPreferencesContext } from "../agent-preferences/store.ts";
 import {
   chatMessageAttachments,
   type ChatAttachment,
@@ -6,6 +10,7 @@ import { resolveCommandMessage } from "../hermes/commands.ts";
 import { prepareDocumentContext } from "../document-skills/turn.ts";
 import { stageEditableDocumentAttachments } from "../document-attachments-server.ts";
 import { prepareTurn, mergeSelectedTools } from "../hermes/dispatch-core.ts";
+import { turnApprovalPolicy } from "../hermes/turn-approval-policy.ts";
 import { adjudicateWebGrounding } from "../hermes/web-grounding-decider.ts";
 import {
   grantFilesystemRoot,
@@ -15,6 +20,7 @@ import {
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { hermesMessageId } from "../hermes/message-id.ts";
 import { resolveHermesEngine } from "../hermes/model-selection.ts";
+import { selectedModelForUser } from "../selected-model.ts";
 import {
   beginRuntimeRun,
   finishRuntimeRun,
@@ -67,6 +73,8 @@ import {
   type ConversationMessageRow,
 } from "./store.ts";
 import { withDelegatedResearchSources } from "./delegated-research-sources.ts";
+import { deliverCompletedResearch } from "./deliver-completed-research.ts";
+import { deliverCompletedHyperframes } from "./deliver-completed-hyperframes.ts";
 import { carriedExternalAgentsForContinuation } from "./delegated-agent-provenance.ts";
 import type { ExternalAgentCall } from "../hermes/evidence.ts";
 import {
@@ -211,7 +219,6 @@ import { ARIS_AGENT_SLUG } from "../aris/identity.ts";
 import type { CurrentLocationSnapshot } from "../current-location.ts";
 import {
   renderCurrentLocationContext,
-  requestUsesShoppingLocation,
 } from "../hermes/current-location-context.ts";
 import {
   renderGeographicGroundingDirective,
@@ -377,6 +384,14 @@ export async function startConversationTurn(
     );
   }
   const context = normalizeSurfaceContext(input.surfaceContext);
+  const approvalPolicy = turnApprovalPolicy({
+    surface: input.surface,
+    deliveryChannel: context.deliveryChannel,
+    yoloMode: input.yoloMode,
+    savedYoloMode: context.deliveryChannel
+      ? getHermesUserSettings(input.conversation.user_id).composerSwitches.yoloMode
+      : undefined,
+  });
   let preparedBranchSession: AuthorizedRuntimeSession | null = null;
   if (input.branchHistory) {
     preparedBranchSession = await resolveConversationRuntime({
@@ -436,6 +451,7 @@ export async function startConversationTurn(
     userOrderIndex: reservation.userMessage.order_index,
     reservationIsNew: reservation.isNew,
     preDispatchReserved,
+    isInlineQuestion: input.textSelection?.mode === "inline",
   })) {
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,
@@ -506,6 +522,26 @@ export async function startConversationTurn(
           : {}),
       },
     );
+  }
+
+  const hyperframesDelivery = !input.branchHistory ? await deliverCompletedHyperframes({
+    userId: input.conversation.user_id, conversationId: input.conversation.id,
+    clientMessageId: input.clientMessageId, continuationText: input.text,
+    internalAgentContinuation: input.internalAgentContinuation,
+  }) : null;
+  if (hyperframesDelivery) {
+    return { accepted: false, clarified: true,
+      session: authorizeConversationRuntime(input.conversation), message: hyperframesDelivery.content };
+  }
+  const researchDelivery = !input.branchHistory ? deliverCompletedResearch({
+    conversationId: input.conversation.id,
+    clientMessageId: input.clientMessageId,
+    continuationText: input.text,
+    internalAgentContinuation: input.internalAgentContinuation,
+  }) : null;
+  if (researchDelivery) {
+    return { accepted: false, clarified: true,
+      session: authorizeConversationRuntime(input.conversation), message: researchDelivery.content };
   }
 
   let session =
@@ -645,6 +681,7 @@ export async function startConversationTurn(
   }
   let prepared = prepareTurn({
     request: input.text,
+    internalAgentContinuation: input.internalAgentContinuation,
     priorRequests,
     resolvedResources,
     surface: input.surface,
@@ -652,10 +689,7 @@ export async function startConversationTurn(
     grants: filesystemGrants,
     workspaceRoot: session.activeDirectory,
     confirmedPermissionIds: input.confirmedPermissionIds,
-    // WhatsApp and Telegram cannot surface Hermes's native approval request.
-    // Withholding the executor here makes any attempted fallback fail at the
-    // capability boundary immediately instead of waiting five minutes.
-    interactiveApprovals: !context.deliveryChannel,
+    interactiveApprovals: approvalPolicy.interactiveApprovals,
     superAgent: input.superAgent === true,
     researchPipeline: researchToolsWarranted,
   });
@@ -692,7 +726,7 @@ export async function startConversationTurn(
   // here, where the turn keeps running with no viewer attached. The grants
   // mirror the client's "once" decision exactly: one-time scope, only the
   // operations the request named.
-  if (prepared.blocked && input.yoloMode === true) {
+  if (prepared.blocked && approvalPolicy.yoloMode) {
     // The switch says "act without asking me"; the tier says how far that
     // goes. At the default tier it goes all the way, so everything below runs
     // over the same permissions it always did — the split only bites for
@@ -761,6 +795,7 @@ export async function startConversationTurn(
         }
         const regranted = prepareTurn({
           request: input.text,
+          internalAgentContinuation: input.internalAgentContinuation,
           priorRequests,
           resolvedResources,
           surface: input.surface,
@@ -771,7 +806,7 @@ export async function startConversationTurn(
             ...(input.confirmedPermissionIds ?? []),
             ...confirmations,
           ],
-          interactiveApprovals: !context.deliveryChannel,
+          interactiveApprovals: approvalPolicy.interactiveApprovals,
           superAgent: input.superAgent === true,
           researchPipeline: researchToolsWarranted,
         });
@@ -882,6 +917,7 @@ export async function startConversationTurn(
   // part reaches the parametric kernel rather than becoming an uneditable mesh.
   const textToCadSelection = textToCadCommandText({
     text: watchSelection.text,
+    internalContinuation: input.internalAgentContinuation === true,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -1278,7 +1314,7 @@ export async function startConversationTurn(
       ...new Set([...decision.selectedConnections, GOAL_MODE_CONNECTION]),
     ];
   }
-  const engine = resolveHermesEngine(input.model, input.reasoningEffort);
+  const engine = resolveHermesEngine(input.model, input.reasoningEffort, selectedModelForUser(input.conversation.user_id));
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const connectedApps =
     input.surface === "quartz_ai"
@@ -1337,7 +1373,7 @@ export async function startConversationTurn(
       superAgent,
       goalMode,
       goalSkillSelected,
-      yoloMode: input.yoloMode === true,
+      yoloMode: approvalPolicy.yoloMode,
       ...(superAgentInventory
         ? {
             superAgentSkillCount: superAgentInventory.skillSlugs.length,
@@ -1559,10 +1595,32 @@ export async function startConversationTurn(
       ? "trusted model-to-model continuation, not a user request"
       : "excerpt-scoped selection follow-up, answered from delivered text",
   });
+  const selectionSourceMessage = input.textSelection
+    ? currentConversationMessages.find(
+        (message) =>
+          message.role === "assistant" &&
+          (input.textSelection!.sourceMessageId === `msg_${message.id}` ||
+            input.textSelection!.sourceMessageId === message.client_message_id),
+      )?.content
+    : undefined;
+  const explanationContext = input.internalAgentContinuation ? undefined : await prepareExplanationTurn({
+    runtimeSessionId: session.row.id,
+    request: resolved.userText || input.text,
+    messages: currentConversationMessages,
+    selectionContext: input.textSelection
+      ? chatTextSelectionQuestionPrompt(resolved.userText || input.text, input.textSelection, selectionSourceMessage)
+      : context.selectedText,
+    selectedText: input.textSelection?.quote ?? context.selectedText,
+    sourcePassages: gardenGrounding.context,
+    constraints: input.branchHistory === undefined ? JSON.stringify({ knownFacts: memory.workingState.knownFacts, decisions: memory.workingState.decisions,
+      historicalInstructions: memory.workingState.historicalInstructions, openQuestions: memory.workingState.openQuestions }) : "",
+  });
+  const explanationFocus = explanationContext?.repair === true && decision.mode === "knowledge";
   const baseSystem = composeHermesSystemPrompt({
     surface: input.surface,
     decision,
     userText: resolved.userText || input.text,
+    explanationFocus,
     // Only the attachments that still travel verbatim: a distilled document
     // reaches the model as an index, which has no values to check.
     suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
@@ -1571,6 +1629,7 @@ export async function startConversationTurn(
     goalMode: goalModeState,
     goalSkillSelected,
     additional: [
+      agentPreferencesContext(input.conversation.user_id),
       superAgentInventory
         ? renderSuperAgentDirective(superAgentInventory, researchPipeline)
         : // Without the inventory there is no super-agent directive to carry
@@ -1587,8 +1646,11 @@ export async function startConversationTurn(
         {
           recentMessages: currentConversationMessages,
           includeConversationState: input.branchHistory === undefined,
+          explanationFocus,
+          recentContextSupplied: Boolean(explanationContext),
         },
       ),
+      explanationContext ? explanationTurnPrompt(explanationContext) : "",
       // Directly after memory, as in Garden Chat: the repository is something
       // the assistant knows about the active Garden, not a late tool notice.
       repository?.systemContext ?? "",
@@ -1642,7 +1704,7 @@ export async function startConversationTurn(
       connectedApps.systemContext,
       authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
       renderSurfaceContext(input.surface, context),
-      renderDeliveryChannel(context.deliveryChannel),
+      renderDeliveryChannel(context.deliveryChannel, approvalPolicy.yoloMode),
     ].filter(Boolean).join("\n\n"),
     persona: activeAgencyAgent
       ? activeAgencyAgent.slug === CHIEF_OF_STAFF_SLUG
@@ -1657,28 +1719,25 @@ export async function startConversationTurn(
     ? ""
     : renderCurrentLocationContext({
         request: locationRequest,
-        priorRequests,
         location: input.currentLocation,
       });
   const currentLocationSnapshot = currentLocationContext
     ? parseCurrentLocationPayload(input.currentLocation)
     : null;
   const productSearchMarket =
-    currentLocationSnapshot &&
-    requestUsesShoppingLocation(locationRequest, priorRequests)
+    currentLocationSnapshot && tools.product_search === true
       ? await resolveProductSearchMarket(currentLocationSnapshot)
       : null;
   // The product tool runs in Hermes after this request returns. Give it only a
   // country-level, short-lived market owned by this server-side runtime
-  // session. A new turn always replaces the value, so an unrelated request
-  // cannot inherit yesterday's shopping location.
+  // session on every turn where the tool is available. The model can decide
+  // to shop from any wording; a topic classifier must not drop its market.
   setProductSearchMarketContext(session.row.id, productSearchMarket);
   // The same coarse fix, put where the map tools can reach it. Without this,
   // "what's near me" has no anchor unless the /map page happens to be open —
   // and an agent with no anchor and a geographic question is exactly the
   // situation this whole feature exists to prevent. It is written only when
-  // renderCurrentLocationContext already decided this request uses location, so
-  // an unrelated turn never records where the user is, and the next fix
+  // the user enabled device context and map tools are available. The next fix
   // replaces it rather than accumulating a trail.
   if (currentLocationContext && tools.map_search === true) {
     const snapshot = currentLocationSnapshot;
@@ -1703,14 +1762,6 @@ export async function startConversationTurn(
   const defaultRuntimeText =
     resolved.text ||
     "Acknowledge the persona selection briefly and ask how you can help.";
-  const selectionSourceMessage = input.textSelection
-    ? currentConversationMessages.find(
-        (message) =>
-          message.role === "assistant" &&
-          (input.textSelection!.sourceMessageId === `msg_${message.id}` ||
-            input.textSelection!.sourceMessageId === message.client_message_id),
-      )?.content
-    : undefined;
   const runtimeText = input.textSelection
     ? chatTextSelectionQuestionPrompt(
         defaultRuntimeText,
@@ -1856,12 +1907,13 @@ export async function startConversationTurn(
     dispatch: {
       conversationPublicId: input.conversation.public_id,
       clientMessageId: input.clientMessageId,
-      runtimeText,
+      runtimeText: hermesPromptText(runtimeText, documents.inlineAttachments),
       model: engine.model,
       modelIdentity: { modelID: engine.selectedModelID },
       variant: engine.variant,
       tools,
       system: baseSystem,
+      explanationContext,
       // On the turn that starts a goal there is no id yet — the model has not
       // called create_goal — so the run records that a goal governs it and
       // leaves the id null. Accounting resolves the id at the end of the turn,
@@ -1949,10 +2001,10 @@ export async function startConversationTurn(
       variant: engine.variant,
       system: runtimeSystem,
       messageId: hermesMessageId(input.clientMessageId),
-      yoloMode: input.yoloMode === true,
+      yoloMode: approvalPolicy.yoloMode,
       // A delivery-channel turn has no card to answer a mid-turn question on;
       // the runtime answers `clarify` itself rather than waiting on no one.
-      interactive: !context.deliveryChannel,
+      interactive: approvalPolicy.interactive,
     });
   };
 
@@ -2111,7 +2163,7 @@ function renderSurfaceContext(surface: HermesSurface, context: ConversationSurfa
  * capability question — the constraints are entirely about where the text
  * lands, so they are stated as fact and kept out of the capability grant.
  */
-function renderDeliveryChannel(channel: DeliveryChannel | undefined): string {
+function renderDeliveryChannel(channel: DeliveryChannel | undefined, yoloMode = false): string {
   if (!channel) return "";
   const app = channel === "whatsapp" ? "WhatsApp" : "Telegram";
   const formatting =
@@ -2124,7 +2176,10 @@ function renderDeliveryChannel(channel: DeliveryChannel | undefined): string {
     "Only your final text is delivered. Your reasoning, tool calls and any status you would normally show alongside the answer are not visible there.",
     formatting,
     "Keep it to what reads well on a phone: a few short paragraphs. Anything past about 4000 characters is cut off mid-sentence.",
-    "You cannot ask for a permission decision here. A turn that needs one is refused before it reaches you.",
+    yoloMode
+      ? "The owner's saved act-without-asking setting applies here. Use the available PC, terminal, browser and connected-app tools to carry out their request. This phone channel does not remove access to the Windows PC running Breadboard."
+      : "You cannot ask for a permission decision here. Actions requiring approval need the owner's act-without-asking setting or approval in Breadboard.",
+    "For PC actions, discover and invoke the appropriate tool and verify its result. An acknowledgement or emoji does not perform an action. Never claim success without evidence, or claim the PC is inaccessible without checking the available tools.",
     "The same chat is open in the Breadboard app, so anything genuinely long or visual belongs there; say so rather than trying to fit it into a message.",
   ].join("\n");
 }

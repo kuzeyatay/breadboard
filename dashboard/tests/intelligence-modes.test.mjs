@@ -52,12 +52,11 @@ test("a fresh model starts on the default level when it exists", () => {
   assert.equal(modes.defaultIntelligenceMode(modes.toIntelligenceModes(["low"])), "low");
 });
 
-test("provider models reach the runtime through the default sentinel", () => {
+test("provider models reach the runtime through the chat sentinel", () => {
   // The runtime cannot register every provider model, so a provider-prefixed
-  // choice is sent as `default` — which ChatMock expands to the background
-  // model the Intelligence menu just set to that same model.
+  // choice uses `chat`, which follows the shared default until a turn pins it.
   const engine = selection.resolveHermesEngine("anthropic/claude-opus-4-5", "high");
-  assert.equal(engine.model.modelID, "default");
+  assert.equal(engine.model.modelID, "chat");
   assert.equal(engine.model.providerID, "chatmock");
   assert.equal(engine.selectedModelID, "anthropic/claude-opus-4-5");
 });
@@ -79,16 +78,19 @@ test("the sentinel keeps its max reasoning variant", () => {
   assert.equal(engine.adjusted, false);
 });
 
-test("the Intelligence menu owns the background model", () => {
+test("the Intelligence menu overrides the profile fallback locally", () => {
   const hook = source("src/app/components/use-assistant-intelligence.ts");
-  // Selecting a model there sets the global default for Hermes/TARS/OpenCode.
-  assert.match(hook, /\/api\/chatmock\/default-model/);
+  // The account preference route updates the global runtime default too.
+  assert.doesNotMatch(hook, /patchAssistantPreferences/);
+  assert.match(hook, /writeOverride\(key,/);
+  const route = source("src/app/api/assistant-preferences/route.ts");
+  assert.match(route, /await setDefaultModel\(request, model\)/);
   assert.match(hook, /clampIntelligenceMode/);
 
   // Settings shows it but must not offer a second, rival control.
   const settings = source("src/app/components/settings-providers.tsx");
   assert.doesNotMatch(settings, /Use this model/);
-  assert.match(settings, /Intelligence menu/);
+  assert.match(settings, /profile owns the default model/);
 });
 
 test("the composer renders modes from the active model", () => {

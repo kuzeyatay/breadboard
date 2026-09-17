@@ -1,3 +1,5 @@
+import type { Metadata } from 'next';
+import { cache } from 'react';
 import { getServerSession } from 'next-auth/next';
 import { redirect, notFound } from 'next/navigation';
 import { authOptions } from '@/lib/auth-options';
@@ -9,12 +11,33 @@ import FastReadButton from '@/app/components/fastread-button';
 import NavbarFlowerWind from '@/app/components/navbar-flower-wind';
 import { resolveGardenNoteSlug } from '@/lib/garden-note-navigation';
 import { resolveQuartzBaseUrl } from '@/lib/quartz-url';
+import { ensureGardenPublicationForView } from '@/lib/quartz-publish';
 import { openQuartzViewLease } from '@/lib/quartz-view-lease';
 import {
   getNavbarFlowers,
   getNavbarShortcuts,
 } from '@/lib/profile/navbar-shortcuts-store.ts';
 import GardenClient from './garden-client';
+
+// Metadata and the page must read the same saved name and enforce the same access.
+const getGardenPageData = cache(async (clusterSlug: string) => {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) redirect('/auth/login');
+  const userId = Number((session.user as { id?: string }).id);
+  const cluster = await getReadableCluster(userId, clusterSlug);
+  if (!cluster) notFound();
+  return { userId, cluster };
+});
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ clusterSlug: string }>;
+}): Promise<Metadata> {
+  const { clusterSlug } = await params;
+  const { cluster } = await getGardenPageData(clusterSlug);
+  return { title: cluster.name };
+}
 
 export default async function GardenPage({
   params,
@@ -23,15 +46,9 @@ export default async function GardenPage({
   params: Promise<{ clusterSlug: string }>;
   searchParams: Promise<{ note?: string; chat?: string }>;
 }) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) redirect('/auth/login');
-
-  const userId = Number((session.user as { id?: string }).id);
   const { clusterSlug } = await params;
   const { note, chat } = await searchParams;
-
-  const cluster = await getReadableCluster(userId, clusterSlug);
-  if (!cluster) notFound();
+  const { userId, cluster } = await getGardenPageData(clusterSlug);
 
   // Older search cards stored only the filename while newer cards carry the
   // full nested page path. Resolve both forms here so saved conversations and
@@ -50,6 +67,12 @@ export default async function GardenPage({
   // for publication and service start belongs to the global blue progress bar
   // and the frame receives its source on first paint instead of showing a
   // loading state of its own.
+  // A Garden written while publication was failing has no page in the
+  // published tree, and nothing the reader itself does would ever create
+  // one. Publish it before the frame is handed a URL, so the wait belongs
+  // to the global blue progress bar rather than becoming a dead 404.
+  await ensureGardenPublicationForView(userId, clusterSlug);
+
   const quartzViewId = await openQuartzViewLease(userId);
 
   return (

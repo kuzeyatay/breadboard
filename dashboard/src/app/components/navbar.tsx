@@ -1,12 +1,11 @@
 "use client";
 
-import Link from "next/link";
+import NavigationLink from "./navigation-link";
 import NavbarFlowerWind from "./navbar-flower-wind";
 import WorkTimerShortcut from "./work-timer-shortcut";
 import BrowserShortcut from "./browser-shortcut";
 import ClickyShortcut from "./clicky-shortcut";
 import VoiceShortcut from "./voice-shortcut";
-import LinkContextMenu from "./link-context-menu";
 import {
   DEFAULT_NAVBAR_SHORTCUTS,
   type NavbarShortcuts,
@@ -35,24 +34,22 @@ export default function NavBar({
   return (
     <nav className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 shrink-0">
       <NavbarFlowerWind showFlowers={showFlowers} />
-      <LinkContextMenu href="/dashboard" label="Dashboard">
-        <Link
-          href="/dashboard"
-          className="relative z-10 flex items-center gap-2.5 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
-          aria-label="Go to Breadboard main page"
-        >
-          {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/logo.png"
-            alt="breadboard"
-            className="breadboard-logo h-12 w-12 object-contain [filter:brightness(0)_saturate(100%)] opacity-90"
-          />
-          <span className="text-lg font-medium text-white tracking-tight">
-            breadboard
-          </span>
-        </Link>
-      </LinkContextMenu>
+      <NavigationLink newTab label="Dashboard"
+        href="/dashboard"
+        className="relative z-10 flex items-center gap-2.5 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
+        aria-label="Go to Breadboard main page"
+      >
+        {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo.png"
+          alt="breadboard"
+          className="breadboard-logo h-12 w-12 object-contain [filter:brightness(0)_saturate(100%)] opacity-90"
+        />
+        <span className="text-lg font-medium text-white tracking-tight">
+          breadboard
+        </span>
+      </NavigationLink>
       {/* Agents live in the capability palette's Agents tab (the slash button),
           not in this navbar. */}
       {showActions && <div className="relative z-10 flex items-center gap-4">
@@ -65,11 +62,8 @@ export default function NavBar({
         {shortcuts.clicky && <ClickyShortcut />}
         {shortcuts.voice && <VoiceShortcut />}
         {shortcuts.plan && (
-          <LinkContextMenu href="/plan" label="Plan">
-          <a
+          <NavigationLink newTab label="Plan"
             href="/plan"
-            target="_blank"
-            rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
             title="Open Plan — your board and calendar — in a new tab"
           >
@@ -86,15 +80,11 @@ export default function NavBar({
               <path strokeLinecap="round" d="M19.5 6.5v11" />
             </svg>
             Plan
-          </a>
-          </LinkContextMenu>
+          </NavigationLink>
         )}
         {shortcuts.buzz && (
-          <LinkContextMenu href="/buzz" label="Organization">
-          <a
+          <NavigationLink newTab label="Organization"
             href="/buzz"
-            target="_blank"
-            rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
             title="Open Organization — rooms you share with your team and their agents — in a new tab"
           >
@@ -116,14 +106,12 @@ export default function NavBar({
               <path d="M12 8v3.5M5.5 16v-2.5h13V16" />
             </svg>
             Organization
-          </a>
-          </LinkContextMenu>
+          </NavigationLink>
         )}
         {/* The profile chip is the way to the profile page, which is where
             inviting and signing out now live — both are account business, and
             neither was worth a permanent seat in the navbar. */}
-        <LinkContextMenu href="/profile" label="Profile">
-        <Link
+        <NavigationLink newTab label="Profile"
           href="/profile"
           title="Your profile"
           className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-gray-400 transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
@@ -142,8 +130,7 @@ export default function NavBar({
             <path d="M5 20a7 7 0 0 1 14 0" />
           </svg>
           <span className="truncate font-medium">{username || email}</span>
-        </Link>
-        </LinkContextMenu>
+        </NavigationLink>
       </div>}
     </nav>
   );

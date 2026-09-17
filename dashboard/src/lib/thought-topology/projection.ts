@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent } from "node:fs";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 import {
   readGardenSemanticArtifacts,
@@ -9,6 +10,7 @@ import {
 } from "../garden-semantics.ts";
 import type { ClusterKnowledge, KnowledgeNode } from "../knowledge.ts";
 import type { AuthoredCandidate, ScoringDocument } from "./scoring.ts";
+import { sourceAnchorEdges, TOPOLOGY_PROVENANCE_FILES } from "./provenance.ts";
 import type {
   EnrichmentText,
   TopologyFolder,
@@ -54,6 +56,36 @@ export interface GardenProjection {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/**
+ * The most text one embedding request may carry, in UTF-8 bytes: the GBrain
+ * adapter refuses anything larger, so a projection that exceeds it never
+ * reaches the embedder at all.
+ */
+export const SEMANTIC_TEXT_MAX_BYTES = 16_000;
+
+/**
+ * `String#slice` counts UTF-16 code units, so cutting at an arbitrary offset
+ * can leave half of a surrogate pair at the end. That lone surrogate survives
+ * JSON, and the tokenizer behind `/v1/embeddings` throws on it — every build
+ * of a Garden whose page happened to end its budget inside an emoji or a
+ * mathematical symbol failed with "Embedding service unavailable".
+ */
+export function clipText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  let end = maxChars;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end);
+}
+
+/** Like {@link clipText}, but the budget is UTF-8 bytes rather than code units. */
+export function clipUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const bytes = Buffer.from(text, "utf8").subarray(0, maxBytes);
+  // A cut inside a multi-byte sequence decodes to U+FFFD; drop that tail.
+  return bytes.toString("utf8").replace(/�+$/u, "");
 }
 
 function normalizeRel(value: string): string {
@@ -375,7 +407,7 @@ const FINGERPRINT_IGNORED = new Set([".breadboard", "assets", ".git", "node_modu
 export function gardenContentFingerprint(gardenDir: string): string {
   const entries: string[] = [];
   const visit = (absolute: string, relative: string) => {
-    let children: fs.Dirent[] = [];
+    let children: Dirent[] = [];
     try {
       children = fs.readdirSync(absolute, { withFileTypes: true });
     } catch {
@@ -398,6 +430,12 @@ export function gardenContentFingerprint(gardenDir: string): string {
     }
   };
   visit(gardenDir, "");
+  for (const relative of TOPOLOGY_PROVENANCE_FILES) {
+    try {
+      const stat = fs.statSync(path.join(gardenDir, relative));
+      entries.push(`${relative}\u0000${stat.size}\u0000${Math.round(stat.mtimeMs)}`);
+    } catch { /* Source ledgers are optional in gardens without Learn pages. */ }
+  }
   return sha256(entries.sort().join("\n"));
 }
 
@@ -455,7 +493,7 @@ function meaningfulPassages(body: string): string[] {
     (left, right) => right.length - left.length || left.localeCompare(right),
   )]
     .slice(0, 8)
-    .map((part) => part.slice(0, 700));
+    .map((part) => clipText(part, 700));
 }
 
 /**
@@ -521,11 +559,11 @@ function markdownBlocks(body: string): MarkdownBlock[] {
  * its longest paragraphs, so the sample describes the span as a whole. */
 function sampledPassages(text: string, limit: number): string[] {
   const passages = plainParagraphs(text.replace(/\$\$[\s\S]*?\$\$/g, " "));
-  if (passages.length <= limit) return passages.map((part) => part.slice(0, SPAN_PASSAGE_CHARS));
+  if (passages.length <= limit) return passages.map((part) => clipText(part, SPAN_PASSAGE_CHARS));
   const picked: string[] = [];
   for (let index = 0; index < limit; index += 1) {
     const at = Math.min(passages.length - 1, Math.round((index * (passages.length - 1)) / Math.max(1, limit - 1)));
-    picked.push(passages[at].slice(0, SPAN_PASSAGE_CHARS));
+    picked.push(clipText(passages[at], SPAN_PASSAGE_CHARS));
   }
   return picked;
 }
@@ -645,21 +683,21 @@ export function documentSpans(title: string, body: string): TopologySpanProjecti
     }
     while (used.has(label)) label = `${label} (${index + 1})`;
     used.add(label);
-    label = label.slice(0, 140);
+    label = clipText(label, 140);
 
     const headings = group
       .filter(topical)
       .map((block) => block.heading)
       .slice(0, SPAN_HEADING_LIMIT);
     const passages = sampledPassages(group.map((block) => block.text).join("\n\n"), SPAN_PASSAGE_LIMIT);
-    const text = [
+    const joined = [
       `Title: ${title}. Section: ${label}`,
       headings.length ? `Headings: ${headings.join(" | ")}` : "",
       passages.length ? `Passages: ${passages.join(" | ")}` : "",
     ]
       .filter(Boolean)
-      .join("\n")
-      .slice(0, SPAN_TEXT_LIMIT);
+      .join("\n");
+    const text = clipText(joined, SPAN_TEXT_LIMIT);
     return { label, text, hash: sha256(text) };
   });
   // A trailing sliver (a stray heading after the last chapter) would embed
@@ -703,13 +741,13 @@ function semanticProjection(
     formulas.length ? `Formulae: ${formulas.join(" | ")}` : "",
     passages.length ? `Passages: ${passages.join(" | ")}` : "",
   ].filter(Boolean);
-  const semanticText = sections.join("\n").slice(0, 16_000);
+  const semanticText = clipUtf8(sections.join("\n"), SEMANTIC_TEXT_MAX_BYTES);
   const spans = documentSpans(node.title, parsed.body);
   // Lexical overlap is scored on the whole document, so a long document's
   // lexical text also carries its spans: a textbook's chapter vocabulary,
   // not only its table of contents.
   const lexicalText = spans.length
-    ? `${semanticText}\n${spans.map((span) => span.text).join("\n")}`.slice(0, 40_000)
+    ? clipText(`${semanticText}\n${spans.map((span) => span.text).join("\n")}`, 40_000)
     : semanticText;
   return { semanticText, lexicalText, headings, spans };
 }
@@ -782,8 +820,8 @@ export function buildGardenProjection(input: {
   const claimById = new Map(
     artifacts.claims.claims.map((claim) => [claim.id, claim.text]),
   );
-  const nodes = input.knowledge.nodes
-    .filter(visibleMarkdown)
+  const visibleNodes = input.knowledge.nodes.filter(visibleMarkdown);
+  const nodes = visibleNodes
     .map((node): ProjectedTopologyNode => {
       const claimTexts = node.claimIds
         .map((id) => claimById.get(id))
@@ -828,7 +866,7 @@ export function buildGardenProjection(input: {
   const nodeIdByKnowledgeSlug = new Map(
     nodes.map((node) => [`page:${node.id.slice(5)}`, node.id]),
   );
-  const authoredEdges = input.knowledge.edges
+  const authoredEdges: AuthoredCandidate[] = input.knowledge.edges
     .filter((edge) => edge.relation !== "shared-topic")
     .flatMap((edge) => {
       const source = nodeIdByKnowledgeSlug.get(`page:${edge.source}`);
@@ -847,6 +885,8 @@ export function buildGardenProjection(input: {
           ]
         : [];
     });
+
+  authoredEdges.push(...sourceAnchorEdges(input.gardenDir, visibleNodes));
 
   const folders = folderPaths(input.gardenDir, nodes).map(
     (folderPath): TopologyFolder => {

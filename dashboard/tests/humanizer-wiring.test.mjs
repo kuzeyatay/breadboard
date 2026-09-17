@@ -26,6 +26,7 @@ const schemas = source("src/lib/humanizer/schemas.ts");
 const review = source("src/lib/humanizer/review.ts");
 const recovery = source("src/lib/humanizer/recovery.ts");
 const autoHumanize = source("src/app/components/humanizer/auto-humanize.ts");
+const autoHook = source("src/app/components/humanizer/use-auto-humanize.ts");
 const actions = source("src/app/components/assistant-message-actions.tsx");
 const composer = source("src/app/components/assistant-composer.tsx");
 const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
@@ -128,10 +129,10 @@ test("Rewrite naturally regenerates through the existing branch path without a m
     assert.doesNotMatch(actions, mutation);
   }
   assert.match(
-    panel,
-    /onRewrite=\{[\s\S]{0,320}\(\) => retryAssistantAsBranch\(index\)/,
+    panel.slice(panel.indexOf("onRewrite={"), panel.indexOf("onRetry={", panel.indexOf("onRewrite={"))),
+    /\(\) => retryAssistantAsBranch\(index\)/,
   );
-  assert.doesNotMatch(actions, /Style score|humanizerReview|original kept/);
+  assert.match(actions, /<RewriteStatus review=\{humanizerReview\}/);
 });
 
 test("standing rewrites are adopted only when they improve and remain intact", () => {
@@ -190,6 +191,8 @@ test("automatic rewriting happens only behind the switch, and never in the pipel
     // The automatic server path for artifacts and garden notes, gated on the
     // account preference.
     "src/lib/humanizer/auto-server.ts",
+    // The document assistant's explicitly opened Humanize skill.
+    "src/lib/hermes/genoffice-writing-skills.ts",
     // The loopback client they all share.
     "src/lib/humanizer/service.ts",
   ].sort());
@@ -219,14 +222,14 @@ test("the automatic chat path is gated, guarded and keeps the original", () => {
   // Failure is silence, never a thrown error into somebody's reading.
   assert.match(auto, /return null/);
 
-  assert.match(panel, /autoHumanizeMessage\(/);
-  assert.match(panel, /if \(!humanizerEnabled \|\| runInFlight/, "gated on the switch");
-  assert.match(panel, /sawRunRef/, "only after a run this panel watched");
-  assert.match(panel, /attemptedRef/, "once per message");
+  assert.match(panel, /useAutoHumanize\(/);
+  assert.match(autoHook, /if \(!enabled \|\| blocked/, "gated on the switch");
+  assert.match(autoHook, /sawRunRef/, "only after a run this panel watched");
+  assert.match(autoHook, /attemptedRef/, "once per message");
   assert.match(panel, /isExternalAgentRunMessage\(message\)/, "never an agent run card");
   // A newly streamed row still has its browser UUID. Waiting for a reload to
   // obtain msg_N was why successful automatic rewrites used to disappear.
-  assert.match(panel, /message\.clientMessageId \?\? message\.id/);
+  assert.match(autoHook, /message\.clientMessageId \?\? message\.id/);
   assert.match(versionsRoute, /getConversationMessageByClientId\(/);
 });
 

@@ -1,5 +1,23 @@
+import { isGardenUserOrNavigationPath, mergeCurrentGardenUserContent } from "./garden-user-content.ts";
 import { createHash } from "crypto";
 import os from "os";
+import { LEARN_FOUNDATION_RULES, LEARN_FOUNDATION_PLANNING_RULES } from "./learn-pedagogy.ts";
+import {
+  LESSON_TERM_REVIEW_PROMPT,
+  lessonTermReviewProblems,
+  type LessonReviewVerdicts,
+} from "./learn-lesson-terms.ts";
+import {
+  acceptedPageInputHash,
+  readAcceptedPage,
+  writeAcceptedPage,
+  type AcceptedPageReceipt,
+} from "./learn-accepted-pages.ts";
+import {
+  OVERVIEW_TERM_REVIEW_PROMPT,
+  overviewTermReviewProblems,
+  overviewUnitSummaries,
+} from "./learn-overview-terms.ts";
 import type OpenAI from "openai";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
@@ -30,6 +48,7 @@ import {
   repairLearningUnitsFromContract,
   sourceFormulaReviewFinalizationContextFromGarden,
   verifyFinalArtifactNoMutation,
+  refreshFinalArtifactValidationReport,
   type SourceFormulaReviewFinalizationContext,
   type UnitRepairRequest,
 } from "@/lib/garden-finalize";
@@ -69,6 +88,7 @@ import {
   type RegisteredSourceArtifact,
   type SourceArtifactAssignment,
   type SourceArtifactOmission,
+  type SourceFormulaGrounding,
 } from "@/lib/learning-unit-contract";
 import {
   buildModelAuthoredConceptRegistry,
@@ -123,6 +143,10 @@ import {
 import {
   assessLessonQuality,
   buildLearningPageFrontmatter,
+  withLearningQuestionPrompt,
+  assignedOpeningMove,
+  OPENING_MOVE_BRIEFS,
+  type OpeningMove,
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   excludeSyllabusFromSources,
@@ -141,6 +165,7 @@ import {
   stripMarkdownFrontmatter,
   textbookPageFileName,
   textbookSectionFolder,
+  topicListTitleProblem,
   validateLearningMapDepth,
   wikilinkForRelPath,
   yamlFrontmatter,
@@ -265,6 +290,7 @@ import { getLearnStatusSnapshot as projectLearnStatusSnapshot } from "@/lib/lear
 import {
   authoredSyllabusLocatorCatalog,
   buildSyllabusCoverageSourceCatalog,
+  canonicalSourceMaterialBody,
   detectUnavailableCitations,
   modelAuthoredSyllabusPlanProblems,
   projectModelAuthoredSyllabusPlan,
@@ -321,8 +347,11 @@ import {
   buildVisualizationCoverageReport,
   applyVisualizationRoutesToLearningUnits,
   coverageGateMode,
+  interactiveVisualWriterAnchor,
+  placeInteractiveVisualAnchor,
   saveVisualizationCoverageReport,
   saveVisualizationPlan,
+  stripInteractiveVisualWriterMarkers,
   type VisualizationPlan,
   type VisualizationPublicationOutcome,
 } from "@/lib/visualization-opportunities";
@@ -358,8 +387,7 @@ import {
   createGeneratedVisualization,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
 } from "@/lib/generated-visuals";
-import { compileGeneratedVisualization } from "@/lib/generated-visual-compiler";
-import { runGeneratedVisualBrowserTestsLocally } from "@/lib/generated-visual-browser-tests";
+import { compileLearnGardenVisualization, testLearnGardenVisualization } from "@/lib/learn-visualization-runners";
 import { stableGeneratedVisualCouncilRecoveryRoot } from "@/lib/generated-visual-council-receipts";
 import {
   persistLearnVisualRejectedAttemptAudit,
@@ -375,15 +403,16 @@ import {
 import {
   exactScopedModelRepairResponse,
   executeLearnScopedRepair,
-  type LearnScopedRepairResult,
+  summarizeLearnScopedRepairResult,
+  type LearnScopedRepairSummary as LearnScopedRepairResultSummary,
 } from "@/lib/learn-scoped-repair";
 import {
-  acquireGardenLearnLease,
   acquireGardenLearnLock,
   LOCK_STALE_MS,
   promoteStagingGarden,
   type GardenLearnLease,
 } from "@/lib/learn-atomic-promotion";
+import { acquireGardenLearnLease } from "@/lib/garden-mutation-lease";
 import {
   createLearnBuildWorkspace,
   disposeLearnBuildWorkspace,
@@ -700,6 +729,40 @@ interface StrictCouncilReceiptMetadata {
   redispatchAllowed: boolean;
   failureCode?: string;
   attempts: LearnCouncilReceiptAttempt[];
+  createdAt: string;
+  /** Durable claim time for the currently active dispatch generation. */
+  updatedAt: string;
+}
+
+function exactRecoverableStartedPlanningReceiptPrefix(
+  receipt: StrictCouncilReceiptMetadata,
+  requestedModel: string,
+): boolean {
+  if (receipt.redispatchAllowed !== false) return false;
+  if (
+    receipt.dispatchGeneration === 1 &&
+    receipt.dispatchCount === 1 &&
+    receipt.redispatchCount === 0 &&
+    receipt.attempts.length === 0
+  ) {
+    return true;
+  }
+  if (
+    receipt.dispatchGeneration !== 2 ||
+    receipt.dispatchCount !== 2 ||
+    receipt.redispatchCount !== 1 ||
+    receipt.attempts.length !== 1
+  ) {
+    return false;
+  }
+  const priorAttempt = receipt.attempts[0];
+  try {
+    assertExactOrdinaryLearnCouncilReceiptAttempt(priorAttempt, requestedModel);
+  } catch {
+    return false;
+  }
+  return priorAttempt.outcome === "failed_no_final_answer" &&
+    priorAttempt.failureCode === "council_no_final_answer";
 }
 
 interface LegacyCouncilFailureOutcome extends LegacyLearnCouncilFailureProof {
@@ -872,7 +935,7 @@ const LEARN_REVISION_COUNCIL_MODE = envCouncilMode(
 const LEARN_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT_MS =
   envClampedPositiveInt(
     "CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT",
-    1_800,
+    3_600,
     901,
     21_600,
   ) * 1_000;
@@ -890,12 +953,78 @@ const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
   "LEARN_PLANNING_TIMEOUT_MS",
   LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS + 60_000,
 );
+/**
+ * Options for every ChatMock client Learn constructs. The planning calls pass
+ * their own timeout per request, but the writer, synthesis and repair calls
+ * did not, and so ran on the SDK's ten-minute default with two silent
+ * retries. A deep reasoning model on a long prompt (GPT 6 Pro on the web
+ * provider: 13-15 minutes measured) crossed that default, and the SDK's
+ * retry then issued a second provider POST behind Learn's one-call receipt -
+ * against a browser page that was still answering the first.
+ */
+export const LEARN_MODEL_CLIENT_OPTIONS = {
+  timeout: LEARN_PLANNING_TIMEOUT_MS,
+  maxRetries: 0,
+} as const;
 const LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE = 1;
 /** Explicit full-generation attempts per page. This loop is never entered by
  * scoped repair; only generate/full_rebuild may create fresh page drafts. */
+const OVERVIEW_MAX_ATTEMPTS = Math.max(3, envPositiveInt("LEARN_OVERVIEW_MAX_ATTEMPTS", 6));
+/** Prose-review findings a page may still carry after its bounded repairs.
+ * Knowledge defects never count toward this allowance. */
+const LESSON_REVIEW_RESIDUAL_ALLOWANCE = Math.max(0, envPositiveInt("LEARN_LESSON_REVIEW_RESIDUAL_ALLOWANCE", 3));
+/** On a page's final repair round the same prose findings are allowed to
+ * remain in larger number: the alternative is discarding a converging draft
+ * and failing the whole course. Knowledge defects are never in this set. */
+const LESSON_REVIEW_FINAL_RESIDUAL_ALLOWANCE = Math.max(
+  LESSON_REVIEW_RESIDUAL_ALLOWANCE,
+  envPositiveInt("LEARN_LESSON_REVIEW_FINAL_RESIDUAL_ALLOWANCE", 8),
+);
+// Reteaching is repaired but not blocking: a worked-example unit (6.5 on
+// telecom-1, an over-split section) must reuse earlier results as inputs and
+// the reviewer could not tell that from reteaching; residue is recorded.
+const LESSON_REVIEW_BLOCKING_CODES = new Set(["unexplained-term", "unshown-result"]);
+
+function normalizedConceptKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** A page may carry a few prose-quality findings after its bounded repairs.
+ * Missing explanations, unshown results, and retaught units always block; a
+ * concept left abstract blocks only when it is one of the page's own
+ * newConcepts (8.1 on telecom-1 stalled at "spread-spectrum multiple access
+ * is defined only in the abstract" - a CDMA page, not an SSMA page, 2026-09-16). */
+function lessonReviewResidualIsAcceptable(
+  problems: readonly QualityProblem[],
+  newConcepts: readonly string[],
+  allowance: number = LESSON_REVIEW_RESIDUAL_ALLOWANCE,
+): boolean {
+  const owned = new Set(newConcepts.map(normalizedConceptKey).filter(Boolean));
+  const ownsSubject = (subject: string | undefined): boolean => {
+    if (!subject) return false;
+    const key = normalizedConceptKey(subject);
+    return [...owned].some((concept) => concept === key || concept.includes(key) || key.includes(concept));
+  };
+  // An owned concept the page could only take to the depth its assigned
+  // sources support (8.1 had two Rappaport pages and no spreading-sequence
+  // material; the reviewer wanted a chip-level worked case) is recorded as
+  // residue rather than failing the course: source-only pages cannot invent
+  // the mechanism, and the event names the gap for the reader's author.
+  void ownsSubject;
+  return (
+    problems.length <= allowance &&
+    problems.every((problem) => !LESSON_REVIEW_BLOCKING_CODES.has(problem.code))
+  );
+}
+
+/** Focused repair calls allowed on one draft before the page is rewritten. */
+const MAX_PAGE_REPAIR_ROUNDS = Math.max(1, envPositiveInt("LEARN_MAX_PAGE_REPAIR_ROUNDS", 3));
 const MAX_PAGE_ATTEMPTS = Math.max(
   1,
-  Math.min(2, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 2)),
+  // A resumed job replays its earlier attempts from council checkpoints, so a
+  // page that failed every attempt needs one unreplayed attempt to differ
+  // (9.2 on telecom-1, 2026-09-17, replayed its failure in two seconds).
+  Math.min(4, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 4)),
 );
 const MAX_TOTAL_SOURCE_CHARS_PER_PAGE = envPositiveInt(
   "LEARN_MAX_TOTAL_SOURCE_CHARS_PER_PAGE",
@@ -939,13 +1068,27 @@ const LEARNER_VOICE_RULES = `Voice rules (hard requirements):
 - NEVER use the word "textbook" anywhere.
 - NEVER frame content as "the paper says", "the source frames", "in this paper", "the source material explains", "source-derived", "source-central", "according to the source". The source grounds the content silently.
 - Teaching sentences take the concept as their subject ("A spiking neuron carries information in discrete events"), never the document ("The paper introduces spiking neurons").
-- Stay within what the source material supports; grounding is silent, not narrated.`;
+- Stay within what the source material supports; grounding is silent, not narrated.
+- Tell one linear story. Each paragraph picks up exactly where the previous one stopped and moves the idea one step; a reader should be able to say, after every paragraph, what was just settled and what the next paragraph now has to answer. Never jump between ideas that have not yet been connected.
+- Plain words first. Say what a thing is and does in everyday language before its technical name appears, then attach the name to the picture the learner now has. A technical phrase ("a common decision procedure", "statistical multiplexing") may never stand in for an explanation: if a sentence rests on it, the same passage must show what it means, concretely, with the actual steps or an example. A gloss in passing does not count.
+- Never state a result as a fact the reader must take on trust. A number of users, a rate, a capacity, a probability, a comparison, or a conclusion appears only together with how it is reached from things already on the page - the calculation written out with its values, or the reasoning step by step. If the sources give a result without its derivation, say so plainly ("the specification lists three users per carrier; the split that produces it is ...") rather than presenting the number as obvious.
+- Say each thing once. After a sentence establishes an idea, the next sentence must add something - a step, a consequence, a number, a condition, an example. A sentence or paragraph that says the previous one again in other words ("the network needs a rule that tells each user when to transmit" ... "TDMA chooses time as the dimension for that division" ... "the system divides the time axis into short intervals") is deleted, not kept for emphasis.
+- Prefer the short, concrete word over the abstract one whenever both are correct ("waits" over "experiences latency", "shares one wire" over "utilizes a common physical medium"). Every sentence must be one a good teacher would say aloud to a first-year student.`;
 
 const TITLE_RULES = `Title rules (hard requirements):
 - Titles name the concept the learner will understand, standalone.
-- Bad: "Why the Source Turns from Conventional Neural Networks to SNNs", "What Spiking Neural Networks Are in This Paper", "Source-Derived Comparative Results", "The Named Neuron Model LIF as Source-Central Evidence".
-- Good: "Why Spiking Neural Networks Exist", "Spikes, Timing, and Event-Driven Computation", "The Leaky Integrate-and-Fire Neuron", "How SNNs Learn", "Accuracy, Latency, Energy, and Spike Count", "Choosing an SNN Training Strategy".
+- A title names one idea or one move, never a list of topics. "Work, Potential, Energy, and Current" and "Gradient, Divergence, Curl, and Integral Theorems" are tables of contents; each hides several teaching steps that need their own units. Three or more comma-separated topics in a title is a planning error.
+- Bad: "Why the Source Turns from Conventional Neural Networks to SNNs", "What Spiking Neural Networks Are in This Paper", "Source-Derived Comparative Results", "The Named Neuron Model LIF as Source-Central Evidence", "Accuracy, Latency, Energy, and Spike Count".
+- Good: "Why Spiking Neural Networks Exist", "How a Spike Carries Information in Its Timing", "The Leaky Integrate-and-Fire Neuron", "How SNNs Learn", "What Accuracy Costs in Latency and Energy", "Choosing an SNN Training Strategy".
 - Never contain "paper", "source", "textbook", or "overview" in a title.`;
+
+const ANTI_AIISM_RULES = `Banned writing patterns — do NOT use these:
+- "The first/second/next/big idea is…", "X is not a side detail", "X is not just Y", "The point is not…", "This is not only X but also Y", "It is important to note that…", "This matters because…", "This highlights/underscores…", "The key takeaway is…", "In summary…".
+- Filler and ceremony: "merely", "simply put", "at its core", "in essence", "crucial", "plays a key role", "serves as", "delve", "the beauty of", "a testament to", "let's dive into", "it is tempting to think", "readily apparent", "it should be noted that", "seamlessly", "unlocks". Each of these is a sentence that has not decided what it wants to say.
+Do not teach through contrastive negation (telling the learner what something is NOT). Explain directly what it IS, why it exists, how it works, and how to think about it. "X is not about A; it is about B", "far from being A, X is B", "rather than A, X is B" all open on the wrong idea and are banned as openers; state B, and mention A only when the learner is likely to hold it and it needs correcting.
+Write sentences a person would say to a student across a table: a concrete subject, an active verb, one idea. Read each sentence back; if a physicist explaining this to a friend would not say it that way, rewrite it. "Three features of this force are readily apparent upon measurement" is not a sentence anyone says; "Measure it and three things show up" is.
+Weak: "A second limitation appears in how information is represented. Continuous activations carry information through changing numerical values."
+Strong: "Imagine a sensor watching a mostly still scene. A dense network keeps re-processing whole arrays of values even when nothing changes. A spiking system assumes silence is meaningful: when something changes, it sends a single event — a spike — at a particular time, and that timing is part of the message."`;
 
 const SOURCE_MAP_PROMPT = `You create the internal Source Map for a Breadboard learning garden. This document is internal planning data; learners never see it.
 Return ONLY JSON with this exact top-level shape:
@@ -1006,12 +1149,13 @@ Availability rule (hard): any formula, equation, figure, table, or graph that ha
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
 
 const SCOPE_CONTRACT_PROMPT = `You create the internal Scope Contract for a Breadboard learning garden. This document is internal planning data; learners never see it.
+${LEARN_FOUNDATION_PLANNING_RULES}
 Return ONLY JSON with exactly these six arrays of concise strings: included, excluded, background, deferred, sourceEmphasis, and caveats. included and sourceEmphasis must be non-empty. Do not return prose outside the JSON object.
 The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.
 Availability rule (hard): treat any extracted formula, equation, figure, table, or graph anchor as available. Do not add caveats claiming formulas, notation, definitions, tables, or figures are unavailable or caption-only when anchors for them exist.`;
 
 const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract and its section spine for a Breadboard learning garden. Author every learning unit needed to cover the teachable syllabus and source scope at the required depth, then assign every unit to a model-authored section in the same response. Code will validate and project your section decisions verbatim; it will not cluster, title, or explain sections for you.
-Return ONLY JSON with this shape:
+Return ONLY JSON with this shape; every learningUnits entry must also include the unit-specific expectedWordRange specified in the planning rules below:
 {
   "title": "Topic title (the subject itself, e.g. 'Spiking Neural Networks')",
   "summary": "short description of what the learner will be able to do",
@@ -1038,7 +1182,9 @@ Return ONLY JSON with this shape:
           "id": "S1.P6.E1",
           "teachingGoal": "what the formula teaches",
           "termsToDefine": ["symbol or term"],
-          "placement": "before_example | inside_metric_definition | inside_result_interpretation"
+          "placement": "before_example | inside_metric_definition | inside_result_interpretation",
+          "grounding": "derived | empirical | axiom | asserted_in_source",
+          "derivableFrom": ["earlier anchor ids or prior unit results the derivation starts from; [] unless grounding is derived"]
         }
       ],
       "sourceTables": [
@@ -1082,7 +1228,6 @@ Return ONLY JSON with this shape:
         }
       ],
       "mustNotRepeat": ["motif, framing, or example already used"],
-      "expectedWordRange": [700, 1100],
       "sectionPlan": {
         "id": "S1",
         "title": "A specific learner-facing section title",
@@ -1103,6 +1248,9 @@ Return ONLY JSON with this shape:
   "warnings": ["..."]
 }
 ${TITLE_RULES}
+${LEARN_FOUNDATION_PLANNING_RULES}
+Section purposes, learning questions, and summaries are learner-facing prose and obey the lesson writing rules below.
+${ANTI_AIISM_RULES}
 Contract rules:
 - Generate learningUnits first and encode their section ownership in each unit's sectionPlan object. Do not return a separate nested section/subsection map.
 - Author syllabusUnitIds from exact supplied syllabusCoverage unit IDs. With a syllabus, every learning unit must name at least one syllabus unit it serves; without one, return an empty array. Code never guesses this mapping from title overlap.
@@ -1141,12 +1289,13 @@ const SYLLABUS_READING_PROMPT = `You read a course syllabus / study guide and ex
 Return ONLY JSON with this shape:
 {
   "courseTitle": "the course's own title, if stated",
+  "courseObjectives": ["a course-level learning objective stated outside any one unit, exactly as written"],
   "units": [
     {
       "id": "SU1",
-      "label": "the syllabus's own numbering, e.g. 'Week 1', 'Module 2', 'Session 3'",
+      "label": "the syllabus's own numbering, e.g. 'Week 1', 'Module 2', 'Lecture 3'",
       "title": "what this unit teaches",
-      "objectives": ["a learning objective or outcome exactly as the syllabus states it"],
+      "objectives": ["a learning objective or outcome exactly as the syllabus states it for this unit"],
       "topics": ["a topic this unit covers"],
       "questionReferences": ["an exact assigned problem/question/exercise identifier, such as 'Problem 6.21'"],
       "materialIds": ["ids of the referencedMaterials this unit assigns"]
@@ -1159,19 +1308,26 @@ Return ONLY JSON with this shape:
       "title": "the work's title alone, without chapter/page numbers",
       "authors": ["surname or full name as written"],
       "kind": "textbook | chapter | paper | reading | lecture | slides | dataset | video | other",
-      "locator": "the assigned part, e.g. 'ch. 3', 'pp. 40-58'",
+      "locator": "the assigned part, e.g. 'ch. 3', 'pp. 40-58', '3.2 - 3.4'",
+      "sections": ["each individual section the locator assigns, e.g. '3.2', '3.3', '3.4'"],
       "required": true
     }
   ]
 }
 Extraction rules:
+- Read the WHOLE document before answering. The unit structure and the reading assignments are usually on the last pages (a "course subjects per week" or "lecture / subject matter / book section" table after the grading rules), not the first.
 - Extract only what the syllabus actually says. Never invent a unit, objective, topic, author, or reading.
-- Every book, chapter, paper, article, dataset, slide deck, or handout the syllabus points at belongs in referencedMaterials — required and optional alike, with "required" set accordingly.
+- The finest schedule the syllabus gives is the unit structure. A table or list mapping lectures, weeks, or sessions to subject matter is the course's own plan: return one unit per lecture/week/session row (label "Lecture 3", "Week 2"), with that row's subject-matter entries as topics. Do not collapse such a schedule into a few broad themes or one course-wide unit; the schedule outranks a coarser "main topics" overview elsewhere in the document. Use a coarser structure only when the document offers nothing finer.
+- Extracted PDF tables arrive flattened: a lecture's number appears only at the start of its first line, and the following lines with no leading number belong to that same lecture until the next line that starts with a lecture number. Read every such leading number as a new unit — a schedule numbered 1 through 13 yields 13 units, never fewer. Distinguish a leading lecture number ("4 Electric potential 4.3 - 4.5" begins lecture 4) from the section numbers at the end of the line.
+- \`syllabus.crossCheckTranscript\`, when present, is a second independent transcription of the same document by a different parser. Each parser loses different things: one may drop a table's row numbers, the other may merge a row's cells into one line. Read both and reconcile them. A lecture/week number, subject, or section assignment present in either transcription is real; when the two disagree on which row an entry belongs to, follow the transcription that kept the row numbers.
+- Course-wide learning objectives that belong to no single unit go in courseObjectives, not copied into every unit.
+- Every book, chapter, paper, article, dataset, slide deck, formula sheet, or handout the syllabus points at belongs in referencedMaterials — required and optional alike, with "required" set accordingly.
 - Put the work's own title in "title" and the assigned part in "locator". "Smith, Neural Dynamics, ch. 3" has title "Neural Dynamics" and locator "ch. 3".
-- A reference with no identifiable work ("Readings TBD", "Lecture 4 slides") still belongs in the list; leave "title" empty.
+- When a schedule assigns book sections, chapters, or pages per lecture/week, create ONE referencedMaterial per assignment cell: the course textbook's title and authors (as named in the course-material section) in "title"/"authors", the cell exactly as written in "locator", and the citation combining the work's name as the syllabus refers to it and the cell (a syllabus that calls its textbook "Smith" and assigns "3.2 - 3.4" gets the citation "Smith 3.2 - 3.4"). Link that material only from the unit whose row it sits in. A dash between two section numbers is an inclusive range: "1.1 - 1.7" assigns 1.1, 1.2, 1.3, 1.4, 1.5, 1.6 and 1.7; a comma list assigns each listed section. Spell out every individual section in "sections". A cell that names something other than a work's part ("Additional material", "Formula sheet") is its own referencedMaterial of kind "other" with an empty "sections".
+- A reference with no identifiable work ("Readings TBD", "Lecture 4 slides") still belongs in the list; leave "title" empty. Leave "locator" empty when the syllabus assigns no particular part; never invent a locator from a delivery note such as "available on Canvas".
 - Link each unit to its readings through materialIds. A unit that assigns nothing gets an empty list.
 - Copy every explicitly assigned problem, question, exercise, drill, or problem range into that unit's questionReferences. Keep the syllabus's exact wording (for example "Problems 6.21-6.24"). Do not mistake chapter/section reading ranges for question assignments. A unit that assigns no questions gets an empty list.
-- If the document has no unit/week structure, return one unit covering the whole course.
+- If the document has no unit/week/lecture structure at all, return one unit covering the whole course.
 - If the document is not a syllabus or study guide at all, return empty units and referencedMaterials.`;
 
 const SYLLABUS_COVERAGE_PROMPT = `You decide which exact syllabus materials are present in the user's selected source documents and which syllabus units those sources can teach. This is a semantic evidence review. Code will only validate your JSON, exact IDs, copied citations, completeness, and internal consistency; code will never match titles, infer availability, or decide teachability for you.
@@ -1201,8 +1357,9 @@ Return ONLY JSON with this exact shape:
 Hard rules:
 - Return exactly one resolution for every referenced material and exactly one coverage record for every syllabus unit, in the supplied order. Never omit or add records.
 - Judge each material from the supplied source catalog. \`selectedSourceCatalog.sourceRecords[].navigationMetadata\` (including title, description, excerpt, and planningIndex) is generated navigation context and can never prove a bibliographic title, author, chapter, page, or locator. Exact sourceId, sourceFile, and relPath are routing identity only. \`canonicalRawPageEvidence.pages\` and \`unpagedEvidence\` are the bounded verbatim source material: each page record carries its exact sourceId, pageNumber, and complete raw text in document order. Use only exact supplied source IDs.
-- \`selectedSourceCatalog.authoredLocators\` copies the syllabus's locator strings verbatim. It never selects a source page or establishes that a source satisfies one. The catalog may omit complete raw pages only because of its explicit transport bounds. An omittedPageCount or truncated flag is transport metadata, never proof that a citation is present. When the supplied canonical raw evidence does not visibly establish the full citation's title/authors and locator, author \`missing\`; never infer it from navigation metadata, a filename, subject overlap, or a locator string alone.
-- "available" requires direct evidence that an uploaded source satisfies the FULL citation. Match title/authors AND any locator such as chapter, section, or page range. A matching book title alone never proves that an assigned chapter or page range is present. Put one or more satisfying source IDs in sourceIds.
+- \`canonicalHeadingIndex.entries\` lists every Markdown heading line of a source verbatim with the page it sits on, for the whole document, even where the catalog could not carry the page text itself. A heading such as "#### 3.2 GAUSS'S LAW" on page 47 is direct evidence that section 3.2 exists in that source on that page; combined with the title/author evidence in the source's opening pages it establishes that a citation of that section is present. It does not show what the section says — the planner grounds content later. A \`truncated\` index is a transport bound, not evidence of absence.
+- \`selectedSourceCatalog.authoredLocators\` copies the syllabus's locator strings verbatim, with the individual \`sections\` the reader expanded from each one. They never select a source page by themselves. Check every expanded section: "3.2 - 3.4" is available only when 3.2, 3.3 and 3.4 can each be found. The catalog may omit complete raw pages only because of its explicit transport bounds. An omittedPageCount or truncated flag is transport metadata, never proof that a citation is present. When the supplied canonical raw evidence does not visibly establish the full citation's title/authors and locator, author \`missing\`; never infer it from navigation metadata, a filename, subject overlap, or a locator string alone.
+- "available" requires direct evidence that an uploaded source satisfies the FULL citation. Match title/authors AND any locator such as chapter, section, or page range. A matching book title alone never proves that an assigned chapter or page range is present. Put one or more satisfying source IDs in sourceIds, and name the pages that carry the assigned sections in matchReason.
 - "missing" means the citation identifies a work or assigned part but the supplied evidence does not establish that it is present. Use an empty sourceIds array. Do not guess from subject overlap.
 - "generic" is only for a reference that identifies no checkable work, such as "Readings TBD". Use an empty sourceIds array.
 - Preserve each citation exactly as supplied. In each unit, missingCitations must contain exactly its assigned materials resolved "missing", in syllabus material order. Distinct assigned material IDs can copy the same exact citation: retain one occurrence for every such missing material ID and never de-duplicate it. Generic references are not missing citations.
@@ -1224,7 +1381,13 @@ Syllabus (hard requirements):
 - A syllabus (study guide / course outline) was provided as \`syllabus\`, already read into \`syllabusCoverage\`. It states what this course must teach, in what order, and to what depth.
 - The syllabus is NOT source material and is NOT a topic. Never write a page about the syllabus, never cite it as a source, never treat its headings as content to summarize, and never mention it in learner-facing text.
 - Treat \`syllabusCoverage.units\` as the required plan: work through them in order, cover each teachable unit's objectives and topics, and match the depth each is given. Every teachable syllabus unit ID must appear in at least one learning unit's syllabusUnitIds. An item the syllabus treats as central earns a full learning unit; background or optional items earn proportionally less. Never compress unrelated syllabus units together merely to hit a smaller unit or section count.
+- \`syllabusCoverage.courseObjectives\` are what the whole course promises; the plan as a whole must reach them, distributed across the units that naturally carry each one.
 - Source material that no syllabus unit covers is out of scope. Exclude it rather than adding units for it.
+
+Assigned readings (hard requirements — this is what keeps the course on its book):
+- \`unit.assignedMaterials\` are the readings the syllabus assigns to that unit, each with its resolved \`status\`. When an \`available\` reading carries a \`locator\` or \`sections\` (for example sections "3.2", "3.3", "3.4" of the course textbook), those sections are the primary source for that unit: the lesson is a lesson on those sections. Choose source anchors from the pages that carry those sections, take the unit's definitions, derivations, formulas, figures, and worked examples from them, and cover what those sections teach at the depth the lecture gives them.
+- The subject-matter topics say what a unit is about; the assigned sections say where in the assigned work it lives. Do not substitute a different chapter that treats a similar subject, and do not skip an assigned section because a lecture transcript or slide deck already touches its subject — an assigned reading is the treatment the course holds the learner to. Other selected sources (transcripts, slides, tutorials, notes) support and illustrate the assigned sections; they do not replace them. When the syllabus itself says how its lectures relate to the readings, follow that statement.
+- Every assigned available section must be visibly covered by the learning units that serve its syllabus unit. If one cannot be, say so in warnings, naming the section.
 
 Material availability (hard requirements — this is what stops fabrication):
 - A separate source-grounded model has already reviewed every work the syllabus assigns against the exact selected-source catalog. Its authored coverage decision is authoritative for this run. Do not second-guess it.
@@ -1241,6 +1404,7 @@ Syllabus:
 - \`dossier.syllabus\` is the course study guide. Use it only to judge what this page must cover and how deep to go.
 - Never mention, quote, cite, or describe the syllabus in the lesson. The learner reads a lesson on the subject, not a walkthrough of their course outline.
 - \`dossier.syllabusUnits[].objectives\` are what the learner must be able to do after this page. Teach to them.
+- \`dossier.syllabusUnits[].assignedReadings\` are the book sections the course assigns for this unit (each with its locator and expanded sections). The page teaches those sections' content — their definitions, derivations, and worked examples as the supplied source snippets give them — at the depth the course gives them. Do not drift to a neighbouring chapter's treatment of the same idea, and do not present a lecture's shorthand where the assigned section gives the full argument.
 - \`dossier.syllabusUnits[].questionReferences\` are explicit course assignments. The page dossier's requiredSourceQuestions resolves the ones present in the selected sources; include those questions on the mapped page and never invent the text of an unresolved assignment.
 - \`dossier.unavailableCitations\` lists works the course assigns that are NOT in this garden. You have never read them. Never name, quote, summarize, paraphrase, or state the findings of anything on that list, and never imply the page is based on one. Teach only from the source material provided in this dossier.`;
 
@@ -1276,30 +1440,49 @@ function withLearnUserInstructionRules(
     : basePrompt;
 }
 
+/** The Scope Contract declares what the learner already brings, and the
+ * foundation review is told to respect it — but the writer was never shown it,
+ * so every page defaulted to a motivated beginner and re-taught the entry
+ * prerequisites. Raise the floor only for what the contract actually names;
+ * everything outside that list stays beginner-level and the foundation review
+ * still catches an unexplained prerequisite. */
+function withAssumedBackgroundRules(
+  basePrompt: string,
+  assumedBackground: readonly string[],
+): string {
+  if (assumedBackground.length === 0) return basePrompt;
+  return `${basePrompt}
+Declared entry level:
+- The Scope Contract states the learner already brings: ${assumedBackground.join("; ")}.
+- Use those named foundations directly. Do not re-teach them, define them from scratch, or spend the page's opening establishing them; a brief reminder of the specific fact needed at that moment is still fine.
+- This raises the floor ONLY for what that list names. Every concept outside it is still owed a ground-up explanation at first substantive use.
+- If a page genuinely cannot proceed without a foundation the list does not cover, teach that foundation rather than assuming it.`;
+}
+
 const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
 Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
+${LEARN_FOUNDATION_RULES}
+${ANTI_AIISM_RULES}
+Assume none of the planned units has been read yet. Establish the topic's simplest concrete meaning before describing its branches or reading order. Keep the introduction proportionate; it does not need a full lesson's word count or advanced derivations.
 Include what the topic is about, how to learn it, the recommended reading order with wikilink-style labels for sections/subsections, and honest scope notes (what this garden does and does not cover) phrased around the topic, not around the uploaded files.
-Do not create disconnected notes and do not include raw visual placeholders.`;
+Do not create disconnected notes and do not include raw visual placeholders.
+Terms on this page (hard requirement): the overview is read before any lesson, so it may rely only on words it explains. unitsInReadingOrder lists what each unit teaches (its learningQuestion and newConcepts). Choose the few ideas the course is built on and explain each in plain words with a concrete picture. Every other unit is described by the question it answers or the capability it gives, in everyday language; its technical name may appear as the label of that destination, but never inside a sentence that uses its meaning to explain, compare, or give a reason. A one-word gloss or a restated name ("TDMA separates users in time") is not an explanation. If the page cannot afford to explain a term, leave the term to its lesson. Every abbreviation is spelled out and explained at first use or not used.`;
 
 // Concrete style rules reused by the writing and revision prompts.
 const DEPTH_RULES = `Teach from first principles so a motivated beginner with minimal background understands the concept:
-1. Open with the simplest concrete situation that makes the concept necessary. A short scenario ("Imagine a sensor watching a mostly still scene…") beats an abstract statement.
-2. Explain why the concept is needed — what breaks or is wasteful without it.
-3. Build the mechanism one step at a time. Each sentence should add one idea the previous sentence set up.
-4. Introduce a term only at the moment the learner needs it, and explain it in plain words the first time.
-5. Introduce a formula only after motivating it, then define every symbol and say what the formula lets you compute.
-6. Put at least one concrete example, analogy, or worked interpretation right after the idea it illustrates.
+${LEARN_FOUNDATION_RULES}
+1. Open the way dossier.openingMove assigns, when one is supplied. Whichever move applies, an abstract statement is the wrong opening; ground it in something specific.
+2. Explain why the concept is needed — what breaks or is wasteful without it — and where it comes from: the observation, experiment, or earlier result it rests on.
+3. Build the mechanism one step at a time. Each sentence should add one idea the previous sentence set up. Take the page's one idea to the bottom before touching a neighbouring one.
+3a. Depth test for every mechanism the page names (a coding scheme, a timing field, a guard interval, a duplexing method, a queue discipline): the page must answer, in prose, what problem it solves, how it works step by step, what it costs or what goes wrong without it, and show one instance with real numbers. A purpose-only sentence ("channel coding adds redundancy so errors can be corrected", "tail bits mark the end of a burst") is a name, not teaching, and reasoning built on it is superficial. If a mechanism is too large for this page and no earlier unit taught it, do not lean on it: say in one sentence what role it plays and that it is outside this lesson, and build the argument on what the page does teach. When the assigned sources name a part (a field in a frame, a coder, a code) but do not give its inner mechanism, say so at the term - what the sources do give (purpose, position, size, a number) and that the mechanism is outside the assigned material - rather than pretending to teach it or leaving a bare name.
+4. Introduce a term only at the moment the learner needs it, and explain it in plain words the first time — including, when it helps, what the word originally meant.
+5. Introduce a formula only after the reader could predict its shape from the picture and reasoning already given; then define every symbol, read the equation back in words, and say what it lets you compute.
+6. Every concept this page introduces gets one concrete, fully specified instance right after its definition: the named real system the sources describe with its actual numbers, or a small worked case with every value written out, walked through in prose. "Those values depend on the system" in place of an instance is a failure - a concept with nothing to picture floats. When the concept has a structure (slots in a frame, channels across cells, states in a chain, layers in a fiber) and no assigned source figure shows it, a small ASCII diagram in a fenced \`\`\`text block with the real numbers labelled is usually the clearest anchor - recommended, not required; when you draw one, follow it with prose that reads it back to the learner.
 7. Weave assigned source figures/tables into the flow and INTERPRET them (what the shape/trend/number means), never just caption them.
 8. Mention a common beginner confusion only when it genuinely helps, and resolve it by explaining the correct picture.
 9. End by connecting the chain of ideas into a mental model — not a bullet summary and not a list of formulas.
-Write at least ~700 words of real explanatory prose. Aim for genuine understanding, not coverage.`;
-
-const ANTI_AIISM_RULES = `Banned writing patterns — do NOT use these:
-- "The first/second/next/big idea is…", "X is not a side detail", "X is not just Y", "The point is not…", "This is not only X but also Y", "It is important to note that…", "This matters because…", "This highlights/underscores…", "The key takeaway is…", "In summary…".
-Do not teach through contrastive negation (telling the learner what something is NOT). Explain directly what it IS, why it exists, how it works, and how to think about it.
-Weak: "A second limitation appears in how information is represented. Continuous activations carry information through changing numerical values."
-Strong: "Imagine a sensor watching a mostly still scene. A dense network keeps re-processing whole arrays of values even when nothing changes. A spiking system assumes silence is meaningful: when something changes, it sends a single event — a spike — at a particular time, and that timing is part of the message."`;
+Write at least 1400 words of real explanatory prose, with no upper word limit and no target length: a page that stops as soon as it clears the minimum has stopped teaching. A learning question taken to the bottom - the mechanism step by step, every result derived, at least two concrete instances with numbers, the failure cases and costs - typically needs 2000-3500 words; a subsection a reader finishes in seven minutes has not gone deep enough. Never compress an explanation to fit a length, and never stop because the minimum is met. Preserve the reasoning, supported derivations, and worked examples needed for understanding; remove only restatement and tangents once the explanation is complete.`;
 
 const PLACEHOLDER_FREE_PROSE_RULES = `Final-prose rules (hard requirements):
 - Every line must be finished learner-facing prose, not a note about what someone should write later.
@@ -1314,24 +1497,47 @@ ${DEPTH_RULES}
 ${ANTI_AIISM_RULES}
 ${PLACEHOLDER_FREE_PROSE_RULES}
 Mechanics:
-- One flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
+- One continuous lesson. The page title is its only heading: never write a heading line of any level (\`#\` through \`######\`) inside the body, and never split the page into titled blocks or sub-subsections. When the argument turns, carry the turn in prose — a transition sentence that says what the previous idea settled and what the next one needs — so the subsection reads as one unbroken explanation from first paragraph to the questions.
+- Give the page a visible emphasis layer so a reader can find the load-bearing parts without reading every sentence. Use exactly these marks, sparingly — at most one of each per major idea, and only where it carries real weight:
+  - Bold the term itself at its first substantive use in the course, in the sentence that defines it - only on the page that introduces it (its newConcepts). A term in establishedEarlier is never bolded or defined again; it gets at most a one-line reminder.
+  - \`> [!warning]\` for a trap: a step readers get wrong, a condition that invalidates the result, a sign or direction that is easy to reverse.
+  - \`> [!note]\` for deferred debt: something used now whose full treatment comes later, naming where it is taken up.
+  - \`> [!info]\` for one connection beyond this course's material: a standard deeper link the wider subject holds (where the idea leads, what later theory explains it), stated as established knowledge and explicitly marked as outside the assigned material. At most one per page, and never carrying a formula, number, or derivation the sources do not have.
+  All callouts take a following line of prose inside the blockquote. Do not invent other callout types.
+  A callout is earned only by what the reader can do with it at that point. A warning names a mistake a reader who has followed the page so far could actually make now - a step in the wrong order, a sign reversed, a condition forgotten. It never warns against confusing the topic with something the page has not taught ("TDMA is not TDD" on a page that never explained duplexing), never restates the paragraph above it, and never leans on terms the page has not explained. If no such mistake exists, there is no warning.
+- Never use emoji anywhere in the page. No warning signs, pins, checkmarks, arrows-as-pictures, or decorative symbols; the marks above are the entire emphasis vocabulary.
+- dossier.openingMove assigns how this page opens, and its brief says what that move requires. Follow it. Do not open every page the same way, and in particular do not open with "You already know" unless the assigned move is continuation — even then, name the specific idea being picked up rather than telling the reader what they know.
 - Treat dossier.learningUnit as the contract for this page: answer its learningQuestion, introduce its newConcepts, respect mustNotRepeat, use only its planned source artifacts, and use its zettelNotes as conceptual anchors.
-- dossier.requiredSourceQuestions contains source-authored practice assigned to this page. Include EVERY entry using a **Question.** block whose prompt is copied verbatim, followed by an **Answer.** block that teaches a worked or guided solution matching its teachingGoal. When it has relatedFigureIds, keep the matching assigned source visual directly beside that question and use it in the solution. If no source questions are assigned, write the usual 1-2 learner questions yourself.
-- The first paragraph must connect to prior ideas unless this is the first unit; later pages must not restart the whole motivation.
+- taughtLater lists the concepts later pages own. This page may point at one of them as a destination - one sentence saying what a later lesson will do - but must never build reasoning on it or explain it: that is the later lesson's job. If this page's argument seems to need it, the argument is wrong for this page; make it with what this page does teach.
+- establishedEarlier lists the concepts earlier pages already taught. Pick one up with a single reminder sentence of the meaning needed now, then build on it. Never teach it again - no re-motivating why it exists, no redefining it from scratch, no paragraph that re-explains what an earlier page established. The page's space belongs to its own learning question.
+- dossier.requiredSourceQuestions contains source-authored practice assigned to this page. Include EVERY entry using a **Question.** block whose prompt is copied verbatim. The solution that teaches its teachingGoal must go inside a collapsed answer block so the learner can attempt the question before seeing it worked; use the exact shape shown below. When it has relatedFigureIds, keep the matching assigned source visual beside the question itself — the figure is part of the problem, not part of the answer. If no source questions are assigned, write the usual 1-2 learner questions yourself, in the same collapsed shape.
+- Later pages must not restart the whole course motivation. How the page connects to what came before is set by dossier.openingMove: a continuation picks the thread up explicitly, while a cold open, a problem, a contrast, or a concrete instance earns its place without a backward reference. Connection is a requirement of the lesson as a whole, not of its first sentence.
 - If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose using its provided markdown snippet, with an interpretation of what the figure shows directly beside it. Never dump images at the end and never repeat a caption without interpreting it.
 - dossier.requiredSourceFormulas is an exact-copy checklist. For every entry, reproduce its exactText verbatim in its own visible $$...$$ displayed equation; preserve every command, sign, bound, term, and aligned-row separator. Do not substitute an equivalent formula, combine equations, or invent different notation. Then teach the model-authored teachingGoal and define every listed term.
+- Each required formula also carries a grounding, and each grounding owes the learner a different move. "derived": show the route to it — start from what derivableFrom names, take the steps in order, and say what each step uses; a reader who lost the formula should be able to rebuild it from your text. "empirical": say plainly that it is measured or postulated rather than deduced, and give the observation or reasoning that makes it credible. "axiom": say what it fixes by definition and why that convention is the useful one. "asserted_in_source": say that the result is taken as given here and name where its argument lives, so the learner knows the gap is real and is not left thinking a step was skipped. Never dress up an empirical law, axiom, or asserted result as a derivation, and never leave a "derived" formula sitting unexplained as if it had to be accepted.
 - The user message begins with a VERBATIM SOURCE FORMULA COPY SHEET when formulas are required. Those are literal Markdown display blocks, not JSON-escaped examples: copy every complete block character-for-character into the final lesson. Use that sheet rather than trying to reconstruct LaTex from escaped JSON.
 - Never create a generic "## Source Figures" section. Every source figure/table/formula belongs inside the explanation where the contract placed it.
 - Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
+- When dossier.interactiveVisualMarker is present, this unit has a planned interactive visual (see dossier.learningUnit.interactiveVisual and interactiveVisualPlan). It is inserted exactly where you put that marker, so place it like a source figure: copy the marker verbatim exactly once, on its own line with a blank line before and after, directly after the paragraph that explains the idea the interaction lets the learner explore. Never put it at the start of the page, before that idea is introduced, or inside a list, callout, table, displayed formula, or question/answer block.
 - Never leave [Interactive visual: ...] or any bracketed placeholder, and never write instructions to yourself (e.g. "use the page 10 materials").
-- Include 1-2 real questions a learner would ask (or every assigned source question), using exactly:
+- Include 1-2 real questions a learner would ask (or every assigned source question), using exactly this shape — the blank lines around the summary line are required for the Markdown inside to render:
+
   **Question.** ...
+
+  <details>
+  <summary>Answer</summary>
+
   **Answer.** ...
+
+  </details>
+
+- Write each question so it can actually be attempted before the answer is opened: it must be answerable from what the page has already taught, and the paragraph introducing it must not give the answer away.
 - Do not generate arbitrary executable JavaScript.`;
 
 const SUBSECTION_REPAIR_PROMPT = `Repair one lesson page that failed specific hard quality checks. This is a focused repair, not a rewrite.
 Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
+${LEARN_FOUNDATION_RULES}
 ${ANTI_AIISM_RULES}
 ${PLACEHOLDER_FREE_PROSE_RULES}
 Task:
@@ -1339,13 +1545,25 @@ Task:
 - Preserve correct existing content: explanations, examples, formulas, structure, and the Question./Answer. section.
 - Do not restart from scratch unless the page is genuinely unusable.
 - When a failedProblems entry includes \`offending text\`, treat that quote as diagnostic material from the rejected draft, not prose to preserve, discuss, or quote. Replace the whole sentence or bullet containing it with a finished learner explanation, then silently scan the completed Markdown before returning it.
-- If a failure says the page is too short, lacks a concrete example, or lacks a **Question.** / **Answer.** pair, add the missing depth in the same flowing, beginner-friendly voice: motivate before mechanism, define terms as they appear, put a concrete example right after the idea it illustrates, and keep at least ~700 words of real explanatory prose.
+- If a failure identifies a short or unfinished explanation, a missing concrete example, or a missing **Question.** / **Answer.** pair, supply the missing teaching in the same flowing, beginner-friendly voice: motivate before mechanism, define terms as they appear, and put a concrete example right after the idea it illustrates. Keep at least 1400 words of real explanatory prose, with no upper word limit; meet the minimum through substantive explanation and worked reasoning, not repetition. Any question you add keeps the collapsed-answer shape: **Question.** in the prose, then its **Answer.** inside a \`<details><summary>Answer</summary>\` block.
 - If failedProblems includes placeholder or empty-bullet-scaffold, replace the offending scaffold with finished explanatory sentences. Do not merely delete it unless the surrounding paragraph remains coherent and complete.
+- If failedProblems includes unexplained-term, the page leaned on a technical term a beginner was never taught. At the term's first use, explain in plain words what it is and what it does, with the concrete steps or an example, before any sentence depends on it; do not replace it with another undefined phrase, and do not delete the sentence that needed it.
+- If failedProblems includes floating-concept, the page defined a concept without ever showing one. Directly after the definition, add one concrete, fully specified instance drawn from the assigned sources - the named system with its real numbers (slots per frame, frame duration, channel count, data rate) or a worked case with every value stated - and walk the reader through it in prose so the definition is now something they can picture. If the concept has a structure and no assigned source figure shows it, consider a small ASCII diagram in a fenced \`\`\`text block with the numbers labelled, read back in the prose below - recommended where it helps, not required. If the sources give no instance, construct a small numeric case and say the values are chosen for illustration.
+- An unexplained-term or floating-concept failure may name a standard idea the assigned sources use without defining (wave number, refractive index, probability). You may state its plain-words meaning in one sentence at first use - that is a definition, not a source claim - and then continue. Never leave the term unexplained because the sources do not define it, and never invent a course-specific result around it.
+- If failedProblems includes reteaches-earlier-unit, the page re-taught an idea an earlier page established. Cut each quoted paragraph to one reminder sentence of the meaning this page needs now, then continue with this page's own question; do not re-motivate or redefine the earlier idea, and do not pad the page back to length.
+- If failedProblems includes unearned-callout, the callout gives the reader nothing at that point. Delete it, or rewrite it so that reader can use it now: a warning names a mistake they could actually make with what has been taught, a note names a debt this page really incurs, an info adds one connection they can now understand. Never keep a warning about confusing the topic with something the page has not taught.
+- If failedProblems includes leans-on-later-unit, the page built reasoning on a concept a later lesson teaches. Do not explain it here. Rewrite each quoted sentence so nothing depends on it, and carry the argument with what this page teaches. The whole page may point at a later lesson at most once per concept - never add another "this is taken up later" sentence; if one already exists, just remove the dependence.
+- If failedProblems includes shallow-explanation, the page named a mechanism's purpose and then reasoned with it as if it had been taught. Teach it where it is first used: the problem it solves, how it works step by step, what it costs or what goes wrong without it, and one concrete instance with numbers from the sources. If that is more than this page can carry and no earlier unit teaches it, remove the reliance instead: one sentence naming its role and that it is outside this lesson, and reasoning rebuilt on what the page does teach. Never leave a purpose-only gloss in place.
+- If failedProblems includes unshown-result, the page stated a number or conclusion as a fact without showing where it comes from. At the point it appears, derive it from what the page has already established: write the calculation out with every value and unit, or lay out the reasoning one step at a time, so the reader could reproduce it. If the sources only assert the result, say so in plain words and name what its derivation would need; do not invent numbers the sources do not support.
+- If failedProblems includes restated-idea, the page said one thing several times. Keep the single statement that teaches it best, at the point where the idea is first needed, and delete the repeats or rewrite each into a sentence that adds a step, a consequence, a number, or an example. Do not pad the page back to its old length.
+- If failedProblems includes internal-heading, remove every heading line inside the body and join the prose around it into one continuous argument: rewrite the first sentence after each dropped heading so the transition reads naturally, and never delete the content that sat under it.
+- If failedProblems includes emoji, remove every pictographic character and carry its emphasis with the sanctioned marks instead: bold the term at first substantive use, \`> [!warning]\` for a trap, \`> [!note]\` for deferred debt.
 - If failedProblems includes missing-source-formula, copy each matching exactText from dossier.requiredSourceFormulas into its own visible $$...$$ displayed equation verbatim. Preserve every command, sign, bound, term, and aligned-row separator; do not substitute, shorten, combine, or restyle the equation. The literal replacement block overrides any instruction to preserve the old malformed formula: replace it rather than retaining or duplicating an equivalent variant.
-- If failedProblems includes missing-source-question, copy the matching prompt from dossier.requiredSourceQuestions verbatim into a **Question.** block and add its **Answer.** directly after it. Keep every related source figure beside the question.
+- If failedProblems includes missing-source-question, copy the matching prompt from dossier.requiredSourceQuestions verbatim into a **Question.** block and put its **Answer.** inside a collapsed \`<details><summary>Answer</summary>\` block directly after it, keeping a blank line above and below the inner Markdown. Keep every related source figure beside the question itself, not inside the answer.
 - The user message begins with a VERBATIM SOURCE FORMULA COPY SHEET when formulas are required. Those blocks are literal Markdown, not JSON-escaped examples. Copy every required block character-for-character into the repaired lesson.
 - Rewrite any sentence that comments on "the paper", "the source", "source-derived", or similar document framing so it teaches the concept directly.
 - Keep every embedded image markdown where it is and keep any \`\`\`breadboard-visual block byte-for-byte unchanged.
+- Keep every \`<!-- learning-unit:... -->\` marker line exactly where it is; it positions the interactive visual.
 - Remove placeholder or self-instruction text.
 - If source-only mode is true, do not add unsupported facts.
 - Return only the final Markdown.`;
@@ -2418,6 +2636,22 @@ function getLearnMapPlanningJob(
     : null;
 }
 
+/** True when the garden's confirmed Learning Map was planned as an additive
+ * update of the published course. Generation for such a map is an additive
+ * update whichever Learn job happens to be the latest: a cancelled or failed
+ * generation attempt clears its own confirmedLearningMapId, and reading the
+ * mode off that job made the next `generate` refuse with "already has learner
+ * content" (telecom-1, 2026-09-16). */
+export function confirmedLearningMapPlannedAsUpdate(
+  gardenId: string,
+  learningMapId: string | null | undefined,
+): boolean {
+  if (!learningMapId) return false;
+  const map = getLearnMapById(learningMapId, gardenId);
+  if (!map || map.status !== "confirmed") return false;
+  return getLearnMapPlanningJob(map, gardenId)?.mode === "update_sources";
+}
+
 function requireLearnMapPlanningModel(
   map: Pick<StoredLearningMap, "id" | "jobId">,
   gardenId: string,
@@ -3301,6 +3535,7 @@ async function ensureSourceVisualsExtracted({
   gardenId,
   context,
   deferEmptyVisualCheck = false,
+  reviewFigureCrops = false,
   checkpoint,
   onProgress,
 }: {
@@ -3311,6 +3546,8 @@ async function ensureSourceVisualsExtracted({
   context: LearnSourceContext;
   /** Let an immediate follow-up on-demand scan satisfy a visual-rich source. */
   deferEmptyVisualCheck?: boolean;
+  /** Check figure crops against their pages (planning only). */
+  reviewFigureCrops?: boolean;
   checkpoint?: () => void;
   onProgress?: (step: string) => void;
 }): Promise<SourceVisual[]> {
@@ -3337,6 +3574,7 @@ async function ensureSourceVisualsExtracted({
       sourceId: source.slug,
       sourceIndex,
       pageImageUrls,
+      reviewFigureCrops,
       checkpoint,
       onProgress,
     });
@@ -3365,7 +3603,19 @@ async function ensureSourceVisualsExtracted({
   ).sourceArtifactInventoryHash;
 
   if (!deferEmptyVisualCheck) {
-    const inventoryCoverageProblems = sourceVisualInventoryCoverageProblems(context.sources, visuals);
+    const scannedPageImageUrlsBySource = new Map<string, string[]>();
+    for (const source of context.sources) {
+      const pageImageUrls = [...new Set([
+        ...(source.sourceImages ?? []).filter(isFullPageSnapshotUrl),
+        ...sourceVisualCachedPageImageUrls(contentPath, gardenId, source.slug),
+      ])];
+      scannedPageImageUrlsBySource.set(source.slug, pageImageUrls);
+    }
+    const inventoryCoverageProblems = sourceVisualInventoryCoverageProblems(
+      context.sources,
+      visuals,
+      scannedPageImageUrlsBySource,
+    );
     if (inventoryCoverageProblems.length > 0) {
       throw new Error(
         `Source visual extraction completeness failed: ${inventoryCoverageProblems.join("; ")}. Refusing to plan or write learner pages from an incomplete figure registry.`,
@@ -3381,12 +3631,45 @@ function truncate(value: string | undefined, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength).trimEnd()}\n[truncated]`;
 }
 
-/** How much of the study guide the planner sees. Syllabi are short documents;
- * this is generous enough for a full course outline without crowding out the
- * source material it is meant to organize. */
-const MAX_SYLLABUS_PROMPT_CHARS = 12000;
+/** How much of the study guide the planner sees. A study guide's per-lecture
+ * reading table usually sits on its last pages, after the grading rules, so
+ * the budget must hold the whole document: a 12k cut once dropped every
+ * "Lecture N → book sections" row of a seven-page guide. */
+const MAX_SYLLABUS_PROMPT_CHARS = 60_000;
 /** Page writing only needs the outline as orientation, not the whole guide. */
-const MAX_SYLLABUS_DOSSIER_CHARS = 3000;
+const MAX_SYLLABUS_DOSSIER_CHARS = 8_000;
+
+/**
+ * The study guide's own text. An ingested source note carries Breadboard's
+ * generated preamble (summary, concept coverage, internal planning) before
+ * `## Source material`; sending that to the syllabus reader spends the budget
+ * on text that is not the syllabus. A note without the canonical marker, or
+ * with an ambiguous one, is passed through whole.
+ */
+function syllabusMaterialText(body: string | undefined): string {
+  try {
+    return canonicalSourceMaterialBody(body).trim() || String(body ?? "");
+  } catch {
+    return String(body ?? "");
+  }
+}
+
+const ANYDOC_CROSS_CHECK_HEADING = /^## AnyDoc cross-check[ \t]*$/m;
+
+/**
+ * The second transcription dual-parser PDF ingestion appends after the
+ * canonical pages. Page-image OCR and layout parsing fail differently — one
+ * drops the row numbers of a schedule table, the other keeps them but merges
+ * cells — so the syllabus reader gets both and reconciles them. Absent for a
+ * source that was ingested by one parser.
+ */
+function syllabusCrossCheckText(body: string | undefined): string | undefined {
+  const text = String(body ?? "");
+  const match = ANYDOC_CROSS_CHECK_HEADING.exec(text);
+  if (!match) return undefined;
+  const transcript = text.slice(match.index + match[0].length).trim();
+  return transcript || undefined;
+}
 
 /** The designated study guide, in the shape planning prompts read it. */
 function promptSyllabus(
@@ -3395,12 +3678,14 @@ function promptSyllabus(
 ): unknown {
   const syllabus = context.syllabus;
   if (!syllabus) return undefined;
+  const crossCheck = syllabusCrossCheckText(syllabus.body);
   return {
     id: syllabus.slug,
     title: syllabus.title,
     description: syllabus.description,
     sourceFile: syllabus.sourceFile,
-    content: truncate(syllabus.body, maxChars),
+    content: truncate(syllabusMaterialText(syllabus.body), maxChars),
+    ...(crossCheck ? { crossCheckTranscript: truncate(crossCheck, maxChars) } : {}),
   };
 }
 
@@ -3467,7 +3752,34 @@ function structuralSourceTextAnchorCatalog(context: LearnSourceContext): ModelSo
 function structuralSourceAnchorPromptCatalog(
   anchors: readonly ModelSourcePageAnchorRecord[],
 ): Array<Record<string, unknown>> {
-  return anchors.map((anchor) => ({
+  const bySource = new Map<string, ModelSourcePageAnchorRecord[]>();
+  for (const anchor of anchors) {
+    const sourceAnchors = bySource.get(anchor.sourceId) ?? [];
+    sourceAnchors.push(anchor);
+    bySource.set(anchor.sourceId, sourceAnchors);
+  }
+  const selected: ModelSourcePageAnchorRecord[] = [];
+  const maximumPerSource = 40;
+  for (const sourceAnchors of bySource.values()) {
+    if (sourceAnchors.length <= maximumPerSource) {
+      selected.push(...sourceAnchors);
+      continue;
+    }
+    // Preserve the beginning/end of the source while sampling the middle
+    // uniformly. The model's map is capped at 40 anchors per source, so
+    // sending thousands of page records only inflates the upstream request
+    // and causes provider timeouts without increasing the accepted output.
+    const indexes = new Set<number>();
+    for (let slot = 0; slot < maximumPerSource; slot += 1) {
+      indexes.add(Math.round(
+        (slot * (sourceAnchors.length - 1)) / (maximumPerSource - 1),
+      ));
+    }
+    selected.push(...[...indexes].sort((left, right) => left - right).map(
+      (index) => sourceAnchors[index]!,
+    ));
+  }
+  return selected.map((anchor) => ({
     id: anchor.id,
     sourceId: anchor.sourceId,
     page: anchor.page,
@@ -3527,7 +3839,7 @@ function promptSources(
   options: { sourceMapArtifactKinds?: boolean } = {},
 ): unknown {
   const maxIndexCharsPerSource = Math.max(
-    18_000,
+    4_000,
     Math.floor(120_000 / Math.max(1, context.sources.length)),
   );
   const sourceFigures = options.sourceMapArtifactKinds
@@ -3551,7 +3863,10 @@ function promptSources(
       content: sourcePlanningIndex(source.body, maxIndexCharsPerSource),
     })),
     conceptNodes: context.conceptNodes.slice(0, 80),
-    sourceFigures,
+    // Source Map planning consumes the normalized, compact sourceVisuals
+    // projection below. Re-sending the full detector records here duplicates
+    // OCR/relevance text and can push large gardens into provider timeouts.
+    ...(options.sourceMapArtifactKinds ? {} : { sourceFigures }),
     // Stage-2 extracted visuals, in the shape the planner assigns from.
     sourceVisuals: sourceFigures.map((figure) => ({
       sourceVisualId: figure.figureId,
@@ -4015,7 +4330,14 @@ async function callCouncilJson({
     planningCheckpoint,
     ordinaryCheckpoint,
   });
-  return { ...result, parsed: parseJsonCandidate(result.content) };
+  // A model answer that is text but not parseable JSON is malformed output,
+  // not an absent one: hand the stage the raw text so its validator can reject
+  // the shape and ask for a repair. Only a truly empty answer stays null.
+  // Live 2026-09-16: a stray brace inside a 2.7 KB visual-necessity repair
+  // became parsed=null and ended the plan as "no nonempty candidate".
+  const parsed = parseJsonCandidate(result.content);
+  const trimmed = typeof result.content === "string" ? result.content.trim() : "";
+  return { ...result, parsed: parsed ?? (trimmed && trimmed !== "null" ? result.content : null) };
 }
 
 async function requestVisualizationContractRepair(input: {
@@ -4318,6 +4640,192 @@ function assertNonemptyPlanningCandidate(
   }
 }
 
+const SOURCE_MAP_CANONICAL_ID_PROBLEM =
+  /^sourceAnchors\[(\d+)\]\.id must be copied from canonicalSourceAnchors$/;
+
+function sourceMapCanonicalAnchorRepairPacket({
+  originalRequest,
+  invalidResponse,
+  problems,
+}: {
+  originalRequest: unknown;
+  invalidResponse: unknown;
+  problems: string[];
+}): Record<string, unknown> | null {
+  if (
+    problems.length === 0 ||
+    problems.some((problem) => !SOURCE_MAP_CANONICAL_ID_PROBLEM.test(problem)) ||
+    !originalRequest ||
+    typeof originalRequest !== "object" ||
+    Array.isArray(originalRequest) ||
+    !invalidResponse ||
+    typeof invalidResponse !== "object" ||
+    Array.isArray(invalidResponse)
+  ) {
+    return null;
+  }
+
+  const request = originalRequest as Record<string, unknown>;
+  const rejected = invalidResponse as Record<string, unknown>;
+  const canonicalAnchors = request.canonicalSourceAnchors;
+  const rejectedAnchors = rejected.sourceAnchors;
+  if (!Array.isArray(canonicalAnchors) || !Array.isArray(rejectedAnchors)) {
+    return null;
+  }
+
+  const invalidIndexes = new Set<number>();
+  const invalidSourceIds = new Set<string>();
+  const invalidAnchors: Array<Record<string, unknown>> = [];
+  for (const problem of problems) {
+    const match = problem.match(SOURCE_MAP_CANONICAL_ID_PROBLEM);
+    const index = match ? Number(match[1]) : Number.NaN;
+    const anchor = Number.isInteger(index) ? rejectedAnchors[index] : undefined;
+    if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) {
+      return null;
+    }
+    const sourceId = (anchor as Record<string, unknown>).sourceId;
+    if (typeof sourceId !== "string" || !sourceId) return null;
+    invalidIndexes.add(index);
+    invalidSourceIds.add(sourceId);
+    invalidAnchors.push({
+      index,
+      id: (anchor as Record<string, unknown>).id,
+      sourceId,
+      title: (anchor as Record<string, unknown>).title,
+      summary: (anchor as Record<string, unknown>).summary,
+    });
+  }
+
+  const canonicalIds = new Set(
+    canonicalAnchors
+      .map((anchor) => planningRecord(anchor).id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0),
+  );
+  const usedCanonicalAnchorIds = rejectedAnchors
+    .filter((_anchor, index) => !invalidIndexes.has(index))
+    .map((anchor) => planningRecord(anchor).id)
+    .filter((id): id is string => typeof id === "string" && canonicalIds.has(id));
+  const usedCanonicalAnchorIdSet = new Set(usedCanonicalAnchorIds);
+  const repairCandidates = canonicalAnchors.filter((anchor) =>
+    Boolean(
+      anchor &&
+      typeof anchor === "object" &&
+      !Array.isArray(anchor) &&
+      invalidSourceIds.has(String((anchor as Record<string, unknown>).sourceId ?? "")) &&
+      !usedCanonicalAnchorIdSet.has(String((anchor as Record<string, unknown>).id ?? "")),
+    ));
+  if (
+    repairCandidates.length === 0 ||
+    [...invalidSourceIds].some((sourceId) =>
+      !repairCandidates.some((candidate) => planningRecord(candidate).sourceId === sourceId))
+  ) {
+    return null;
+  }
+
+  return {
+    repairScope:
+      "Choose exactly one replacement canonicalId for every invalidAnchors entry. Copy it verbatim from candidateCanonicalAnchors, keep the same sourceId, do not reuse an id, and return only the requested replacements.",
+    responseShape: {
+      replacements: [{ index: "integer", sourceId: "exact sourceId", canonicalId: "exact candidate id" }],
+    },
+    invalidAnchors,
+    usedCanonicalAnchorIds,
+    candidateCanonicalAnchors: repairCandidates,
+  };
+}
+
+/** Project only the model's exact canonical-id choices into the rejected map.
+ * Code never guesses, normalizes, or substitutes an anchor. Any malformed,
+ * duplicate, unknown, or cross-source choice leaves the incumbent unchanged so
+ * the ordinary full-map validator can fail closed or authorize another bounded
+ * model attempt. */
+function applySourceMapCanonicalAnchorRepair({
+  invalidResponse,
+  repairResponse,
+  repairPacket,
+}: {
+  invalidResponse: unknown;
+  repairResponse: unknown;
+  repairPacket: Record<string, unknown>;
+}): unknown {
+  const incumbent = planningRecord(invalidResponse);
+  const incumbentAnchors = incumbent.sourceAnchors;
+  const targets = repairPacket.invalidAnchors;
+  const candidates = repairPacket.candidateCanonicalAnchors;
+  const replacements = planningRecord(repairResponse).replacements;
+  if (
+    !Array.isArray(incumbentAnchors) ||
+    !Array.isArray(targets) ||
+    !Array.isArray(candidates) ||
+    !Array.isArray(replacements) ||
+    replacements.length !== targets.length
+  ) {
+    return invalidResponse;
+  }
+
+  const targetByIndex = new Map<number, Record<string, unknown>>();
+  for (const rawTarget of targets) {
+    const target = planningRecord(rawTarget);
+    const index = target.index;
+    if (!Number.isInteger(index) || Number(index) < 0 || Number(index) >= incumbentAnchors.length) {
+      return invalidResponse;
+    }
+    targetByIndex.set(Number(index), target);
+  }
+  if (targetByIndex.size !== targets.length) return invalidResponse;
+
+  const candidateById = new Map<string, Record<string, unknown>>();
+  for (const rawCandidate of candidates) {
+    const candidate = planningRecord(rawCandidate);
+    if (typeof candidate.id !== "string" || typeof candidate.sourceId !== "string") {
+      return invalidResponse;
+    }
+    candidateById.set(candidate.id, candidate);
+  }
+  const usedIds = new Set(
+    Array.isArray(repairPacket.usedCanonicalAnchorIds)
+      ? repairPacket.usedCanonicalAnchorIds.filter((id): id is string => typeof id === "string")
+      : [],
+  );
+  const replacementByIndex = new Map<number, string>();
+  for (const rawReplacement of replacements) {
+    const replacement = planningRecord(rawReplacement);
+    const index = replacement.index;
+    const sourceId = replacement.sourceId;
+    const canonicalId = replacement.canonicalId;
+    if (
+      !Number.isInteger(index) ||
+      typeof sourceId !== "string" ||
+      typeof canonicalId !== "string"
+    ) {
+      return invalidResponse;
+    }
+    const target = targetByIndex.get(Number(index));
+    const candidate = candidateById.get(canonicalId);
+    if (
+      !target ||
+      target.sourceId !== sourceId ||
+      !candidate ||
+      candidate.sourceId !== sourceId ||
+      usedIds.has(canonicalId) ||
+      replacementByIndex.has(Number(index))
+    ) {
+      return invalidResponse;
+    }
+    usedIds.add(canonicalId);
+    replacementByIndex.set(Number(index), canonicalId);
+  }
+  if (replacementByIndex.size !== targetByIndex.size) return invalidResponse;
+
+  const sourceAnchors = incumbentAnchors.map((rawAnchor, index) => {
+    const canonicalId = replacementByIndex.get(index);
+    return canonicalId === undefined
+      ? rawAnchor
+      : { ...planningRecord(rawAnchor), id: canonicalId };
+  });
+  return { ...incumbent, sourceAnchors };
+}
+
 async function callValidatedPlanningJson({
   client,
   model,
@@ -4364,13 +4872,25 @@ async function callValidatedPlanningJson({
     preserveExactContent,
   });
   assertNonemptyPlanningCandidate(result, stageLabel);
+  let completedAttempts = 1;
   let problems = validate(result.parsed);
-  for (let repairAttempt = 1; repairAttempt <= 2 && problems.length > 0; repairAttempt += 1) {
+  for (let repairAttempt = 1; repairAttempt <= 3 && problems.length > 0; repairAttempt += 1) {
     throwIfLearnCancelled(jobId);
     const invalidResponse = result.parsed ?? {
       unparsedResponse: result.content.slice(0, 12_000),
     };
-    result = await dispatchAfterDurablePlanningIssuance({
+    const sourceMapAnchorRepair = stageLabel === "Source Map"
+      ? sourceMapCanonicalAnchorRepairPacket({
+          originalRequest,
+          invalidResponse,
+          problems,
+        })
+      : null;
+    // All planning stages retain their two complete-replacement repairs. Source
+    // Map alone may spend one additional call, and only after validation proves
+    // the remaining work is the compact canonical-anchor identity decision.
+    if (repairAttempt > 2 && !sourceMapAnchorRepair) break;
+    const repairResult = await dispatchAfterDurablePlanningIssuance({
       persist: () => appendDurablePlanningIssuanceEvent({
         contentPath,
         gardenId,
@@ -4382,38 +4902,79 @@ async function callValidatedPlanningJson({
           stageKey,
           stageLabel,
           repairAttempt,
+          repairKind: sourceMapAnchorRepair ? "source_map_canonical_anchor_ids" : "complete_replacement",
           problems,
         },
       }),
-      dispatch: () => callPlanningJsonOnce({
-        client,
-        model,
-        taskType,
-        gardenId,
-        system:
-          `${system}\n\nYour previous ${stageLabel} response failed the supplied hard validation problems. ` +
-          "Return a complete corrected replacement JSON object. Do not explain, patch, omit required entries, or rely on code to fill anything in.",
-        user: compactJson({
-          originalRequest,
-          invalidResponse,
-          validationProblems: problems,
-          repairAttempt,
-        }),
-        sourceContext: {
-          gardenId,
-          taskType,
-          stageLabel,
-          repairAttempt,
-        },
-        contentPath,
-        jobId,
-        stageKey,
-        stageLabel,
-        semanticAttempt: repairAttempt,
-        preserveExactContent,
-      }),
+      dispatch: () => sourceMapAnchorRepair
+        ? callPlanningJsonOnce({
+            client,
+            model,
+            taskType,
+            gardenId,
+            system:
+              "You repair canonical source-anchor identity bindings in an otherwise complete Source Map. " +
+              "Return exactly one JSON object in the requested responseShape. Select every canonicalId verbatim from candidateCanonicalAnchors for the matching sourceId. Do not return the Source Map, explanations, Markdown, or additional keys.",
+            user: compactJson(sourceMapAnchorRepair),
+            sourceContext: {
+              gardenId,
+              taskType,
+              stageLabel,
+              repairAttempt,
+              repairKind: "source_map_canonical_anchor_ids",
+            },
+            contentPath,
+            jobId,
+            stageKey,
+            stageLabel,
+            semanticAttempt: repairAttempt,
+            preserveExactContent,
+          })
+        : callPlanningJsonOnce({
+            client,
+            model,
+            taskType,
+            gardenId,
+            system:
+              `${system}\n\nYour previous ${stageLabel} response failed the supplied hard validation problems. ` +
+              "Return a complete corrected replacement JSON object. Do not explain, patch, omit required entries, or rely on code to fill anything in.",
+            user: compactJson({
+              originalRequest,
+              invalidResponse,
+              validationProblems: problems,
+              repairAttempt,
+            }),
+            sourceContext: {
+              gardenId,
+              taskType,
+              stageLabel,
+              repairAttempt,
+            },
+            contentPath,
+            jobId,
+            stageKey,
+            stageLabel,
+            semanticAttempt: repairAttempt,
+            preserveExactContent,
+          }),
     });
-    assertNonemptyPlanningCandidate(result, stageLabel);
+    assertNonemptyPlanningCandidate(
+      repairResult,
+      sourceMapAnchorRepair ? `${stageLabel} canonical-anchor repair` : stageLabel,
+    );
+    completedAttempts += 1;
+    result = sourceMapAnchorRepair
+      ? {
+          ...repairResult,
+          parsed: applySourceMapCanonicalAnchorRepair({
+            invalidResponse,
+            repairResponse: repairResult.parsed,
+            repairPacket: sourceMapAnchorRepair,
+          }),
+          content: "",
+        }
+      : repairResult;
+    if (sourceMapAnchorRepair) result.content = compactJson(result.parsed);
     problems = validate(result.parsed);
     try {
       appendLearnEvent(contentPath, gardenId, "learn_planning_schema_repair_reviewed", {
@@ -4429,7 +4990,7 @@ async function callValidatedPlanningJson({
   }
   if (problems.length > 0) {
     throw new Error(
-      `${stageLabel} remained invalid after 3 bounded AI-authored attempts: ${problems.join("; ")}. No deterministic fallback was used.`,
+      `${stageLabel} remained invalid after ${completedAttempts} bounded AI-authored attempts: ${problems.join("; ")}. No deterministic fallback was used.`,
     );
   }
   return result;
@@ -4471,10 +5032,9 @@ async function runValidatedTextRepairLoop<TProblem>({
     previousMarkdown: string;
     failedProblems: readonly TProblem[];
   }) => Promise<string>;
-  validate: (markdown: string, attempt: number) => {
-    markdown: string;
-    problems: TProblem[];
-  };
+  validate: (markdown: string, attempt: number) =>
+    | { markdown: string; problems: TProblem[] }
+    | Promise<{ markdown: string; problems: TProblem[] }>;
   emptyResponseMessage: string;
   onReviewed?: (input: {
     attempt: number;
@@ -4503,7 +5063,7 @@ async function runValidatedTextRepairLoop<TProblem>({
     });
     const candidate = modelTextCandidateOrThrow(rawContent, emptyResponseMessage);
 
-    const reviewed = validate(candidate, attempt);
+    const reviewed = await validate(candidate, attempt);
     const problems = [...reviewed.problems];
     try {
       onReviewed?.({ attempt, markdown: candidate, problems });
@@ -4871,7 +5431,6 @@ function parsePromptlessCouncilRecoveryResult(
     ].every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0) ||
     Number(totalTokens) < Number(inputTokens) + Number(outputTokens) ||
     Number(cachedInputTokens) > Number(inputTokens) ||
-    Number(reasoningTokens) > Number(outputTokens) ||
     Number(reportedCallCount) > Number(callCount)
   ) {
     throw new LearnPlanningRecoveryConflictError(
@@ -4950,6 +5509,14 @@ async function promptlessCouncilResultGet(
   const redispatchCount = receipt?.redispatchCount;
   const redispatchAllowed = receipt?.redispatchAllowed;
   const failureCode = receipt?.failureCode;
+  const receiptCreatedAt = receipt?.createdAt;
+  const receiptUpdatedAt = receipt?.updatedAt;
+  const receiptCreatedAtMs = typeof receiptCreatedAt === "string"
+    ? Date.parse(receiptCreatedAt)
+    : Number.NaN;
+  const receiptUpdatedAtMs = typeof receiptUpdatedAt === "string"
+    ? Date.parse(receiptUpdatedAt)
+    : Number.NaN;
   const strictMetadataScalars =
     Number.isSafeInteger(dispatchGeneration) &&
     (dispatchGeneration === 1 || dispatchGeneration === 2) &&
@@ -4959,7 +5526,10 @@ async function promptlessCouncilResultGet(
     Number.isSafeInteger(redispatchCount) &&
     (redispatchCount === 0 || redispatchCount === 1) &&
     Number(redispatchCount) === Number(dispatchCount) - 1 &&
-    typeof redispatchAllowed === "boolean";
+    typeof redispatchAllowed === "boolean" &&
+    Number.isFinite(receiptCreatedAtMs) &&
+    Number.isFinite(receiptUpdatedAtMs) &&
+    receiptCreatedAtMs <= receiptUpdatedAtMs;
   let strictReceiptMetadata: StrictCouncilReceiptMetadata | undefined;
   if (strictMetadataScalars) {
     const receiptState = record?.state;
@@ -4978,6 +5548,8 @@ async function promptlessCouncilResultGet(
         dispatchCount: Number(dispatchCount),
         redispatchCount: Number(redispatchCount),
         redispatchAllowed: Boolean(redispatchAllowed),
+        createdAt: String(receiptCreatedAt),
+        updatedAt: String(receiptUpdatedAt),
         attempts: parseLearnCouncilReceiptAttempts(
           receipt?.attempts,
           Number(dispatchCount) as 1 | 2,
@@ -6848,7 +7420,7 @@ async function omitTerminallySettledMismatchedPlanningReceipts(input: {
     if (!exactPlanningDispatchAuthority(input.checkpoint.jobId, row.garden_id)) {
       throw new PlanningRecoveryBoundaryError("dispatch_authority_lost");
     }
-    const lookup = await promptlessCouncilResultGet(
+    let lookup = await promptlessCouncilResultGet(
       input.client,
       "/internal/council-results/resolve",
       {
@@ -6858,6 +7430,81 @@ async function omitTerminallySettledMismatchedPlanningReceipts(input: {
     );
     if (!exactPlanningDispatchAuthority(input.checkpoint.jobId, row.garden_id)) {
       throw new PlanningRecoveryBoundaryError("dispatch_authority_lost");
+    }
+    if (
+      lookup.status === 409 &&
+      lookup.code === "request_started" &&
+      lookup.receipt &&
+      exactRecoverableStartedPlanningReceiptPrefix(lookup.receipt, input.expectedModel)
+    ) {
+      const expiresAt =
+        Date.parse(lookup.receipt.updatedAt) + LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS;
+      let nextHeartbeatAt = 0;
+      while (Date.now() < expiresAt) {
+        if (Date.now() >= nextHeartbeatAt) {
+          updateLearnJob(input.checkpoint.jobId, {
+            currentStep: "Waiting for an interrupted model request to expire safely",
+          });
+          nextHeartbeatAt = Date.now() + 30_000;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(2_000, Math.max(1, expiresAt - Date.now()))),
+        );
+        lookup = await promptlessCouncilResultGet(
+          input.client,
+          "/internal/council-results/resolve",
+          {
+            requestId: row.receipt_request_id,
+            requestHash: row.request_hash,
+          },
+        );
+        if (!exactPlanningDispatchAuthority(input.checkpoint.jobId, row.garden_id)) {
+          throw new PlanningRecoveryBoundaryError("dispatch_authority_lost");
+        }
+        if (lookup.status !== 409 || lookup.code !== "request_started") break;
+      }
+    }
+    if (
+      lookup.status === 409 &&
+      lookup.code === "request_started" &&
+      lookup.receipt &&
+      exactRecoverableStartedPlanningReceiptPrefix(lookup.receipt, input.expectedModel)
+    ) {
+      const observedAt = nowIso();
+      const boundary = recordExpiredStartedPlanningReceiptBoundary(db, {
+        originRequestId: row.request_id,
+        receiptRequestId: row.receipt_request_id,
+        requestHash: row.request_hash,
+        dispatchGeneration: lookup.receipt.dispatchGeneration,
+        dispatchCount: lookup.receipt.dispatchCount,
+        redispatchCount: lookup.receipt.redispatchCount,
+        redispatchAllowed: lookup.receipt.redispatchAllowed,
+        attemptCount: lookup.receipt.attempts.length,
+        startedAt: lookup.receipt.updatedAt,
+        observedAt,
+        maxStartedAgeMs: LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS,
+      });
+      if (boundary) {
+        appendLearnEvent(
+          input.checkpoint.contentPath,
+          row.garden_id,
+          "learn_planning_started_receipt_expired",
+          {
+            jobId: input.checkpoint.jobId,
+            originJobId: row.job_id,
+            stageKey: row.stage_key,
+            semanticAttempt: row.semantic_attempt,
+            receiptRequestId: boundary.receipt_request_id,
+            dispatchCount: boundary.dispatch_count,
+            startedAt: boundary.started_at,
+            observedAt: boundary.observed_at,
+            maxStartedAgeMs: boundary.max_started_age_ms,
+            mismatchedRequestHash: true,
+            freshRequestAuthorized: true,
+          },
+        );
+        continue;
+      }
     }
     if (lookup.status === 200 && lookup.result) {
       assertExactRecoveredPlanningRouting(lookup.result, input.expectedModel);
@@ -7131,7 +7778,7 @@ async function resolvePriorPlanningResult({
   }
   if (exactCheckpoint) {
     const { row, abandonedFence } = exactCheckpoint;
-    const lookup =
+    let lookup =
       row.result_origin === "legacy"
         ? await promptlessCouncilResultGet(client, "/internal/council-results/legacy-resolve", {
             requestHash,
@@ -7144,13 +7791,48 @@ async function resolvePriorPlanningResult({
             requestId: row.receipt_request_id ?? row.request_id,
             requestHash,
           });
+    if (
+      row.result_origin === "receipt" &&
+      row.state === "started" &&
+      lookup.status === 409 &&
+      lookup.code === "request_started" &&
+      lookup.receipt
+    ) {
+      const receipt = lookup.receipt;
+      if (exactRecoverableStartedPlanningReceiptPrefix(receipt, request.model)) {
+        const expiresAt =
+          Date.parse(receipt.updatedAt) + LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS;
+        let nextHeartbeatAt = 0;
+        while (Date.now() < expiresAt) {
+          if (Date.now() >= nextHeartbeatAt) {
+            updateLearnJob(checkpoint.jobId, {
+              currentStep: "Waiting for an interrupted model request to expire safely",
+            });
+            nextHeartbeatAt = Date.now() + 30_000;
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(2_000, Math.max(1, expiresAt - Date.now()))),
+          );
+          lookup = await promptlessCouncilResultGet(
+            client,
+            "/internal/council-results/resolve",
+            {
+              requestId: row.receipt_request_id ?? row.request_id,
+              requestHash,
+            },
+          );
+          if (lookup.status !== 409 || lookup.code !== "request_started") break;
+        }
+      }
+    }
     if (lookup.status !== 200 || !lookup.result) {
       if (
         row.result_origin === "receipt" &&
         row.state === "started" &&
         lookup.status === 409 &&
         lookup.code === "request_started" &&
-        lookup.receipt
+        lookup.receipt &&
+        exactRecoverableStartedPlanningReceiptPrefix(lookup.receipt, request.model)
       ) {
         const observedAt = nowIso();
         const boundary = recordExpiredStartedPlanningReceiptBoundary(db, {
@@ -7162,6 +7844,7 @@ async function resolvePriorPlanningResult({
           redispatchCount: lookup.receipt.redispatchCount,
           redispatchAllowed: lookup.receipt.redispatchAllowed,
           attemptCount: lookup.receipt.attempts.length,
+          startedAt: lookup.receipt.updatedAt,
           observedAt,
           maxStartedAgeMs: LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS,
         });
@@ -7866,7 +8549,12 @@ function modelAuthoredLearningMapMetadataProblems(value: unknown): string[] {
   return problems;
 }
 
-function modelAuthoredUnitTitleProblems(units: readonly LearningUnitContract[]): string[] {
+function modelAuthoredUnitTitleProblems(
+  units: readonly LearningUnitContract[],
+  // Units an incremental run must return verbatim cannot be retitled, so a
+  // list-shaped title inherited from an earlier plan is not this run's error.
+  publishedUnitIds: ReadonlySet<string> = new Set(),
+): string[] {
   const problems: string[] = [];
   for (const unit of units) {
     if (unit.title && sanitizeLearnerTitle(unit.title) !== unit.title) {
@@ -7880,6 +8568,11 @@ function modelAuthoredUnitTitleProblems(units: readonly LearningUnitContract[]):
         `section "${unit.sectionPlan?.id}": model-authored title violates learner-facing title rules; return it already corrected as "${sanitizeLearnerTitle(sectionTitle)}"`,
       );
     }
+    if (publishedUnitIds.has(unit.id)) continue;
+    const unitListProblem = unit.title ? topicListTitleProblem(unit.title) : null;
+    if (unitListProblem) problems.push(`unit "${unit.id}": ${unitListProblem}`);
+    const sectionListProblem = sectionTitle ? topicListTitleProblem(sectionTitle) : null;
+    if (sectionListProblem) problems.push(`section "${unit.sectionPlan?.id}": ${sectionListProblem}`);
   }
   return [...new Set(problems)];
 }
@@ -8954,19 +9647,79 @@ export async function runLearnPlanning({
   const effectiveUserInstruction = normalizeLearnUserInstruction(userInstruction);
   assertNoPendingLearnClear(gardenId);
   const gardenDir = clusterPath(contentPath, gardenId);
+  const jobId = makeId("learn_job");
+  const leaseResult = acquireGardenLearnLease(gardenDir, {
+    gardenSlug: gardenId,
+    jobId,
+    buildId: `planning:${jobId}`,
+  }, {
+    scope: "learn-output",
+    onLeaseLost: () => abortLearnWorkerAfterLeaseLoss(jobId),
+  });
+  if (!leaseResult.acquired) {
+    const message = `Another Learn operation (${leaseResult.conflict.jobId}) is already changing this garden.`;
+    throw new LearnPipelineConflictError(message);
+  }
+  const lease = leaseResult.lease;
+  try {
+    assertNoPendingLearnClear(gardenId);
+    reconcileSupersededAwaitingLearnJobs(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+  try {
+    // A failed planning+generation run leaves its planning artifacts (the
+    // proposed Learning Unit Contract, source ledgers, visual plans) in the
+    // live garden next to the previously published lessons, with its rollback
+    // snapshot retained. A new plan starts from the published state, so that
+    // run is restored first; otherwise the incremental baseline below reads
+    // the abandoned proposal and reports its unwritten units as missing pages.
+    const previousJob = getLatestLearnJob(gardenId);
+    if (
+      previousJob?.status === "failed" &&
+      (resetSourceMap || resolveLearnRunSnapshot(gardenDir, previousJob.id))
+    ) {
+      await rollbackLearnRun({
+        gardenId,
+        contentPath,
+        jobId: previousJob.id,
+        lease,
+      });
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn planning lost its lease after restoring the previous failed run.",
+        );
+      }
+      discardLearnRunSnapshot({
+        gardenId,
+        contentPath,
+        jobId: previousJob.id,
+      });
+    }
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
   const incrementalBaseline: IncrementalLearnBaseline | null = updateExisting
     ? readIncrementalLearnBaseline(gardenDir)
     : null;
   if (updateExisting && !incrementalBaseline) {
+    lease.release();
     throw new LearnPipelineConflictError(
       "This garden has learner pages but no valid Learning Unit Contract to extend. Repair it or explicitly rebuild the garden before adding material.",
     );
   }
+  const publishedLearningUnitIds: ReadonlySet<string> = new Set(
+    (incrementalBaseline?.learningUnits ?? []).map((unit) => unit.id),
+  );
   const publishedVersion = updateExisting ? getLatestLearnVersion(gardenId) : null;
   const publishedMap = publishedVersion
     ? getLearnMapById(publishedVersion.learning_map_id, gardenId)
     : null;
   if (updateExisting && (!publishedVersion || !publishedMap)) {
+    lease.release();
     throw new LearnPipelineConflictError(
       "The published Learn version is no longer bound to its Learning Map. Repair it or explicitly rebuild the garden before adding material.",
     );
@@ -8977,6 +9730,7 @@ export async function runLearnPlanning({
       .map((unit) => unit.id)
       .filter((unitId) => !publishedPages.get(unitId)?.body);
     if (missingPublishedUnitIds.length > 0) {
+      lease.release();
       throw new LearnPipelineConflictError(
         `The published Learn is missing lesson pages for existing units: ${missingPublishedUnitIds.join(", ")}. Repair it or explicitly rebuild the garden before adding material.`,
       );
@@ -8995,27 +9749,6 @@ export async function runLearnPlanning({
   const updateSyllabusSourceId = updateExisting
     ? (syllabusSourceId ?? publishedMap?.syllabusSourceId)
     : syllabusSourceId;
-  const jobId = makeId("learn_job");
-  const leaseResult = acquireGardenLearnLease(gardenDir, {
-    gardenSlug: gardenId,
-    jobId,
-    buildId: `planning:${jobId}`,
-  }, {
-    onLeaseLost: () => abortLearnWorkerAfterLeaseLoss(jobId),
-  });
-  if (!leaseResult.acquired) {
-    const message = `Another Learn operation (${leaseResult.conflict.jobId}) is already changing this garden.`;
-    throw new LearnPipelineConflictError(message);
-  }
-  const lease = leaseResult.lease;
-  try {
-    assertNoPendingLearnClear(gardenId);
-    reconcileSupersededAwaitingLearnJobs(gardenId);
-    assertNoUnresolvedLearnJob(gardenId);
-  } catch (error) {
-    lease.release();
-    throw error;
-  }
   let context: LearnSourceContext;
   try {
     context = collectLearnSourceContext(
@@ -9031,27 +9764,6 @@ export async function runLearnPlanning({
   let leaseTransferred = false;
   let job: LearnJob;
   try {
-    if (resetSourceMap) {
-      const previousJob = getLatestLearnJob(gardenId);
-      if (previousJob?.status === "failed") {
-        await rollbackLearnRun({
-          gardenId,
-          contentPath,
-          jobId: previousJob.id,
-          lease,
-        });
-        if (!lease.heartbeat()) {
-          throw new LearnPipelineConflictError(
-            "Learn planning lost its lease after restoring the previous failed run.",
-          );
-        }
-        discardLearnRunSnapshot({
-          gardenId,
-          contentPath,
-          jobId: previousJob.id,
-        });
-      }
-    }
     if (!lease.heartbeat()) {
       throw new LearnPipelineConflictError(
         "Learn planning lost its garden lease before creating its job.",
@@ -9149,6 +9861,7 @@ export async function runLearnPlanning({
       gardenId,
       context,
       deferEmptyVisualCheck: true,
+      reviewFigureCrops: true,
       checkpoint: () => throwIfLearnCancelled(job.id),
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
@@ -9184,6 +9897,7 @@ export async function runLearnPlanning({
       contentPath,
       gardenId,
       context,
+      reviewFigureCrops: true,
       checkpoint: () => throwIfLearnCancelled(job.id),
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
@@ -9263,7 +9977,14 @@ export async function runLearnPlanning({
         taskType: "source_map",
         gardenId,
         system: SYLLABUS_READING_PROMPT,
-        user: compactJson({ syllabus: syllabusPayload }),
+        // Keep the exact run instruction inside the recoverable request
+        // envelope. Without it, two semantically distinct retries share the
+        // syllabus-reading hash and an exhausted prior receipt can block a
+        // legitimate fresh run before model dispatch.
+        user: compactJson({
+          syllabus: syllabusPayload,
+          userInstruction: effectiveUserInstruction,
+        }),
         sourceContext: { ...planningSourceMeta, taskType: "syllabus_reading" },
         contentPath,
         jobId: job.id,
@@ -9460,6 +10181,9 @@ export async function runLearnPlanning({
     const syllabusCoveragePayload = () => syllabusCoverage
       ? {
           courseTitle: syllabusCoverage.courseTitle,
+          ...(syllabusCoverage.plan.courseObjectives && syllabusCoverage.plan.courseObjectives.length > 0
+            ? { courseObjectives: syllabusCoverage.plan.courseObjectives }
+            : {}),
           units: syllabusCoverage.units,
           missingCitations: syllabusCoverage.missingCitations,
           untaughtUnitTitles: syllabusCoverage.untaughtUnitTitles,
@@ -10162,7 +10886,7 @@ export async function runLearnPlanning({
       ...modelAuthoredLearningMapMetadataProblems(topicMapCall.parsed),
       ...modelAuthoredLearningUnitParseProblems(topicMapCall.parsed),
       ...modelAuthoredSourceArtifactOmissionParseProblems(topicMapCall.parsed),
-      ...modelAuthoredUnitTitleProblems(learningUnits),
+      ...modelAuthoredUnitTitleProblems(learningUnits, publishedLearningUnitIds),
       ...prematureVisualPlanningProblems(learningUnits),
       ...sourceArtifactOwnershipProblems(learningUnits),
       ...sourceArtifactCoverageProblems(
@@ -10249,7 +10973,7 @@ export async function runLearnPlanning({
         ...modelAuthoredLearningMapMetadataProblems(retryCall.parsed),
         ...modelAuthoredLearningUnitParseProblems(retryCall.parsed),
         ...modelAuthoredSourceArtifactOmissionParseProblems(retryCall.parsed),
-        ...modelAuthoredUnitTitleProblems(retryUnits),
+        ...modelAuthoredUnitTitleProblems(retryUnits, publishedLearningUnitIds),
         ...prematureVisualPlanningProblems(retryUnits),
         ...sourceArtifactOwnershipProblems(retryUnits),
         ...sourceArtifactCoverageProblems(
@@ -10387,7 +11111,7 @@ export async function runLearnPlanning({
             ...modelAuthoredLearningMapMetadataProblems(candidate),
             ...modelAuthoredLearningUnitParseProblems(candidate),
             ...modelAuthoredSourceArtifactOmissionParseProblems(candidate),
-            ...modelAuthoredUnitTitleProblems(candidateUnits),
+            ...modelAuthoredUnitTitleProblems(candidateUnits, publishedLearningUnitIds),
             ...prematureVisualPlanningProblems(candidateUnits),
             ...sourceArtifactOwnershipProblems(candidateUnits),
             ...sourceArtifactCoverageProblems(
@@ -12172,17 +12896,34 @@ async function rollbackLearnRun({
     };
   }
 
-  const durableFingerprintBefore = fingerprintDurableGardenState(clusterDir);
-  const fileFingerprintsBefore = fingerprintGardenFiles(clusterDir);
+  const separateUserContent = lease.lock.scope === "learn-output";
+  const durableFingerprintBefore = fingerprintDurableGardenState(clusterDir, separateUserContent);
+  const fileFingerprintsBefore = fingerprintGardenFiles(clusterDir, separateUserContent);
   const temporaryRoot = createLearnRollbackTemporaryRoot();
   const stagingGardenDir = path.join(temporaryRoot, gardenId);
   let previousGardenDir: string | undefined;
   try {
-    fs.cpSync(clusterDir, stagingGardenDir, { recursive: true, force: true });
-    if (
-      fingerprintDurableGardenState(stagingGardenDir) !==
-      durableFingerprintBefore
-    ) {
+    let preparedStableCandidate = false;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      fs.rmSync(stagingGardenDir, { recursive: true, force: true });
+      fs.cpSync(clusterDir, stagingGardenDir, { recursive: true, force: true });
+      if (
+        fingerprintDurableGardenState(stagingGardenDir, separateUserContent) ===
+        durableFingerprintBefore
+      ) {
+        preparedStableCandidate = true;
+        break;
+      }
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn rollback lost its fenced garden lease while preparing a stable candidate.",
+        );
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    if (!preparedStableCandidate) {
       throw new LearnPipelineConflictError(
         "The garden changed while Learn prepared its rollback candidate.",
       );
@@ -12219,11 +12960,18 @@ async function rollbackLearnRun({
       ...LEARN_RUN_ROLLBACK_PATHS,
       ".breadboard/backups",
       ".breadboard/events.jsonl",
+      // Derived knowledge-graph caches the topology builder rewrites on its
+      // own schedule; never protected content.
+      ".breadboard/thought-topology.json",
+      ".breadboard/thought-topology-cache.json",
+      ".breadboard/thought-topology-build-cache.json",
+      ".breadboard/thought-topology-build-journal.jsonl",
     ];
     const candidateViolations = gardenClearBoundaryViolations({
       before: fileFingerprintsBefore,
       candidateGardenDir: stagingGardenDir,
       allowedMutationRoots,
+      separateUserContent,
     });
     if (candidateViolations.length > 0) {
       throw new Error(
@@ -12235,12 +12983,14 @@ async function rollbackLearnRun({
 
     const promotion = await promoteStagingGarden({
       stagingGardenDir,
+      learnLease: lease,
+      refreshMergedNavigation: dir => refreshClusterIndex(path.dirname(dir), gardenId, { migrateSources: false }),
       destinationGardenDir: clusterDir,
       retainPreviousUntilCallerCommit: true,
       recoveryOwnerId: `rollback:${jobId}`,
       verifyCurrentDestination: (destinationDir) =>
         lease.heartbeat() &&
-        fingerprintDurableGardenState(destinationDir) === durableFingerprintBefore,
+        fingerprintDurableGardenState(destinationDir, separateUserContent) === durableFingerprintBefore,
       prepareIncomingForCommit: (incomingDir, destinationDir) => {
         mergeLearnEventLedgers(destinationDir, incomingDir);
         return true;
@@ -12250,6 +13000,7 @@ async function rollbackLearnRun({
           before: fileFingerprintsBefore,
           candidateGardenDir: candidateDir,
           allowedMutationRoots,
+          separateUserContent,
         }).length === 0,
     });
     previousGardenDir = promotion.previousPreservedAt;
@@ -12259,6 +13010,7 @@ async function rollbackLearnRun({
           clusterDir,
           previousGardenDir,
           () => lease.heartbeat(),
+          lease,
         );
         previousGardenDir = undefined;
       }
@@ -12282,6 +13034,7 @@ async function rollbackLearnRun({
           clusterDir,
           previousGardenDir,
           () => lease.heartbeat(),
+          lease,
         );
         previousGardenDir = undefined;
       } catch (restoreError) {
@@ -12516,6 +13269,17 @@ async function reconcileInteractiveVisuals({
     nextMarkdown = removeRawVisualPlaceholders(nextMarkdown, "");
   }
 
+  // 3) The writer marks where the visualized idea is taught; use that marker
+  //    when it is placed once, otherwise fall back to after the introduction.
+  //    A page that will carry no visual keeps no stray marker.
+  if (opportunity && routeDecision?.route === "generated_module") {
+    const placement = placeInteractiveVisualAnchor(nextMarkdown, opportunity.learningUnitId);
+    nextMarkdown = placement.markdown;
+    opportunity.insertionAnchor = placement.insertionAnchor;
+  } else {
+    nextMarkdown = stripInteractiveVisualWriterMarkers(nextMarkdown);
+  }
+
   if (!opportunity) {
     return { markdown: nextMarkdown, visualIds: keptIds };
   }
@@ -12558,6 +13322,7 @@ async function reconcileInteractiveVisuals({
     }
 
     const result = await createGeneratedVisualization({
+      sourceSkill: "interactive-visualizer-in-chat",
       client,
       model,
       gardenDir: path.join(contentPath, gardenId),
@@ -12573,9 +13338,9 @@ async function reconcileInteractiveVisuals({
       sourceFigureSummaries: sourceFigures,
       formulaDefinitions: subsection.sourceFormulaContracts ?? [],
       compilerRunner: async (sourceCode, compilerOpportunity) =>
-        compileGeneratedVisualization(sourceCode, compilerOpportunity),
+        compileLearnGardenVisualization(sourceCode, compilerOpportunity),
       browserTestRunner: (browserInput) =>
-        runGeneratedVisualBrowserTestsLocally({
+        testLearnGardenVisualization({
           ...browserInput,
           requireMobileValidation: false,
         }),
@@ -12778,6 +13543,8 @@ type PageDossier = {
     teachingGoal: string;
     termsToDefine: string[];
     placement: string;
+    grounding: SourceFormulaGrounding;
+    derivableFrom: string[];
   }>;
 
   /** Exact source-authored practice prompts assigned by the Learning Unit Contract. */
@@ -12796,6 +13563,18 @@ type PageDossier = {
   mustCover: string[];
   avoid: string[];
 
+  /** Foundations the Scope Contract declares the learner already brings. Empty
+   * means the page keeps the motivated-beginner default. */
+  assumedBackground: string[];
+
+  /** How this page opens, and what that move requires, assigned from the unit's
+   * own shape so the set of pages does not converge on one template. */
+  openingMove: { move: OpeningMove; brief: string };
+
+  /** Present when this unit plans an interactive visual: the exact marker the
+   * writer places where the visualized idea is taught. */
+  interactiveVisualMarker?: string;
+
   /** The course study guide, when one was designated. Orientation only — it
    * never appears in the lesson. */
   syllabus?: {
@@ -12811,6 +13590,16 @@ type PageDossier = {
     objectives: string[];
     topics: string[];
     questionReferences: string[];
+    /** Available readings the course assigns for this unit, with the sections
+     * they cover. Missing or generic materials are not listed here; the
+     * missing ones surface through `unavailableCitations`. */
+    assignedReadings?: Array<{
+      citation: string;
+      title?: string;
+      locator?: string;
+      sections?: string[];
+      sourceIds: string[];
+    }>;
   }>;
 
   /** Works the course assigns that this garden does not contain. The page must
@@ -12845,6 +13634,19 @@ function scopeAvoidList(scopeContract: unknown): string[] {
     .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     .map((entry) => entry.trim().slice(0, 200))
     .slice(0, 5);
+}
+
+/** The Scope Contract's `background` is what the learner is declared to bring.
+ * It was collected at planning time and read by the foundation review, but was
+ * never projected to the writer, so pages re-taught their own prerequisites. */
+function scopeBackgroundList(scopeContract: unknown): string[] {
+  if (!scopeContract || typeof scopeContract !== "object") return [];
+  const background = (scopeContract as Record<string, unknown>).background;
+  if (!Array.isArray(background)) return [];
+  return background
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim().slice(0, 200))
+    .slice(0, 8);
 }
 
 function exactSourceSnippetsForAnchors(input: {
@@ -12891,6 +13693,8 @@ function requiredSourceFormulaDossierEntries(
       teachingGoal: contract.teachingGoal,
       termsToDefine: [...contract.termsToDefine],
       placement: contract.placement,
+      grounding: contract.grounding,
+      derivableFrom: [...contract.derivableFrom],
     };
   });
 }
@@ -12910,6 +13714,7 @@ function buildPageDossier({
   sourceArtifactAssignments,
   canonicalSourceAnchors,
   sourceOnly,
+  openingMove,
 }: {
   gardenTitle: string;
   sectionTitle: string;
@@ -12917,6 +13722,9 @@ function buildPageDossier({
   subsection: LearningSubsectionPlan;
   anchors: string[];
   scopeContract: unknown;
+  /** Assigned by the caller, which is the only place that can see this page's
+   * position among its siblings and what the previous page was given. */
+  openingMove: OpeningMove;
   sources: LearnSourceSummary[];
   syllabus?: LearnSourceSummary | null;
   syllabusCoverage?: SyllabusCoverage | null;
@@ -12989,7 +13797,10 @@ function buildPageDossier({
           semanticConcepts: subsection.semanticConcepts,
           knowledgeClaims: subsection.knowledgeClaims,
           mustNotRepeat: subsection.mustNotRepeat,
-          expectedWordRange: subsection.expectedWordRange,
+          // The planner's expectedWordRange stays out of the writer's dossier:
+          // given a number, the model writes to it (telecom-1 M2, 2026-09-16:
+          // every lesson landed inside its 800-1400 planning estimate despite
+          // "no upper word limit"). Length follows the teaching, not the plan.
         }
       : undefined,
     requiredSourceFormulas: requiredSourceFormulaDossierEntries(
@@ -13002,21 +13813,40 @@ function buildPageDossier({
       .filter(Boolean)
       .slice(0, 8),
     avoid: scopeAvoidList(scopeContract),
+    assumedBackground: scopeBackgroundList(scopeContract),
+    openingMove: { move: openingMove, brief: OPENING_MOVE_BRIEFS[openingMove] },
+    ...(subsection.learningUnitId && (subsection.interactiveVisualPlan || subsection.interactiveVisualContract)
+      ? { interactiveVisualMarker: `<!-- ${interactiveVisualWriterAnchor(subsection.learningUnitId)} -->` }
+      : {}),
     syllabus: syllabus
       ? {
           title: syllabus.title,
-          outline: truncate(syllabus.body, MAX_SYLLABUS_DOSSIER_CHARS),
+          outline: truncate(syllabusMaterialText(syllabus.body), MAX_SYLLABUS_DOSSIER_CHARS),
         }
       : undefined,
     syllabusUnits: matchedSyllabusUnits.length > 0
-      ? matchedSyllabusUnits.map((unit) => ({
-          unitId: unit.unitId,
-          label: unit.label,
-          title: unit.title,
-          objectives: unit.objectives,
-          topics: unit.topics,
-          questionReferences: unit.questionReferences ?? [],
-        }))
+      ? matchedSyllabusUnits.map((unit) => {
+          const assignedReadings = (unit.assignedMaterials ?? [])
+            .filter((material) => material.status === "available")
+            .map((material) => ({
+              citation: material.citation,
+              ...(material.title !== undefined ? { title: material.title } : {}),
+              ...(material.locator !== undefined ? { locator: material.locator } : {}),
+              ...(material.sections && material.sections.length > 0
+                ? { sections: material.sections }
+                : {}),
+              sourceIds: material.sourceIds,
+            }));
+          return {
+            unitId: unit.unitId,
+            label: unit.label,
+            title: unit.title,
+            objectives: unit.objectives,
+            topics: unit.topics,
+            questionReferences: unit.questionReferences ?? [],
+            ...(assignedReadings.length > 0 ? { assignedReadings } : {}),
+          };
+        })
       : undefined,
     unavailableCitations: matchedSyllabusUnits.some((unit) => unit.missingCitations.length > 0)
       ? [...new Set(matchedSyllabusUnits.flatMap((unit) => unit.missingCitations))]
@@ -13191,6 +14021,7 @@ export async function runTextbookGeneration({
       jobId,
       buildId: `generation:${jobId}`,
     }, {
+      scope: "learn-output",
       onLeaseLost: () => abortLearnWorkerAfterLeaseLoss(jobId),
     });
     if (!leaseResult.acquired) {
@@ -13596,6 +14427,7 @@ export async function runTextbookGeneration({
       sourceSetFingerprint: context.sourceSetHash,
       stagingDirectoryName: gardenId,
       requireAuthoritativeSourceAnchorLedger: true,
+      separateUserContent: lease.lock.scope === "learn-output",
     });
     if (workspace.resumedFromJobId) {
       const resumedJob = getLearnJobById(workspace.resumedFromJobId);
@@ -13932,12 +14764,25 @@ export async function runTextbookGeneration({
       context.sourceSetHash !== map.sourceSetHash ||
       context.sourceArtifactInventoryHash !== map.sourceArtifactInventoryHash
     ) {
+      // Name the field that moved: a bare "not bound" message cost hours of
+      // guessing when the artifact inventory (not the formulas) had drifted.
+      const drift = [
+        generationFormulaReview.newlyReplacedFormulaIds.length > 0
+          ? `new replacements: ${generationFormulaReview.newlyReplacedFormulaIds.join(", ")}`
+          : "",
+        !confirmedFormulaReviewSetHash ? "map has no reviewed formula set" : "",
+        confirmedFormulaReviewSetHash && generationFormulaReview.reviewedFormulaSetHash !== confirmedFormulaReviewSetHash
+          ? `formula review ${generationFormulaReview.reviewedFormulaSetHash.slice(0, 12)} != map ${confirmedFormulaReviewSetHash.slice(0, 12)}`
+          : "",
+        context.sourceSetHash !== map.sourceSetHash
+          ? `source set ${context.sourceSetHash.slice(0, 12)} != map ${map.sourceSetHash.slice(0, 12)}`
+          : "",
+        context.sourceArtifactInventoryHash !== map.sourceArtifactInventoryHash
+          ? `artifact inventory ${context.sourceArtifactInventoryHash.slice(0, 12)} != map ${map.sourceArtifactInventoryHash.slice(0, 12)}`
+          : "",
+      ].filter(Boolean).join("; ");
       throw new LearnPipelineConflictError(
-        `Source formula fidelity review or source-artifact extraction found evidence that is not bound to the confirmed Learning Map${
-          generationFormulaReview.newlyReplacedFormulaIds.length > 0
-            ? ` (new replacements: ${generationFormulaReview.newlyReplacedFormulaIds.join(", ")})`
-            : ""
-        }. No learner pages were written; run Learn planning again and confirm the fresh AI-authored map.`,
+        `Source formula fidelity review or source-artifact extraction found evidence that is not bound to the confirmed Learning Map (${drift}). No learner pages were written; run Learn planning again and confirm the fresh AI-authored map.`,
         { requiresReplan: true },
       );
     }
@@ -14183,8 +15028,11 @@ export async function runTextbookGeneration({
       progressPercent: 3,
     });
 
+    // The overview surveys every unit, so its term review starts with many
+    // findings and converges over repairs (13 -> 2 in three attempts on a
+    // 31-unit course, 2026-09-16); give it room to finish.
     const overviewOutcome = await runValidatedTextRepairLoop<string>({
-      maxAttempts: 3,
+      maxAttempts: OVERVIEW_MAX_ATTEMPTS,
       emptyResponseMessage: "The overview model returned an empty response; no repair request was issued.",
       request: async ({ attempt, previousMarkdown, failedProblems }) => {
         await learnCheckpoint(job.id);
@@ -14202,13 +15050,14 @@ export async function runTextbookGeneration({
             task: attempt === 1 ? "write_topic_overview" : "repair_topic_overview",
             userInstruction: effectiveUserInstruction,
             learningMap: map.learningMap,
+            unitsInReadingOrder: overviewUnitSummaries(map.learningMap.sections),
             scopeContract: map.scopeContract,
             sourceOnly,
             ...(attempt > 1
               ? {
                   previousMarkdown,
                   failedProblems,
-                  instruction: "Return a complete corrected Markdown body. Do not explain the repair.",
+                  instruction: "Return a complete corrected Markdown body. Do not explain the repair. Fix only the listed problems by rewriting those sentences in everyday words; every other sentence stays exactly as it was. Do not introduce any new technical phrase anywhere - if a term cannot be explained in one plain sentence here, drop it and name only the lesson that teaches it.",
                 }
               : {}),
           }),
@@ -14230,7 +15079,50 @@ export async function runTextbookGeneration({
         });
         return overviewCall.content;
       },
-      validate: (markdown) => validateTopicOverview(markdown, map.learningMap),
+      validate: async (markdown, attempt) => {
+        const structural = validateTopicOverview(markdown, map.learningMap);
+        if (structural.problems.length > 0) return structural;
+        let reviewError = "";
+        for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt += 1) {
+          await learnCheckpoint(job.id);
+          const review = await callCouncilJson({
+            client,
+            model,
+            taskType: "critique",
+            gardenId,
+            system: OVERVIEW_TERM_REVIEW_PROMPT,
+            user: compactJson({
+              task: "review_topic_overview_terms",
+              scopeContract: map.scopeContract,
+              assumedBackground: scopeBackgroundList(map.scopeContract),
+              courseIntroduces: overviewUnitSummaries(map.learningMap.sections)
+                .flatMap((section) => section.units.flatMap((unit) => unit.newConcepts)),
+              overviewMarkdown: structural.markdown,
+              ...(reviewError ? { previousReviewRejected: reviewError } : {}),
+            }),
+            sourceContext: {
+              gardenId,
+              pageId: "learning/Topic Overview",
+              taskType: "topic_overview_term_review",
+              overviewAttempt: attempt,
+            },
+            councilModeOverride: "direct_council",
+            ordinaryCheckpoint: {
+              jobId: job.id,
+              contentPath,
+              stageKey: `generation:topic_overview:term_review:${attempt}`,
+              stageLabel: "topic overview term review",
+              semanticAttempt: reviewAttempt - 1,
+            },
+          });
+          const outcome = overviewTermReviewProblems(review.parsed);
+          if (!outcome.reviewError) {
+            return { markdown: structural.markdown, problems: outcome.problems };
+          }
+          reviewError = outcome.reviewError;
+        }
+        throw new Error(`Topic overview term review could not be completed: ${reviewError}.`);
+      },
       onReviewed: ({ attempt, problems }) => {
         appendLearnEvent(contentPath, gardenId, "learn_overview_reviewed", {
           jobId: job.id,
@@ -14242,7 +15134,7 @@ export async function runTextbookGeneration({
     const overviewBody = overviewOutcome.markdown;
     if (!overviewBody) {
       throw new Error(
-        `The AI-authored Topic Overview remained invalid after 3 bounded attempts: ${overviewOutcome.problems.join("; ")}. No fallback overview was written.`,
+        `The AI-authored Topic Overview remained invalid after ${OVERVIEW_MAX_ATTEMPTS} bounded attempts: ${overviewOutcome.problems.join("; ")}. No fallback overview was written.`,
       );
     }
     await learnCheckpoint(job.id);
@@ -14323,6 +15215,11 @@ export async function runTextbookGeneration({
       0,
     );
     let completed = 0;
+    // Opening moves are assigned across the whole garden, not per section: two
+    // pages either side of a section boundary are still consecutive to a reader,
+    // and it was exactly that document-wide blindness that let every page
+    // converge on one template.
+    let previousOpeningMove: OpeningMove | undefined;
 
     for (let sectionIndex = 0; sectionIndex < map.learningMap.sections.length; sectionIndex += 1) {
       const section = map.learningMap.sections[sectionIndex];
@@ -14392,12 +15289,47 @@ export async function runTextbookGeneration({
         // Compact per-page packet: everything the model needs to write THIS
         // subsection, nothing else. The full source map / scope contract /
         // learning spine never ride into page prompts anymore.
+        const openingMove = assignedOpeningMove({
+          role: subsection.learningUnitRole,
+          isFirstInSection: subsectionIndex === 0,
+          isFirstOverall: sectionIndex === 0 && subsectionIndex === 0,
+          prerequisiteConcepts: subsection.prerequisiteConcepts,
+          previousMove: previousOpeningMove,
+        });
+        previousOpeningMove = openingMove;
+        // Concepts the lessons before this one introduced, in reading order,
+        // so the term review can tell "taught earlier" from "never explained".
+        const conceptsOfUnitsWhere = (
+          keep: (otherSectionIndex: number, otherSubsectionIndex: number) => boolean,
+        ): string[] => [
+          ...new Set(
+            map.learningMap.sections.flatMap((otherSection, otherSectionIndex) =>
+              otherSection.subsections.flatMap((otherSubsection, otherSubsectionIndex) =>
+                keep(otherSectionIndex, otherSubsectionIndex)
+                  ? [...(otherSubsection.newConcepts ?? [])]
+                  : [],
+              ),
+            ),
+          ),
+        ];
+        const taughtEarlier = conceptsOfUnitsWhere(
+          (otherSectionIndex, otherSubsectionIndex) =>
+            otherSectionIndex < sectionIndex ||
+            (otherSectionIndex === sectionIndex && otherSubsectionIndex < subsectionIndex),
+        );
+        // Concepts later pages own: this page may point at them, never lean on them.
+        const taughtLater = conceptsOfUnitsWhere(
+          (otherSectionIndex, otherSubsectionIndex) =>
+            otherSectionIndex > sectionIndex ||
+            (otherSectionIndex === sectionIndex && otherSubsectionIndex > subsectionIndex),
+        );
         const pageDossier = buildPageDossier({
           gardenTitle: map.learningMap.title,
           sectionTitle,
           sectionPurpose: section.purpose,
           subsection,
           anchors,
+          openingMove,
           scopeContract: map.scopeContract,
           sources: context.sources,
           syllabus: context.syllabus,
@@ -14524,6 +15456,35 @@ export async function runTextbookGeneration({
           }
         }
 
+        // A page this workspace already accepted from the same inputs is
+        // reused as written - body and visual outcomes - with no model call,
+        // whatever the prompts look like now. Prompt changes therefore reach
+        // only pages not yet accepted; the receipt travels with the retained
+        // workspace that a resumed job clones.
+        const acceptedInputHash = acceptedPageInputHash({
+          pageRelPath,
+          dossier: pageDossier,
+          assignedVisualIds: assignedVisuals.map((visual) => visual.sourceVisualId),
+          taughtEarlier,
+          taughtLater,
+          sourceSetHash: context.sourceSetHash,
+          confirmedLearningMapId: map.id,
+        });
+        let acceptedReplay: AcceptedPageReceipt | null = null;
+        if (pageBody === null) {
+          acceptedReplay = readAcceptedPage(clusterDir, pageRelPath, acceptedInputHash);
+          if (acceptedReplay) {
+            pageBody = acceptedReplay.pageBody;
+            appendLearnEvent(contentPath, gardenId, "learn_page_accepted_receipt_reused", {
+              jobId: job.id,
+              textbookVersionId,
+              pageId,
+              acceptedByJobId: acceptedReplay.jobId,
+              acceptedAt: acceptedReplay.acceptedAt,
+            });
+          }
+        }
+
         for (
           let attempt = 0;
           attempt < MAX_PAGE_ATTEMPTS && pageBody === null;
@@ -14551,7 +15512,7 @@ export async function runTextbookGeneration({
                   placeholderFailure
                     ? "The previous draft contained unfinished author-facing wording. Return a self-contained final lesson and silently check that every line teaches the concept rather than directing a future writer or commenting on the draft."
                     : "",
-                  'Write a longer, deeper, fully-written lesson (at least 700 words) with a concrete example and a real Question./Answer. Teach the concept directly; never comment on "the paper" or "the source".',
+                  'Resolve the listed failures with a complete explanation, a concrete example, and a real Question./Answer. Write at least 1400 words of real explanatory prose, with no upper word limit. Above that minimum, let length follow the reasoning needed for understanding. Teach the concept directly; never comment on "the paper" or "the source".',
                 ]
                   .filter(Boolean)
                   .join(" ");
@@ -14564,10 +15525,13 @@ export async function runTextbookGeneration({
               gardenId,
               pageId,
               system: withLearnUserInstructionRules(
-                withSyllabusRules(
-                  SUBSECTION_PROMPT,
-                  SYLLABUS_PAGE_RULES,
-                  Boolean(context.syllabus),
+                withAssumedBackgroundRules(
+                  withSyllabusRules(
+                    SUBSECTION_PROMPT,
+                    SYLLABUS_PAGE_RULES,
+                    Boolean(context.syllabus),
+                  ),
+                  pageDossier.assumedBackground,
                 ),
                 effectiveUserInstruction,
               ),
@@ -14576,6 +15540,8 @@ export async function runTextbookGeneration({
                   task: "write_subsection",
                   userInstruction: effectiveUserInstruction,
                   dossier: pageDossier,
+                  establishedEarlier: taughtEarlier,
+                  taughtLater,
                   instructions: {
                     style: "flowing beginner-friendly textbook subsection",
                     sourceAware: true,
@@ -14610,10 +15576,111 @@ export async function runTextbookGeneration({
             canonicalSourceAnchors: selectedCanonicalSourceAnchors,
             requiredSourceQuestions: pageDossier.requiredSourceQuestions,
           });
+          // A draft that clears the deterministic gates is then read for
+          // technical terms it relies on without teaching them; each one is a
+          // hard problem the repair call below fixes in place.
+          let priorVerdicts: LessonReviewVerdicts | null = null;
+          const reviewLessonTerms = async (
+            body: string,
+            reviewStage: "draft" | "repaired",
+            repairRound = 0,
+          ): Promise<QualityProblem[]> => {
+            let reviewError = "";
+            for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt += 1) {
+              await learnCheckpoint(job.id);
+              const review = await callCouncilJson({
+                client,
+                model,
+                taskType: "critique",
+                gardenId,
+                system: LESSON_TERM_REVIEW_PROMPT,
+                user: compactJson({
+                  task: "review_lesson_terms",
+                  pageTitle,
+                  learningQuestion: subsection.learningQuestion ?? "",
+                  newConcepts: subsection.newConcepts ?? [],
+                  taughtEarlier,
+                  taughtLater,
+                  assumedBackground: pageDossier.assumedBackground,
+                  pageMarkdown: body,
+                  ...(priorVerdicts ? { priorVerdicts } : {}),
+                  ...(reviewError ? { previousReviewRejected: reviewError } : {}),
+                }),
+                sourceContext: {
+                  ...pageSourceMeta,
+                  taskType: "lesson_term_review",
+                  reviewStage,
+                  pageAttempt: attempt,
+                },
+                councilModeOverride: "direct_council",
+                ordinaryCheckpoint: {
+                  jobId: job.id,
+                  contentPath,
+                  stageKey: `generation:page:${learnCouncilStageComponent(pageId)}:term_review:${attempt}:${reviewStage}:${repairRound}`,
+                  stageLabel: `lesson term review ${pageId}`,
+                  semanticAttempt: reviewAttempt - 1,
+                },
+              });
+              const outcome = lessonTermReviewProblems(review.parsed);
+              if (!outcome.reviewError) {
+                priorVerdicts = outcome.accepted ?? priorVerdicts;
+                appendLearnEvent(contentPath, gardenId, "learn_lesson_terms_reviewed", {
+                  jobId: job.id,
+                  pageId,
+                  attempt,
+                  reviewStage,
+                  unexplained: outcome.problems
+                    .filter((problem) => problem.code === "unexplained-term")
+                    .map((problem) => problem.evidence?.[0] ?? problem.message),
+                  shallow: outcome.problems
+                    .filter((problem) => problem.code === "shallow-explanation")
+                    .map((problem) => problem.evidence?.[0] ?? problem.message),
+                  leansOnLater: outcome.problems
+                    .filter((problem) => problem.code === "leans-on-later-unit")
+                    .map((problem) => problem.evidence?.[0] ?? problem.message),
+                  restated: outcome.problems
+                    .filter((problem) => problem.code === "restated-idea")
+                    .map((problem) => problem.message),
+                  floating: outcome.problems
+                    .filter((problem) => problem.code === "floating-concept")
+                    .map((problem) => problem.evidence?.[0] ?? problem.message),
+                  unshown: outcome.problems
+                    .filter((problem) => problem.code === "unshown-result")
+                    .map((problem) => problem.evidence?.[0] ?? problem.message),
+                  unearnedCallouts: outcome.problems
+                    .filter((problem) => problem.code === "unearned-callout")
+                    .map((problem) => problem.evidence?.[0] ?? problem.message),
+                  retaught: outcome.problems
+                    .filter((problem) => problem.code === "reteaches-earlier-unit")
+                    .map((problem) => problem.message),
+                });
+                return outcome.problems;
+              }
+              reviewError = outcome.reviewError;
+            }
+            throw new Error(`Lesson "${pageTitle}" term review could not be completed: ${reviewError}.`);
+          };
+          if (!quality.hardFail) {
+            const termProblems = await reviewLessonTerms(attemptBody, "draft");
+            if (termProblems.length > 0) {
+              quality = {
+                ok: false,
+                hardFail: true,
+                problems: [...quality.problems, ...termProblems],
+              };
+            }
+          }
 
-          // Hard-fail-only repair: one focused call that fixes the listed
-          // problems in place. Minor style issues never trigger a rewrite.
-          if (quality.hardFail) {
+          // Hard-fail-only repair: focused calls that fix the listed problems
+          // in place, up to MAX_PAGE_REPAIR_ROUNDS per draft. Minor style
+          // issues never trigger a rewrite. The prose review finds many
+          // problems on a first draft and they converge over rounds (27 -> 16
+          // on one round, 2026-09-16); a single round threw that away.
+          for (
+            let repairRound = 0;
+            quality.hardFail && repairRound < MAX_PAGE_REPAIR_ROUNDS;
+            repairRound += 1
+          ) {
             const hardQualityProblems = quality.problems.filter((problem) => problem.hard);
             const formulasNeedingRepair = sourceFormulasNeedingVerbatimRepair(
               pageDossier.requiredSourceFormulas,
@@ -14626,7 +15693,13 @@ export async function runTextbookGeneration({
                 gardenId,
                 pageId,
                 system: withLearnUserInstructionRules(
-                  SUBSECTION_REPAIR_PROMPT,
+                  // A depth repair that has not been told the declared entry
+                  // level will happily re-teach the prerequisites the page was
+                  // right to assume.
+                  withAssumedBackgroundRules(
+                    SUBSECTION_REPAIR_PROMPT,
+                    pageDossier.assumedBackground,
+                  ),
                   effectiveUserInstruction,
                 ),
                 user: withVerbatimSourceFormulaCopySheet(
@@ -14636,6 +15709,8 @@ export async function runTextbookGeneration({
                   failedProblems: hardQualityProblems
                     .map(formatModelAuthoredLessonQualityProblemForRepair),
                   dossier: pageDossier,
+                  establishedEarlier: taughtEarlier,
+                  taughtLater,
                   repairRules: [
                     "Fix only the listed hard failures.",
                     "Preserve correct existing content.",
@@ -14669,7 +15744,10 @@ export async function runTextbookGeneration({
                 ordinaryCheckpoint: {
                   jobId: job.id,
                   contentPath,
-                  stageKey: `generation:page:${learnCouncilStageComponent(pageId)}:quality_repair`,
+                  // Every repair round is its own checkpoint stage: a resumed
+                  // job replays exact earlier rounds and refuses a changed
+                  // request under a reused stage identity.
+                  stageKey: `generation:page:${learnCouncilStageComponent(pageId)}:quality_repair:${repairRound}`,
                   stageLabel: `lesson quality repair ${pageId}`,
                   semanticAttempt: attempt,
                 },
@@ -14688,6 +15766,45 @@ export async function runTextbookGeneration({
               canonicalSourceAnchors: selectedCanonicalSourceAnchors,
               requiredSourceQuestions: pageDossier.requiredSourceQuestions,
             });
+            if (!quality.hardFail) {
+              const termProblems = await reviewLessonTerms(attemptBody, "repaired", repairRound);
+              if (termProblems.length > 0) {
+                const lastRoundOfLastAttempt =
+                  repairRound === MAX_PAGE_REPAIR_ROUNDS - 1 &&
+                  attempt === MAX_PAGE_ATTEMPTS - 1;
+                if (
+                  repairRound === MAX_PAGE_REPAIR_ROUNDS - 1 &&
+                  lessonReviewResidualIsAcceptable(
+                    termProblems,
+                    subsection.newConcepts ?? [],
+                    // The last chance a page gets: rather than throw away a
+                    // draft the reviews have been improving for nine rounds
+                    // (9.2 on telecom-1, 2026-09-17), accept a wider prose
+                    // residue and record it. Knowledge defects still block.
+                    lastRoundOfLastAttempt ? LESSON_REVIEW_FINAL_RESIDUAL_ALLOWANCE : undefined,
+                  )
+                ) {
+                  // The reviewer keeps finding a few prose-quality items on
+                  // each rewrite (1.2 on telecom-1 sat at 4-6 for six rounds,
+                  // 2026-09-16). After the bounded repairs, a small residue of
+                  // restatements / callouts / shallow-but-present explanations
+                  // is recorded and the page accepted; missing explanations,
+                  // unshown results, and headings still block.
+                  appendLearnEvent(contentPath, gardenId, "learn_lesson_review_residual_accepted", {
+                    jobId: job.id,
+                    pageId,
+                    attempt,
+                    residual: termProblems.map((problem) => `${problem.code}: ${problem.evidence?.[0] ?? problem.message}`),
+                  });
+                } else {
+                  quality = {
+                    ok: false,
+                    hardFail: true,
+                    problems: [...quality.problems, ...termProblems],
+                  };
+                }
+              }
+            }
           }
           lastQuality = quality;
           lastAttemptBody = attemptBody;
@@ -14732,26 +15849,50 @@ export async function runTextbookGeneration({
           currentPageTitle: pageTitle,
         });
         // Stage 6: validated, ID-consistent, plan-selected interactives only.
-        const visualized = await reconcileInteractiveVisuals({
-          client,
-          model,
-          contentPath: artifactContentPath,
-          durableEventContentPath: contentPath,
-          gardenId,
-          jobId: job.id,
-          textbookVersionId,
-          pageId,
-          pageRelPath,
-          markdown: pageBody,
-          subsection,
-          sourceContext: pageDossier,
-          sourceFigures: interactiveSourceFigures,
-          visualizationPlan,
-          visualizationOutcomes,
-          reusePublishedVisualsFromRetainedWorkspace: Boolean(
-            workspace.resumedFromJobId || mode === "update_sources",
-          ),
-        });
+        let visualized: { markdown: string; visualIds: string[] };
+        if (acceptedReplay) {
+          visualized = { markdown: acceptedReplay.pageBody, visualIds: [...acceptedReplay.visualIds] };
+          for (const outcome of acceptedReplay.visualizationOutcomes) {
+            const index = visualizationOutcomes.findIndex((candidate) => candidate.opportunityId === outcome.opportunityId);
+            if (index >= 0) visualizationOutcomes[index] = outcome;
+            else visualizationOutcomes.push(outcome);
+          }
+        } else {
+          visualized = await reconcileInteractiveVisuals({
+            client,
+            model,
+            contentPath: artifactContentPath,
+            durableEventContentPath: contentPath,
+            gardenId,
+            jobId: job.id,
+            textbookVersionId,
+            pageId,
+            pageRelPath,
+            markdown: pageBody,
+            subsection,
+            sourceContext: pageDossier,
+            sourceFigures: interactiveSourceFigures,
+            visualizationPlan,
+            visualizationOutcomes,
+            reusePublishedVisualsFromRetainedWorkspace: Boolean(
+              workspace.resumedFromJobId || mode === "update_sources",
+            ),
+          });
+          const pageOpportunityIds = new Set(
+            visualizationPlan.opportunities
+              .filter((opportunity) => opportunity.learningUnitId === subsection.learningUnitId)
+              .map((opportunity) => opportunity.id),
+          );
+          writeAcceptedPage(clusterDir, pageRelPath, {
+            inputHash: acceptedInputHash,
+            pageBody: visualized.markdown,
+            visualIds: [...visualized.visualIds],
+            visualizationOutcomes: visualizationOutcomes.filter((outcome) => pageOpportunityIds.has(outcome.opportunityId)),
+            councilRunId: revisionRunId ?? subsectionRunId,
+            acceptedAt: new Date().toISOString(),
+            jobId: job.id,
+          });
+        }
         pageBody = visualized.markdown;
         throwIfLearnCancelled(job.id);
 
@@ -14786,6 +15927,7 @@ export async function runTextbookGeneration({
             sectionNumber,
             subsectionNumber,
             title: pageTitle,
+            learningQuestion: subsection.learningQuestion,
             sourceAnchors: anchors,
             tags: zettelTags,
             primaryConcepts,
@@ -14801,7 +15943,8 @@ export async function runTextbookGeneration({
             sourceSetHash: context.sourceSetHash,
             sourceFormulaReviewSetHash: context.sourceFormulaReviewSetHash,
             generatedAt,
-          }) + `${pageBody.trim()}\n`;
+          }) +
+          `${withLearningQuestionPrompt(pageBody.trim(), subsection.learningQuestion)}\n`;
 
         updateLearnJob(job.id, {
           status: "writing_quartz",
@@ -15511,12 +16654,14 @@ export async function runTextbookGeneration({
     committingLearnJobs.add(job.id);
     const promotion = await promoteStagingGarden({
       stagingGardenDir: clusterDir,
+      learnLease: lease,
+      refreshMergedNavigation: dir => refreshClusterIndex(path.dirname(dir), gardenId, { migrateSources: false }),
       destinationGardenDir: repositoryGardenDir,
       retainPreviousUntilCallerCommit: true,
       recoveryOwnerId: job.id,
       verifyCurrentDestination: (destinationDir) =>
         lease.heartbeat() &&
-        fingerprintDurableGardenState(destinationDir) === workspace!.durableInputFingerprint,
+        fingerprintDurableGardenState(destinationDir, workspace!.separateUserContent) === workspace!.durableInputFingerprint,
       prepareIncomingForCommit: (incomingDir, destinationDir) => {
         mergeLearnEventLedgers(destinationDir, incomingDir);
         return true;
@@ -15673,6 +16818,7 @@ export async function runTextbookGeneration({
             repositoryGardenDir,
             previousPromotedGardenDir,
             stillOwnGenerationLease,
+            lease,
           );
           if (!stillOwnGenerationLease()) return;
           previousPromotedGardenDir = undefined;
@@ -15875,7 +17021,26 @@ async function restorePreviousPromotedGarden(
   destinationGardenDir: string,
   previousGardenDir?: string,
   ownsLease?: () => boolean,
+  learnLease?: GardenLearnLease,
 ): Promise<void> {
+  if (learnLease?.lock.scope === "learn-output" && previousGardenDir) {
+    const restored = await promoteStagingGarden({
+      stagingGardenDir: previousGardenDir,
+      destinationGardenDir,
+      learnLease,
+      verifyCurrentDestination: () => !ownsLease || ownsLease(),
+      prepareIncomingForCommit: (incoming, current) => { mergeLearnEventLedgers(current, incoming); return true; },
+      refreshMergedNavigation: dir => refreshClusterIndex(path.dirname(dir), path.basename(destinationGardenDir), { migrateSources: false }),
+    });
+    if (!restored.promoted) throw new Error(`Previous garden restore failed: ${restored.reason}`);
+    return;
+  }
+  // Exclusive recovery can still follow a previously scoped run. Carry edits
+  // made after its original publication into the retained previous version.
+  if (previousGardenDir && fs.existsSync(previousGardenDir) && fs.existsSync(destinationGardenDir)) {
+    if (ownsLease && !ownsLease()) throw new Error("Lost garden ownership before restore.");
+    mergeCurrentGardenUserContent(destinationGardenDir, previousGardenDir);
+  }
   const failedDir = path.join(
     path.dirname(destinationGardenDir),
     `.${path.basename(destinationGardenDir)}.failed-commit-${Date.now().toString(36)}`,
@@ -15944,6 +17109,7 @@ async function restorePreviousPromotedGarden(
     );
   }
   if ((!ownsLease || ownsLease()) && fs.existsSync(failedDir)) {
+    refreshClusterIndex(path.dirname(destinationGardenDir), path.basename(destinationGardenDir), { migrateSources: false });
     try {
       fs.rmSync(failedDir, { recursive: true, force: true });
     } catch (cleanupError) {
@@ -15985,13 +17151,19 @@ export interface LearnHumanizerSwitchResult {
 function finishedLearnHumanizerValidation(
   gardenDir: string,
   gardenId: string,
+  expectedContext: VisualContractExecutabilityLedgerContext,
+  refreshReport = false,
 ): { accepted: boolean; problems: string[] } {
-  const verification = verifyFinalArtifactNoMutation({
+  const options = {
     gardenDir,
     gardenSlug: gardenId,
-    updateRepairReport: false,
     strictModelApprovedVisuals: true,
-  });
+    expectedVisualContractExecutabilityContext: expectedContext,
+  };
+  // Rewriting legitimately changes the report's content fingerprint. Refresh
+  // only the audit, never finalize/repair the completed learner prose or plans.
+  if (refreshReport) refreshFinalArtifactValidationReport(options);
+  const verification = verifyFinalArtifactNoMutation({ ...options, updateRepairReport: false });
   return {
     accepted: verification.accepted,
     problems: [
@@ -16035,6 +17207,16 @@ export async function switchFinishedLearnHumanizer({
   if (expectedVersionId && version.id !== expectedVersionId) {
     throw new LearnPipelineConflictError(
       "The completed Learn version changed before its prose could be switched.",
+    );
+  }
+  // The confirmed map in SQLite supplies the review identity independently of
+  // the mutable garden ledger. A finished-copy switch does not create a new
+  // generation review or relabel the original planning review as one.
+  const publishedMap = getLearnMapById(version.learning_map_id, gardenId);
+  const expectedVisualContext = publishedMap?.visualContractExecutabilityLedger?.context;
+  if (!publishedMap || publishedMap.status !== "confirmed" || !expectedVisualContext) {
+    throw new LearnPipelineConflictError(
+      "The saved visual review for this Learn version is missing. Restore its confirmed Learning Map before switching the prose copy.",
     );
   }
   const latestJob = getLatestLearnJob(gardenId);
@@ -16137,17 +17319,22 @@ export async function switchFinishedLearnHumanizer({
           }
         },
         validate: () =>
-          finishedLearnHumanizerValidation(stagingGardenDir, gardenId),
+          finishedLearnHumanizerValidation(stagingGardenDir, gardenId, expectedVisualContext, true),
       });
       changed = outcome.adopted;
       reason = outcome.reason;
       validationProblems = outcome.validationProblems;
+      if (outcome.reason !== "adopted" && outcome.reason !== "no_improvement") {
+        throw new Error(
+          `The finished lessons could not be rewritten: ${validationProblems.join("; ") || outcome.reason}.`,
+        );
+      }
     } else {
       const outcome = restoreLearnAiCopy({
         gardenDir: stagingGardenDir,
         versionId: version.id,
         validate: () =>
-          finishedLearnHumanizerValidation(stagingGardenDir, gardenId),
+          finishedLearnHumanizerValidation(stagingGardenDir, gardenId, expectedVisualContext, true),
       });
       changed = outcome.restored;
       reason = outcome.reason;
@@ -16160,6 +17347,19 @@ export async function switchFinishedLearnHumanizer({
       if (outcome.reason === "validation_failed") {
         throw new Error(
           `The saved AI copy did not pass final validation: ${validationProblems.join("; ")}`,
+        );
+      }
+    }
+
+    // A no-improvement pass skips the candidate callback. The completed garden
+    // may have been edited since generation, so it still needs a current audit.
+    if (!changed) {
+      const validation = finishedLearnHumanizerValidation(
+        stagingGardenDir, gardenId, expectedVisualContext, true,
+      );
+      if (!validation.accepted) {
+        throw new LearnPipelineConflictError(
+          `The finished lessons did not pass verification: ${validation.problems.join("; ")}`,
         );
       }
     }
@@ -16192,7 +17392,7 @@ export async function switchFinishedLearnHumanizer({
         return true;
       },
       verifyManifest: (candidateDir) =>
-        finishedLearnHumanizerValidation(candidateDir, gardenId).accepted,
+        finishedLearnHumanizerValidation(candidateDir, gardenId, expectedVisualContext).accepted,
     });
     previousPromotedGardenDir = promotion.previousPreservedAt;
     if (!promotion.promoted) {
@@ -16490,7 +17690,7 @@ export async function runLearnRepairOperation({
   request: StartLearnOperationRequest;
   /** Cooperative route handoff after the durable job is visible to polling. */
   yieldToResponse?: (jobId: string) => Promise<void>;
-}): Promise<{ job: LearnJob; repair: LearnScopedRepairResult }> {
+}): Promise<{ job: LearnJob; repair: LearnScopedRepairResultSummary }> {
   if (request.mode !== "repair" || request.gardenId !== gardenId) {
     throw new Error("Repair request garden/mode does not match the Learn operation.");
   }
@@ -16595,6 +17795,7 @@ export async function runLearnRepairOperation({
             "Use only entity IDs, source anchors, actions, and context present in the packet.",
             "Never return a directory, Markdown tree, replacement garden, unrestricted page, or invented source anchor.",
             "For visual-only failures, modify only the owned visual spec/block. For metadata failures, never rewrite prose.",
+            "For a prose failure, return {\"type\":\"set_page_body\",\"pageId\":...,\"body\":...,\"justification\":...} whose body is the COMPLETE page.body from the packet with only the offending text fixed; keep every other sentence, equation, figure, visual block and question unchanged.",
           ].join(" "),
           user: JSON.stringify(packet),
           sourceContext: packet,
@@ -16697,7 +17898,7 @@ export async function runLearnRepairOperation({
         );
       }
     }
-    return { job: finalJob, repair };
+    return { job: finalJob, repair: summarizeLearnScopedRepairResult(repair) };
   } catch (error) {
     const stillOwnRepairLease = (): boolean => {
       return confirmLearnLeaseForFailureCleanup(lease, job.id);
@@ -17458,13 +18659,14 @@ function learnClearMutationPolicyViolations(
   return violations;
 }
 
-function fingerprintGardenFiles(gardenDir: string): GardenFileFingerprints {
+function fingerprintGardenFiles(gardenDir: string, separateUserContent = false): GardenFileFingerprints {
   const fingerprints: GardenFileFingerprints = {};
   if (!fs.existsSync(gardenDir)) return fingerprints;
 
   const visit = (directory: string): void => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const absolutePath = path.join(directory, entry.name);
+      if (separateUserContent && isGardenUserOrNavigationPath(normalizeRelPath(path.relative(gardenDir, absolutePath)))) continue;
       if (entry.isDirectory()) {
         visit(absolutePath);
         continue;
@@ -17502,12 +18704,14 @@ function gardenClearBoundaryViolations({
   before,
   candidateGardenDir,
   allowedMutationRoots,
+  separateUserContent = false,
 }: {
   before: GardenFileFingerprints;
   candidateGardenDir: string;
   allowedMutationRoots: readonly string[];
+  separateUserContent?: boolean;
 }): string[] {
-  const after = fingerprintGardenFiles(candidateGardenDir);
+  const after = fingerprintGardenFiles(candidateGardenDir, separateUserContent);
   const violations: string[] = [];
 
   for (const [relativePath, fingerprint] of Object.entries(before)) {
@@ -17609,10 +18813,12 @@ async function restoreGardenAfterClearDatabaseFailure({
  * tree are protected by a byte-fingerprint boundary before atomic promotion.
  */
 export async function clearAllLearnData({
+  userId,
   gardenId,
   contentPath,
   confirmClearLearnData,
 }: {
+  userId: number;
   gardenId: string;
   contentPath: string;
   confirmClearLearnData: true;
@@ -17810,6 +19016,7 @@ export async function clearAllLearnData({
 
     try {
       await publishQuartzAfterMutation(`cleared Learn data in ${gardenId}`, {
+        userId,
         requireSuccess: true,
         gardenSlug: gardenId,
       });
@@ -17838,7 +19045,7 @@ export async function clearAllLearnData({
       try {
         await publishQuartzAfterMutation(
           `rolled back failed Learn Clear publication in ${gardenId}`,
-          { requireSuccess: true, gardenSlug: gardenId },
+          { userId, requireSuccess: true, gardenSlug: gardenId },
         );
       } catch (republishError) {
         throw new Error(
@@ -17918,7 +19125,7 @@ export async function clearAllLearnData({
       try {
         await publishQuartzAfterMutation(
           `rolled back failed Learn Clear database commit in ${gardenId}`,
-          { requireSuccess: true, gardenSlug: gardenId },
+          { userId, requireSuccess: true, gardenSlug: gardenId },
         );
       } catch (republishError) {
         throw new Error(
@@ -18314,9 +19521,17 @@ function disposeAbandonedLearnWorkspaces(gardenId: string, jobId: string): void 
 export async function recoverAbandonedLearnJobs({
   contentPath,
   nowMs = Date.now(),
+  gardenHasLiveWorker,
 }: {
   contentPath: string;
   nowMs?: number;
+  /**
+   * Whether the garden's Runtime Learn job is still running and heartbeating.
+   * A durable job row goes quiet whenever its 15 s heartbeat cannot write, but
+   * a worker waiting on a long model answer is not abandoned; recovering over
+   * it restores the garden mid-run. `null` means unknown: the row rules apply.
+   */
+  gardenHasLiveWorker?: (gardenId: string) => Promise<boolean | null>;
 }): Promise<{ recoveredJobIds: string[]; skippedJobIds: string[] }> {
   reclaimStaleLearnRollbackRoots({ nowMs });
   ensureLearnTables();
@@ -18361,6 +19576,13 @@ export async function recoverAbandonedLearnJobs({
     try {
       if (!recoverableAbandonedJob(candidate)) continue;
       if (pendingLearnClearOperation(candidate.garden_id)) {
+        skippedJobIds.push(candidate.id);
+        continue;
+      }
+      if (gardenHasLiveWorker && (await gardenHasLiveWorker(candidate.garden_id)) === true) {
+        console.info(
+          `[learn] Skipping abandoned-job recovery for ${candidate.id}: its Runtime worker is still heartbeating.`,
+        );
         skippedJobIds.push(candidate.id);
         continue;
       }

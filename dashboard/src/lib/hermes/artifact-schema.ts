@@ -19,7 +19,7 @@ export function ensureArtifactSchema(database: Database.Database): void {
       originating_message_id     INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL,
       originating_tool_call_id   TEXT,
       source_surface             TEXT NOT NULL CHECK (source_surface IN ('dashboard_terminal','garden_chat')),
-      kind                       TEXT NOT NULL CHECK (kind IN ('text','markdown','document','pdf','presentation','spreadsheet','html','code','image','audio','video','diagram','data','unknown','gadget','model')),
+      kind                       TEXT NOT NULL CHECK (kind IN ('text','markdown','document','pdf','presentation','spreadsheet','html','code','image','audio','video','diagram','data','unknown','gadget','model','folder')),
       renderer_id                TEXT NOT NULL,
       title                      TEXT NOT NULL,
       filename                   TEXT NOT NULL,
@@ -146,6 +146,19 @@ export function ensureArtifactSchema(database: Database.Database): void {
   // Like pinning a chat it is placement rather than activity, so nothing that
   // writes it touches updated_at — the archive is ordered by that.
   ensureColumn(database, "hermes_artifacts", "highlight", "highlight TEXT");
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS document_assistant_conversations (
+      artifact_id TEXT PRIMARY KEY REFERENCES hermes_artifacts(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('word', 'markdown')),
+      conversation_id INTEGER UNIQUE REFERENCES conversations(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS document_assistant_entries (
+      artifact_id TEXT NOT NULL REFERENCES document_assistant_conversations(artifact_id) ON DELETE CASCADE,
+      entry_id TEXT NOT NULL,
+      message_id INTEGER UNIQUE REFERENCES conversation_messages(id) ON DELETE SET NULL,
+      PRIMARY KEY (artifact_id, entry_id)
+    );
+  `);
   // Older background-agent runs could write the assistant id to their artifact
   // event after creating the artifact, but leave the artifact row itself
   // unassigned. Recover that durable ownership from the newest event that names

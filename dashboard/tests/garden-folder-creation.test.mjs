@@ -17,7 +17,7 @@ async function fixture() {
   const previous = process.env.QUARTZ_CONTENT_PATH;
   // Exercise the same extended Windows paths used by the desktop runtime.
   process.env.QUARTZ_CONTENT_PATH = path.toNamespacedPath(content);
-  const state = { allowed: true, busy: false, leased: false, publishes: 0 };
+  const state = { allowed: true, busy: false, leased: false, publishes: 0, refreshes: 0 };
   globalThis.__folderFixture = state;
   const normalization = fs.readFileSync(path.join(root, "src/lib/garden-documents.ts"), "utf8")
     .match(/export function normalizeGardenFolder\(value: unknown\): string \{[\s\S]*?\n\}/)[0];
@@ -30,7 +30,7 @@ async function fixture() {
     "./db.ts": "export default {};",
     "./runtime-paths.ts": "export const dashboardDataDir=()=>'';",
     "./knowledge.ts": `export const slugify=s=>s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
-      export const refreshClusterIndex=()=>{throw Error('Empty folder scanned every note')};
+      export const refreshClusterIndex=()=>{globalThis.__folderFixture.refreshes++};
       export const walkClusterMarkdown=()=>[];`,
     "./garden-documents.ts": `import {slugify} from './knowledge.ts'; ${normalization}`,
     "./quartz-publish.ts": `export async function publishQuartzAfterMutation(){
@@ -41,7 +41,7 @@ async function fixture() {
     "./garden-mutation-recovery.ts": `export function acquireGardenMutationLeaseWithIngestionRecovery(){
       const state=globalThis.__folderFixture;
       if(state.busy) throw Object.assign(Error('Garden busy'),{code:'garden_busy',status:409});
-      state.leased=true;return {release(){state.leased=false}};
+      state.leased=true;return {lock:{buildId:'fixture-exclusive'},release(){state.leased=false}};
     }`,
     "@/lib/garden-mutation-lease": "export const isGardenMutationBusyError=e=>e.code==='garden_busy';",
   };
@@ -82,6 +82,7 @@ test("folder API confirms real persistence before a stalled rebuild, with safe r
     assert.match(fs.readFileSync(index, "utf8"), /title: "Nested"/);
     assert.equal(app.state.leased, false);
     assert.equal(app.state.publishes, 1);
+    assert.equal(app.state.refreshes, 0, "Empty folder creation does not scan every note");
     fs.writeFileSync(index, "Existing content\n");
     await app.POST(createRequest("My Notes/Nested"));
     assert.equal(fs.readFileSync(index, "utf8"), "Existing content\n", "Retry preserves existing contents");
@@ -107,6 +108,87 @@ test("folder API confirms real persistence before a stalled rebuild, with safe r
   } finally { app.close(); }
 });
 
+test("folder copies preserve originals, nested contents and links while reserving unique names and note identities", async () => {
+  const app = await fixture();
+  const request = (method, body) => new Request("http://localhost/api/folders", {
+    method, body: JSON.stringify({ clusterSlug: "physics", ...body }),
+  });
+  try {
+    const root = path.join(app.content, "physics");
+    fs.mkdirSync(path.join(root, "learning/1. Fields and Space/empty"), { recursive: true });
+    fs.writeFileSync(path.join(root, "learning/_index.md"), '---\ntitle: "Electromagnetism"\n---\n[[learning/lesson|Start]]\n');
+    const original = '---\ntitle: "Lesson"\n---\n[[exercise]]\n[Exercise](1.%20Fields%20and%20Space/exercise.md)\n![Figure](figure.png)\n';
+    fs.writeFileSync(path.join(root, "learning/lesson.md"), original);
+    fs.writeFileSync(path.join(root, "learning/1. Fields and Space/exercise.md"), '---\ntitle: "Exercise"\n---\n[[physics/learning/lesson#field|Lesson]]');
+    fs.writeFileSync(path.join(root, "learning/figure.png"), Buffer.from([1, 2, 3]));
+    const copy = await app.POST(request("POST", { action: "copy", folder: "learning" }));
+    assert.equal(copy.status, 200);
+    assert.deepEqual(await copy.json(), { success: true, folder: "learning", newFolder: "learning-copy", name: "Learning copy" });
+    assert.equal(fs.readFileSync(path.join(root, "learning/lesson.md"), "utf8"), original);
+    assert.ok(fs.statSync(path.join(root, "learning-copy/1. Fields and Space/empty")).isDirectory());
+    assert.deepEqual(fs.readFileSync(path.join(root, "learning-copy/figure.png")), Buffer.from([1, 2, 3]));
+    assert.match(fs.readFileSync(path.join(root, "learning-copy/lesson-copy.md"), "utf8"), /exercise-copy/);
+    assert.match(fs.readFileSync(path.join(root, "learning-copy/lesson-copy.md"), "utf8"), /\[Exercise\]\(1\.%20Fields%20and%20Space\/exercise-copy\.md\)/);
+    assert.match(fs.readFileSync(path.join(root, "learning-copy/_index.md"), "utf8"), /title: "Learning copy"/);
+    assert.match(fs.readFileSync(path.join(root, "learning-copy/1. Fields and Space/exercise-copy.md"), "utf8"), /lesson-copy#field\|Lesson/);
+    const second = await app.POST(request("POST", { action: "copy", folder: "learning" }));
+    assert.equal((await second.json()).newFolder, "learning-copy-2");
+    assert.ok(fs.existsSync(path.join(root, "learning-copy-2/lesson-copy-2.md")));
+    for (const folder of ["learning", "sources", "artifacts", "Concepts", "notepad", "notes"]) {
+      fs.mkdirSync(path.join(root, folder), { recursive: true });
+      const result = await app.PUT(request("PUT", { folder, name: "changed" }));
+      assert.equal(result.status, 400, `${folder} is protected in the API`);
+      assert.match((await result.json()).error, /cannot be renamed/);
+      assert.ok(fs.existsSync(path.join(root, folder)));
+    }
+    const renamed = await app.PUT(request("PUT", { folder: "learning-copy", name: "My revision" }));
+    assert.equal(renamed.status, 200);
+    assert.equal((await renamed.json()).newFolder, "my-revision");
+    assert.equal(fs.existsSync(path.join(root, "learning-copy")), false);
+    assert.ok(fs.existsSync(path.join(root, "my-revision/lesson-copy.md")));
+    assert.match(fs.readFileSync(path.join(root, "my-revision/_index.md"), "utf8"), /title: "My revision"/);
+    assert.match(fs.readFileSync(path.join(root, "my-revision/_index.md"), "utf8"), /\[\[my-revision\/lesson-copy\|Start\]\]/);
+    assert.equal((await app.PUT(request("PUT", { folder: "my-revision", name: "Learning" }))).status, 400);
+    assert.equal((await app.PUT(request("PUT", { folder: "my-revision", name: "Learning copy 2" }))).status, 409);
+    assert.equal((await app.PUT(request("PUT", { folder: "my-revision", name: "a/b" }))).status, 400);
+    assert.equal((await app.POST(request("POST", { action: "copy", folder: "../physics/learning" }))).status, 400);
+    assert.equal((await app.POST(request("POST", { action: "copy", folder: "missing" }))).status, 404);
+    app.state.busy = true;
+    assert.equal((await app.POST(request("POST", { action: "copy", folder: "learning" }))).status, 409);
+    assert.equal(fs.existsSync(path.join(root, "learning-copy-3")), false);
+    app.state.busy = false;
+    app.state.allowed = false;
+    assert.equal((await app.POST(request("POST", { action: "copy", folder: "learning" }))).status, 403);
+    assert.equal(app.state.leased, false);
+  } finally { app.close(); }
+});
+
+test("folder API copies Sources, Concepts and Artifacts with independent PDF and media references", async () => {
+  const app = await fixture();
+  try {
+    const root = path.join(app.content, "physics");
+    fs.mkdirSync(path.join(root, "assets"));
+    fs.writeFileSync(path.join(root, "assets/source.pdf"), "%PDF original");
+    fs.writeFileSync(path.join(root, "assets/lecture.mp3"), "audio original");
+    for (const folder of ["sources", "Concepts", "artifacts"]) {
+      fs.mkdirSync(path.join(root, folder));
+      fs.writeFileSync(path.join(root, folder, `${folder}-note.md`), `---\ntitle: ${folder}\nknowledge_type: source-document\nsource_document: parent\nartifact_id: original\nsource_pdf: /physics/assets/source.pdf\nsource_media: /physics/assets/lecture.mp3\n---\n\nBody\n`);
+      const response = await app.POST(new Request("http://localhost/api/folders", {
+        method: "POST", body: JSON.stringify({ clusterSlug: "physics", action: "copy", folder }),
+      }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).newFolder, `${folder}-copy`);
+      const copied = fs.readFileSync(path.join(root, `${folder}-copy/${folder}-note-copy.md`), "utf8");
+      assert.match(copied, /knowledge_type: note/);
+      assert.match(copied, new RegExp(`source_pdf: /physics/${folder}-copy/assets/`));
+      assert.match(copied, new RegExp(`source_media: /physics/${folder}-copy/assets/`));
+      assert.doesNotMatch(copied, /^source_document:|^artifact_id:/m);
+    }
+    assert.equal(app.state.publishes, 3);
+    assert.equal(app.state.leased, false);
+  } finally { app.close(); }
+});
+
 test("Explorer closes promptly, displays normalized and nested folders, and restores them after reload", async () => {
   const app = await fixture();
   // EM1 has canonical folder names with spaces and punctuation. Its static
@@ -118,6 +200,8 @@ test("Explorer closes promptly, displays normalized and nested folders, and rest
     const explorer = await build({ entryPoints: [path.join(root, "../quartz/quartz/components/scripts/explorer.inline.ts")], bundle: true, write: false, platform: "browser", format: "iife" });
     // Exercise the real snapshot hook and the actual creation branch used by each host.
     for (const clientPath of ["src/app/garden/[clusterSlug]/garden-client.tsx", "src/app/garden/library-garden-client.tsx"]) {
+      fs.mkdirSync(path.join(app.content, "physics/published-folder"), { recursive: true });
+      fs.writeFileSync(path.join(app.content, "physics/published-folder/_index.md"), '---\ntitle: "Published folder"\n---\n');
       const source = fs.readFileSync(path.join(root, clientPath), "utf8");
       const branchStart = source.indexOf("        const folder = typeof data.folder", source.indexOf("if (data.type === 'second-brain:move-note')"));
       const end = source.indexOf("        return;", branchStart) + "        return;".length;
@@ -160,6 +244,7 @@ test("Explorer closes promptly, displays normalized and nested folders, and rest
             <template id="template-file"><li><a></a></li></template>
             <script>window.addCleanup=()=>{};window.fetchData=Promise.resolve({
               'physics/index':{slug:'physics/index',filePath:'physics/_index.md',title:'Physics',links:[],tags:[],content:''},
+              'physics/published-folder/index':{slug:'physics/published-folder/index',filePath:'physics/published-folder/_index.md',title:'Published folder',links:[],tags:[],content:''},
               'physics/learning/1.-Fields-and-Space/index':{slug:'physics/learning/1.-Fields-and-Space/index',filePath:'physics/learning/1. Fields and Space/_index.md',title:'1. Fields and Space',links:[],tags:[],content:''}
             });</script>
             <script src="/explorer.js"></script><script>document.dispatchEvent(new CustomEvent('nav',{detail:{url:'physics/index'}}))</script>`);
@@ -196,6 +281,32 @@ test("Explorer closes promptly, displays normalized and nested folders, and rest
       assert.equal(await row("learning/1. Fields and Space").count(), 0,
         "Canonical disk names merge into their existing Quartz slugs");
       assert.equal(await frame.locator(".overflow-end").count(), 1);
+      // Both embedding hosts use the real shared bridge for copy and rename.
+      const learning = row("learning");
+      assert.equal(await learning.getByRole("button", { name: "Rename folder", exact: true }).isDisabled(), true);
+      await learning.getByRole("button", { name: "Copy folder", exact: true }).click();
+      await frame.getByRole("dialog").waitFor({ state: "hidden" });
+      // The first host's renamed copy no longer reserves learning-copy.
+      const copied = row("learning-copy");
+      await copied.waitFor({ state: "visible" });
+      assert.match(await copied.textContent(), /Learning copy/);
+      assert.equal(await copied.getByRole("button", { name: "Rename folder", exact: true }).isEnabled(), true);
+      await copied.getByRole("button", { name: "Rename folder", exact: true }).click();
+      await frame.getByLabel("Folder name", { exact: true }).fill(`Revision ${suffix}`);
+      await frame.getByRole("button", { name: "Save name", exact: true }).click();
+      await frame.getByRole("dialog").waitFor({ state: "hidden" });
+      await row(`revision-${suffix}`).waitFor({ state: "visible" });
+      assert.equal(await copied.count(), 0, "Old folder disappears even before Quartz rebuilds");
+      await page.reload();
+      await row(`revision-${suffix}`).waitFor({ state: "visible" });
+      assert.equal(await learning.getByRole("button", { name: "Rename folder", exact: true }).isDisabled(), true);
+      await row("published-folder").getByRole("button", { name: "Rename folder", exact: true }).click();
+      await frame.getByLabel("Folder name", { exact: true }).fill(`Published ${suffix}`);
+      await frame.getByRole("button", { name: "Save name", exact: true }).click();
+      await row(`published-${suffix}`).waitFor({ state: "visible" });
+      await page.reload();
+      await row(`published-${suffix}`).waitFor({ state: "visible" });
+      assert.equal(await row("published-folder").count(), 0, "Reload suppresses stale published folder paths after rename");
       // A missing bridge response must release the dialog and allow a retry.
       await page.route("**/api/folders", route => route.abort());
       await row("").getByRole("button", { name: "New sub-folder", exact: true }).click();

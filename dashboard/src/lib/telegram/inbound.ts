@@ -7,10 +7,12 @@
 // is the whole point of driving the Bot API here rather than pointing it at some
 // separate bot runtime with a transcript store of its own.
 //
-// A Telegram thread maps to one conversation while it stays warm; after a quiet
-// period (or an explicit /new) the next message opens a fresh chat.
+// A Telegram thread maps to one conversation per local calendar day.
+// An explicit /new can still start a fresh chat within the day.
 
 import { wakeAgentRuntime } from "../agent-runtime/wake.ts";
+import db from "../db.ts";
+import { prepareTelegramAttachments } from "../messaging-attachments/prepare.ts";
 import {
   completeAssistantMessage,
   createConversation,
@@ -41,7 +43,7 @@ import {
   conversationTitleFor,
   senderIsAllowed,
 } from "./identity.ts";
-import { conversationIsWarm, messageText, HELP_TEXT } from "./inbound-policy.ts";
+import { conversationIsSameDay, messageText, HELP_TEXT } from "./inbound-policy.ts";
 import {
   deliverTelegramDelegatedFollowUps,
   telegramDelegatedWorkers,
@@ -116,6 +118,7 @@ export async function routeTelegramMessage(
   if (settings.ownerUserId === null) {
     return { status: "ignored", reason: "no_owner" };
   }
+  const ownerUserId = settings.ownerUserId;
   // A bot's @name is public, so an unlisted sender gets silence rather than a
   // "you are not allowed" reply that would confirm the bot is live.
   if (!senderIsAllowed(message, settings.allowedUsers)) {
@@ -126,7 +129,7 @@ export async function routeTelegramMessage(
   if (!text) return { status: "ignored", reason: "empty" };
 
   // Telegram appends `@botname` to commands sent in groups.
-  const command = text.trim().toLowerCase().split(/\s+/)[0]?.replace(/@[\w_]+$/, "") ?? "";
+  const command = message.hasMedia ? "" : text.trim().toLowerCase().split(/\s+/)[0]?.replace(/@[\w_]+$/, "") ?? "";
   if (command === "/help" || command === "/start") {
     return { status: "replied", reply: HELP_TEXT, conversationId: "" };
   }
@@ -135,15 +138,15 @@ export async function routeTelegramMessage(
   // answer to that question, not the start of a chat. Grading it here — before
   // any conversation is created — is what stops "3" from being routed to the
   // assistant as an inscrutable one-word prompt.
-  const review = await handleInboundReview({ chatId: message.chatId, text });
+  const review = message.hasMedia ? null : await handleInboundReview({ chatId: message.chatId, text });
   if (review) {
     return { status: "replied", reply: review.reply, conversationId: "" };
   }
 
   const label = contactLabel(message);
-  const chat = store.upsertChat({
+  store.upsertChat({
     chatId: message.chatId,
-    userId: settings.ownerUserId,
+    userId: ownerUserId,
     contactLabel: label,
     contactHandle: contactHandle(message),
     isGroup: message.isGroup,
@@ -154,7 +157,7 @@ export async function routeTelegramMessage(
   // it before Hermes so the gateway never burns a turn searching for a
   // scheduler tool, and so the eventual notification can be delivered even if
   // the agent runtime is stopped at that moment.
-  const scheduledReminder = !forceNew && /\bremind(?:er)?\b/i.test(text)
+  const scheduledReminder = !message.hasMedia && !forceNew && /\bremind(?:er)?\b/i.test(text)
     ? parseExplicitScheduleRequest(text, now)
     : null;
   let createdConversation: ConversationRow | null = null;
@@ -164,6 +167,7 @@ export async function routeTelegramMessage(
     // Fail before creating anything when the runtime is off, so a stopped runtime
     // answers Telegram with a reason instead of leaving an empty chat behind.
     if (!scheduledReminder) requireEnabled();
+    const attachments = await prepareTelegramAttachments(ownerUserId, message);
 
     // Hermes is an on-demand service: after a few quiet minutes the supervisor
     // stops it, and only a lease can start it again — which this gateway
@@ -172,33 +176,40 @@ export async function routeTelegramMessage(
     // wait: it only names a fresh chat, no turn runs.
     if (!forceNew && !scheduledReminder) await wakeAgentRuntime("telegram-inbound");
 
-    const existing =
-      !forceNew && chat.conversation_id !== null
-        ? getConversationById(chat.conversation_id)
-        : null;
-    const warm =
-      existing !== null &&
-      existing.user_id === settings.ownerUserId &&
-      existing.surface === "dashboard_terminal" &&
-      conversationIsWarm(chat.last_message_at, now)
-        ? existing
-        : null;
-    const initialSummary = forceNew ? null : fallbackConversationTitle(text);
+    const { conversation, created } = db.transaction(() => {
+      // A reminder may have opened today's chat while the runtime was waking.
+      // Read the current binding and claim it atomically with outbound sends.
+      const now = deps.now?.() ?? new Date();
+      const chat = store.getChat(message.chatId)!;
+      const existing =
+        !forceNew && chat.conversation_id !== null
+          ? getConversationById(chat.conversation_id)
+          : null;
+      const dailyConversation =
+        existing !== null &&
+        existing.user_id === ownerUserId &&
+        existing.surface === "dashboard_terminal" &&
+        conversationIsSameDay(existing.created_at, now)
+          ? existing
+          : null;
+      const initialSummary = forceNew ? null : fallbackConversationTitle(text);
 
-    const conversation =
-      warm ??
-      createConversation({
-        userId: settings.ownerUserId,
-        title:
-          initialSummary
-            ? `Telegram:${initialSummary}`.slice(0, 120)
-            : conversationTitleFor(label, forceNew ? "" : text),
-        surface: "dashboard_terminal",
-        scopeKind: "global",
-      });
-    if (!warm) createdConversation = conversation;
-
-    store.bindConversation(message.chatId, conversation.id);
+      const conversation =
+        dailyConversation ??
+        createConversation({
+          userId: ownerUserId,
+          title:
+            initialSummary
+              ? `Telegram:${initialSummary}`.slice(0, 120)
+              : conversationTitleFor(label, forceNew ? "" : text),
+          surface: "dashboard_terminal",
+          originLabel: "Telegram",
+          scopeKind: "global",
+        });
+      store.bindConversation(message.chatId, conversation.id);
+      return { conversation, created: !dailyConversation };
+    }).immediate();
+    if (created) createdConversation = conversation;
 
     if (forceNew) {
       return {
@@ -210,9 +221,9 @@ export async function routeTelegramMessage(
 
     const clientMessageId = `telegram-${message.messageId || `${message.chatId}-${Date.now()}`}`;
     if (scheduledReminder) {
-      const preference = getHermesUserSettings(settings.ownerUserId);
+      const preference = getHermesUserSettings(ownerUserId);
       const scheduleRow = getScheduledChatJobStore().create(
-        settings.ownerUserId,
+        ownerUserId,
         {
           title: scheduledReminder.title,
           prompt: scheduledReminder.prompt,
@@ -266,6 +277,7 @@ export async function routeTelegramMessage(
       conversation,
       clientMessageId,
       text,
+      attachments,
       surface: "dashboard_terminal",
       surfaceContext: { deliveryChannel: "telegram" },
       // Messaging has no composer switch, so every inbound phone turn uses
@@ -341,7 +353,7 @@ export async function routeTelegramMessage(
   } catch (cause) {
     if (createdScheduleId !== null) {
       try {
-        getScheduledChatJobStore().delete(settings.ownerUserId, createdScheduleId);
+        getScheduledChatJobStore().delete(ownerUserId, createdScheduleId);
       } catch {
         // If the transcript write failed, keeping the direct reminder would be
         // surprising because the sender receives the failure below.

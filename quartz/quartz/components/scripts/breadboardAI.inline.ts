@@ -5,11 +5,15 @@
 // sessionStorage), and clear error/reconnect states. No secrets, no Hermes
 // URL — everything sensitive stays server-side.
 
+import { createAssistantWidgetHost } from "./assistantWidgets"
+import { formatAssistantModelChangeName } from "../../../../dashboard/src/lib/ai-models"
+
 interface SessionState {
   sessionId: string | number | null
   clientToken: string | null
   model: string | null
   effort: string | null
+  modelChanges?: Record<string, string[]>
 }
 
 interface QuartzSessionItem {
@@ -23,6 +27,10 @@ interface QuartzSessionItem {
     content?: unknown
     status?: unknown
     createdAt?: unknown
+    uiResources?: unknown[]
+    clientMessageId?: string
+    id?: string
+    metadata?: { modelChangeLabels?: string[]; modelChangeLabel?: string }
   }>
 }
 
@@ -49,8 +57,6 @@ interface QuartzTopologyInvestigationEvent {
 // Mirrors the dashboard's slash-command token grammar: one or more leading
 // "/token" selectors, each followed by whitespace or end of text.
 const LEADING_COMMAND_RUN = /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i
-const ASSISTANT_MODEL_STORAGE_KEY = "breadboard:assistant-model"
-const ASSISTANT_EFFORT_STORAGE_KEY = "breadboard:assistant-reasoning-effort"
 
 function setupPanel(root: HTMLElement) {
   // The embedding dashboard owns that view's sole Assistant. Keep this root
@@ -92,6 +98,9 @@ function setupPanel(root: HTMLElement) {
   const evidenceBody = root.querySelector<HTMLElement>(".breadboard-ai-evidence-body")
   const pageName = root.querySelector<HTMLElement>(".breadboard-ai-page-name")
   const newChatBtn = root.querySelector<HTMLButtonElement>(".breadboard-ai-new")
+  const temporaryToggle = root.querySelector<HTMLButtonElement>(".breadboard-ai-temporary")
+  const temporaryCheck = root.querySelector<SVGPathElement>(".breadboard-ai-temporary-check")
+  const temporaryBanner = root.querySelector<HTMLElement>(".breadboard-ai-temporary-banner")
   const historyToggle = root.querySelector<HTMLButtonElement>(".breadboard-ai-history-toggle")
   const historyBox = root.querySelector<HTMLElement>(".breadboard-ai-history")
   const historyStatus = root.querySelector<HTMLElement>(".breadboard-ai-history-status")
@@ -108,11 +117,14 @@ function setupPanel(root: HTMLElement) {
 
   const storageKey = `breadboard-ai:${gardenId}:${pageSlug}`
   const state: SessionState = loadState()
+  let temporaryChat = false
+  let chatBeforeTemporary: SessionState | null = null
   let abortController: AbortController | null = null
   let commandItems: QuartzCommandItem[] = []
   let activeCommandIndex = 0
   let activeCommandTab: QuartzCommandItem["kind"] = "skill"
   let intelligenceLoaded = false
+  let modelChangeWrites: Promise<unknown> = Promise.resolve()
   let activeTextSelection: QuartzTextSelection | null = null
   // Every async viewer belongs to the page/session selection that created it.
   // Quartz SPA navigation replaces the DOM without stopping server work, so a
@@ -131,20 +143,43 @@ function setupPanel(root: HTMLElement) {
     } catch {
       /* ignore */
     }
-    try {
-      restored.model = localStorage.getItem(ASSISTANT_MODEL_STORAGE_KEY) || restored.model
-      restored.effort = localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY) || restored.effort
-    } catch {
-      /* ignore */
-    }
     return restored
   }
   function saveState() {
     try {
+      if (temporaryChat) {
+        // Like Terminal, a temporary chat leaves no restore pointer behind.
+        sessionStorage.removeItem(storageKey)
+        return
+      }
       sessionStorage.setItem(storageKey, JSON.stringify(state))
+      if (state.sessionId !== null) {
+        sessionStorage.setItem(
+          `${storageKey}:chat:${state.sessionId}`,
+          JSON.stringify({ model: state.model, effort: state.effort, modelChanges: state.modelChanges }),
+        )
+      }
     } catch {
       /* ignore */
     }
+  }
+
+  function syncTemporaryChrome() {
+    if (temporaryChat) root.dataset.temporaryChat = "true"
+    else delete root.dataset.temporaryChat
+    if (temporaryBanner) temporaryBanner.hidden = !temporaryChat
+    if (temporaryToggle) {
+      temporaryToggle.hidden = messages!.childElementCount > 0
+      temporaryToggle.setAttribute("aria-pressed", String(temporaryChat))
+      temporaryToggle.setAttribute(
+        "aria-label",
+        temporaryChat ? "Turn off temporary chat" : "Turn on temporary chat",
+      )
+      temporaryToggle.title = temporaryChat
+        ? "Temporary chat is on — click to return. This chat is not in your history and is not used or saved as memory."
+        : "Temporary chat: start a chat kept out of your history and memory, both ways"
+    }
+    temporaryCheck?.toggleAttribute("hidden", !temporaryChat)
   }
 
   function openPanel() {
@@ -205,7 +240,10 @@ function setupPanel(root: HTMLElement) {
   }
   window.addEventListener("breadboard:assistant-investigate-topology", onTopologyInvestigation)
   window.addCleanup(() =>
-    window.removeEventListener("breadboard:assistant-investigate-topology", onTopologyInvestigation),
+    window.removeEventListener(
+      "breadboard:assistant-investigate-topology",
+      onTopologyInvestigation,
+    ),
   )
   selectionCancel?.addEventListener("click", () => {
     clearSelectionQuestion()
@@ -263,10 +301,9 @@ function setupPanel(root: HTMLElement) {
         el.textContent = label
         return el
       }
-      modelSelect.replaceChildren(...models.map((id) => option(id, formatModelName(id))))
       effortSelect.replaceChildren(...efforts.map((id) => option(id, effortLabel(id))))
-      const defaultModel = typeof data.defaultModel === "string" ? data.defaultModel : models[0]
-      const defaultEffort =
+      let defaultModel = typeof data.defaultModel === "string" ? data.defaultModel : models[0]
+      let defaultEffort =
         typeof data.defaultReasoningEffort === "string" ? data.defaultReasoningEffort : efforts[0]
       if (preferenceResponse?.ok) {
         const preference = (await preferenceResponse.json()) as {
@@ -275,12 +312,17 @@ function setupPanel(root: HTMLElement) {
           userPreference?: unknown
         }
         if (preference.userPreference === true) {
-          if (typeof preference.model === "string") state.model = preference.model
+          if (typeof preference.model === "string") defaultModel = preference.model
           if (typeof preference.reasoningEffort === "string") {
-            state.effort = preference.reasoningEffort
+            defaultEffort = preference.reasoningEffort
           }
         }
       }
+      // Provider models may be the profile fallback even when the static Quartz list omits them.
+      for (const model of [state.model, defaultModel]) {
+        if (model && !models.includes(model)) models.push(model)
+      }
+      modelSelect.replaceChildren(...models.map((id) => option(id, formatModelName(id))))
       modelSelect.value =
         state.model && models.includes(state.model)
           ? state.model
@@ -293,50 +335,54 @@ function setupPanel(root: HTMLElement) {
           : efforts.includes(defaultEffort)
             ? defaultEffort
             : efforts[0]
-      state.model = modelSelect.value
-      state.effort = effortSelect.value
-      try {
-        localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, state.model)
-        localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, state.effort)
-      } catch {
-        /* ignore */
-      }
-      saveState()
       intelligence.hidden = false
     } catch {
       /* picker stays hidden; server defaults apply */
     }
   }
 
-  function saveIntelligencePreference(value: { model?: string; reasoningEffort?: string }) {
-    void fetch(`${dashboard}/api/assistant-preferences`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(value),
-    }).catch(() => undefined)
-  }
-
+  // Explicit picks belong to this chat. Unselected controls use the profile fallback.
   modelSelect?.addEventListener("change", () => {
-    state.model = modelSelect.value
-    try {
-      localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, state.model)
-    } catch {
-      /* ignore */
+    const answer = Array.from(messages!.querySelectorAll<HTMLElement>(".breadboard-ai-assistant")).at(-1)
+    if (answer && state.model !== modelSelect.value) {
+      const anchor = answer.dataset.modelChangeAnchor!
+      const label = formatAssistantModelChangeName(modelSelect.value)
+      state.modelChanges = { ...state.modelChanges, [anchor]: [...(state.modelChanges?.[anchor] ?? []), label].slice(-50) }
+      renderModelChanges(answer)
+      if (typeof state.sessionId === "string" && answer.dataset.clientMessageId) {
+        const sessionId = state.sessionId
+        const body = JSON.stringify({ surface: "quartz_ai", model: modelSelect.value, afterClientMessageId: answer.dataset.clientMessageId })
+        modelChangeWrites = modelChangeWrites.catch(() => undefined).then(() => fetch(`${dashboard}/api/hermes/sessions/${encodeURIComponent(sessionId)}/model-change`, {
+          method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body,
+        })).catch(() => undefined)
+      }
     }
+    state.model = modelSelect.value
     saveState()
-    saveIntelligencePreference({ model: state.model })
   })
   effortSelect?.addEventListener("change", () => {
     state.effort = effortSelect.value
-    try {
-      localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, state.effort)
-    } catch {
-      /* ignore */
-    }
     saveState()
-    saveIntelligencePreference({ reasoningEffort: state.effort })
   })
+
+  function restoreChatIntelligence(sessionId: string | number | null) {
+    state.model = null
+    state.effort = null
+    state.modelChanges = {}
+    if (sessionId !== null) {
+      try {
+        const saved = JSON.parse(
+          sessionStorage.getItem(`${storageKey}:chat:${sessionId}`) || "{}",
+        ) as Partial<SessionState>
+        if (typeof saved.model === "string") state.model = saved.model
+        if (typeof saved.effort === "string") state.effort = saved.effort
+        if (saved.modelChanges && typeof saved.modelChanges === "object") state.modelChanges = saved.modelChanges
+      } catch {
+        /* An unconfigured chat follows the profile. */
+      }
+    }
+    if (intelligenceLoaded) void loadIntelligence()
+  }
 
   function filteredCommands(): QuartzCommandItem[] {
     const query = commandSearch?.value.trim().toLowerCase() || ""
@@ -496,6 +542,7 @@ function setupPanel(root: HTMLElement) {
   function addMessage(role: "user" | "assistant", text: string): HTMLElement {
     const el = document.createElement("div")
     el.className = `breadboard-ai-message breadboard-ai-${role}`
+    el.dataset.modelChangeAnchor = `row:${messages!.querySelectorAll(".breadboard-ai-message").length}`
     // A command invocation tints the whole message, arguments included.
     if (role === "user" && LEADING_COMMAND_RUN.test(text)) {
       el.classList.add("breadboard-ai-command-text")
@@ -511,7 +558,47 @@ function setupPanel(root: HTMLElement) {
     messages!.appendChild(el)
     messages!.scrollTop = messages!.scrollHeight
     if (role === "user") refreshRail()
+    syncTemporaryChrome()
     return el
+  }
+
+  function renderModelChanges(answer: HTMLElement) {
+    let next = answer.nextElementSibling
+    while (next?.classList.contains("breadboard-ai-model-change")) {
+      const previous = next
+      next = next.nextElementSibling
+      previous.remove()
+    }
+    if (answer.dataset.pending === "true") return
+    let after: Element = answer
+    const labels = state.modelChanges?.[answer.dataset.modelChangeAnchor ?? ""]
+    for (const name of Array.isArray(labels) ? labels : []) {
+      if (typeof name !== "string" || !name.trim()) continue
+      const separator = document.createElement("div")
+      separator.className = "breadboard-ai-model-change"
+      separator.setAttribute("role", "separator")
+      const label = `Switched to ${name.slice(0, 160)}`
+      separator.setAttribute("aria-label", label)
+      const wave = () => {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+        svg.setAttribute("viewBox", "0 0 2000 8")
+        svg.setAttribute("preserveAspectRatio", "xMinYMid slice")
+        svg.setAttribute("aria-hidden", "true")
+        const path = document.createElementNS(svg.namespaceURI, "path")
+        path.setAttribute("d", `M 0 4 ${"q 4 -4 8 0 t 8 0 ".repeat(125)}`)
+        path.setAttribute("fill", "none")
+        path.setAttribute("stroke", "currentColor")
+        path.setAttribute("stroke-width", "1")
+        path.setAttribute("vector-effect", "non-scaling-stroke")
+        svg.appendChild(path)
+        return svg
+      }
+      const text = document.createElement("span")
+      text.textContent = label
+      separator.append(wave(), text, wave())
+      after.after(separator)
+      after = separator
+    }
   }
 
   // ── The rail of sent messages ─────────────────────────────────────────────
@@ -753,8 +840,37 @@ function setupPanel(root: HTMLElement) {
       .join("")
   }
 
-  function renderAssistantContent(el: HTMLElement, text: string) {
+  const widgetHost = createAssistantWidgetHost(
+    dashboard,
+    (text) => {
+      if (sendBtn!.disabled) {
+        input!.value = [input!.value.trim(), text].filter(Boolean).join("\n\n")
+        input!.focus()
+        return
+      }
+      void send(text)
+    },
+    messages,
+  )
+  const messageResources = new WeakMap<HTMLElement, unknown[]>()
+  function widgetResources(value: unknown): Array<{ id: string }> {
+    return Array.isArray(value)
+      ? value.filter((resource): resource is { id: string } =>
+          Boolean(resource && typeof resource === "object" && typeof resource.id === "string"),
+        )
+      : []
+  }
+  function renderAssistantContent(el: HTMLElement, text: string, resources?: unknown[]) {
+    if (resources) messageResources.set(el, widgetResources(resources))
     el.classList.add("breadboard-ai-markdown")
+    if (
+      widgetHost.render(el, {
+        content: text,
+        uiResources: messageResources.get(el) ?? [],
+        conversationPublicId: typeof state.sessionId === "string" ? state.sessionId : null,
+      })
+    )
+      return
     el.innerHTML = markdownToHtml(text)
   }
 
@@ -768,15 +884,32 @@ function setupPanel(root: HTMLElement) {
         const role = entry.role === "user" ? "user" : "assistant"
         const content = typeof entry.content === "string" ? entry.content : ""
         const pending = role === "assistant" && entry.status === "pending"
-        if (!content && !pending) continue
+        const resources =
+          role === "assistant" && Array.isArray(entry.uiResources) ? entry.uiResources : []
+        if (!content && !pending && !resources.length) continue
         const el = addMessage(role, content || "…")
-        if (role === "assistant" && content) renderAssistantContent(el, content)
+        if (entry.clientMessageId) {
+          el.dataset.clientMessageId = entry.clientMessageId
+          el.dataset.modelChangeAnchor = `turn:${entry.clientMessageId}`
+        }
+        if (role === "assistant") {
+          const stored = entry.metadata?.modelChangeLabels ?? (entry.metadata?.modelChangeLabel ? [entry.metadata.modelChangeLabel] : [])
+          const local = state.modelChanges?.[el.dataset.modelChangeAnchor!] ?? []
+          if (Array.isArray(stored) && stored.length > local.length) {
+            state.modelChanges = { ...state.modelChanges, [el.dataset.modelChangeAnchor!]: stored }
+          }
+          el.dataset.pending = String(pending)
+          renderModelChanges(el)
+        }
+        if (role === "assistant" && (content || resources.length))
+          renderAssistantContent(el, content, resources)
       }
     } finally {
       railSuspended = false
     }
     messages!.scrollTop = messages!.scrollHeight
     refreshRail()
+    syncTemporaryChrome()
   }
 
   function sessionQuery(): string {
@@ -829,6 +962,7 @@ function setupPanel(root: HTMLElement) {
         // into a conversation the server now correctly refuses.
         state.sessionId = null
         state.clientToken = null
+        restoreChatIntelligence(null)
         saveState()
         return
       }
@@ -874,7 +1008,10 @@ function setupPanel(root: HTMLElement) {
           viewGeneration += 1
           abortController?.abort()
           abortController = null
+          temporaryChat = false
+          chatBeforeTemporary = null
           state.sessionId = item.id
+          restoreChatIntelligence(item.id)
           saveState()
           renderTranscript(item.messages)
           clearError()
@@ -895,8 +1032,11 @@ function setupPanel(root: HTMLElement) {
     // remains the owner of the run and will persist its answer in the old chat.
     abortController?.abort()
     abortController = null
+    temporaryChat = false
+    chatBeforeTemporary = null
     state.sessionId = null
     state.clientToken = null
+    restoreChatIntelligence(null)
     saveState()
     clearSelectionQuestion()
     messages!.replaceChildren()
@@ -904,10 +1044,48 @@ function setupPanel(root: HTMLElement) {
     clearError()
     if (activity) activity.hidden = true
     setBusy(false)
+    syncTemporaryChrome()
     closeHistory()
   }
 
+  function toggleTemporaryChat() {
+    if (sendBtn!.disabled) return
+    viewGeneration += 1
+    abortController?.abort()
+    abortController = null
+
+    if (temporaryChat) {
+      const previous = chatBeforeTemporary
+      temporaryChat = false
+      chatBeforeTemporary = null
+      state.sessionId = previous?.sessionId ?? null
+      state.clientToken = previous?.clientToken ?? null
+      state.model = previous?.model ?? null
+      state.effort = previous?.effort ?? null
+    } else {
+      chatBeforeTemporary = { ...state }
+      temporaryChat = true
+      state.sessionId = null
+      state.clientToken = null
+      state.model = null
+      state.effort = null
+    }
+
+    restoreChatIntelligence(state.sessionId)
+    saveState()
+    clearSelectionQuestion()
+    messages!.replaceChildren()
+    refreshRail()
+    clearError()
+    if (activity) activity.hidden = true
+    setBusy(false)
+    syncTemporaryChrome()
+    closeHistory()
+    if (!temporaryChat && state.sessionId) void restoreTranscript()
+  }
+
   newChatBtn?.addEventListener("click", startNewChat)
+  temporaryToggle?.addEventListener("click", toggleTemporaryChat)
   historyToggle?.addEventListener("click", () =>
     historyBox?.hidden ? void openHistory() : closeHistory(),
   )
@@ -935,6 +1113,12 @@ function setupPanel(root: HTMLElement) {
   function setBusy(busy: boolean) {
     sendBtn!.disabled = busy
     stopBtn!.hidden = !busy
+    if (temporaryToggle) temporaryToggle.disabled = busy
+    const answer = Array.from(messages!.querySelectorAll<HTMLElement>(".breadboard-ai-assistant")).at(-1)
+    if (answer) {
+      answer.dataset.pending = String(busy)
+      renderModelChanges(answer)
+    }
     if (!activity || !activityTitle || !activityList) return
     if (busy) {
       activity.hidden = false
@@ -1179,6 +1363,14 @@ function setupPanel(root: HTMLElement) {
           showError(String(event.payload?.message ?? "The assistant reported an error."))
         } else if (event.type === "tool.started" || event.type === "tool.completed") {
           const payload = event.payload || {}
+          if (event.type === "tool.completed" && Array.isArray(payload.uiResources)) {
+            const resources = widgetResources(payload.uiResources)
+            const prior = widgetResources(messageResources.get(assistantEl))
+            renderAssistantContent(assistantEl, text, [
+              ...prior.filter((current) => !resources.some((next) => next.id === current.id)),
+              ...resources,
+            ])
+          }
           const id = String(payload.toolCallId || payload.toolName || activityEntries.size)
           activityEntries.set(`tool-${id}`, {
             label: String(payload.summary || payload.toolName || "Using tool"),
@@ -1273,6 +1465,8 @@ function setupPanel(root: HTMLElement) {
     clearError()
     addMessage("user", trimmed)
     const assistantEl = addMessage("assistant", "…")
+    assistantEl.dataset.clientMessageId = clientMessageId
+    assistantEl.dataset.modelChangeAnchor = `turn:${clientMessageId}`
     setBusy(true)
     try {
       const turn = {
@@ -1283,6 +1477,7 @@ function setupPanel(root: HTMLElement) {
         model: state.model || undefined,
         reasoningEffort: state.effort || undefined,
         retry,
+        temporary: temporaryChat,
         context: {
           gardenId,
           pageSlug,
@@ -1407,12 +1602,14 @@ function setupPanel(root: HTMLElement) {
   // every visited page retained a stream closure and its detached DOM tree.
   window.addCleanup(() => {
     disposed = true
+    widgetHost.dispose()
     viewGeneration += 1
     abortController?.abort()
     abortController = null
   })
 
   // Restore the persisted transcript of the page session after a reload.
+  syncTemporaryChrome()
   if (state.sessionId) void restoreTranscript()
 }
 

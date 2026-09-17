@@ -11,15 +11,13 @@ import type { TransferImportResult, TransferKind } from "./format.ts";
 
 export { TRANSFER_ACCEPT, TRANSFER_FILE_FORMATS } from "./format.ts";
 
-function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
+function downloadUrl(url: string, fileName: string): void {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = fileName;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function filenameFromDisposition(
@@ -67,12 +65,16 @@ async function downloadTransfer(
   kind: TransferKind,
   label: string,
 ): Promise<void> {
-  const response = await fetch(url);
-  if (!response.ok) throw await errorFrom(response);
+  const response = await fetch(url, { method: "HEAD" });
+  if (!response.ok) {
+    throw new Error(response.status === 404 ? "Garden or cluster not found." :
+      response.status === 401 ? "Sign in to export this garden." : "The export could not be started. Try again.");
+  }
 
-  const blob = await response.blob();
-  downloadBlob(
-    blob,
+  // Let the browser download manager write the stream to disk. Fetching a Blob
+  // first would retain a second archive-sized allocation in the renderer.
+  downloadUrl(
+    url,
     filenameFromDisposition(
       response.headers.get("Content-Disposition"),
       transferFileName(kind, label),

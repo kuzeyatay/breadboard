@@ -34,7 +34,7 @@ Breadboard's own repository statistics.
   `Vvvebjs/demo/landing`.
 - Reproducible bulk corpora and media are omitted to keep clones and GitHub
   operations practical: `harvey-labs/tasks`, HyperFrames producer test
-  fixtures, `openGym/media`, `pxpipe/eval`, and
+  fixtures, `pxpipe/eval`, and
   `Resource2Skill/skills_wiki`. Screenpipe's downloadable ONNX Runtime archive
   is omitted as well.
 - Stirling PDF's two test private-key fixtures are intentionally omitted. No
@@ -104,7 +104,6 @@ compression) after those exclusions.
 | `open-alpha-arena` | https://github.com/etrobot/open-alpha-arena | `main` | `15d47c1d48969f63419954927478cdad8a36a6b2` |
 | `OpenExecutive` | https://github.com/SenteLabsAI/OpenExecutive | `main` | `755d8ec13083bc231b2d9c331af48ff5df902a81` |
 | `opencode` | https://github.com/anomalyco/opencode | `dev` | `017a5977d2107092007623e507fc5c6eb337d3b2` |
-| `openGym` | https://github.com/arvids-unavailable/openGym | `main` | `c42ba6b98e3776af5981f20c05ba392238799670` |
 | `OpenMontage` | https://github.com/calesthio/OpenMontage | `main` | `4eab34c5cfcccaa4f1970554928feccce73ee930` |
 | `OpenPlanter` | https://github.com/ShinMegamiBoson/OpenPlanter | `main` | `81d75620ff50a69f576bc19a8bb17738e952387a` |
 | `openmaic` | https://github.com/THU-MAIC/OpenMAIC | `main` | `dfebbcf33f3a56064129903faeab70a9e4243146` |

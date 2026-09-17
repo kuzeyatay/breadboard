@@ -7,8 +7,8 @@ export const BREADBOARD_TITLE_BAR = {
 } as const;
 
 export const BREADBOARD_DARK_TITLE_BAR = {
-  color: "#171916",
-  symbolColor: "#ccd2c9",
+  color: "#181d1a",
+  symbolColor: "#d2d9d0",
   height: 32,
 } as const;
 
@@ -46,7 +46,7 @@ export function titleBarForSurface(surface: BreadboardWindowSurface) {
 
 export function backgroundColorForSurface(surface: BreadboardWindowSurface): string {
   if (surface === "voice") return "#c1543c";
-  return surface === "dark" ? "#0b0c0a" : "#faf7ef";
+  return surface === "dark" ? "#0f1210" : "#faf7ef";
 }
 
 export function titleBarForTheme(theme: BreadboardWindowTheme) {
@@ -111,6 +111,21 @@ export function rendererWebPreferences(
     // Throttled, that hidden render never finishes and the swap lands on a
     // half-painted page.
     backgroundThrottling: false,
+  };
+}
+
+/**
+ * Tabs are detached from the native view tree while inactive. Let Chromium
+ * park their timers and animation frames; the top-level window keeps the
+ * unthrottled startup behaviour above, but background tabs must not continue
+ * doing foreground work indefinitely.
+ */
+export function tabRendererWebPreferences(
+  preloadPath: string,
+): NonNullable<BrowserWindowConstructorOptions["webPreferences"]> {
+  return {
+    ...rendererWebPreferences(preloadPath),
+    backgroundThrottling: true,
   };
 }
 

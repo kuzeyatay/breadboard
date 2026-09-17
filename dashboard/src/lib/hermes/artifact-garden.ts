@@ -134,6 +134,7 @@ export async function publishArtifactToGarden(
   if (!root) return null;
   const dir = clusterDir(root, input.clusterSlug);
   if (!dir) return null;
+  let reference: GardenArtifactRef;
   const lease = acquireGardenMutationLease(dir, "publish-artifact");
   try {
     const slug = documentSlugFor(
@@ -202,15 +203,7 @@ export async function publishArtifactToGarden(
     fs.renameSync(temporary, notePath);
 
     refreshClusterIndex(root, input.clusterSlug.trim());
-    await publishQuartzAfterMutation(
-      `publish artifact ${input.clusterSlug}/${slug}`,
-      {
-        userId: input.userId,
-        gardenSlug: input.clusterSlug,
-      },
-    );
-
-    return {
+    reference = {
       clusterSlug: input.clusterSlug.trim(),
       documentSlug: slug,
       markdownRelPath: `${ARTIFACTS_FOLDER}/${slug}.md`,
@@ -220,6 +213,13 @@ export async function publishArtifactToGarden(
   } finally {
     lease.release();
   }
+  // The canonical files are complete. A full-site rebuild can take minutes
+  // and must not keep folder creation (or another edit) behind this lease.
+  await publishQuartzAfterMutation(
+    `publish artifact ${input.clusterSlug}/${reference.documentSlug}`,
+    { userId: input.userId, gardenSlug: input.clusterSlug },
+  );
+  return reference;
 }
 
 export interface UnpublishArtifactInput {
@@ -272,11 +272,11 @@ export async function unpublishArtifactFromGarden(
     }
 
     refreshClusterIndex(root, input.clusterSlug.trim());
-    await publishQuartzAfterMutation(
-      `remove artifact ${input.clusterSlug}/${input.documentSlug}`,
-      { userId: input.userId, gardenSlug: input.clusterSlug },
-    );
   } finally {
     lease.release();
   }
+  await publishQuartzAfterMutation(
+    `remove artifact ${input.clusterSlug}/${input.documentSlug}`,
+    { userId: input.userId, gardenSlug: input.clusterSlug },
+  );
 }

@@ -23,6 +23,7 @@ from chatmock.model_identity import (
 )
 from chatmock.providers import (
     anthropic,
+    chatgpt_web,
     claude_code,
     dispatch,
     openai_compatible,
@@ -30,6 +31,9 @@ from chatmock.providers import (
     transport,
 )
 from chatmock.providers.registry import (
+    NoDefaultModelError,
+    active_failover,
+    chat_model,
     default_model,
     external_model_ids,
     model_entries,
@@ -444,6 +448,26 @@ class ProviderStoreTests(unittest.TestCase):
         store.set_default_model("default")
         self.assertIsNone(store.read_settings().default_model)
 
+    def test_default_change_preserves_the_chat_override_in_one_write(self) -> None:
+        store.set_default_model("gpt-5.6-sol")
+        store.set_chat_model("gpt-5.5")
+        with patch.object(store, "write_settings", wraps=store.write_settings) as write:
+            self.assertTrue(store.set_default_model("gpt-6-astra"))
+        self.assertEqual(write.call_count, 1)
+        settings = store.read_settings()
+        self.assertEqual(settings.default_model, "gpt-6-astra")
+        self.assertEqual(settings.chat_model, "gpt-5.5")
+        self.assertEqual(store.get_chat_model(store.get_default_model("fallback")), "gpt-5.5")
+
+    def test_failed_default_write_preserves_both_cached_choices(self) -> None:
+        store.set_default_model("gpt-5.6-sol")
+        store.set_chat_model("gpt-5.5")
+        with patch.object(store, "write_settings", return_value=False):
+            self.assertFalse(store.set_default_model("gpt-6-astra"))
+        settings = store.read_settings()
+        self.assertEqual(settings.default_model, "gpt-5.6-sol")
+        self.assertEqual(settings.chat_model, "gpt-5.5")
+
 
 class ModelResolutionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -511,6 +535,25 @@ class ModelResolutionTests(unittest.TestCase):
         resolved = resolve_model("default")
         self.assertTrue(resolved.is_chatgpt)
         self.assertEqual(resolved.upstream_model, "gpt-5.6-sol")
+
+    def test_explicit_no_default_never_uses_a_fallback(self) -> None:
+        store.set_default_model(store.NO_MODEL_SENTINEL)
+        with patch.dict(os.environ, {"CHATMOCK_DEFAULT_MODEL": "gpt-5.5"}):
+            self.assertEqual(store.get_default_model("gpt-5.6-sol"), "none")
+            self.assertEqual(default_model(), "none")
+            self.assertEqual(chat_model(), "none")
+            self.assertIsNone(active_failover())
+            for model in ["none", "default", "chat", "auto", "", None]:
+                with self.subTest(model=model), self.assertRaises(NoDefaultModelError):
+                    resolve_model(model)
+            router = ProviderRouter(CouncilConfig())
+            with self.assertRaises(NoDefaultModelError):
+                router.effective_model("default")
+            store.set_chat_model("gpt-5.5")
+            self.assertEqual(resolve_model("chat").public_model, "gpt-5.5")
+            self.assertEqual(resolve_model("gpt-6-astra").public_model, "gpt-6-astra")
+        store.set_default_model("gpt-5.6-sol")
+        self.assertEqual(resolve_model("default").public_model, "gpt-5.6-sol")
 
     def test_environment_default_overrides_the_stored_default(self) -> None:
         store.set_default_model("anthropic/claude-opus-4-5")
@@ -705,16 +748,65 @@ class ProviderRouterTests(unittest.TestCase):
         ):
             self.assertEqual(router.call_model(call), "chatgpt fallback")
 
-        self.assertEqual(len(call.model_attempts_out), 2)
-        exhausted, served = call.model_attempts_out
+        # ChatGPT is the last layer: the provider's own siblings are tried
+        # (and, patched to be exhausted too, recorded) before it answers.
+        self.assertGreaterEqual(len(call.model_attempts_out), 2)
+        exhausted, *siblings, served = call.model_attempts_out
         self.assertEqual(exhausted["requestedModel"], "default")
         self.assertEqual(exhausted["callModel"], "anthropic/claude-opus-4-5")
         self.assertEqual(exhausted["upstreamModel"], "claude-opus-4-5")
         self.assertEqual(exhausted["outcome"], "quota_exhausted")
         self.assertFalse(exhausted["fallback"])
+        for sibling in siblings:
+            self.assertEqual(sibling["provider"], "anthropic")
+            self.assertEqual(sibling["outcome"], "quota_exhausted")
+            self.assertTrue(sibling["fallback"])
         self.assertEqual(served["upstreamModel"], "gpt-5.6-sol")
         self.assertEqual(served["outcome"], "succeeded")
         self.assertTrue(served["fallback"])
+
+
+    def test_a_rate_limited_subscription_model_stands_in_with_subscriptions_before_chatgpt(self) -> None:
+        # A Gemini alias behind CLIProxyAPI answers a burst with per-request
+        # 429s while siblings keep serving. Leading the fallback with ChatGPT
+        # sent every one of those to a paid ChatGPT account with the full
+        # prompt — 135 times in one Thought Topology build — spending a weekly
+        # window the person had not chosen to spend.
+        store.upsert_provider(
+            "cliproxy",
+            api_key="loopback-secret",
+            models=["gemini-3.6-flash-high", "gemini-3.1-flash-lite"],
+        )
+
+        class NeverUpstream:
+            def call_model(self, routed_call):
+                raise AssertionError("ChatGPT must not be tried before a subscription sibling")
+
+        router = ProviderRouter(CouncilConfig(), upstream=NeverUpstream())
+        call = ModelCall(
+            model="cliproxy/gemini-3.6-flash-high",
+            client_requested_model="default",
+            request_id="crun_burst",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        def respond(routed_call, _credentials, upstream_model):
+            if upstream_model == "gemini-3.6-flash-high":
+                raise ProviderError(
+                    "Resource has been exhausted (e.g. check quota).",
+                    status_code=429,
+                    replay_safe=True,
+                )
+            return f"stood in on {upstream_model}"
+
+        with patch.object(openai_compatible, "call_model", side_effect=respond):
+            self.assertEqual(router.call_model(call), "stood in on gemini-3.1-flash-lite")
+
+        outcomes = [(a["upstreamModel"], a["outcome"]) for a in call.model_attempts_out]
+        self.assertEqual(
+            outcomes,
+            [("gemini-3.6-flash-high", "quota_exhausted"), ("gemini-3.1-flash-lite", "succeeded")],
+        )
 
 
 class OpenAICompatibleTests(unittest.TestCase):
@@ -818,6 +910,61 @@ class OpenAICompatibleTests(unittest.TestCase):
             openai_compatible.chat_url(self._credentials()),
             "https://api.groq.com/openai/v1/chat/completions",
         )
+
+    def test_openrouter_requests_carry_a_bounded_output_allowance(self) -> None:
+        """OpenRouter reserves credit for the whole allowance up front and
+        defaults to the model maximum (64k for Sonnet 4.5) when none is named,
+        so every paid model answered HTTP 402 "requires more credits, or fewer
+        max_tokens" on a balance that covered the actual answers."""
+        messages = [{"role": "user", "content": "hi"}]
+        # No allowance named: the cap is supplied.
+        absent = openai_compatible.build_payload(
+            {"messages": messages}, "anthropic/claude-sonnet-4.5", stream=False, provider_id="openrouter"
+        )
+        self.assertEqual(absent["max_tokens"], openai_compatible.DEFAULT_OPENROUTER_MAX_TOKENS)
+        # A larger request is brought down to it; a smaller one is kept.
+        capped = openai_compatible.build_payload(
+            {"messages": messages, "max_tokens": 64000}, "m", stream=False, provider_id="openrouter"
+        )
+        self.assertEqual(capped["max_tokens"], openai_compatible.DEFAULT_OPENROUTER_MAX_TOKENS)
+        kept = openai_compatible.build_payload(
+            {"messages": messages, "max_completion_tokens": 2048}, "m", stream=True, provider_id="openrouter"
+        )
+        self.assertEqual(kept["max_completion_tokens"], 2048)
+        self.assertNotIn("max_tokens", kept)
+        # The ceiling is configurable.
+        with patch.dict(os.environ, {openai_compatible.OPENROUTER_MAX_TOKENS_ENV: "4096"}):
+            self.assertEqual(
+                openai_compatible.build_payload(
+                    {"messages": messages, "max_tokens": 64000}, "m", stream=False, provider_id="openrouter"
+                )["max_tokens"],
+                4096,
+            )
+
+    def test_other_openai_compatible_providers_keep_their_own_allowance(self) -> None:
+        messages = [{"role": "user", "content": "hi"}]
+        untouched = openai_compatible.build_payload(
+            {"messages": messages, "max_tokens": 64000}, "gemini-3.6-flash-high", stream=False, provider_id="cliproxy"
+        )
+        self.assertEqual(untouched["max_tokens"], 64000)
+        self.assertNotIn(
+            "max_tokens",
+            openai_compatible.build_payload({"messages": messages}, "m", stream=False, provider_id="cliproxy"),
+        )
+
+    def test_request_chat_caps_the_wire_payload_for_openrouter(self) -> None:
+        seen: dict = {}
+
+        def capture(url, *, headers, payload, stream, **kwargs):
+            seen.update(payload)
+            return FakeResponse(body={"choices": [{"message": {"content": "ok"}}]})
+
+        credentials = ResolvedCredentials("openrouter", "or-key", "https://openrouter.ai/api/v1", True)
+        with patch.object(transport, "post_with_retry", side_effect=capture):
+            openai_compatible.request_chat(
+                credentials, {"messages": [{"role": "user", "content": "hi"}]}, "stealth/union-alpha", stream=False
+            )
+        self.assertEqual(seen["max_tokens"], openai_compatible.DEFAULT_OPENROUTER_MAX_TOKENS)
 
     def test_bearer_header_is_set(self) -> None:
         headers = openai_compatible.build_headers(self._credentials())
@@ -1212,10 +1359,14 @@ class ProviderRoutesTests(unittest.TestCase):
         self.assertFalse(entry["configured"])
 
     def test_default_model_requires_a_reachable_provider(self) -> None:
+        store.set_default_model("gpt-5.6-sol")
+        store.set_chat_model("gpt-5.5")
         rejected = self.client.put(
             "/v1/settings/default-model", json={"model": "anthropic/claude-opus-4-5"}
         )
         self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(store.read_settings().default_model, "gpt-5.6-sol")
+        self.assertEqual(store.read_settings().chat_model, "gpt-5.5")
 
         self.client.put("/v1/providers/anthropic", json={"apiKey": "sk-ant-key"})
         accepted = self.client.put(
@@ -1223,11 +1374,43 @@ class ProviderRoutesTests(unittest.TestCase):
         )
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.get_json()["defaultModel"], "anthropic/claude-opus-4-5")
+        self.assertEqual(accepted.get_json()["chatModel"], "gpt-5.5")
+        self.assertEqual(accepted.get_json()["storedChatModel"], "gpt-5.5")
 
     def test_chatgpt_default_model_is_always_allowed(self) -> None:
         response = self.client.put("/v1/settings/default-model", json={"model": "gpt-5.5"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.client.get("/v1/settings/default-model").get_json()["defaultModel"], "gpt-5.5")
+
+    def test_no_default_can_be_saved_and_dependent_requests_fail_before_dispatch(self) -> None:
+        response = self.client.put("/v1/settings/default-model", json={"model": "none"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["defaultModel"], "none")
+        self.assertIsNone(response.get_json()["failover"])
+        self.assertEqual(self.client.get("/v1/settings/default-model").get_json()["storedDefaultModel"], "none")
+        self.assertEqual(self.client.get("/v1/settings/model-health").status_code, 200)
+        self.assertEqual(self.client.get("/v1/models").status_code, 200)
+        with patch("chatmock.routes_openai.start_upstream_request") as upstream, patch.object(dispatch, "credentials_for") as credentials:
+            for endpoint, body in [
+                ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hello"}]}),
+                ("/v1/completions", {"prompt": "hello"}),
+                ("/v1/responses", {"input": "hello"}),
+            ]:
+                for model in ["none", "default", "chat", "auto", "", None]:
+                    with self.subTest(endpoint=endpoint, model=model):
+                        result = self.client.post(endpoint, json={**body, **({"model": model} if model is not None else {})})
+                        self.assertEqual(result.status_code, 400)
+                        self.assertEqual(result.get_json()["error"]["code"], "default_model_required")
+                        self.assertIn("No default model is selected", result.get_json()["error"]["message"])
+            upstream.assert_not_called()
+            credentials.assert_not_called()
+        pin = self.client.put("/v1/settings/chat-model", json={"model": "gpt-5.5"})
+        self.assertEqual(pin.status_code, 200)
+        self.assertEqual(pin.get_json()["chatModel"], "gpt-5.5")
+        self.assertEqual(pin.get_json()["defaultModel"], "none")
+        restored = self.client.put("/v1/settings/default-model", json={"model": "gpt-5.6-sol"})
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.get_json()["defaultModel"], "gpt-5.6-sol")
 
     def test_models_endpoint_lists_configured_providers(self) -> None:
         before = [m["id"] for m in self.client.get("/v1/models").get_json()["data"]]
@@ -1632,6 +1815,33 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409, response.get_json())
         claude_request.assert_not_called()
+
+    def test_non_streaming_passthrough_only_hands_client_gone_to_clients_that_take_it(self) -> None:
+        """Only the ChatGPT web client accepts ``client_gone``. Passing it to
+        the others raised ``TypeError`` before any upstream call, so every
+        non-streaming tool-carrying request to CLIProxy, OpenRouter or
+        Anthropic was an instant HTTP 500 — Deep Research's search call among
+        them. The fake below carries the real ``openai_compatible`` signature,
+        so an unexpected keyword fails the same way it failed in production."""
+        self._configure(["gemini-3.6-flash-high"])
+        seen: list[dict] = []
+
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
+            seen.append({"stream": stream})
+            return FakeResponse(body={"choices": [{"message": {"content": "answered"}}]})
+
+        with patch.object(openai_compatible, "request_chat", side_effect=respond):
+            response = self._ask("cliproxy/gemini-3.6-flash-high")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_json()["choices"][0]["message"]["content"], "answered")
+        self.assertEqual(seen, [{"stream": False}])
+
+    def test_non_streaming_passthrough_hands_client_gone_to_a_client_that_takes_it(self) -> None:
+        self.assertTrue(dispatch._accepts_client_gone(chatgpt_web.request_chat))
+        self.assertFalse(dispatch._accepts_client_gone(openai_compatible.request_chat))
+        self.assertFalse(dispatch._accepts_client_gone(anthropic.request_chat))
+        self.assertFalse(dispatch._accepts_client_gone(claude_code.request_chat))
 
     def test_cooldown_observer_failure_does_not_replace_safe_stand_in(self) -> None:
         self._configure(["gemini-3.6-flash-high", "claude-opus-5"])

@@ -107,7 +107,10 @@ export async function embedTexts(
       "content-type": "application/json",
       authorization: `Bearer ${settings.apiKey}`,
     },
-    body: JSON.stringify({ model: settings.model, input: texts }),
+    // A lone surrogate — text cut inside an emoji or a mathematical symbol —
+    // survives JSON but makes the tokenizer behind `/v1/embeddings` answer 500
+    // for the whole batch. One U+FFFD is a better outcome than no vectors.
+    body: JSON.stringify({ model: settings.model, input: texts.map((text) => text.toWellFormed()) }),
     signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 120_000),
   });
 

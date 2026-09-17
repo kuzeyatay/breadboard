@@ -19,7 +19,16 @@ async function bridgeSecret(): Promise<string> {
   return secret;
 }
 
-export async function subscriptionBridge(userId: number, suffix: string, init: RequestInit = {}): Promise<Response> {
+/**
+ * One authenticated loopback request to ChatMock's voice bridge, returned
+ * unparsed so audio bodies pass through untouched.
+ */
+export async function voiceBridgeFetch(
+  userId: number,
+  suffix: string,
+  init: RequestInit = {},
+  { timeoutMs = 50_000, unavailable = "The subscription voice service is unavailable. Restart Breadboard and try again." }: { timeoutMs?: number; unavailable?: string } = {},
+): Promise<Response> {
   const base = new URL(localChatmockBaseUrl());
   if (!(["127.0.0.1", "localhost", "[::1]"] as string[]).includes(base.hostname) || base.protocol !== "http:") {
     throw new RouteError(503, "Subscription voice currently requires the local Breadboard service.");
@@ -27,15 +36,24 @@ export async function subscriptionBridge(userId: number, suffix: string, init: R
   const headers = new Headers(init.headers);
   headers.set("X-Breadboard-Voice-Secret", await bridgeSecret());
   headers.set("X-Breadboard-Voice-Owner", String(userId));
-  let response: Response;
+  // Voice event reads are long polls. Werkzeug closes each response, while
+  // Node's pooled fetch can otherwise retain the half-closed loopback socket
+  // and reuse it for the next poll. That request then waits for the outer
+  // timeout and lets ChatMock expire an otherwise healthy voice session.
+  headers.set("Connection", "close");
   try {
-    response = await fetch(new URL(`/breadboard/voice/${suffix}`, base), {
+    return await fetch(new URL(`/breadboard/voice/${suffix}`, base), {
       ...init, headers, cache: "no-store", redirect: "error",
-      signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(50_000)]) : AbortSignal.timeout(50_000),
+      signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
   } catch {
-    throw new RouteError(503, "The subscription voice service is unavailable. Restart Breadboard and try again.");
+    if (init.signal?.aborted) throw new RouteError(499, "The voice request was cancelled.");
+    throw new RouteError(503, unavailable);
   }
+}
+
+export async function subscriptionBridge(userId: number, suffix: string, init: RequestInit = {}): Promise<Response> {
+  const response = await voiceBridgeFetch(userId, suffix, init);
   if (response.status === 404) throw new RouteError(503, "Restart Breadboard to load the subscription voice service.");
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new RouteError(response.status, body?.error || "Subscription voice could not connect.");

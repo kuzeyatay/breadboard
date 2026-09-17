@@ -1,9 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import ViewportPopover from "@/app/components/viewport-popover";
 import { assistantModelVendor, formatAssistantModelName } from "@/lib/ai-models";
 import { providerUsageLink } from "@/lib/provider-usage";
-import { usageLimitRowsWithFiveHour } from "@/lib/usage-limit-display";
+import {
+  usageLimitRowsWithFiveHour,
+  usageReserveRows,
+  type DisplayUsageLimitReserve,
+} from "@/lib/usage-limit-display";
+import { ReserveNotice, planLabel } from "@/app/components/usage-reserve-notice";
 
 interface UsageLimitWindow {
   used_percent?: number;
@@ -21,9 +27,16 @@ interface UsageLimitsPayload {
   refreshed?: boolean;
   refresh_error?: string;
   error?: string;
+  recovery_required?: boolean;
   model?: string;
   primary?: UsageLimitWindow;
   secondary?: UsageLimitWindow;
+  /** Set when OpenAI's own report was read rather than the header snapshot. */
+  source?: "headers" | "report";
+  account?: string;
+  plan?: string;
+  limit_reached?: boolean;
+  reserve?: DisplayUsageLimitReserve | null;
   accounts?: Array<{
     account: string;
     limit: UsageLimitWindow;
@@ -46,12 +59,40 @@ interface UsageLimitsPopoverProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   showBackdrop?: boolean;
+  viewportBounded?: boolean;
   /**
    * The model currently in use. ChatGPT windows come from rate-limit headers;
    * Google subscriptions are read from Antigravity's quota report; Claude
    * subscriptions use Anthropic's read-only utilization report.
    */
   activeModel?: string;
+}
+
+function UsagePopoverContainer({
+  viewportBounded,
+  anchorRef,
+  onClose,
+  className,
+  children,
+}: {
+  viewportBounded: boolean;
+  anchorRef: RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  className: string;
+  children: ReactNode;
+}) {
+  return viewportBounded ? (
+    <ViewportPopover
+      anchorRef={anchorRef}
+      ariaLabel="Usage limits"
+      role="dialog"
+      onClose={onClose}
+      className={className}
+      portal={false}
+    >
+      {children}
+    </ViewportPopover>
+  ) : <div className={className}>{children}</div>;
 }
 
 /** ChatGPT ids are bare; every other provider's are `provider/model`. */
@@ -76,6 +117,9 @@ function isClaudeSubscriptionModel(modelId: string | undefined): boolean {
 function providerLabel(modelId: string): string {
   const provider = modelId.split("/", 1)[0];
   if (provider === "cliproxy") return "your subscription";
+  // The chatgpt.com tab draws on the website's own limits, which the plan
+  // usage shown here (the Codex endpoint's windows) does not describe.
+  if (provider === "openaiweb") return "chatgpt.com";
   return provider;
 }
 
@@ -202,8 +246,10 @@ export default function UsageLimitsPopover({
   open: controlledOpen,
   onOpenChange,
   showBackdrop = true,
+  viewportBounded = false,
   activeModel,
 }: UsageLimitsPopoverProps) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const [usageData, setUsageData] = useState<UsageLimitsPayload | null>(null);
@@ -233,15 +279,21 @@ export default function UsageLimitsPopover({
     try {
       const query = new URLSearchParams({ ts: String(Date.now()) });
       if (activeModel) query.set("model", activeModel);
-      // A ChatGPT refresh needs a tiny probe request so fresh limit headers
-      // exist. Google and Anthropic expose read-only usage calls of their own.
+      // Claude uses its read-only report first, waking the CLI only when the
+      // server identifies expired credentials or an inactive usage session.
       const useProbe = probe && !googleUsageActive && !claudeUsageActive;
-      const response = await fetch(`/api/usage-limits?${query.toString()}`, {
+      let response = await fetch(`/api/usage-limits?${query.toString()}`, {
         method: useProbe ? "POST" : "GET",
         cache: "no-store",
         headers: { "Cache-Control": "no-cache" },
       });
-      const data = (await response.json().catch(() => ({}))) as UsageLimitsPayload;
+      let data = (await response.json().catch(() => ({}))) as UsageLimitsPayload;
+      if (claudeUsageActive && data.recovery_required) {
+        response = await fetch(`/api/usage-limits?${query.toString()}`, {
+          method: "POST", cache: "no-store", signal: AbortSignal.timeout(60000),
+        });
+        data = (await response.json().catch(() => ({}))) as UsageLimitsPayload;
+      }
       setUsageData(data);
       if (!response.ok) {
         throw new Error(
@@ -282,6 +334,8 @@ export default function UsageLimitsPopover({
     usageData.provider !== "anthropic"
       ? usageLimitRowsWithFiveHour(usageData)
       : [];
+  const reserveRows =
+    usageData?.available && usageData.source === "report" ? usageReserveRows(usageData) : [];
   const googleAccounts = usageData?.provider === "google" ? usageData.accounts ?? [] : [];
   const claudeLimits = usageData?.provider === "anthropic" ? usageData.limits ?? [] : [];
   const googleModelLabel = formatAssistantModelName(usageData?.model ?? activeModel ?? "Google");
@@ -326,6 +380,7 @@ export default function UsageLimitsPopover({
       ) : (
         <button
           type="button"
+          ref={triggerRef}
           onClick={() => setOpen(!open)}
           title="View usage limits"
           aria-expanded={open}
@@ -339,7 +394,12 @@ export default function UsageLimitsPopover({
           {showBackdrop ? (
             <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           ) : null}
-          <div className={popoverClassName}>
+          <UsagePopoverContainer
+            viewportBounded={viewportBounded}
+            anchorRef={triggerRef}
+            onClose={() => setOpen(false)}
+            className={popoverClassName}
+          >
             <div className="mb-3 flex items-center justify-between gap-3">
               <p className={`font-medium ${light ? "text-[var(--ink-heading)]" : "text-gray-300"}`}>Usage Limits</p>
               {!activeModel ||
@@ -467,9 +527,21 @@ export default function UsageLimitsPopover({
               </div>
             ) : (
               <div className="space-y-3">
-                {updatedAt ? (
+                {updatedAt || usageData.account ? (
                   <div className="space-y-1">
-                    <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>Updated: {updatedAt}</p>
+                    {usageData.account ? (
+                      <p
+                        data-usage-account=""
+                        className={`truncate ${light ? "text-[var(--ink-muted)]" : "text-gray-500"}`}
+                        title={usageData.account}
+                      >
+                        {usageData.account}
+                        {usageData.plan ? ` · ${planLabel(usageData.plan)}` : ""}
+                      </p>
+                    ) : null}
+                    {updatedAt ? (
+                      <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>Updated: {updatedAt}</p>
+                    ) : null}
                     {usageData.stale ? (
                       <p className={light ? "text-[#8a6f00]" : "text-amber-300"}>
                         This snapshot is stale. Click Refresh for an updated snapshot.
@@ -477,12 +549,22 @@ export default function UsageLimitsPopover({
                     ) : null}
                   </div>
                 ) : null}
+                {usageData.reserve ? (
+                  <ReserveNotice
+                    reserve={usageData.reserve}
+                    plan={usageData.plan}
+                    primary={usageData.primary}
+                    capturedAt={usageData.captured_at}
+                    now={now}
+                    light={light}
+                  />
+                ) : null}
                 {limitRows.length === 0 ? (
                   <p className={light ? "text-[var(--ink-muted)]" : "text-gray-500"}>
                     No usage windows reported yet.
                   </p>
                 ) : null}
-                {limitRows.map(({ key, label, window: windowData, reported }) => (
+                {[...limitRows, ...reserveRows].map(({ key, label, window: windowData, reported }) => (
                   <UsageLimitMeter
                     key={key}
                     label={label}
@@ -495,7 +577,7 @@ export default function UsageLimitsPopover({
                 ))}
               </div>
             )}
-          </div>
+          </UsagePopoverContainer>
         </>
       ) : null}
     </div>

@@ -31,6 +31,34 @@ test("uses the Hermes defaults when a legacy client omits both selections", () =
   assert.equal(engine.variant, "high");
 });
 
+test("a cleared profile default fails inherited turns but permits explicit models", () => {
+  for (const model of [undefined, null, "", "none"]) {
+    assert.throws(() => resolveHermesEngine(model, "high", "none"),
+      error => error?.code === "default_model_required" && error?.status === 400);
+  }
+  assert.equal(resolveHermesEngine("gpt-6-astra", "high", "none").selectedModelID, "gpt-6-astra");
+  assert.equal(resolveHermesEngine(undefined, "high", "gpt-5.5").selectedModelID, "gpt-5.5");
+  const inheritedProvider = resolveHermesEngine(undefined, "high", "cliproxy/claude-opus-5");
+  assert.equal(inheritedProvider.model.modelID, "chat");
+  assert.equal(inheritedProvider.selectedModelID, "cliproxy/claude-opus-5");
+});
+
+test("a provider-prefixed pick travels as the chat sentinel, never as default", () => {
+  // Hermes cannot name `cliproxy/...`, so the pick rides a sentinel. It must
+  // be `chat`: `default` is the background model the profile page owns, and
+  // routing a conversation through it used to drag Learn and every council
+  // onto whatever model was picked for that one chat.
+  const engine = resolveHermesEngine("cliproxy/gemini-3.6-flash-high", "max");
+  assert.equal(engine.model.modelID, "chat");
+  assert.equal(engine.selectedModelID, "cliproxy/gemini-3.6-flash-high");
+  // The sentinel stands for a model whose depth ChatMock clamps itself.
+  assert.equal(engine.variant, "max");
+  assert.equal(engine.adjusted, false);
+
+  const background = resolveHermesEngine("default", "high");
+  assert.equal(background.model.modelID, "default");
+});
+
 test("rejects models that are not registered with Hermes", () => {
   assert.throws(
     () => resolveHermesEngine("gpt-5", "high"),

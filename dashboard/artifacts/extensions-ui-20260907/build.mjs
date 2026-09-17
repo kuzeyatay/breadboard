@@ -1,0 +1,10 @@
+import { build } from '../../node_modules/esbuild/lib/main.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dir = path.dirname(fileURLToPath(import.meta.url));
+await build({entryPoints:[path.join(dir,'entry.tsx')],bundle:true,outfile:path.join(dir,'bundle.js'),loader:{'.module.css':'local-css'},tsconfig:path.join(dir,'../../tsconfig.json'),define:{'process.env.NODE_ENV':'"development"'}});
+const globalCss = fs.readFileSync(path.join(dir,'../../src/app/globals.css'),'utf8').replace(/^@(import|source).*;\r?\n/gm,'');
+const preflight = fs.readFileSync(path.join(dir,'../../node_modules/tailwindcss/preflight.css'),'utf8');
+fs.writeFileSync(path.join(dir,'global.css'),preflight+'\n'+globalCss);
+fs.writeFileSync(path.join(dir,'index.html'),'<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="global.css"><link rel="stylesheet" href="bundle.css"></head><body><div id="root"></div><script src="bundle.js"></script></body></html>');

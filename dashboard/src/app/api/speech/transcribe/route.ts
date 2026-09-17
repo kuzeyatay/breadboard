@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
 import { getSpeechSettings } from "@/lib/speech/settings";
+import { transcribeElevenLabsAudio } from "@/lib/speech/elevenlabs";
+import { transcribeWebAudio } from "@/lib/speech/web-speech";
 import { voiceboxFetch, voiceboxResponseError } from "@/lib/speech/voicebox-client";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
@@ -19,6 +21,12 @@ export async function POST(request: Request) {
       throw new RouteError(409, "Subscription dictation requires the browser audio connection. Reload Breadboard and try again.");
     }
 
+    if (settings.speechProvider === "elevenlabs") {
+      return NextResponse.json(await transcribeElevenLabsAudio(userId, file, file.name || "dictation.webm", settings.transcriptionLanguage, request.signal));
+    }
+    if (settings.speechProvider === "openaiweb") {
+      return NextResponse.json(await transcribeWebAudio(userId, file, file.name || "dictation.webm", settings.transcriptionLanguage, request.signal));
+    }
     const outgoing = new FormData();
     outgoing.set("file", file, file.name || "dictation.webm");
     outgoing.set("model", settings.transcriptionModel);

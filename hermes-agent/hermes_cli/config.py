@@ -1389,6 +1389,7 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        "exploration_limit": 0,  # Optional per-turn discovery/search budget; 0 disables it.
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,

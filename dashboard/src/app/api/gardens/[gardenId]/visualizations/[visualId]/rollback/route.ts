@@ -15,7 +15,7 @@ import {
   rollbackGeneratedVisualization,
 } from "@/lib/generated-visuals";
 import { appendGardenEvent, listGardenMarkdownFiles } from "@/lib/visuals";
-import { acquireGardenLearnLease } from "@/lib/learn-atomic-promotion";
+import { acquireGardenLearnLease } from "@/lib/garden-mutation-lease";
 import { generatedVisualPublicationPointersMatch } from "@/lib/generated-visual-publication-coherence";
 import {
   createDetachedGardenMutation,

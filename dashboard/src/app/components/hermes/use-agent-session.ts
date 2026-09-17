@@ -97,11 +97,8 @@ import {
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
-import {
-  getStoredCurrentLocationPreference,
-  type CurrentLocationSnapshot,
-} from "@/lib/current-location";
-import { requestUsesCurrentLocation } from "@/lib/hermes/current-location-context";
+import type { CurrentLocationSnapshot } from "@/lib/current-location";
+import { getCurrentLocationForTurn } from "@/app/components/current-location-autorefresh";
 import { currentBrowserTerminalAccess, type BrowserTerminalAccess } from "@/lib/browser-terminal";
 import {
   delegatedAgentActivityLabel,
@@ -247,6 +244,7 @@ export interface AgentMessage {
   content: string;
   /** Assistant-authored pre-tool updates, kept separate from private reasoning. */
   progressNotes?: string[];
+  activityLabel?: string;
   /** Presentation-only row derived from `modelChangeAfter`. */
   modelChange?: string;
   /** Persistent model boundaries rendered immediately after this answer. */
@@ -358,8 +356,6 @@ export interface AgentMessage {
   musicProducerRun?: { runId: string; task: string };
   /** OpenExecutive's multi-specialist virtual executive advisory run. */
   openExecutiveRun?: { runId: string; task: string };
-  /** Persistent openGym coaching/program run with catalogue animations. */
-  openGymRun?: { runId: string; task: string; quiet?: boolean };
   /**
    * Present when this assistant turn is a TradingAgents analysis (the cloned
    * multi-agent trading framework, driven by ChatMock). Renders the firm's
@@ -620,6 +616,8 @@ export interface AgentSendOptions {
   internalAgentContinuation?: boolean;
   continuation?: SkillContinuation;
   attachments?: ChatAttachment[];
+  /** Prepare reader evidence after the optimistic turn is visible. */
+  prepareAttachments?: (signal: AbortSignal) => Promise<ChatAttachment[]>;
   confirmedPermissionIds?: string[];
   historyOverride?: AgentMessage[];
   branchGroupId?: string;
@@ -1179,7 +1177,6 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["careerOpsRun", "career_ops"],
   ["musicProducerRun", "music_producer"],
   ["openExecutiveRun", "openexecutive"],
-  ["openGymRun", "open_gym"],
   ["tradingAgentsRun", "trading_agents"],
   ["vibeTradingRun", "vibe_trading"],
   ["stockAnalystRun", "stock_analyst"],
@@ -1415,6 +1412,7 @@ export interface UseAgentSessionResult {
   steer: (
     text: string,
     attachments?: readonly ChatAttachment[],
+    textSelection?: ChatTextSelectionReference,
   ) => Promise<boolean>;
   /**
    * Remove one exchange — a message and the answer it produced. Resolves false
@@ -1556,9 +1554,12 @@ export function useAgentSession(
     AgentLaunchRequestPayload[]
   >([]);
   const abortRef = useRef<AbortController | null>(null);
+  const attachmentPreparationRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
   const runStateRef = useRef<AgentRunState>("idle");
   const activeRunIdRef = useRef<string | null>(null);
+  const activeTurnClientMessageIdRef = useRef<string | null>(null);
+  const stoppedRunIdsRef = useRef(new Set<string>());
   const activeSuperAgentRef = useRef(false);
   const externalThinkingTurnIdsRef = useRef(new Set<string>());
   // A background agent belongs to the conversation that launched it, not to
@@ -1583,6 +1584,7 @@ export function useAgentSession(
   const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
   const steeringRef = useRef(false);
   const stopRequestedRef = useRef(false);
+  const stopEpochRef = useRef(0);
   /**
    * A stop is a decision about the whole run, not about the one frame it lands
    * on. Events that were already in flight when it was made -- a trailing
@@ -1599,7 +1601,16 @@ export function useAgentSession(
     [],
   );
   const resumedRunIdRef = useRef<string | null>(null);
-  const stoppedDirectTurnIdsRef = useRef(new Set<string>());
+  const stoppedTurnIdsRef = useRef(new Set<string>());
+  // The composer is released before cancellation finishes. Dispatch its next
+  // turn only after the previous reservation/dispatch and stop have settled,
+  // so an old session-wide abort can never cancel the new message.
+  const cancellationBarrierRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingTurnDispatchRef = useRef<{
+    clientMessageId: string;
+    sessionId: string | null;
+    settled: Promise<void>;
+  } | null>(null);
   const blockedTurnRef = useRef<BlockedTurn | null>(null);
   const pendingHistoryOverrideRef = useRef<AgentMessage[] | null>(null);
   // A send remains owned by its conversation while another conversation is on
@@ -1746,6 +1757,8 @@ export function useAgentSession(
           : null);
       if (!initial) return false;
       const expectedClientMessageId = initial.assistant.clientMessageId;
+      const turnWasStopped = () => Boolean(expectedClientMessageId && stoppedTurnIdsRef.current.has(expectedClientMessageId));
+      if (turnWasStopped()) return false;
       const persistenceGraceUntil = Date.now() + 30_000;
 
       setActiveInstruction(initial.instruction);
@@ -1820,6 +1833,7 @@ export function useAgentSession(
                   yoloMode: recovery.yoloMode,
                 },
               );
+              if (turnWasStopped()) return;
               if (!response.ok) {
                 const body = await response.json().catch(() => ({}));
                 throw new Error(
@@ -1842,6 +1856,7 @@ export function useAgentSession(
                 return;
               }
             } catch (recoveryError) {
+              if (turnWasStopped()) return;
               preDispatchRecoveriesRef.current.delete(recoveryKey);
               if (
                 viewEpochRef.current === viewEpoch &&
@@ -1866,6 +1881,7 @@ export function useAgentSession(
           await new Promise<void>((resolve) => {
             window.setTimeout(resolve, delayMs);
           });
+          if (turnWasStopped()) return;
           if (
             viewEpochRef.current !== viewEpoch ||
             sessionRef.current !== id
@@ -1883,6 +1899,7 @@ export function useAgentSession(
           const restored = await loadHermesSessionDetail(surface, id).catch(
             () => null,
           );
+          if (turnWasStopped()) return;
           if (
             viewEpochRef.current !== viewEpoch ||
             sessionRef.current !== id
@@ -2015,7 +2032,9 @@ export function useAgentSession(
       })();
       return true;
     },
-    [createOptions, rehydrateAwaitingPermission, surface, transition],
+    // Restoration depends on this callback. Inline options (as used by the
+    // PDF assistant) must not restart restoration on every loading-state render.
+    [createOptions?.gardenSlug, createOptions?.pageSlug, rehydrateAwaitingPermission, surface, transition],
   );
 
   useEffect(() => {
@@ -2185,6 +2204,7 @@ export function useAgentSession(
   useEffect(
     () => () => {
       viewEpochRef.current += 1;
+      attachmentPreparationRef.current?.abort();
       abortRef.current?.abort();
     },
     [],
@@ -2306,6 +2326,7 @@ export function useAgentSession(
             streamReader.read(),
             timeout,
           );
+          controller.signal.throwIfAborted();
           if (done) {
             throw agentStreamClosedFailure(reportedFailure);
           }
@@ -2485,6 +2506,8 @@ export function useAgentSession(
               break;
             }
             case "reasoning.status":
+              assistant = { ...assistant, activityLabel: String(payload.label ?? "Thinking") };
+              commit(assistant);
               if (typeof payload.detail === "string" && payload.detail) {
                 assistant = {
                   ...assistant,
@@ -2506,6 +2529,7 @@ export function useAgentSession(
                 startedAt: new Date().toISOString(),
               });
               break;
+            case "assistant.usage":
             case "assistant.completed": {
               const usage = normalizeChatTokenUsage(payload.usage);
               const replacementText =
@@ -2842,6 +2866,7 @@ export function useAgentSession(
           }
         }
       } catch (streamError) {
+        controller.signal.throwIfAborted();
         if ((streamError as Error).name === "AbortError") {
           throw streamError;
         }
@@ -2896,6 +2921,7 @@ export function useAgentSession(
     ) => {
       await activeStreamRef.current?.catch(() => undefined);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (stoppedRunIdsRef.current.has(runId) || (clientMessageId && stoppedTurnIdsRef.current.has(clientMessageId))) return;
       if (viewEpochRef.current !== viewEpoch) {
         monitorBackgroundChatResponse({
           surface,
@@ -2936,6 +2962,7 @@ export function useAgentSession(
         setMessages((current) => [...current, assistant]);
       }
       const commit = (message: AgentMessage) => {
+        if (clientMessageId && stoppedTurnIdsRef.current.has(clientMessageId)) return;
         if (viewEpochRef.current !== viewEpoch) return;
         setMessages((current) => {
           const next = [...current];
@@ -2969,6 +2996,7 @@ export function useAgentSession(
       };
 
       activeRunIdRef.current = runId;
+      activeTurnClientMessageIdRef.current = clientMessageId ?? null;
       setActiveRunId(runId);
       setActiveInstruction(instruction);
       setError(null);
@@ -3010,6 +3038,7 @@ export function useAgentSession(
             );
           }),
         ]);
+        if (clientMessageId && stoppedTurnIdsRef.current.has(clientMessageId)) return;
         if (viewEpochRef.current !== viewEpoch) {
           streamController?.abort();
           monitorBackgroundChatResponse({
@@ -3061,6 +3090,7 @@ export function useAgentSession(
           }
         }
       } catch (streamError) {
+        if (clientMessageId && stoppedTurnIdsRef.current.has(clientMessageId)) return;
         if (viewEpochRef.current !== viewEpoch) {
           monitorBackgroundChatResponse({
             surface,
@@ -3606,6 +3636,21 @@ export function useAgentSession(
         externalAgentConversationIdsRef.current.get(input.clientMessageId) ??
         sessionRef.current;
       if (!targetSessionId) return;
+      if (input.outcome === "aborted") {
+        stoppedTurnIdsRef.current.add(input.clientMessageId);
+        if (sessionRef.current === targetSessionId) {
+          const completedAt = new Date().toISOString();
+          setMessages((current) => current.map((message) =>
+            message.role === "assistant" && message.clientMessageId === input.clientMessageId
+              ? { ...message, externalAgentOutcome: "aborted", externalAgentResult: input.content,
+                  interrupted: true, pending: false, responseCompletedAt: completedAt,
+                  responseDurationMs: Math.max(0, Date.now() - (Date.parse(message.responseStartedAt ?? message.createdAt ?? completedAt) || Date.now())) }
+              : message,
+          ));
+        }
+      } else if (stoppedTurnIdsRef.current.has(input.clientMessageId)) {
+        return;
+      }
       const response = await fetch(
         `/api/hermes/sessions/${targetSessionId}/external-turns`,
         {
@@ -3624,6 +3669,7 @@ export function useAgentSession(
       }
       const [restored] = normalizeRestoredMessages([body.message]);
       if (!restored) return;
+      if (input.outcome !== "aborted" && stoppedTurnIdsRef.current.has(input.clientMessageId)) return;
       if (sessionRef.current !== targetSessionId) return;
       setMessages((current) =>
         current.map((message) =>
@@ -3655,6 +3701,7 @@ export function useAgentSession(
       options?: AgentSendOptions;
       retry: boolean;
       onTurnPersisted: () => void;
+      onDispatchSettled: () => void;
       responseStartedAtMs: number;
       viewEpoch: number;
       currentLocation?: CurrentLocationSnapshot;
@@ -3664,7 +3711,7 @@ export function useAgentSession(
       const clientMessageId = assistant.clientMessageId ?? "";
       const stopWasRequestedForTurn = () =>
         Boolean(clientMessageId) &&
-        stoppedDirectTurnIdsRef.current.has(clientMessageId);
+        stoppedTurnIdsRef.current.has(clientMessageId);
       const response = await fetch(
         `/api/hermes/sessions/${input.sessionId}/direct`,
         {
@@ -3678,6 +3725,7 @@ export function useAgentSession(
             model: input.options?.model,
             reasoningEffort: input.options?.reasoningEffort,
             attachments: input.options?.attachments,
+            textSelection: input.options?.textSelection,
             branchGroupId: input.options?.branchGroupId,
             internalAgentContinuation:
               input.options?.internalAgentContinuation === true,
@@ -3691,10 +3739,10 @@ export function useAgentSession(
           }),
         },
       );
+      input.onDispatchSettled();
       if (!response.ok && stopWasRequestedForTurn()) {
         // Stop can land while the server is still opening the provider stream.
         // Its 409 is the acknowledgement of that stop, not a failed answer.
-        stoppedDirectTurnIdsRef.current.delete(clientMessageId);
         return;
       }
       if (!response.ok || !response.body) {
@@ -3707,9 +3755,8 @@ export function useAgentSession(
       }
       input.onTurnPersisted();
       if (stopWasRequestedForTurn()) {
-        await fetch(`/api/hermes/sessions/${input.sessionId}/abort`, {
-          method: "POST",
-        }).catch(() => undefined);
+        void response.body.cancel().catch(() => undefined);
+        return;
       } else if (input.viewEpoch === viewEpochRef.current) {
         transition("running");
         setActivities((current) =>
@@ -3728,6 +3775,10 @@ export function useAgentSession(
       let reasoning = "";
       for (;;) {
         const { done, value } = await reader.read();
+        if (stopWasRequestedForTurn()) {
+          void reader.cancel().catch(() => undefined);
+          return;
+        }
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const frames = buffer.split("\n\n");
@@ -3774,11 +3825,11 @@ export function useAgentSession(
           else notifyChatResponseReady(input.text, options);
           notifyHermesSessionsChanged(surface);
         }
-        stoppedDirectTurnIdsRef.current.delete(clientMessageId);
+        stoppedTurnIdsRef.current.delete(clientMessageId);
         return;
       }
       if (stopWasRequestedForTurn()) {
-        stoppedDirectTurnIdsRef.current.delete(clientMessageId);
+        stoppedTurnIdsRef.current.delete(clientMessageId);
         return;
       }
       const completedAt = new Date().toISOString();
@@ -3809,13 +3860,14 @@ export function useAgentSession(
         if (failure) notifyChatResponseFailed(input.text, options);
         else notifyChatResponseReady(input.text, options);
       }
-      stoppedDirectTurnIdsRef.current.delete(clientMessageId);
+      stoppedTurnIdsRef.current.delete(clientMessageId);
     },
     [surface, transition],
   );
 
   const respondToClarification = useCallback(
     async (answer: string) => {
+      const stopEpoch = stopEpochRef.current;
       const prompt = pendingClarificationRef.current;
       const activeSessionId = sessionRef.current;
       const trimmed = answer.trim();
@@ -3838,6 +3890,7 @@ export function useAgentSession(
           assistantContentOffset,
         );
       } catch (answerError) {
+        if (stopEpochRef.current !== stopEpoch) return;
         setPendingClarification(prompt);
         transition("waiting_for_permission");
         setError(
@@ -3847,6 +3900,7 @@ export function useAgentSession(
         );
         return;
       }
+      if (stopEpochRef.current !== stopEpoch) return;
       setActivities((current) =>
         current.map((item) =>
           item.id === `clarify-${prompt.requestId}`
@@ -3924,25 +3978,6 @@ export function useAgentSession(
               message.clientMessageId !== resumedBlockedTurn.userMessageId,
           )
         : selectedHistory ?? messages;
-      const priorLocationRequests = transcript
-        .filter(
-          (message) =>
-            message.role === "user" &&
-            message.internalAgentContinuation !== true,
-        )
-        .slice(-8)
-        .map((message) => message.content);
-      const locationPreference = getStoredCurrentLocationPreference(
-        window.localStorage,
-      );
-      const currentLocation =
-        options?.internalAgentContinuation !== true &&
-        locationPreference.useForAnswers &&
-        locationPreference.state === "available" &&
-        locationPreference.snapshot &&
-        requestUsesCurrentLocation(trimmed, priorLocationRequests)
-          ? locationPreference.snapshot
-          : undefined;
       // A hidden agent continuation appends to the conversation the delegated
       // run belongs to; it never regenerates a turn. Branching it would rebuild
       // the runtime from whatever history the surface happened to be holding
@@ -4008,7 +4043,7 @@ export function useAgentSession(
           : {}),
       };
       userMessage.clientMessageId = userMessage.id;
-      stoppedDirectTurnIdsRef.current.delete(userMessage.id ?? "");
+      stoppedTurnIdsRef.current.delete(userMessage.id ?? "");
       const assistant: AgentMessage = {
         id: resumedBlockedTurn?.assistantMessageId ?? crypto.randomUUID(),
         createdAt: turnCreatedAt,
@@ -4028,6 +4063,7 @@ export function useAgentSession(
           : {}),
       };
       assistant.clientMessageId = userMessage.id;
+      activeTurnClientMessageIdRef.current = userMessage.id!;
       const baseline = [...transcript, userMessage, assistant];
       // Stop reads the transcript ref synchronously. Waiting for React's effect
       // here can make a quick Stop mark the previous assistant id instead of
@@ -4039,6 +4075,21 @@ export function useAgentSession(
         clientMessageId: userMessage.id!,
         messages: baseline,
       };
+      const previousCancellation = cancellationBarrierRef.current;
+      let resolveDispatch!: () => void;
+      const pendingDispatch = {
+        clientMessageId: userMessage.id!,
+        sessionId: startingSessionId,
+        settled: new Promise<void>((resolve) => { resolveDispatch = resolve; }),
+      };
+      pendingTurnDispatchRef.current = pendingDispatch;
+      const markDispatchSettled = () => {
+        resolveDispatch();
+        if (pendingTurnDispatchRef.current === pendingDispatch) {
+          pendingTurnDispatchRef.current = null;
+        }
+      };
+      const turnWasStopped = () => stoppedTurnIdsRef.current.has(userMessage.id!);
       let activeSessionIdForTurn = startingSessionId;
       if (startingSessionId) {
         localInFlightTurnsRef.current.set(
@@ -4065,6 +4116,7 @@ export function useAgentSession(
       };
 
       const commit = (message: AgentMessage) => {
+        if (turnWasStopped()) return;
         if (viewEpochRef.current !== viewEpoch) return;
         setMessages((current) => {
           const next = [...current];
@@ -4080,15 +4132,40 @@ export function useAgentSession(
         "completed" | "cancelled" | "failed"
       > | null = null;
       let streamController: AbortController | null = null;
+      let preparationController: AbortController | null = null;
       try {
+        await previousCancellation;
+        if (turnWasStopped()) return;
+        if (options?.prepareAttachments) {
+          preparationController = new AbortController();
+          attachmentPreparationRef.current = preparationController;
+          const attachments = await options.prepareAttachments(preparationController.signal);
+          preparationController.signal.throwIfAborted();
+          options = { ...options, attachments };
+          const preparedUser = {
+            ...userMessage,
+            attachmentNames: attachments.map((attachment) => attachment.name),
+            attachments: chatMessageAttachments(attachments),
+          };
+          localInFlightTurn.messages = baseline.map((message) =>
+            message.id === userMessage.id ? preparedUser : message);
+          if (viewEpochRef.current === viewEpoch) {
+            setMessages((current) => current.map((message) =>
+              message.id === userMessage.id ? preparedUser : message));
+          }
+          if (attachmentPreparationRef.current === preparationController) {
+            attachmentPreparationRef.current = null;
+          }
+        }
         const browserAccess = surface === "dashboard_terminal"
           ? await currentBrowserTerminalAccess() : undefined;
+        if (turnWasStopped()) return;
         const initialCreation = {
           viewEpoch,
           promise: ensureSession(
             surface,
             createOptions,
-            startingSessionId,
+            startingSessionId ?? (viewEpochRef.current === viewEpoch ? sessionRef.current : null),
             { activeDirectory, filesystemMode },
             {
               clientMessageId: userMessage.id!,
@@ -4122,6 +4199,7 @@ export function useAgentSession(
           }
         }
         const activeSessionId = ensured.id;
+        pendingDispatch.sessionId = activeSessionId;
         activeSessionIdForTurn = activeSessionId;
         if (
           startingSessionId &&
@@ -4144,16 +4222,6 @@ export function useAgentSession(
         // only the view updates are held back, and the durable resume path
         // attaches a viewer when the person comes back to it.
         const stillViewing = () => viewEpochRef.current === viewEpoch;
-        if (stopRequestedRef.current) {
-          // Session creation may have reserved this first turn after Stop was
-          // clicked. Persist the cancellation now so restore does not present
-          // that placeholder as a live, retryable response.
-          await fetch(`/api/hermes/sessions/${activeSessionId}/abort`, {
-            method: "POST",
-          }).catch(() => undefined);
-          if (stillViewing()) transition("cancelled");
-          return;
-        }
         if (stillViewing()) {
           sessionRef.current = activeSessionId;
           setSessionId(activeSessionId);
@@ -4162,9 +4230,14 @@ export function useAgentSession(
           setActiveDirectory(ensured.activeDirectory);
           setFilesystemMode(ensured.filesystemMode);
         }
+        if (turnWasStopped()) return;
         // Agent mode off: the message goes to the provider instead of the
         // runtime. Read at send time, not at render time, so the switch the user
         // sees is the one that governs the message they just sent.
+        const currentLocation = options?.internalAgentContinuation !== true
+          ? await getCurrentLocationForTurn(trimmed)
+          : undefined;
+        if (turnWasStopped()) return;
         if (!isAgentModeEnabled()) {
           await streamDirectTurn({
             sessionId: activeSessionId,
@@ -4174,6 +4247,7 @@ export function useAgentSession(
             options,
             retry: Boolean(resumedBlockedTurn) || ensured.initialTurnReserved,
             onTurnPersisted: () => markTurnPersisted(activeSessionId),
+            onDispatchSettled: markDispatchSettled,
             responseStartedAtMs,
             viewEpoch,
             currentLocation,
@@ -4199,6 +4273,7 @@ export function useAgentSession(
             },
           );
           const branchBody = await branchResponse.json().catch(() => ({}));
+          if (turnWasStopped()) return;
           if (
             !branchResponse.ok ||
             typeof branchBody.branchContextId !== "string"
@@ -4217,6 +4292,7 @@ export function useAgentSession(
           // A rapid toggle followed by Send must not let an older session update
           // land after this turn's authoritative value.
           await yoloSyncRef.current;
+          if (turnWasStopped()) throw new DOMException("Stopped", "AbortError");
           const dispatched = await dispatchAgentMessage(
             `/api/hermes/sessions/${activeSessionId}/messages`,
             {
@@ -4253,6 +4329,7 @@ export function useAgentSession(
             },
           );
           if (dispatched.ok) markTurnPersisted(activeSessionId);
+          markDispatchSettled();
           return dispatched;
         };
 
@@ -4322,6 +4399,7 @@ export function useAgentSession(
           // below and the durable resume path finds the run on the way back.
           if (stillViewing()) throw handshakeError;
         }
+        if (turnWasStopped()) return;
         if (!stillViewing()) {
           streamController?.abort();
           trackBackgroundDispatch(await dispatchTurn());
@@ -4333,6 +4411,7 @@ export function useAgentSession(
           return;
         }
         const sendResponse = await dispatchTurn();
+        if (turnWasStopped()) return;
         if (viewEpochRef.current !== viewEpoch) {
           streamController?.abort();
           trackBackgroundDispatch(sendResponse);
@@ -4357,6 +4436,12 @@ export function useAgentSession(
               viewEpochRef.current === viewEpoch
             ) {
               const restoredMessages = normalizeRestoredMessages(restored.messages);
+              const previousRun = restored.activeRun as { clientMessageId?: string; id?: string } | undefined;
+              const previousTurn = pendingRestoredTurn(restoredMessages);
+              if ((previousRun?.id && stoppedRunIdsRef.current.has(previousRun.id)) ||
+                  (previousTurn?.assistant.clientMessageId && stoppedTurnIdsRef.current.has(previousTurn.assistant.clientMessageId))) {
+                throw new Error("The previous response is still stopping. Please try sending this message again.");
+              }
               pendingHistoryOverrideRef.current = null;
               setMessages(restoredMessages);
               setError(null);
@@ -4384,6 +4469,7 @@ export function useAgentSession(
           dispatchTurn,
           { signal: abortRef.current?.signal },
         );
+        if (turnWasStopped()) return;
         if (
           responseBody.clarified === true &&
           typeof responseBody.message === "string" &&
@@ -4499,6 +4585,7 @@ export function useAgentSession(
           transition("running");
         }
         const outcome = await streamPromise;
+        if (turnWasStopped()) return;
         if (viewEpochRef.current !== viewEpoch) {
           if (surface !== "quartz_ai") {
             const notificationOptions = {
@@ -4539,6 +4626,7 @@ export function useAgentSession(
         }
       } catch (err) {
         streamController?.abort();
+        if (turnWasStopped()) return;
         if (viewEpochRef.current !== viewEpoch) {
           if (activeSessionIdForTurn && turnPersisted) {
             monitorBackgroundChatResponse({
@@ -4573,6 +4661,7 @@ export function useAgentSession(
           });
         }
       } finally {
+        markDispatchSettled();
         for (const id of new Set(
           [startingSessionId, activeSessionIdForTurn].filter(
             (value): value is string => Boolean(value),
@@ -4581,6 +4670,9 @@ export function useAgentSession(
           if (localInFlightTurnsRef.current.get(id) === localInFlightTurn) {
             localInFlightTurnsRef.current.delete(id);
           }
+        }
+        if (attachmentPreparationRef.current === preparationController) {
+          attachmentPreparationRef.current = null;
         }
         if (abortRef.current === streamController) {
           abortRef.current = null;
@@ -4609,6 +4701,7 @@ export function useAgentSession(
     async (
       text: string,
       attachments: readonly ChatAttachment[] = [],
+      textSelection?: ChatTextSelectionReference,
     ): Promise<boolean> => {
       const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       const activeSessionId = sessionRef.current;
@@ -4635,6 +4728,7 @@ export function useAgentSession(
               runId,
               text: trimmed,
               attachments,
+              textSelection,
               clientRequestId,
               assistantContentOffset,
             }),
@@ -4683,6 +4777,7 @@ export function useAgentSession(
                   }
                 : {}),
               courseCorrection: true,
+              ...(textSelection ? { textSelection } : {}),
               courseCorrectionTargetClientMessageId:
                 typeof body.courseCorrectionTargetClientMessageId === "string"
                   ? body.courseCorrectionTargetClientMessageId
@@ -4739,6 +4834,7 @@ export function useAgentSession(
    */
   const resolvePreflightPermission = useCallback(
     async (prompt: PermissionPrompt, decision: "once" | "always" | "reject") => {
+      const stopEpoch = stopEpochRef.current;
       const preflight = prompt.preflight;
       const blocked = blockedTurnRef.current;
       if (!preflight || !blocked) return;
@@ -4806,6 +4902,7 @@ export function useAgentSession(
             oneTimeGrantId = body.grant.id;
           }
         }
+        if (stopEpochRef.current !== stopEpoch) return;
         setActivities((current) =>
           current.map((item) =>
             item.id === `permission-${prompt.requestId}`
@@ -4822,6 +4919,7 @@ export function useAgentSession(
               : blocked.options?.confirmedPermissionIds,
         });
       } catch (permissionError) {
+        if (stopEpochRef.current !== stopEpoch) return;
         setPendingPermission(prompt);
         transition("error");
         setError(
@@ -4843,6 +4941,7 @@ export function useAgentSession(
 
   const respondToPermission = useCallback(
     async (decision: "once" | "always" | "reject") => {
+      const stopEpoch = stopEpochRef.current;
       const prompt = pendingPermission;
       const activeSessionId = sessionRef.current;
       if (!prompt || !activeSessionId) return;
@@ -4861,6 +4960,7 @@ export function useAgentSession(
           decision,
         );
       } catch (permissionError) {
+        if (stopEpochRef.current !== stopEpoch) return;
         setPendingPermission(prompt);
         transition("error");
         setError(
@@ -4870,6 +4970,7 @@ export function useAgentSession(
         );
         return;
       }
+      if (stopEpochRef.current !== stopEpoch) return;
       setActivities((current) =>
         current.map((item) =>
           item.id === `permission-${prompt.requestId}`
@@ -4942,123 +5043,70 @@ export function useAgentSession(
   }, [yoloMode]);
 
   const abort = useCallback(async () => {
+    if (!isActiveAgentRunState(runStateRef.current) && !activeRunIdRef.current) return;
     const activeSessionId = sessionRef.current;
-    if (!isActiveAgentRunState(runStateRef.current)) return;
-    setError(null);
+    const pendingDispatch = pendingTurnDispatchRef.current;
+    const assistant = [...messagesRef.current].reverse().find((message) => message.role === "assistant");
+    const clientMessageId = pendingDispatch?.clientMessageId ?? activeTurnClientMessageIdRef.current ?? assistant?.clientMessageId;
+    if (clientMessageId) stoppedTurnIdsRef.current.add(clientMessageId);
+    if (activeRunIdRef.current) stoppedRunIdsRef.current.add(activeRunIdRef.current);
     stopRequestedRef.current = true;
-    transition("stopping");
-    if (!activeSessionId || !activeRunIdRef.current) {
-      const clientMessageId = [...messagesRef.current]
-        .reverse()
-        .find((message) => message.role === "assistant")
-        ?.clientMessageId;
-      if (clientMessageId) {
-        stoppedDirectTurnIdsRef.current.add(clientMessageId);
-      }
-      if (activeSessionId) {
-        await fetch(`/api/hermes/sessions/${activeSessionId}/abort`, {
-          method: "POST",
-        }).catch(() => undefined);
-      }
-      abortRef.current?.abort();
-      if (clientMessageId) {
-        setMessages((current) =>
-          current.map((message) =>
-            message.role === "assistant" &&
-            message.clientMessageId === clientMessageId
-              ? { ...message, pending: false, interrupted: true }
-              : message,
-          ),
-        );
-      }
-      transition("cancelled");
-      setPendingPermission(null);
-      setPendingClarification(null);
-      setActivities((current) =>
-        current.map((item) =>
-          item.status === "running" || item.status === "permission_required"
-            ? {
-                ...item,
-                status: "cancelled",
-                completedAt: new Date().toISOString(),
-              }
-            : item,
-        ),
-      );
-      return;
-    }
-    try {
-      const response = await fetch(
-        `/api/hermes/sessions/${activeSessionId}/abort`,
-        { method: "POST" },
-      );
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(
-          typeof body.error === "string"
-            ? body.error
-            : "The active run could not be stopped.",
-        );
-      }
-
-      if (body.alreadyFinished && body.status === "completed") {
-        activeRunIdRef.current = null;
-        setActiveRunId(null);
-        transition("completed");
-        return;
-      }
-
-      if (activeStreamRef.current) {
-        await Promise.race([
-          activeStreamRef.current.catch(() => "failed" as const),
-          new Promise<"timeout">((resolve) => {
-            window.setTimeout(() => resolve("timeout"), 2_000);
-          }),
-        ]);
-      }
-      if (runStateRef.current === "stopping") {
-        abortRef.current?.abort();
-        activeRunIdRef.current = null;
-        setActiveRunId(null);
-        transition("cancelled");
-      }
-    } catch (stopError) {
-      setError(
-        stopError instanceof Error
-          ? stopError.message
-          : "The active run could not be stopped.",
-      );
-      // The run is genuinely still going, so the state says so -- and the stop
-      // request is released with it, or every later event would be held back
-      // waiting on a cancellation that never happened.
-      stopRequestedRef.current = false;
-      transition(pendingPermission ? "waiting_for_permission" : "running");
-      return;
-    }
+    stopEpochRef.current += 1;
+    attachmentPreparationRef.current?.abort();
+    abortRef.current?.abort();
+    abortRef.current = null;
+    activeStreamRef.current = null;
+    activeRunIdRef.current = null;
+    setActiveRunId(null);
+    setRunToResume(null);
+    blockedTurnRef.current = null;
+    setAutoApprovedPreflight(null);
     setPendingPermission(null);
     setPendingClarification(null);
-    setMessages((current) => {
-      const next = [...current];
-      for (let index = next.length - 1; index >= 0; index -= 1) {
-        if (next[index].role === "assistant") {
-          next[index] = { ...next[index], interrupted: true };
-          break;
-        }
-      }
-      return next;
+    setAgentLaunchRequests([]);
+    setActiveTools([]);
+    setError(null);
+    setSteerError(null);
+    transition("cancelled");
+    const completedAt = new Date().toISOString();
+    const stoppedMessages = messagesRef.current.map((message) => {
+      if (message.role !== "assistant" || (clientMessageId
+        ? message.clientMessageId !== clientMessageId
+        : message !== assistant)) return message;
+      return {
+        ...message,
+        pending: false,
+        interrupted: true,
+        responseCompletedAt: completedAt,
+        responseDurationMs: Math.max(0, Date.now() - (Date.parse(message.responseStartedAt ?? message.createdAt ?? completedAt) || Date.now())),
+        tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "failed" as const, summary: "Stopped" } : tool),
+      };
     });
-    setActivities((current) =>
-      current.map((item) =>
-        item.status === "running" || item.status === "permission_required"
-          ? {
-              ...item,
-              status: "cancelled",
-              completedAt: new Date().toISOString(),
-            }
-          : item,
-        ),
-    );
-  }, [pendingPermission, transition]);
+    messagesRef.current = stoppedMessages;
+    setMessages(stoppedMessages);
+    setActivities((current) => current.map((item) =>
+      item.status === "running" || item.status === "permission_required"
+        ? { ...item, status: "cancelled", completedAt }
+        : item,
+    ));
+    if (activeSessionId) localInFlightTurnsRef.current.delete(activeSessionId);
+
+    // Keep all server-wide cancellations ahead of the next dispatch. A cold
+    // session or provider can register after Stop, so sweep once more after
+    // its registration settles. None of these round trips owns visible state.
+    const cancelSession = async (id: string | null) => {
+      if (!id) return;
+      await fetch(`/api/hermes/sessions/${id}/abort`, { method: "POST" })
+        .catch(() => undefined);
+    };
+    cancellationBarrierRef.current = cancellationBarrierRef.current.then(async () => {
+      await cancelSession(activeSessionId);
+      if (pendingDispatch) {
+        await pendingDispatch.settled;
+        await cancelSession(pendingDispatch.sessionId);
+      }
+    }).catch(() => undefined);
+  }, [setPendingClarification, transition]);
 
   /**
    * Remove one exchange — a message and the answer it produced — for good.
@@ -5190,6 +5238,7 @@ export function useAgentSession(
   const reset = useCallback(() => {
     const previousSessionId = sessionRef.current;
     viewEpochRef.current += 1;
+    attachmentPreparationRef.current?.abort();
     abortRef.current?.abort();
     sessionRef.current = null;
     setSessionId(null);

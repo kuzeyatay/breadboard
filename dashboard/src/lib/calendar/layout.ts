@@ -193,8 +193,11 @@ export interface TimedBlock {
 
 const MINUTES_PER_DAY = 24 * 60;
 
-/** Shortest block that still shows a title; below this, events become slivers. */
-const MIN_BLOCK_MINUTES = 24;
+/** Keep the rendered grid scale and collision geometry in the same units. */
+export const TIME_GRID_HOUR_HEIGHT_REM = 3;
+/** Room for the title, time range, padding and resize edge without hovering. */
+export const TIME_GRID_MIN_BLOCK_HEIGHT_REM = 2.5;
+const MIN_BLOCK_MINUTES = (TIME_GRID_MIN_BLOCK_HEIGHT_REM / TIME_GRID_HOUR_HEIGHT_REM) * 60;
 
 /**
  * Position one day's timed occurrences, splitting runs of mutually overlapping
@@ -211,11 +214,18 @@ export function layoutTimedDay(
   const clipped = occurrences
     .filter((occurrence) => !isBanner(occurrence))
     .filter((occurrence) => occurrence.start <= dayEnd && occurrence.end >= dayStart)
-    .map((occurrence) => ({
-      occurrence,
-      start: occurrence.start < dayStart ? dayStart : occurrence.start,
-      end: occurrence.end > dayEnd ? dayEnd : occurrence.end,
-    }))
+    .map((occurrence) => {
+      const start = occurrence.start < dayStart ? dayStart : occurrence.start;
+      const end = occurrence.end > dayEnd ? dayEnd : occurrence.end;
+      const startMinutes = minutesIntoDay(start);
+      return {
+        occurrence,
+        start: startMinutes,
+        // Use the displayed extent for collisions so enlarged short events
+        // cannot cover the next event. The occurrence's real times stay intact.
+        end: startMinutes + Math.max(MIN_BLOCK_MINUTES, minutesBetween(start, end)),
+      };
+    })
     .sort((a, b) => {
       if (a.start !== b.start) return a.start < b.start ? -1 : 1;
       if (a.end !== b.end) return a.end > b.end ? -1 : 1;
@@ -228,12 +238,12 @@ export function layoutTimedDay(
   // events; column count is decided per cluster so an isolated meeting stays
   // full width even if the morning was triple-booked.
   let cluster: typeof clipped = [];
-  let clusterEnd = "";
+  let clusterEnd = 0;
 
   const flush = () => {
     if (cluster.length === 0) return;
 
-    const laneEnds: string[] = [];
+    const laneEnds: number[] = [];
     const lanes: number[] = [];
 
     for (const item of cluster) {
@@ -248,21 +258,19 @@ export function layoutTimedDay(
     }
 
     cluster.forEach((item, index) => {
-      const startMinutes = minutesIntoDay(item.start);
-      const rawMinutes = Math.max(0, minutesBetween(item.start, item.end));
-      const minutes = Math.max(MIN_BLOCK_MINUTES, rawMinutes);
-
       blocks.push({
         occurrence: item.occurrence,
-        top: startMinutes / MINUTES_PER_DAY,
-        height: Math.min(1 - startMinutes / MINUTES_PER_DAY, minutes / MINUTES_PER_DAY),
+        top: item.start / MINUTES_PER_DAY,
+        // Late-night cards can extend into the grid's bottom padding rather
+        // than losing their labels at midnight.
+        height: (item.end - item.start) / MINUTES_PER_DAY,
         column: lanes[index],
         columns: laneEnds.length,
       });
     });
 
     cluster = [];
-    clusterEnd = "";
+    clusterEnd = 0;
   };
 
   for (const item of clipped) {

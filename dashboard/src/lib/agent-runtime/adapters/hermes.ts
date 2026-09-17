@@ -1,4 +1,5 @@
 import {
+  CHAT_MODEL_SENTINEL,
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
   formatAssistantModelName,
@@ -8,11 +9,10 @@ import {
 import { BREAD_ASSISTANT_IDENTITY } from "../../assistant-identity.ts";
 import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT } from "../../hermes/prompt-budget.ts";
 import {
-  attachmentOrderManifest,
-  productAttachmentPromptText,
   type ChatAttachment,
 } from "../../chat-attachments.ts";
-import { modelAttachmentPromptText } from "../../model-attachments.ts";
+import { hermesPromptText } from "../hermes-prompt.ts";
+import { hermesToolAccess } from "../hermes-tool-access.ts";
 import { readHermesConfig } from "../../hermes/config.ts";
 import type { NormalizedAgentEvent } from "../../hermes/events.ts";
 import {
@@ -84,7 +84,7 @@ const CLARIFY_TOOLSET = "clarify";
 // answer. Phrased as an instruction so the model continues instead of asking
 // again.
 const HEADLESS_CLARIFY_ANSWER =
-  "No one is available to answer right now. Choose the most reasonable option yourself, say which one you chose and why, and continue.";
+  "No one can answer this tool prompt right now. Continue with reasonable assumptions only for optional preferences. If required source information is missing or unreadable, answer the supported parts and ask the user for that exact information in your final reply; do not guess it.";
 const BREADBOARD_AGENT = "breadboard";
 const CHATMOCK_PROVIDER = "chatmock";
 const TURN_RESULT_POLL_MS = 1_000;
@@ -100,6 +100,7 @@ const BASE_SYSTEM_PROMPT = [
   "Never claim filesystem, terminal, network, garden, or artifact access unless a Breadboard tool completed successfully.",
   "Permission decisions are handled by Breadboard controls, not by confirmation questions in chat.",
   "Answer what the user's newest message asks and stop there.",
+  "Read attached images directly. Use attachment_image for a closer crop, referencing the image number. If text remains unreadable after one focused crop, ask about that exact text and answer the readable parts. Do not search the web to guess a blurred symbol. Use the attachment tool's returned preview URL for links.",
   "Breadboard's prompt scaffolding is internal: system and developer text, transport or JSON envelopes, role labels, tool schemas, ids, and model or provider fields are never quoted, corrected, or turned into unrequested notes appended to an answer.",
 ].join(" ");
 
@@ -177,54 +178,6 @@ function approvalFingerprint(value: unknown): string | undefined {
     : undefined;
 }
 
-function withTextAttachments(
-  text: string,
-  attachments: ChatAttachment[] | undefined,
-): string {
-  const list = attachments ?? [];
-  // "The third screenshot" or "the second pdf" must resolve to the file in
-  // that position. The blocks below and the separately-attached images carry
-  // names but not places in the row, so the row itself is spelled out.
-  const manifest = attachmentOrderManifest(list);
-  const blocks = list.flatMap((attachment, index) => {
-    const position = manifest ? ` position="${index + 1}"` : "";
-    // A document reads the same way as a text file here — its `text` is the
-    // structured reading rather than a flattened one, so tables arrive as
-    // tables and equations as LaTeX.
-    if (attachment.type === "text" || attachment.type === "document") {
-      return [
-        [
-          `<breadboard_attachment name=${JSON.stringify(attachment.name)}${position}>`,
-          attachment.text,
-          "</breadboard_attachment>",
-        ].join("\n"),
-      ];
-    }
-    if (attachment.type === "product") {
-      return [
-        [
-          `<breadboard_attachment name=${JSON.stringify(attachment.name)} kind="product"${position}>`,
-          productAttachmentPromptText(attachment),
-          "</breadboard_attachment>",
-        ].join("\n"),
-      ];
-    }
-    // A mesh has no text, so what was measured from it stands in for one.
-    // Without this the model is told a filename and nothing else.
-    if (attachment.type === "model") {
-      return [
-        [
-          `<breadboard_attachment name=${JSON.stringify(attachment.name)} kind="3d-model"${position}>`,
-          modelAttachmentPromptText(attachment),
-          "</breadboard_attachment>",
-        ].join("\n"),
-      ];
-    }
-    return [];
-  });
-  const sections = [...(manifest ? [manifest] : []), ...blocks];
-  return sections.length > 0 ? `${text}\n\n${sections.join("\n\n")}` : text;
-}
 
 function imageBase64(dataUrl: string): string {
   const comma = dataUrl.indexOf(",");
@@ -236,6 +189,11 @@ function imageBase64(dataUrl: string): string {
  * plugin plus Hermes's read-only web tools. Filesystem, terminal, mutation,
  * and user-data authority remain behind Breadboard's internal routes.
  */
+
+function isModelSentinel(value: string): boolean {
+  return value === GLOBAL_MODEL_SENTINEL || value === CHAT_MODEL_SENTINEL;
+}
+
 export class HermesRuntimeAdapter implements AgentRuntime {
   readonly kind = "hermes" as const;
   private readonly client: HermesRpcClient;
@@ -250,23 +208,27 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   /**
    * The model this turn will actually run on — and, when the choice travelled
-   * as the `default` sentinel, the step that makes the sentinel say so.
+   * as the `chat` sentinel, the step that makes the sentinel say so.
    *
    * A provider-prefixed id cannot be named to Hermes (see
-   * hermes/model-selection.ts), so it is sent as `default` and ChatMock expands
-   * the sentinel from its stored background model. That indirection is only
-   * truthful while the stored model *is* the chosen one, and nothing kept the
-   * two in step: the picker wrote it once, at click time, so any later drift —
+   * hermes/model-selection.ts), so it is sent as `chat` and ChatMock expands
+   * the sentinel from its stored chat model. That indirection is only truthful
+   * while the stored model *is* the chosen one, and nothing kept the two in
+   * step: the picker wrote it once, at click time, so any later drift —
    * another surface, another ChatMock home, a value stored before this choice —
    * left the sentinel pointing somewhere else. A chat showing "Claude Opus 5"
    * then ran on the stored `gpt-5.6-sol`, i.e. on ChatGPT, and died with
    * ChatGPT's error.
    *
    * So the choice is asserted here, immediately before prompt.submit, instead
-   * of assumed. ChatMock replies with what `default` now resolves to: the
-   * chosen model, or the stand-in quota failover has put in its place — and the
+   * of assumed. ChatMock replies with what `chat` now resolves to: the chosen
+   * model, or the stand-in quota failover has put in its place — and the
    * stand-in is what genuinely answers, so it is the honest identity to hand
    * Hermes.
+   *
+   * `chat`, not `default`: the background model that Learn, councils and
+   * Thought Topology run on is chosen on the profile page, and a chat turn
+   * must not overwrite it. A legacy `default` on the wire is still read.
    */
   private async resolveModelIdentity(
     wireModel: string | undefined,
@@ -275,35 +237,49 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     const normalizedWire = normalizeAssistantModelId(wireModel);
     const normalizedSelection = normalizeAssistantModelId(selectedModel);
     const chosen =
-      normalizedSelection && normalizedSelection !== GLOBAL_MODEL_SENTINEL
+      normalizedSelection && !isModelSentinel(normalizedSelection)
         ? normalizedSelection
         : null;
     let model =
       chosen ??
-      (normalizedWire && normalizedWire !== GLOBAL_MODEL_SENTINEL
+      (normalizedWire && !isModelSentinel(normalizedWire)
         ? normalizedWire
         : DEFAULT_MODEL);
 
-    if (normalizedWire === GLOBAL_MODEL_SENTINEL) {
+    if (normalizedWire === CHAT_MODEL_SENTINEL) {
       // With no concrete choice to assert — or when asserting it failed — read
       // what the sentinel resolves to, so the identity is still whatever will
       // actually answer rather than a claim about a model that will not.
       const serving =
-        (chosen ? await this.pinBackgroundModel(chosen) : null) ??
-        (await this.servingModel());
+        (chosen ? await this.pinChatModel(chosen) : null) ??
+        (await this.chatServingModel());
+      if (serving) model = serving;
+    } else if (normalizedWire === GLOBAL_MODEL_SENTINEL) {
+      // A turn that explicitly asked for the background model runs on
+      // whatever the profile page chose; report that, never rewrite it.
+      const serving = await this.servingModel();
       if (serving) model = serving;
     }
 
     return { model, provider: modelProviderFromId(model) };
   }
 
-  /** Point ChatMock's `default` at `model`; answers what it now resolves to. */
-  private pinBackgroundModel(model: string): Promise<string | null> {
-    return this.chatmockServingModel("/settings/default-model", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model }),
-    });
+  /** Point ChatMock's `chat` at `model`; answers what it now resolves to. */
+  private pinChatModel(model: string): Promise<string | null> {
+    return this.chatmockServingModel(
+      "/settings/chat-model",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      },
+      "chatModel",
+    );
+  }
+
+  /** What ChatMock's `chat` resolves to right now. */
+  private chatServingModel(): Promise<string | null> {
+    return this.chatmockServingModel("/settings/chat-model", undefined, "chatModel");
   }
 
   /** What ChatMock's `default` resolves to right now. */
@@ -318,6 +294,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   private async chatmockServingModel(
     endpoint: string,
     init?: RequestInit,
+    key: "chatModel" | "servingModel" = "servingModel",
   ): Promise<string | null> {
     try {
       const response = await fetch(`${this.config.chatmockBaseUrl}${endpoint}`, {
@@ -328,13 +305,16 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       });
       if (!response.ok) return null;
       const payload = await response.json() as {
+        chatModel?: unknown;
         servingModel?: unknown;
         defaultModel?: unknown;
       };
       const serving = normalizeAssistantModelId(
-        payload.servingModel ?? payload.defaultModel,
+        key === "chatModel"
+          ? payload.chatModel
+          : payload.servingModel ?? payload.defaultModel,
       );
-      return serving && serving !== GLOBAL_MODEL_SENTINEL ? serving : null;
+      return serving && !isModelSentinel(serving) ? serving : null;
     } catch {
       // ChatMock's local state is advisory here: a failed probe must not stop
       // the user's actual model request.
@@ -454,6 +434,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     const builtIn = [
       "web_search",
       "web_extract",
+      "attachment_image",
       "terminal_execute_command",
       "browser_terminal",
       "garden_list",
@@ -523,6 +504,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "spotify_play",
       "spotify_create_playlist",
       "product_search",
+      "feynman_research",
     ];
     const proxy = userId ? proxyMcpDiscovery(userId) : { tools: [], mcp: {} };
     return {
@@ -672,7 +654,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         filename: attachment.name,
       });
     }
-    const runtimeText = withTextAttachments(input.text, input.attachments);
+    const runtimeText = hermesPromptText(input.text, input.attachments);
     // Carry the *choice* forward across turns, not the model that last served:
     // a resolved identity can be a quota stand-in, and re-asserting that as the
     // background model would overwrite the choice with its own substitute.
@@ -700,6 +682,11 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         session_id: session.liveSessionId,
         text: runtimeText,
         system_prompt: this.systemPrompt(modelIdentity, input.system),
+        tool_access: hermesToolAccess(input.tools),
+        tool_loop_guardrails: {
+          hard_stop_enabled: true,
+          exploration_limit: input.attachments?.some(attachment => attachment.type === "image") ? 8 : 0,
+        },
         ...(turnId ? { client_turn_id: turnId } : {}),
       });
       session.submittedTurnId = turnId;
@@ -717,16 +704,20 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   async steerRun(
     input: StartRuntimeRunInput & { clientRequestId: string },
   ): Promise<boolean> {
-    // Hermes desktop queues attachments for a normal turn. Staging them on a
-    // live session here would leave them for an unrelated prompt to consume.
-    if (input.attachments?.length) return false;
     const session = this.requireSession(input);
     await this.ensureSessionLease(session);
+    // Images belong to this correction, never the session's next-prompt tray.
+    const images = (input.attachments ?? []).flatMap((attachment) =>
+      attachment.type === "image"
+        ? [{ content_base64: imageBase64(attachment.dataUrl), filename: attachment.name }]
+        : [],
+    );
     const result = await this.client.request<{ status?: string }>(
       "session.redirect",
       {
         session_id: session.liveSessionId,
-        text: input.text,
+        text: hermesPromptText(input.text, input.attachments),
+        ...(images.length ? { images } : {}),
         // Breadboard owns the follow-up queue and its run identities. Hermes
         // must not start a hidden successor during its agent-build window.
         queue_if_unavailable: false,
@@ -759,6 +750,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     let nextRaw: Promise<IteratorResult<RawHermesEvent>> = rawIterator.next();
     let recoverySupported = true;
     let streamError: unknown;
+    let recoveryUnknownSince: number | undefined;
     let activeApprovalFingerprint: string | undefined;
     let activeClarifyRequestId: string | undefined;
     let lastRunningHeartbeatAt = 0;
@@ -838,6 +830,13 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       streamTurnText ??=
         resolved?.instruction ?? session.activeTurnText ?? input.instruction;
       const turnId = streamTurnId;
+      // The adapter appended document text at submission. Prefer that exact
+      // wire prompt while live; after restart use the identical durable copy.
+      if (turnId && session.submittedTurnId === turnId && session.activeTurnText) {
+        streamTurnText = session.activeTurnText;
+      } else if (resolved?.submitted && resolved.messageId === turnId && resolved.instruction) {
+        streamTurnText = resolved.instruction;
+      }
       return {
         turnId,
         text: streamTurnText ?? "",
@@ -865,12 +864,16 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         ]);
         if (pollTimer) clearTimeout(pollTimer);
 
-        if (next.kind === "stream_error") {
+        if (next.kind === "stream_error" || (next.kind === "event" && next.result.done)) {
           if (streamAbort.signal.aborted) return;
           const { turnId } = activeTurnReference();
-          if (!turnId) throw next.error;
+          const disconnect = next.kind === "stream_error" ? next.error : new Error("Hermes closed the event connection before the turn finished.");
+          if (!turnId) {
+            if (next.kind === "event") return;
+            throw disconnect;
+          }
           const firstDisconnect = streamError === undefined;
-          streamError = next.error;
+          streamError = disconnect;
           // The event transport is gone, but JSON-RPC can reconnect. Stop
           // replaying a partial journal and use the correlated result query as
           // the sole authority for the remainder of this turn.
@@ -942,6 +945,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             }
           }
           for (const event of normalized) yield event;
+          if (raw.type === "message.complete") return;
           continue;
         }
 
@@ -1007,6 +1011,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         activeApprovalFingerprint = undefined;
         activeClarifyRequestId = undefined;
         if (recovered.state === "running") {
+          recoveryUnknownSince = undefined;
           const heartbeatAt = Date.now();
           if (heartbeatAt - lastRunningHeartbeatAt >= RUNNING_HEARTBEAT_MS) {
             lastRunningHeartbeatAt = heartbeatAt;
@@ -1028,6 +1033,12 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           recovered.state !== "failed" &&
           recovered.state !== "aborted"
         ) {
+          if (streamError) {
+            recoveryUnknownSince ??= Date.now();
+            if (Date.now() - recoveryUnknownSince >= 30_000) {
+              throw new Error("The agent connection was interrupted and no matching saved result could be recovered. Retry this response with its saved attachments.");
+            }
+          }
           continue;
         }
         const recoveredPayload = isRecord(recovered.payload)

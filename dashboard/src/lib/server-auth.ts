@@ -115,7 +115,20 @@ export function routeErrorResponse(error: unknown): NextResponse {
   // refused action answers with its real reason instead of a blanket 500.
   const status = (error as { status?: unknown } | null)?.status;
   if (typeof status === 'number' && status >= 400 && status < 600) {
-    return NextResponse.json({ error: message }, { status });
+    const code = (error as { code?: unknown } | null)?.code;
+    const gardenBusy = code === 'GARDEN_MUTATION_BUSY';
+    return NextResponse.json(
+      {
+        error: message,
+        ...(gardenBusy
+          ? { code, retryable: true, retryAfterMs: 2_000 }
+          : {}),
+      },
+      {
+        status,
+        ...(gardenBusy ? { headers: { 'Retry-After': '2' } } : {}),
+      },
+    );
   }
 
   return NextResponse.json({ error: message }, { status: 500 });

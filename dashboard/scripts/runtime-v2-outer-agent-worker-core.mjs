@@ -377,7 +377,18 @@ function sourceLayout(dataRoot) {
   return { sourceRoot };
 }
 
-function atomicReplace(filePath, bytes, maximumBytes, label) {
+const ATOMIC_RENAME_RETRY_DELAYS_MS = [10, 25, 50, 100, 200, 400, 800];
+const TRANSIENT_ATOMIC_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+function waitForFileUnlock(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+export function atomicReplace(filePath, bytes, maximumBytes, label, {
+  renameSync = fs.renameSync,
+  waitSync = waitForFileUnlock,
+  platform = process.platform,
+} = {}) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > maximumBytes) {
     fail(`${label} exceeded its bounded envelope.`);
   }
@@ -392,10 +403,26 @@ function atomicReplace(filePath, bytes, maximumBytes, label) {
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
-    fs.renameSync(temporary, filePath);
+    // Windows readers and scanners can briefly prevent replacement. Keep the
+    // last checkpoint intact and retry the same fully written file; deleting
+    // the destination or writing over it would expose a missing/partial record.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        renameSync(temporary, filePath);
+        break;
+      } catch (error) {
+        if (
+          platform !== "win32" ||
+          !TRANSIENT_ATOMIC_RENAME_CODES.has(error?.code) ||
+          attempt >= ATOMIC_RENAME_RETRY_DELAYS_MS.length
+        ) throw error;
+        waitSync(ATOMIC_RENAME_RETRY_DELAYS_MS[attempt]);
+      }
+    }
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);
-    fs.rmSync(temporary, { force: true });
+    // Cleanup must not replace the useful write/rename error with another lock.
+    try { fs.rmSync(temporary, { force: true }); } catch {}
     throw error;
   }
 }
@@ -506,8 +533,6 @@ function terminalPayload(adapterId, status, error) {
                     ? "Praxist research stopped."
                   : adapterId === "shorts"
                     ? "The Shorts run was stopped before any clip was finished."
-                    : adapterId === "open-gym"
-                      ? "openGym stopped."
                       : adapterId === "legal"
                         ? "The assignment was stopped before anything was written."
                       : adapterId === "openplanter"
@@ -577,8 +602,6 @@ function terminalPayload(adapterId, status, error) {
                     ? "Praxist finished without a research summary."
                   : adapterId === "shorts"
                     ? "The Shorts run finished without any clips."
-                    : adapterId === "open-gym"
-                      ? "openGym finished without an answer."
                       : adapterId === "legal"
                         ? "The Legal Agent finished without producing a response."
                       : adapterId === "openplanter"

@@ -312,3 +312,36 @@ test("Runtime V2 Learn permits two finite native-owned workers with packaged sta
   assert.match(staging, /"learn-worker-import-hook\.mjs"/u);
   assert.match(staging, /worker-src/u);
 });
+
+test("an oversized Learn result collapses its large fields to identities instead of failing the finished operation", () => {
+  // Live 2026-09-16: a completed telecom-1 plan (map awaiting confirmation)
+  // was reported as a failed runtime job because the stored Learning Map in
+  // the result value alone exceeded the 1 MiB envelope.
+  const identity = { jobId: "job-1", attempt: 1, workerId: "worker-1" };
+  const learningMap = { id: "learn_map_big", status: "proposed", jobId: "learn-job-1", sections: "x".repeat(1024 * 1024 + 10) };
+  const bytes = serializeRuntimeV2LearnResult({
+    identity,
+    completionSequence: 2,
+    operation: "plan",
+    learnJobId: "learn-job-1",
+    value: { job: { id: "learn-job-1", status: "awaiting_confirmation" }, learningMap },
+  });
+  const parsed = JSON.parse(bytes.toString("utf8"));
+  assert.deepEqual(parsed.result.value.job, { id: "learn-job-1", status: "awaiting_confirmation" });
+  assert.equal(parsed.result.value.learningMap.id, "learn_map_big");
+  assert.equal(parsed.result.value.learningMap.status, "proposed");
+  assert.equal(parsed.result.value.learningMap.jobId, "learn-job-1");
+  assert.match(parsed.result.value.learningMap.omitted, /envelope/);
+  assert.ok(bytes.byteLength < 1024 * 1024);
+  assert.throws(
+    () => serializeRuntimeV2LearnResult({
+      identity,
+      completionSequence: 3,
+      operation: "plan",
+      learnJobId: "learn-job-1",
+      value: { text: "y".repeat(1024 * 1024 + 10) },
+    }),
+    /bounded envelope/,
+    "a single oversized string field still has no bounded form",
+  );
+});

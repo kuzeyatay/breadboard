@@ -6,7 +6,6 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "music_producer",
   "career_ops",
   "openexecutive",
-  "open_gym",
   "trading_agents",
   "vibe_trading",
   "stock_analyst",
@@ -55,7 +54,6 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   music_producer: "Music Producer",
   career_ops: "Career Ops",
   openexecutive: "OpenExecutive",
-  open_gym: "openGym",
   trading_agents: "TradingAgents",
   vibe_trading: "Vibe Trading",
   stock_analyst: "Stock Analyst",
@@ -110,7 +108,6 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   music_producer: "music-producer",
   career_ops: "career-ops",
   openexecutive: "openexecutive",
-  open_gym: "open-gym",
   trading_agents: "tradingagents",
   vibe_trading: "vibe-trading",
   stock_analyst: "stock-analyst",
@@ -220,6 +217,8 @@ export function delegatedAgentPresentation<T extends {
 export interface ExternalAgentTerminalResult {
   outcome: ExternalAgentTerminalOutcome;
   content: string;
+  /** Completion time reported by the runtime, including after a reconnect. */
+  terminalAtMs?: number;
   usage?: ChatTokenUsage;
   activity?: ExternalAgentActivityEntry[];
   edits?: ExternalAgentEdits;
@@ -386,13 +385,6 @@ export type ExternalAgentRun =
       kind: "openexecutive";
       runId: string;
       task: string;
-    }
-  | {
-      kind: "open_gym";
-      runId: string;
-      task: string;
-      /** Super Agent chose the capability, so present the result without agent chrome. */
-      quiet?: boolean;
     }
   | {
       kind: "trading_agents";
@@ -685,16 +677,6 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "openexecutive", runId, task };
   }
 
-  if (candidate.kind === "open_gym") {
-    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
-    if (!task) return null;
-    return {
-      kind: "open_gym",
-      runId,
-      task,
-      ...(candidate.quiet === true ? { quiet: true } : {}),
-    };
-  }
 
   if (candidate.kind === "trading_agents") {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
@@ -939,7 +921,6 @@ interface ExternalAgentRunFields {
   musicProducerRun?: { runId: string } | null;
   careerOpsRun?: { runId: string } | null;
   openExecutiveRun?: { runId: string } | null;
-  openGymRun?: { runId: string; quiet?: boolean } | null;
   tradingAgentsRun?: { runId: string } | null;
   vibeTradingRun?: { runId: string } | null;
   stockAnalystRun?: { runId: string } | null;
@@ -997,7 +978,6 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   music_producer: "musicProducerRun",
   career_ops: "careerOpsRun",
   openexecutive: "openExecutiveRun",
-  open_gym: "openGymRun",
   trading_agents: "tradingAgentsRun",
   vibe_trading: "vibeTradingRun",
   stock_analyst: "stockAnalystRun",
@@ -1054,6 +1034,32 @@ export function assistantExternalAgentRunId(
   return null;
 }
 
+/**
+ * Keep locally streaming text, but accept a worker's durable terminal result.
+ * A cached transcript must not keep a finished run alive when its event stream
+ * was detached. Match only assistant run owners; the user half shares the id.
+ */
+export function reconcileExternalAgentMessages<
+  T extends { role: "user" | "assistant"; externalAgentOutcome?: ExternalAgentOutcome } & ExternalAgentRunFields,
+>(local: T[], saved: readonly T[]): T[] {
+  const terminalByRunId = new Map(saved.flatMap((message) => {
+    const runId = assistantExternalAgentRunId(message);
+    return runId && message.externalAgentOutcome && message.externalAgentOutcome !== "running"
+      ? [[runId, message] as const]
+      : [];
+  }));
+  let changed = false;
+  const merged = local.map((message) => {
+    if (message.externalAgentOutcome && message.externalAgentOutcome !== "running") return message;
+    const runId = assistantExternalAgentRunId(message);
+    const terminal = runId ? terminalByRunId.get(runId) : undefined;
+    if (!terminal) return message;
+    changed = true;
+    return { ...message, ...terminal };
+  });
+  return changed ? merged : local;
+}
+
 export function parseExternalAgentOutcome(value: unknown): ExternalAgentOutcome | null {
   return value === "running" ||
     value === "completed" ||
@@ -1099,7 +1105,6 @@ export function externalAgentMessageFields(
   musicProducerRun?: { runId: string; task: string };
   careerOpsRun?: { runId: string; task: string };
   openExecutiveRun?: { runId: string; task: string };
-  openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
   stockAnalystRun?: { runId: string; task: string };
@@ -1251,16 +1256,6 @@ export function externalAgentMessageFields(
   if (run.kind === "openexecutive") {
     return {
       openExecutiveRun: { runId: run.runId, task: run.task },
-      ...outcomeField,
-    };
-  }
-  if (run.kind === "open_gym") {
-    return {
-      openGymRun: {
-        runId: run.runId,
-        task: run.task,
-        ...(run.quiet === true ? { quiet: true } : {}),
-      },
       ...outcomeField,
     };
   }

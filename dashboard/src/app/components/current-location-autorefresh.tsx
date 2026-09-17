@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect } from "react";
+import { beginStartupLoading } from "./startup-readiness";
 import { hydrateCurrentLocationPreference } from "@/app/components/current-location-preference.ts";
 import {
   announceCurrentLocationChange,
   getStoredCurrentLocationPreference,
   normalizeCurrentLocationSnapshot,
   writeStoredCurrentLocationPreference,
+  type CurrentLocationSnapshot,
 } from "@/lib/current-location.ts";
+import { requestUsesCurrentLocation } from "@/lib/hermes/current-location-context.ts";
 import {
   requestCurrentLocationFix,
   resolveCurrentLocationLabel,
@@ -84,6 +87,7 @@ export function refreshCurrentLocationAtInitialization(): Promise<boolean> {
 }
 
 export function refreshCurrentLocationIfDue(now = Date.now()): Promise<boolean> {
+  if (locationRefreshInFlight) return locationRefreshInFlight;
   try {
     const preference = getStoredCurrentLocationPreference(window.localStorage, now);
     if (!preference.useForAnswers) return Promise.resolve(false);
@@ -104,14 +108,44 @@ export function refreshCurrentLocationIfDue(now = Date.now()): Promise<boolean> 
   }
 }
 
+function initializeCurrentLocation(): Promise<boolean> {
+  initializationRefresh ??= hydrateCurrentLocationPreference().then(() =>
+    refreshCurrentLocationAtInitialization(),
+  );
+  return initializationRefresh;
+}
+
+/** Prepare the shared device context just before either chat transport sends. */
+export async function getCurrentLocationForTurn(
+  request: string,
+): Promise<CurrentLocationSnapshot | undefined> {
+  if (typeof window === "undefined" || !requestUsesCurrentLocation(request)) return undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Join startup and any refresh already in flight. A stalled location
+    // service must not hold a chat indefinitely; it can finish in the background.
+    await Promise.race([
+      initializeCurrentLocation().then(() => refreshCurrentLocationIfDue()),
+      new Promise<void>((resolve) => { timeout = setTimeout(resolve, 10_000); }),
+    ]);
+    const preference = getStoredCurrentLocationPreference(window.localStorage);
+    return preference.useForAnswers && preference.state === "available"
+      ? preference.snapshot ?? undefined
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export default function CurrentLocationAutoRefresh() {
   useEffect(() => {
+    const finishStartup = beginStartupLoading();
     // Durable hydration must win before the first read. On desktop restart the
     // new loopback origin begins empty, so reading first would incorrectly see
     // the switch as off and skip the fresh device fix.
-    initializationRefresh ??= hydrateCurrentLocationPreference().then(() =>
-      refreshCurrentLocationAtInitialization(),
-    );
+    void initializeCurrentLocation().then(finishStartup, finishStartup);
 
     const refreshIfDue = () => {
       void refreshCurrentLocationIfDue();
@@ -126,6 +160,7 @@ export default function CurrentLocationAutoRefresh() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      finishStartup();
       window.clearInterval(refreshTimer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };

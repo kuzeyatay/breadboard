@@ -1,0 +1,26 @@
+.popover { width: 100%; max-height: 100vh; overflow: auto; box-sizing: border-box; color: var(--ink); background: var(--paper-raised); border: 1px solid var(--line); border-radius: 9px; font: 13px/1.4 var(--font-source-sans), sans-serif; outline: none; }
+.content { padding: 12px; }
+.content header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+.content h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.content header button { width: 24px; height: 24px; font-size: 20px; }
+.name { display: flex; flex-direction: column; gap: 5px; }
+.name input { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper-strong); color: var(--ink); outline: none; }
+.name input:focus { border-color: var(--group-color); box-shadow: 0 0 0 1px var(--group-color); }
+.colors { display: flex; justify-content: space-between; padding: 16px 2px; }
+.colors button { width: 18px; height: 18px; border-radius: 5px; }
+.colors button[aria-pressed="true"] { outline: 2px solid var(--group-color); outline-offset: 3px; }
+.actions { display: flex; flex-direction: column; gap: 2px; }
+.actions button { text-align: left; padding: 8px; border-radius: 5px; }
+.actions button:not(:disabled):hover, .content header button:hover { background: var(--paper-strong); }
+.content button { cursor: pointer; }
+.content button:focus-visible { outline: 2px solid var(--group-color); outline-offset: 1px; }
+.content button:disabled { opacity: .45; cursor: default; }
+.content hr { border: 0; height: 1px; background: var(--line); margin: 6px 0; }
+.danger { color: #e56575; }
+.saved { display: flex; align-items: center; }
+.saved > button:first-child { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; }
+.saved > button > span:first-child { width: 18px; height: 18px; border-radius: 5px; flex: none; }
+.saved > button > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.saved small { display: block; color: var(--ink-muted); }
+:global(html):has(.popover), :global(html):has(.popover) :global(body) { margin: 0; min-height: 0; overflow: hidden; background: transparent !important; }
+:global(html):has(.popover) :global(.desktop-title-bar), :global(html):has(.popover) :global(.bb-page-toast-host) { display: none !important; }

@@ -115,6 +115,8 @@ export interface CadToolContext {
   env?: NodeJS.ProcessEnv;
   /** Remaining automatic generation attempts for this turn. */
   attemptsRemaining: number;
+  /** One model-timeout recovery shared by planning and source generation. */
+  modelTimeoutRecoveriesRemaining?: number;
   /** Project the agent is working on, once one exists. */
   projectId?: string;
   /**

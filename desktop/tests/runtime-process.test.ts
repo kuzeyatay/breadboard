@@ -320,6 +320,34 @@ test("rejects duplicate starts instead of spawning a second owner or legacy fall
   assert.equal(harness.spawnCalls.length, 1);
 });
 
+test("preserves a native startup exit code when stdout closes before the exit event", async () => {
+  const lines: string[] = [];
+  const harness = createHarness(undefined, (_source, line) => lines.push(line));
+  const started = harness.runtime.start();
+  harness.child.stderr.write("private-startup-secret\n");
+  harness.child.stdout.end();
+  setImmediate(() => harness.child.exit(70));
+
+  await assert.rejects(started, (error: unknown) =>
+    error instanceof RuntimeProcessError &&
+    error.code === "SPAWN_FAILED" &&
+    /exited before readiness \(exit code 70\)/.test(error.message),
+  );
+  assert.equal(harness.runtime.state, "failed");
+  assert.deepEqual(harness.child.killSignals, []);
+  assert.deepEqual(lines, [], "pre-ready output must remain private");
+});
+
+test("bounds cleanup when startup stdout closes but the runtime stays alive", async () => {
+  const harness = createHarness();
+  const started = harness.runtime.start();
+  harness.child.stdout.end();
+
+  await assert.rejects(started, /closed stdout before a ready handshake/);
+  assert.deepEqual(harness.child.killSignals, ["SIGKILL"]);
+  assert.equal(harness.runtime.state, "failed");
+});
+
 test("fatal termination signals only the fixed Runtime V2 root", async () => {
   const harness = createHarness();
   const started = harness.runtime.start();

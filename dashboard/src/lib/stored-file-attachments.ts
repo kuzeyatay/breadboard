@@ -9,7 +9,8 @@ export type StoredFileAttachmentFormat =
   | "py" | "java" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx"
   | "css" | "yaml" | "yml" | "toml" | "ini" | "sql" | "sh" | "ps1"
   | "rs" | "go" | "rb" | "php" | "swift" | "kt" | "kts" | "scala"
-  | "lua" | "r" | "vue" | "svelte" | "zip";
+  | "lua" | "r" | "vue" | "svelte" | "zip" | "bin" | "vcf" | "ics"
+  | "m" | "mlx";
 
 export type StoredFileArtifactKind =
   | "text"
@@ -82,6 +83,14 @@ export const STORED_FILE_ATTACHMENT_FORMATS: Record<
   vue: CODE("text/x-vue; charset=utf-8"),
   svelte: CODE("text/x-svelte; charset=utf-8"),
   zip: { mimeType: "application/zip", artifactKind: "unknown", textual: false },
+  bin: { mimeType: "application/octet-stream", artifactKind: "unknown", textual: false },
+  vcf: { mimeType: "text/vcard; charset=utf-8", artifactKind: "text", textual: true },
+  ics: { mimeType: "text/calendar; charset=utf-8", artifactKind: "text", textual: true },
+  // MATLAB. A .m script is plain source; a .mlx Live Script is a zip package
+  // whose text and code cells are read by document-structure/mlx.ts, the way a
+  // .zip goes through the archive reader rather than being decoded as text.
+  m: CODE("text/x-matlab; charset=utf-8"),
+  mlx: { mimeType: "application/octet-stream", artifactKind: "code", textual: false },
 };
 
 export const STORED_FILE_ATTACHMENT_EXTENSIONS = Object.keys(
@@ -117,4 +126,13 @@ export function isStoredFileBlobId(value: unknown): value is string {
 
 export function storedFileIsText(format: StoredFileAttachmentFormat): boolean {
   return STORED_FILE_ATTACHMENT_FORMATS[format].textual;
+}
+
+/**
+ * What a binary upload says to the model in place of its contents. The client
+ * writes this when the file is first attached; the server writes the same
+ * sentence when a regenerated turn reads the stored file back.
+ */
+export function storedBinaryFilePromptText(name: string): string {
+  return `Original binary file attached: ${name}. Inspect the workspace copy with the appropriate file tools.`;
 }

@@ -93,6 +93,7 @@ export const RUNTIME_PRODUCT_ENVIRONMENT_NAMES = [
   "BREADBOARD_SOLIDWORKS_EXE",
   "BREADBOARD_SOLIDWORKS_VERSION",
   "AGENT_BROWSER_EXECUTABLE_PATH",
+  "HYPERFRAMES_BROWSER_PATH",
   "SF3D_DEVICE",
   "SF3D_PRETRAINED_MODEL",
   "SF3D_TIMEOUT_MS",
@@ -461,6 +462,12 @@ interface BoundedLineReader {
   cancel(): void;
 }
 
+class RuntimeReadyStreamClosedError extends RuntimeProcessError {
+  constructor() {
+    super("SPAWN_FAILED", "Runtime V2 closed stdout before a ready handshake.");
+  }
+}
+
 const DEFAULT_DEPENDENCIES: RuntimeProcessDependencies = {
   spawnRuntime: (executable, args, options) =>
     spawn(executable, [...args], {
@@ -660,6 +667,24 @@ export class RuntimeProcess {
       return this.#readySnapshot;
     } catch (error) {
       readyReader?.cancel();
+      let startupError = error;
+      if (error instanceof RuntimeReadyStreamClosedError) {
+        // Pipe EOF can arrive just before the OS exit notification. Give that
+        // notification a short, bounded chance to preserve the real exit code
+        // instead of replacing it with our cleanup SIGKILL. Raw pre-ready
+        // stderr remains private because control secrets are not yet known.
+        const exit = await this.#waitForExit(Math.min(
+          250,
+          this.#timeouts.forcedShutdown,
+          Math.max(0, deadline - Date.now()),
+        ));
+        if (exit && !this.#terminationExpected) {
+          startupError = new RuntimeProcessError(
+            "SPAWN_FAILED",
+            `Runtime V2 exited before readiness (${formatExit(exit)}).`,
+          );
+        }
+      }
       // `stop()` may run while `start()` is awaiting bootstrap/readiness. Keep
       // that asynchronous transition visible to TypeScript through a helper;
       // local control-flow narrowing cannot observe mutation from another task.
@@ -669,7 +694,7 @@ export class RuntimeProcess {
       this.#clearControlAuthority();
       this.#forceTerminate();
       await this.#waitForExit(this.#timeouts.forcedShutdown);
-      if (error instanceof RuntimeProcessError) throw error;
+      if (startupError instanceof RuntimeProcessError) throw startupError;
       throw new RuntimeProcessError(
         "SPAWN_FAILED",
         "Runtime V2 failed to start; legacy fallback is disabled.",
@@ -1543,16 +1568,16 @@ function readOneBoundedLine(stream: Readable, maxBytes: number): BoundedLineRead
     stream.removeListener("error", onError);
     stream.removeListener("end", onEnd);
   };
-  const fail = (message: string): void => {
+  const fail = (error: RuntimeProcessError): void => {
     if (!active) return;
     active = false;
     cleanup();
     stream.pause();
     chunks = [];
-    rejectLine(protocolViolation(message));
+    rejectLine(error);
   };
-  const onError = (): void => fail("Runtime V2 ready stream failed.");
-  const onEnd = (): void => fail("Runtime V2 closed stdout before a ready handshake.");
+  const onError = (): void => fail(protocolViolation("Runtime V2 ready stream failed."));
+  const onEnd = (): void => fail(new RuntimeReadyStreamClosedError());
   const onData = (raw: Buffer | string): void => {
     if (!active) return;
     const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw, "utf8");
@@ -1560,7 +1585,7 @@ function readOneBoundedLine(stream: Readable, maxBytes: number): BoundedLineRead
     const linePart = newline >= 0 ? chunk.subarray(0, newline) : chunk;
     bytes += linePart.length;
     if (bytes > maxBytes) {
-      fail(`Runtime V2 ready handshake exceeds ${maxBytes} bytes.`);
+      fail(protocolViolation(`Runtime V2 ready handshake exceeds ${maxBytes} bytes.`));
       return;
     }
     chunks.push(linePart);

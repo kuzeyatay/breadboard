@@ -1,4 +1,5 @@
 import { ApiError } from "../hermes/route-core.ts";
+import { conversationMessageText } from "./message-context.ts";
 import {
   listConversationMessages,
   type ConversationMessageRow,
@@ -182,6 +183,6 @@ export function runtimeMessagesForBranch(
         role: "user" | "assistant";
       } => message.role === "user" || message.role === "assistant",
     )
-    .filter((message) => message.content.trim().length > 0)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({ role: message.role, content: conversationMessageText(message) }))
+    .filter((message) => message.content.trim().length > 0);
 }

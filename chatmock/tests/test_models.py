@@ -14,6 +14,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(normalize_model_name("gpt5.6-sol"), "gpt-5.6-sol")
         self.assertEqual(normalize_model_name("gpt5.6-terra"), "gpt-5.6-terra")
         self.assertEqual(normalize_model_name("gpt-5.6-luna-latest"), "gpt-5.6-luna")
+        self.assertEqual(normalize_model_name("gpt-5.6-luna-reserve"), "gpt-reserve")
         self.assertEqual(normalize_model_name("gpt5"), "gpt-5")
         self.assertEqual(normalize_model_name("gpt5.4"), "gpt-5.4")
         self.assertEqual(normalize_model_name("gpt5.5"), "gpt-5.5")
@@ -61,6 +62,10 @@ class ModelRegistryTests(unittest.TestCase):
             allowed_efforts_for_model("gpt-5.6-luna"),
             frozenset(("none", "low", "medium", "high", "xhigh", "max")),
         )
+        self.assertEqual(
+            allowed_efforts_for_model("gpt-5.6-luna-reserve"),
+            frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        )
         self.assertEqual(allowed_efforts_for_model("gpt-5.4"), frozenset(("none", "low", "medium", "high", "xhigh")))
         self.assertEqual(allowed_efforts_for_model("gpt-5.4-mini"), frozenset(("low", "medium", "high", "xhigh")))
         self.assertEqual(allowed_efforts_for_model("gpt-5.1-codex"), frozenset(("low", "medium", "high")))
@@ -74,6 +79,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertIn("gpt-5.6-terra-max", model_ids)
         self.assertIn("gpt-5.6-luna", model_ids)
         self.assertIn("gpt-5.6-luna-max", model_ids)
+        self.assertIn("gpt-5.6-luna-reserve", model_ids)
+        self.assertIn("gpt-5.6-luna-reserve-max", model_ids)
         self.assertIn("gpt-5.4", model_ids)
         self.assertIn("gpt-5.5", model_ids)
         self.assertIn("gpt-5.4-mini", model_ids)

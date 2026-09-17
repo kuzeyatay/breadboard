@@ -12,8 +12,9 @@ from flask import request as flask_request
 
 from ..accounts import ChatGptAccount, note_account_exhausted, select_account
 from ..config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
-from ..limits import record_rate_limits_from_response
+from ..limits import record_rate_limits_from_response, spent_window_message
 from ..model_telemetry import _create_quota_account_handoff
+from .. import usage_ledger
 from ..model_registry import allowed_efforts_for_model, normalize_model_name, uses_codex_instructions
 from ..reasoning import build_reasoning_param
 from ..session import ensure_session_id
@@ -26,12 +27,12 @@ from ..utils import convert_chat_messages_to_responses_input, get_effective_chat
 from .types import ModelCall, ModelTokenUsage, ProviderError
 
 
-# Council generations can legitimately spend more than fifteen minutes in one
-# model call. Both deadlines remain finite, but their defaults sit above that
-# observed boundary. The idle deadline resets on every upstream frame; the
-# total deadline never does.
+# Large Learn planning and repair generations can legitimately spend more than
+# thirty minutes in one model call. Both deadlines remain finite, but the total
+# default must outwait that observed boundary. The idle deadline resets on every
+# upstream frame; the total deadline never does.
 DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS = 1_200.0
-DEFAULT_WEBSOCKET_TOTAL_TIMEOUT_SECONDS = 1_800.0
+DEFAULT_WEBSOCKET_TOTAL_TIMEOUT_SECONDS = 3_600.0
 DEFAULT_WEBSOCKET_OPEN_TIMEOUT_SECONDS = 30.0
 _MIN_CONFIGURED_STREAM_DEADLINE_SECONDS = 901.0
 _MAX_CONFIGURED_STREAM_DEADLINE_SECONDS = 21_600.0
@@ -150,6 +151,43 @@ def _event_status_code(event: Dict[str, Any]) -> int | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _event_quota_detail(event: Dict[str, Any] | None) -> tuple[str, int | None]:
+    """What a 429 event says about the plan window, for the account cooldown.
+
+    A plan-window rejection carries `resets_in_seconds` (days, for a weekly
+    window); without it the account rests for the default quarter hour and is
+    re-benched, failing one request over to a sibling each time, until it
+    really resets.
+    """
+    reason = "the upstream account returned HTTP 429"
+    resets_in: int | None = None
+    candidates: list[Any] = []
+    if isinstance(event, dict):
+        candidates.append(event.get("error"))
+        response = event.get("response")
+        if isinstance(response, dict):
+            candidates.append(response.get("error"))
+    for error in candidates:
+        if not isinstance(error, dict):
+            continue
+        message = error.get("message")
+        if isinstance(message, str) and message.strip() and reason.startswith("the upstream"):
+            reason = message.strip()[:300]
+        if resets_in is None:
+            try:
+                seconds = int(float(error.get("resets_in_seconds")))
+            except (TypeError, ValueError):
+                seconds = 0
+            resets_in = seconds if seconds > 0 else None
+    # The websocket carries no rate-limit headers, so the window can only be
+    # named from how far away the reset is; a short one stays as the backend
+    # worded it.
+    window = spent_window_message(resets_in)
+    if window is not None:
+        reason = window
+    return reason, resets_in
 
 
 def _event_error_code(event: Dict[str, Any]) -> str | None:
@@ -357,13 +395,15 @@ class ChatGptUpstreamProvider:
         )
 
     @staticmethod
-    def _note_quota(account: ChatGptAccount | None, status_code: int | None) -> None:
+    def _note_quota(
+        account: ChatGptAccount | None,
+        status_code: int | None,
+        event: Dict[str, Any] | None = None,
+    ) -> None:
         if account is not None and status_code == 429:
+            reason, resets_in = _event_quota_detail(event)
             try:
-                note_account_exhausted(
-                    account.key,
-                    reason="the upstream account returned HTTP 429",
-                )
+                note_account_exhausted(account.key, reason=reason, seconds=resets_in)
             except Exception:
                 # Cooldown persistence is an observer. The terminal upstream
                 # rejection remains authoritative if that observer is broken.
@@ -459,12 +499,8 @@ class ChatGptUpstreamProvider:
 
         messages: List[Dict[str, Any]] = []
         if isinstance(call.system, str) and call.system.strip():
-            messages.append({"role": "user", "content": call.system})
-        for message in call.messages or []:
-            if isinstance(message, dict) and message.get("role") == "system":
-                messages.append({"role": "user", "content": message.get("content")})
-            else:
-                messages.append(message)
+            messages.append({"role": "system", "content": call.system})
+        messages.extend(call.messages or [])
 
         input_items = convert_chat_messages_to_responses_input(messages)
         instructions = (
@@ -509,6 +545,7 @@ class ChatGptUpstreamProvider:
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
         account = account or select_account()
+        call.account_out = usage_ledger.account_summary(account)
         selected_auth = (account.auth, account.path) if account is not None else None
         try:
             access_token, account_id = get_effective_chatgpt_auth(selected_auth)
@@ -826,7 +863,7 @@ class ChatGptUpstreamProvider:
                         or _response_output_text(response)
                         or _response_reasoning_text(response)
                     )
-                    self._note_quota(account, status)
+                    self._note_quota(account, status, event)
                     replacement = self._replacement_account(
                         account,
                         status,
@@ -881,7 +918,7 @@ class ChatGptUpstreamProvider:
                         or _response_output_text(response)
                         or _response_reasoning_text(response)
                     )
-                    self._note_quota(account, status)
+                    self._note_quota(account, status, event)
                     replacement = self._replacement_account(
                         account,
                         status,

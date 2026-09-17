@@ -12,6 +12,8 @@ import { write } from "./helpers"
 import { i18n, TRANSLATIONS } from "../../i18n"
 import { BuildCtx } from "../../util/ctx"
 import { StaticResources } from "../../util/resources"
+import { isScopedBuild } from "../../util/scope"
+import { fileOf } from "../../processors/treeSpill"
 
 interface TagPageOptions extends FullPageLayout {
   sort?: (f1: QuartzPluginData, f2: QuartzPluginData) => number
@@ -46,12 +48,13 @@ function computeTagInfo(
   )
 
   // Update with actual content if available
-  for (const [tree, file] of content) {
+  for (const entry of content) {
+    const file = fileOf(entry)
     const slug = file.data.slug!
     if (slug.startsWith("tags/")) {
       const tag = slug.slice("tags/".length)
       if (tags.has(tag)) {
-        tagDescriptions[tag] = [tree, file]
+        tagDescriptions[tag] = entry
         if (file.data.frontmatter?.title === tag) {
           file.data.frontmatter.title = `${i18n(locale).pages.tagContent.tag}: ${tag}`
         }
@@ -122,6 +125,9 @@ export const TagPage: QuartzEmitterPlugin<Partial<TagPageOptions>> = (userOpts) 
       ]
     },
     async *emit(ctx, content, resources) {
+      // Tag pages aggregate the whole site; a scoped build only sees part of
+      // it, so the publisher keeps the previous tag pages instead.
+      if (isScopedBuild(ctx.argv.scope)) return
       const allFiles = content.map((c) => c[1].data)
       const cfg = ctx.cfg.configuration
       const [tags, tagDescriptions] = computeTagInfo(allFiles, content, cfg.locale)

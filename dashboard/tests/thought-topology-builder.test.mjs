@@ -490,6 +490,69 @@ test("source-document Markdown becomes a topology node under its source folder",
   database.close();
 });
 
+test("recorded source anchors connect learning pages and notes even without semantic overlap", async () => {
+  const contentRoot = path.join(isolatedRoot, "anchor-content");
+  const slug = "anchor-fixture";
+  const gardenDir = path.join(contentRoot, slug);
+  for (const folder of ["sources", "learning/chapter", "notes", ".breadboard"]) {
+    fs.mkdirSync(path.join(gardenDir, folder), { recursive: true });
+  }
+  for (const name of ["lecture", "book"]) {
+    fs.writeFileSync(path.join(gardenDir, "sources", `${name}.md`),
+      sourceMarkdown(name, "Original material.", "pdf"));
+  }
+  fs.writeFileSync(path.join(gardenDir, "learning/chapter/coordinates.md"),
+    '---\ntitle: Coordinates\nknowledge_type: learning-page\ngeneratedBy: learn_button\nsourceAnchors: [text-anchor, missing, conflicting]\nsourceVisualIds: [S1.P3.F1]\nsourceFormulaAnchors: [S1.P4.E1]\n---\nCylindrical transformations.');
+  fs.writeFileSync(path.join(gardenDir, "notes/review.md"),
+    '---\ntitle: Review\nsourceAnchors: [text-anchor]\n---\nSpatial intuition.');
+  fs.writeFileSync(path.join(gardenDir, ".breadboard/source-anchors.json"), JSON.stringify({
+    sourceStructuralAnchors: [
+      { id: "text-anchor", sourceId: "lecture" },
+      { id: "conflicting", sourceId: "book" },
+      { id: "conflicting", sourceId: "lecture" },
+    ],
+  }));
+  fs.writeFileSync(path.join(gardenDir, ".breadboard/source-visuals.json"), JSON.stringify([
+    { sourceVisualId: "S1.P3.F1", sourceId: "book" },
+    { sourceVisualId: "S1.P4.E1", sourceId: "book" },
+  ]));
+  const database = databaseFixture(slug);
+  await buildThoughtTopologyInRuntimeWorker({
+    clusterId: 1, userId: 7, gardenId: slug, revision: 1, contentRoot, database,
+    dependencies: { generator: null, embed: async () => { throw new Error("offline fixture"); } },
+  });
+  const artifact = readThoughtTopology(gardenDir);
+  const edges = artifact.edges.filter((edge) => edge.origin === "provenance");
+  assert.deepEqual(edges.map((edge) => [edge.source, edge.target]).sort(), [
+    ["page:coordinates", "page:book"],
+    ["page:coordinates", "page:lecture"],
+    ["page:review", "page:lecture"],
+  ]);
+  assert.equal(edges.every((edge) => edge.evidence.every((item) => /Source anchor:/.test(item.label))), true);
+  assert.equal(edges.some((edge) => edge.evidence.some((item) => /missing|conflicting/.test(item.label))), false);
+  const bookEdge = edges.find((edge) => edge.target === "page:book");
+  assert.equal(bookEdge.evidence.length, 2, "multiple anchors produce one source connection");
+  assert.match(bookEdge.explanation.text, /recorded source references/);
+  assert.equal(bookEdge.relationType, "derives-from");
+  const { planThoughtTopology } = await import("../../quartz/quartz/components/scripts/thoughtTopologyLayout.ts");
+  const plan = planThoughtTopology(artifact, { maxConnectionsPerNode: 5 });
+  assert.equal(plan.edges.filter((edge) => edge.origin === "provenance").length, 3);
+  const { gardenContentFingerprint } = await import("../src/lib/thought-topology/projection.ts");
+  const fingerprint = gardenContentFingerprint(gardenDir);
+  fs.writeFileSync(path.join(gardenDir, ".breadboard/source-anchors.json"), JSON.stringify({
+    sourceStructuralAnchors: [{ id: "text-anchor", sourceId: "book" }],
+  }));
+  assert.notEqual(gardenContentFingerprint(gardenDir), fingerprint, "ledger edits invalidate the saved map");
+  await buildThoughtTopologyInRuntimeWorker({
+    clusterId: 1, userId: 7, gardenId: slug, revision: 1, contentRoot, database,
+    dependencies: { generator: null, embed: async () => { throw new Error("offline fixture"); } },
+  });
+  const repaired = readThoughtTopology(gardenDir).edges.filter((edge) => edge.origin === "provenance");
+  assert.equal(repaired.some((edge) => edge.target === "page:lecture"), false, "old ownership is removed");
+  assert.equal(repaired.length, 2);
+  database.close();
+});
+
 test("a long source document is embedded per section and links to pages through the chapter that covers them", async () => {
   const contentRoot = path.join(isolatedRoot, "span-content");
   const slug = "span-fixture";
@@ -859,4 +922,161 @@ test("a build explains every selected connection before publishing one complete 
   assert.equal(explanationCalls, callsBeforeRepair + 1, "the one historical pending edge is regenerated");
   assert.equal(thoughtTopologyHasCompleteConnections(artifact), true);
   assert.ok(artifact.edges.every((edge) => edge.explanation.state !== "pending"));
+
+  // Adding a page must not preserve pending edges from the historical map.
+  const pendingAgain = structuredClone(artifact);
+  const pendingCache = readThoughtTopologyCache(gardenDir);
+  pendingAgain.edges[0].explanation = { state: "pending", text: "Waiting." };
+  pendingCache.edges[pendingAgain.edges[0].pairHash].explanation = pendingAgain.edges[0].explanation;
+  fs.writeFileSync(path.join(gardenDir, ".breadboard/thought-topology.json"), JSON.stringify(pendingAgain));
+  fs.writeFileSync(path.join(gardenDir, ".breadboard/thought-topology-cache.json"), JSON.stringify(pendingCache));
+  fs.writeFileSync(path.join(gardenDir, "e.md"), markdown("Epsilon", "A new flux example.", ["a"]));
+  assert.equal((await build(4)).status, "built");
+  assert.equal(thoughtTopologyHasCompleteConnections(readThoughtTopology(gardenDir)), true);
+});
+
+test("an interrupted build resumes durable explanations, tolerates a torn journal, and publishes only when complete", async () => {
+  const contentRoot = path.join(isolatedRoot, "resume-content");
+  const slug = "resume-fixture";
+  const gardenDir = path.join(contentRoot, slug);
+  fs.mkdirSync(gardenDir, { recursive: true });
+  const names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"];
+  for (const [index, name] of names.entries()) {
+    fs.writeFileSync(path.join(gardenDir, `${name}.md`), markdown(name, `Electric flux in surface ${index}.`, names.slice(index + 1)));
+  }
+  const database = databaseFixture(slug);
+  const controller = new AbortController();
+  const calls = [];
+  let embeddingCalls = 0;
+  const dependencies = {
+    embed: async (texts) => {
+      embeddingCalls++;
+      return { model: "local/bge-small-en-v1.5", dimension: 3, vectors: texts.map(fakeVector) };
+    },
+    generator: async (messages) => {
+      const data = JSON.parse(messages.find((message) => message.role === "user").content);
+      if (data.sourceTitle) {
+        calls.push(`${data.sourceTitle}:${data.targetTitle}`);
+        return JSON.stringify({ explanation: `${data.sourceTitle} and ${data.targetTitle} describe electric flux.`, relationType: "related", direction: "undirected" });
+      }
+      return JSON.stringify({ summary: "Electric flux through surfaces." });
+    },
+  };
+  const journalPath = path.join(gardenDir, ".breadboard/thought-topology-build-journal.jsonl");
+  const input = { clusterId: 1, userId: 7, gardenId: slug, revision: 1, contentRoot, database, dependencies };
+  await assert.rejects(buildThoughtTopologyInRuntimeWorker({
+    ...input,
+    signal: controller.signal,
+    onProgress(percent) {
+      if (percent > 68 && percent < 82) controller.abort(new Error("simulate worker cutoff"));
+    },
+  }), /simulate worker cutoff/);
+  assert.equal(readThoughtTopology(gardenDir), null, "partial work never becomes the renderer artifact");
+  const saved = fs.readFileSync(journalPath, "utf8").trim().split("\n").map(JSON.parse).filter((entry) => entry.kind === "edge");
+  assert.ok(saved.length > 0);
+  const savedTexts = saved.map((entry) => entry.value.explanation.text);
+  const embedsBeforeRetry = embeddingCalls;
+  calls.length = 0;
+  fs.appendFileSync(journalPath, '{"kind":"edge","value":');
+  const resumed = await buildThoughtTopologyInRuntimeWorker(input);
+  assert.equal(resumed.status, "built");
+  const artifact = readThoughtTopology(gardenDir);
+  assert.equal(thoughtTopologyHasCompleteConnections(artifact), true);
+  assert.equal(embeddingCalls, embedsBeforeRetry, "successful vectors survive the interruption");
+  assert.equal(calls.length, artifact.edges.length - saved.length, "retry generates only missing explanations");
+  for (const text of savedTexts) assert.ok(artifact.edges.some((edge) => edge.explanation.text === text));
+  assert.equal(fs.existsSync(journalPath), false, "successful publish removes recovery state");
+  assert.equal(rendererArtifactContainsVector(artifact), false);
+  database.close();
+});
+
+test("completed embedding batches survive cancellation before the next batch", async () => {
+  const contentRoot = path.join(isolatedRoot, "resume-embedding-content");
+  const slug = "resume-embedding";
+  const gardenDir = path.join(contentRoot, slug);
+  fs.mkdirSync(gardenDir, { recursive: true });
+  for (let index = 0; index < 12; index++) fs.writeFileSync(path.join(gardenDir, `${index}.md`), markdown(`Flux ${index}`, `Electric flux through surface ${index}.`));
+  const database = databaseFixture(slug);
+  const controller = new AbortController();
+  const batches = [];
+  const input = {
+    clusterId: 1, userId: 7, gardenId: slug, revision: 1, contentRoot, database,
+    dependencies: {
+      generator: readyGenerator,
+      embed: async (texts) => { batches.push(texts); return { model: "local/bge-small-en-v1.5", dimension: 3, vectors: texts.map(fakeVector) }; },
+    },
+  };
+  await assert.rejects(buildThoughtTopologyInRuntimeWorker({ ...input, signal: controller.signal, onProgress(percent) { if (percent > 20 && percent < 55) controller.abort(); } }), /abort/i);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].length, 8);
+  await buildThoughtTopologyInRuntimeWorker(input);
+  assert.equal(batches.length, 2);
+  assert.equal(batches[1].length, 4, "the first eight pages are not embedded again");
+  database.close();
+});
+
+test("a spent enrichment budget publishes fallback text and the next build resumes the remainder", async () => {
+  const contentRoot = path.join(isolatedRoot, "content-budget");
+  const slug = "budget-fixture";
+  const gardenDir = path.join(contentRoot, slug);
+  fs.mkdirSync(gardenDir, { recursive: true });
+  fs.writeFileSync(path.join(gardenDir, "_index.md"), "---\ntitle: Budget Garden\n---\n");
+  const pages = ["alpha", "beta", "gamma", "delta"];
+  for (const page of pages) {
+    fs.writeFileSync(
+      path.join(gardenDir, `${page}.md`),
+      markdown(`${page} flux`, `The ${page} note relates electric flux to enclosed charge and current.`),
+    );
+  }
+  const database = databaseFixture(slug);
+  // Every model call advances the clock past the allowance, so only the first
+  // explanation is model-written; the rest must fall back instantly instead
+  // of holding the build open, and the artifact must still commit.
+  let clock = Date.parse("2026-01-01T00:00:00.000Z");
+  let modelCalls = 0;
+  let edgeCalls = 0;
+  const dependencies = {
+    generator: async (messages) => {
+      modelCalls += 1;
+      clock += 5_000;
+      if (messages[1].content.includes("sourceTitle")) edgeCalls += 1;
+      return messages[1].content.includes("sourceTitle")
+        ? JSON.stringify({ explanation: "Both notes relate flux to enclosed charge.", relationType: "related", direction: "undirected" })
+        : JSON.stringify({ summary: "A model-written summary of a flux note." });
+    },
+    embed: async (texts) => ({
+      model: "local/bge-small-en-v1.5",
+      dimension: 3,
+      vectors: texts.map(fakeVector),
+    }),
+    now: () => new Date(clock),
+    enrichmentBudgetMs: 4_000,
+  };
+  const input = { clusterId: 1, userId: 7, gardenId: slug, revision: 1, contentRoot, database, dependencies };
+
+  const first = await buildThoughtTopologyInRuntimeWorker(input);
+  assert.equal(first.status, "built", "a Garden the model cannot finish in time still publishes");
+  const firstArtifact = readThoughtTopology(gardenDir);
+  assert.equal(firstArtifact.nodes.length, pages.length);
+  assert.ok(firstArtifact.edges.length >= 2, "the fixture selects several connections");
+  assert.equal(modelCalls, 1, "the model is not consulted once the allowance is spent");
+  assert.equal(firstArtifact.edges.filter((edge) => edge.explanation.state === "ready").length, 1);
+  assert.equal(
+    firstArtifact.edges.filter((edge) => edge.explanation.state === "degraded").length,
+    firstArtifact.edges.length - 1,
+    "the remainder carries deterministic fallback text rather than blocking the commit",
+  );
+
+  // The fallback is never cached as ready, so a later build with time to spare
+  // finishes exactly the explanations this one skipped.
+  database.prepare("UPDATE clusters SET thought_topology_revision = 2").run();
+  dependencies.enrichmentBudgetMs = 60 * 60_000;
+  edgeCalls = 0;
+  const second = await buildThoughtTopologyInRuntimeWorker({ ...input, revision: 2 });
+  assert.equal(second.status, "built");
+  const secondArtifact = readThoughtTopology(gardenDir);
+  assert.ok(secondArtifact.edges.every((edge) => edge.explanation.state === "ready"));
+  assert.equal(secondArtifact.garden.summary.state, "ready", "the skipped Garden summary is written too");
+  assert.equal(edgeCalls, firstArtifact.edges.length - 1, "only the skipped explanations are regenerated");
+  database.close();
 });

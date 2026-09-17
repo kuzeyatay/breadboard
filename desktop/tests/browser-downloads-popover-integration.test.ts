@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-test("downloads toolbar and native popover follow real transfers above the browser page", () => {
+test("downloads and extensions popovers stay above the browser with working actions and dismissal", () => {
   const desktop = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-downloads-popover-"));
   const env = { ...process.env };

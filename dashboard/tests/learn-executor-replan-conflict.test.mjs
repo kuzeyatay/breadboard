@@ -84,6 +84,7 @@ async function loadExecutor() {
                     state().operationCalls.push(name);
                     return { name };
                   };
+                  export const LEARN_MODEL_CLIENT_OPTIONS = { timeout: 1, maxRetries: 0 };
                   export const confirmLearningMap = () => unexpected("confirm");
                   export const rebuildEntireGarden = () => unexpected("rebuild");
                   export const runLearnPipeline = () => unexpected("plan");

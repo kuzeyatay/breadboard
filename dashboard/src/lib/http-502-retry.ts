@@ -161,7 +161,11 @@ const TIMEOUT_MESSAGE = /\b(?:timed out|timeout)\b/i;
 // Require both a quota/limit marker and a reset/retry marker. A provider reset
 // is terminal even if a gateway wrapped it in the status used by receipts.
 const PROVIDER_QUOTA_OR_LIMIT_MESSAGE =
-  /\b(?:session|usage|rate)\s+limit\b|\b(?:insufficient[_\s-]?quota|quota|credits?)\s+(?:is\s+)?(?:exhausted|exceeded|depleted)\b/i;
+  /\b(?:session|usage|rate)\s+limit\b|\b(?:insufficient[_\s-]?quota|quota|credits?)\s+(?:is\s+)?(?:exhausted|exceeded|depleted)\b|\bout\s+of\s+(?:quota|credits)\b|\b(?:requires|needs)\s+more\s+(?:provider\s+)?credits\b|\binsufficient\s+credits\b/i;
+// A provider's own refusal for lack of quota (429) or credits (402). The
+// council collapses these into a 502 whose message names the refusal (see
+// ChatMock `_exhausted_route_message`), so the wording is checked as well.
+const PROVIDER_QUOTA_STATUSES = new Set([402, 429]);
 const PROVIDER_QUOTA_RESET_MESSAGE =
   /\breset(?:s|ting)?\b|\btry\s+again\b|\bretry(?:ing)?\b/i;
 
@@ -354,6 +358,19 @@ export function modelTransportFailureEvidence(
  * cannot restore its session and must not spend the generic outage budget. */
 export function isExplicitProviderQuotaResetError(error: unknown): boolean {
   return hasExplicitProviderQuotaReset(errorDetails(error));
+}
+
+/** Whether the failure, anywhere in its cause chain, is a provider refusing
+ * for lack of quota or credits rather than a transport or model fault. Unlike
+ * the reset predicate above this does not require a reset marker: a 402 from
+ * a pay-as-you-go provider never resets on its own. Used to tell the person
+ * what to fix (credits, limits, model choice) instead of "execution failed". */
+export function isProviderQuotaOrCreditError(error: unknown): boolean {
+  const details = errorDetails(error);
+  return details.some(({ status, message }) => (
+    (status !== undefined && PROVIDER_QUOTA_STATUSES.has(status)) ||
+    PROVIDER_QUOTA_OR_LIMIT_MESSAGE.test(message)
+  ));
 }
 
 /** Classify connection-shaped failures for terminal evidence. Replay still

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { availableParallelism } from "node:os";
 
 import { externalRuntimePathExists } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { invalidateGardenNoteCount } from "./garden-note-count-cache.ts";
 import {
   inspectRuntimeJob,
   readRuntimeJobOutput,
@@ -11,8 +13,14 @@ import {
 } from "./supervisor-control.ts";
 
 const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
-const DEFAULT_BUILD_CONCURRENCY = 1;
-const DEFAULT_BUILD_TIMEOUT_MS = 15 * 60 * 1000;
+// Parsing dominates a full-site build (KaTeX and syntax highlighting per page)
+// and parallelises well across worker threads; each thread holds one chunk of
+// pages, so the cap keeps the build's process tree inside its memory budget.
+const DEFAULT_BUILD_CONCURRENCY = Math.min(
+  4,
+  Math.max(1, availableParallelism() - 2),
+);
+const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_BUILD_TIMEOUT_MS = 10_000;
 const MAX_BUILD_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_BUILD_CONCURRENCY = 16;
@@ -20,6 +28,16 @@ const MAX_REASON_BYTES = 512;
 const MAX_REASONS_PER_JOB = 32;
 const MAX_PENDING_REASONS = 32;
 const COALESCED_REASON = "additional coalesced garden mutations";
+// Every Garden-scoped publication also refreshes the dashboard's library
+// landing pages (`private-library/…`, `public-library`, …): they summarise the
+// Gardens and are rewritten alongside most Garden mutations.
+const LIBRARY_INDEX_SCOPES = [
+  "private-library",
+  "public-library",
+  "organization-library",
+] as const;
+const MAX_SCOPE_ROOTS = 32;
+const SCOPE_ROOT = /^(?!\.)[^\\/\0\p{Cc}]{1,255}(?:\/(?!\.)[^\\/\0\p{Cc}]{1,255})*$/u;
 const TERMINAL_STATES = new Set([
   "succeeded",
   "failed",
@@ -55,6 +73,8 @@ interface SealedRuntimeV2QuartzPublishExecutor {
     readonly concurrency: number;
     readonly timeoutMs: number;
     readonly buildEnvironment: Readonly<Record<string, string>>;
+    /** Content-relative directories to rebuild; empty = the whole site. */
+    readonly scope: readonly string[];
   }): Promise<QuartzBuildResult>;
 }
 
@@ -66,27 +86,44 @@ interface QuartzPublishBaseOptions {
 
 type QuartzPublishOptions = QuartzPublishBaseOptions & (
   | {
-      /** Garden-scoped canonical mutation that invalidates derived topology. */
+      /** Garden-scoped canonical mutation that invalidates derived topology.
+       * The publication rebuilds only this Garden (plus the library landing
+       * pages) on top of the current site. */
       readonly gardenSlug: string;
       readonly topologyImpact?: never;
+      readonly scope?: never;
     }
   | {
       /** Explicit proof that this publication changes only aggregate/static
        * output and cannot make one Garden's derived topology stale. */
       readonly gardenSlug?: never;
       readonly topologyImpact: "none";
+      /** Content-relative directories that are enough to rebuild. Omit when
+       * the change can touch pages anywhere (deletions, imports, renames). */
+      readonly scope?: readonly string[];
     }
 );
 
 interface PendingPublication {
   readonly reasons: string[];
   readonly userId: number | null;
+  /** Union of the queued scopes, or `null` when any entry needs the whole site. */
+  readonly scope: readonly string[] | null;
 }
 
-const pendingReasons = new Map<string, number | null>();
+interface PendingReason {
+  readonly userId: number | null;
+  readonly scope: readonly string[] | null;
+}
+
+const pendingReasons = new Map<string, PendingReason>();
 let activePublish: Promise<void> | null = null;
 let currentPublish: Promise<void> | null = null;
 let viewReadinessPublish: Promise<void> | null = null;
+/** In-flight and recently attempted per-Garden recovery publications. */
+const gardenRecoveryPublishes = new Map<string, Promise<void>>();
+const gardenRecoveryAttempts = new Map<string, number>();
+const GARDEN_RECOVERY_RETRY_MS = 10 * 60 * 1000;
 let sealedWorkerExecutor: SealedRuntimeV2QuartzPublishExecutor | null = null;
 
 function envValue(rawValue: string | undefined): string {
@@ -119,6 +156,21 @@ function quartzPublicIndexIsAvailable(): boolean {
   if (!contentPath) return false;
   return externalRuntimePathExists(
     path.join(path.resolve(contentPath, ".."), "public", "index.html"),
+  );
+}
+
+function quartzPublicRoot(): string | null {
+  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
+  if (!contentPath) return null;
+  return path.join(path.resolve(contentPath, ".."), "public");
+}
+
+/** Whether the published tree already holds a landing page for this Garden. */
+function gardenIsPublished(gardenSlug: string): boolean {
+  const publicRoot = quartzPublicRoot();
+  if (!publicRoot) return false;
+  return externalRuntimePathExists(
+    path.join(publicRoot, gardenSlug, "index.html"),
   );
 }
 
@@ -267,6 +319,7 @@ async function waitForQuartzPublication(
 async function submitQuartzPublication(
   userId: number,
   reasons: readonly string[],
+  scope: readonly string[],
 ): Promise<QuartzBuildResult> {
   const authority: RuntimeJobAuthority = {
     userId,
@@ -283,9 +336,39 @@ async function submitQuartzPublication(
       concurrency: quartzBuildConcurrency(),
       timeoutMs,
       buildEnvironment: quartzBuildEnvironment(),
+      scope,
     },
   });
   return waitForQuartzPublication(authority, job, timeoutMs, reasons.length);
+}
+
+/** Content-relative roots for a scoped publication, or `null` (whole site)
+ * when a root is unusable: a mutation must never fail to publish over it. */
+function normalizeScope(scope: readonly string[]): string[] | null {
+  const roots = new Set<string>();
+  for (const raw of scope) {
+    const root = String(raw).trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "");
+    if (!SCOPE_ROOT.test(root)) {
+      console.warn(
+        `[quartz] Publication scope ${JSON.stringify(raw)} is unusable; building the whole site.`,
+      );
+      return null;
+    }
+    roots.add(root);
+  }
+  return [...roots];
+}
+
+function mergeScopes(
+  entries: readonly PendingReason[],
+): readonly string[] | null {
+  const merged = new Set<string>();
+  for (const entry of entries) {
+    if (entry.scope === null) return null;
+    for (const root of entry.scope) merged.add(root);
+  }
+  // Too many Gardens at once is no cheaper than the whole site.
+  return merged.size > MAX_SCOPE_ROOTS ? null : [...merged];
 }
 
 function consumePendingPublication(): PendingPublication | null {
@@ -294,16 +377,19 @@ function consumePendingPublication(): PendingPublication | null {
   for (const [reason] of entries) pendingReasons.delete(reason);
   return {
     reasons: entries.map(([reason]) => reason),
-    userId: entries.find(([, userId]) => userId !== null)?.[1] ?? null,
+    userId: entries.find(([, entry]) => entry.userId !== null)?.[1].userId ?? null,
+    scope: mergeScopes(entries.map(([, entry]) => entry)),
   };
 }
 
 async function runQuartzPublication(publication: PendingPublication): Promise<void> {
+  const scope = publication.scope ?? [];
   const input = {
     reasons: publication.reasons,
     concurrency: quartzBuildConcurrency(),
     timeoutMs: quartzBuildTimeoutMs(),
     buildEnvironment: quartzBuildEnvironment(),
+    scope,
   };
   if (sealedWorkerExecutor) {
     await sealedWorkerExecutor(input);
@@ -312,6 +398,7 @@ async function runQuartzPublication(publication: PendingPublication): Promise<vo
   await submitQuartzPublication(
     assertUserId(publication.userId ?? undefined),
     publication.reasons,
+    scope,
   );
 }
 
@@ -333,14 +420,32 @@ async function drainQuartzPublishQueue(): Promise<void> {
   }
 }
 
-function queueQuartzPublish(reason: string, userId: number | null): Promise<void> {
+function queueQuartzPublish(
+  reason: string,
+  userId: number | null,
+  scope: readonly string[] | null,
+): Promise<void> {
   const normalized = normalizeReason(reason);
-  if (!pendingReasons.has(normalized)) {
-    if (pendingReasons.size < MAX_PENDING_REASONS - 1) {
-      pendingReasons.set(normalized, userId);
-    } else if (!pendingReasons.has(COALESCED_REASON)) {
-      pendingReasons.set(COALESCED_REASON, userId);
+  const existing = pendingReasons.get(normalized);
+  if (existing) {
+    // The same reason queued again with a wider scope must not stay narrow.
+    if (existing.scope !== null && scope !== null) {
+      pendingReasons.set(normalized, {
+        userId: existing.userId ?? userId,
+        scope: [...new Set([...existing.scope, ...scope])],
+      });
+    } else if (existing.scope !== null) {
+      pendingReasons.set(normalized, { userId: existing.userId ?? userId, scope: null });
     }
+  } else if (pendingReasons.size < MAX_PENDING_REASONS - 1) {
+    pendingReasons.set(normalized, { userId, scope });
+  } else {
+    // Overflow entries lose their reason text and, with it, their scope.
+    const coalesced = pendingReasons.get(COALESCED_REASON);
+    pendingReasons.set(COALESCED_REASON, {
+      userId: coalesced?.userId ?? userId,
+      scope: null,
+    });
   }
   if (!activePublish) activePublish = drainQuartzPublishQueue();
   return activePublish;
@@ -400,6 +505,61 @@ export async function ensureQuartzPublicationForView(userId: number): Promise<vo
   await viewReadinessPublish;
 }
 
+/**
+ * A Garden whose source exists but whose pages were never published — its
+ * creating publication failed, or it was written while publication was broken
+ * — would otherwise render the static service's "could not be found" document
+ * with no way forward: nothing in the reader triggers a publication, so the
+ * page's own Retry link cannot ever succeed. Publish that one Garden (a scoped
+ * build, so it costs a minute rather than a full site rebuild) before handing
+ * the frame its URL, and let the global navigation progress bar cover the wait.
+ *
+ * A Garden that publishes no pages at all — every note still a draft — must not
+ * rebuild on every visit, so a failed recovery is not retried for a while.
+ */
+export async function ensureGardenPublicationForView(
+  userId: number,
+  gardenSlug: string,
+): Promise<void> {
+  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
+  if (!gardenSlug || !contentPath) return;
+  if (gardenIsPublished(gardenSlug)) return;
+  // Nothing has been written for this Garden yet; its first content mutation
+  // publishes it.
+  if (!externalRuntimePathExists(path.join(contentPath, gardenSlug))) return;
+  if (!shouldAutoPublish()) return;
+  const lastAttempt = gardenRecoveryAttempts.get(gardenSlug) ?? 0;
+  if (Date.now() - lastAttempt < GARDEN_RECOVERY_RETRY_MS) return;
+
+  let recovery = gardenRecoveryPublishes.get(gardenSlug);
+  if (!recovery) {
+    recovery = (async () => {
+      // A mutation may already be publishing this Garden. Wait for that
+      // attempt and recheck before queueing another build.
+      if (await waitForQuartzPublicationInFlight()) {
+        if (gardenIsPublished(gardenSlug)) return;
+      }
+      gardenRecoveryAttempts.set(gardenSlug, Date.now());
+      await publishQuartzAfterMutation(`publish unpublished garden ${gardenSlug}`, {
+        userId,
+        requireSuccess: true,
+        topologyImpact: "none",
+        scope: [gardenSlug],
+      });
+    })().finally(() => {
+      gardenRecoveryPublishes.delete(gardenSlug);
+    });
+    gardenRecoveryPublishes.set(gardenSlug, recovery);
+  }
+  try {
+    await recovery;
+  } catch (error) {
+    // The reader still opens: Quartz's own document explains the page is
+    // missing, and the next visit after the backoff tries again.
+    logPublishError(`publish unpublished garden ${gardenSlug}`, error);
+  }
+}
+
 export async function publishQuartzAfterMutation(
   reason: string,
   options: QuartzPublishOptions,
@@ -415,6 +575,9 @@ export async function publishQuartzAfterMutation(
     );
   }
   if (options.gardenSlug) {
+    // Every in-process write to a Garden's files passes through here, so this
+    // is where the cached note count for that Garden stops being true.
+    invalidateGardenNoteCount(options.gardenSlug);
     const { invalidateThoughtTopologyAfterMutation } = await import(
       "./thought-topology/state.ts"
     );
@@ -423,7 +586,12 @@ export async function publishQuartzAfterMutation(
   if (!shouldAutoPublish()) return;
 
   const userId = sealedWorkerExecutor ? null : assertUserId(options.userId);
-  const publishPromise = queueQuartzPublish(reason, userId);
+  const scope = options.gardenSlug
+    ? normalizeScope([options.gardenSlug, ...LIBRARY_INDEX_SCOPES])
+    : options.scope
+      ? normalizeScope([...options.scope, ...LIBRARY_INDEX_SCOPES])
+      : null;
+  const publishPromise = queueQuartzPublish(reason, userId, scope);
 
   if (options.requireSuccess) {
     try {
@@ -458,6 +626,9 @@ export function publishQuartzIndexesIfIdle(reason: string, userId: number): void
   void publishQuartzAfterMutation(reason, {
     userId,
     topologyImpact: "none",
+    // Only the library landing pages are stale here; they live under the
+    // library roots, which every scoped publication rebuilds.
+    scope: [],
   });
 }
 

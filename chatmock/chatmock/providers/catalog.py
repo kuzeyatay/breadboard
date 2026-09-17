@@ -17,8 +17,11 @@ from typing import Dict, Iterable, Tuple
 KIND_CHATGPT_OAUTH = "chatgpt_oauth"
 KIND_OPENAI_COMPATIBLE = "openai_compatible"
 KIND_ANTHROPIC = "anthropic"
+# chatgpt.com itself, driven in a signed-in browser (see chatgpt_web.py).
+KIND_CHATGPT_WEB = "chatgpt_web"
 
 CHATGPT_PROVIDER_ID = "chatgpt"
+CHATGPT_WEB_PROVIDER_ID = "openaiweb"
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,24 @@ _SPECS: Tuple[ProviderSpec, ...] = (
         # it, but that path is not offered: it would mean two credentials for one
         # account and two ids per model, with fewer capabilities.
         description="Your ChatGPT subscription, signed in with OAuth.",
+    ),
+    ProviderSpec(
+        id=CHATGPT_WEB_PROVIDER_ID,
+        label="OpenAI (web)",
+        kind=KIND_CHATGPT_WEB,
+        default_base_url="https://chatgpt.com",
+        requires_api_key=False,
+        # The site decides which models the plan has; they are read from the
+        # signed-in page and cached, never guessed here.
+        suggested_models=(),
+        docs_url="https://chatgpt.com",
+        # The same plan as `chatgpt`, reached the way the website reaches it:
+        # a signed-in browser tab and the site's own composer. It draws on the
+        # website's usage rather than the Codex endpoint's, and offers the
+        # picker's own models (the web-only ones included), with no API-side
+        # tool calling.
+        description="Your ChatGPT plan through chatgpt.com in a signed-in browser tab - the website's own models and limits.",
+        reasoning_efforts=("low", "medium", "high"),
     ),
     ProviderSpec(
         id="anthropic",

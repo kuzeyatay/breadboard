@@ -29,7 +29,7 @@ interface ServerResolution {
   leaseAcknowledged: boolean
 }
 
-const activeBoardCleanups = new Set<() => void>()
+const activeBoardCleanups = new Map<HTMLElement, () => void>()
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -43,13 +43,24 @@ function element<K extends keyof HTMLElementTagNameMap>(
 }
 
 /**
- * The dashboard, which is the only thing that can start a canvas server. Mirrors
- * how the rest of the garden's embedded surfaces find it: the garden is either a
- * `garden.` subdomain of the dashboard or a sibling port on the same host.
+ * The dashboard, which is the only thing that can start a canvas server. The
+ * desktop assigns its port at runtime, so use the embedding origin when framed.
+ * Standalone gardens keep the subdomain/port convention as a fallback.
  */
 function dashboardBaseUrl(): string {
   try {
     const current = new URL(window.location.href)
+    if (window.parent !== window) {
+      // A navigation within Quartz changes document.referrer to another note.
+      // ancestorOrigins continues to name the dashboard across those navigations.
+      const embeddingUrl = window.location.ancestorOrigins?.[0] || document.referrer
+      if (embeddingUrl) {
+        const embedding = new URL(embeddingUrl)
+        if (/^https?:$/.test(embedding.protocol) && embedding.origin !== current.origin) {
+          return embedding.origin
+        }
+      }
+    }
     if (/^garden\./i.test(current.hostname)) return current.origin.replace("//garden.", "//")
     if (LOCAL_HOST.test(current.hostname) || current.port === "8081") {
       return `${current.protocol}//${current.hostname}:3000`
@@ -424,7 +435,7 @@ function buildPenechoCard(board: BoardReference): { card: HTMLElement; dispose: 
       leaseAcknowledged = false
       releaseViewLease(viewId)
     }
-    activeBoardCleanups.delete(dispose)
+    activeBoardCleanups.delete(card)
   }
 
   return { card, dispose }
@@ -440,15 +451,18 @@ function buildFallback(): HTMLElement {
   return fallback
 }
 
-function disposeActiveBoards(): void {
-  for (const dispose of [...activeBoardCleanups]) dispose()
-  activeBoardCleanups.clear()
+function disposeActiveBoards(keepConnected = false): void {
+  for (const [card, dispose] of [...activeBoardCleanups]) {
+    if (!keepConnected || !card.isConnected) dispose()
+  }
 }
 
-window.addEventListener("pagehide", disposeActiveBoards)
+window.addEventListener("pagehide", () => disposeActiveBoards())
 
 document.addEventListener("nav", () => {
-  disposeActiveBoards()
+  // Rehydrating an unchanged article must not tear down a live canvas (or
+  // cancel a lazy mount). Only cards removed by navigation need disposal.
+  disposeActiveBoards(true)
   const nodes = document.querySelectorAll("code.penecho-board-block") as NodeListOf<HTMLElement>
   for (const code of nodes) {
     const host = (code.closest("pre") as HTMLElement | null) ?? code
@@ -460,7 +474,7 @@ document.addEventListener("nav", () => {
       continue
     }
     const built = buildPenechoCard(board)
-    activeBoardCleanups.add(built.dispose)
+    activeBoardCleanups.set(built.card, built.dispose)
     host.replaceWith(built.card)
   }
 })

@@ -5,6 +5,7 @@ import {
   InvalidLearnRouteBodyError,
   isLearnRouteConflict,
   readLearnRouteJsonObject,
+  resolveLearnRequestModel,
   requireExpectedLearnModel,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
@@ -39,7 +40,7 @@ export async function POST(
     // Capture the current selection and validate the model reviewed by the UI
     // synchronously, before either confirmation path can mutate state or spawn
     // a worker. The returned value is the one handed to generation below.
-    const model = selectedModelForUser(userId);
+    const model = resolveLearnRequestModel(body, selectedModelForUser(userId));
     const expectedModel = requireExpectedLearnModel(body, model);
     if (body.generate === true) {
       const { baseURL } = resolveChatmockBaseUrl(request);

@@ -100,6 +100,17 @@ const htmlRenderer: ArtifactRenderer = {
     if (!/<(?:!doctype|html|body|main|section|article|div|p|h1)/i.test(content)) {
       return { ok: false, error: "HTML content must contain a document or visible root element." };
     }
+    const executableScript = [...content.matchAll(/<script\b([^>]*)>/gi)].some(([, attributes]) => {
+      const type = attributes.match(/\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+      const mediaType = (type?.[1] ?? type?.[2] ?? type?.[3] ?? "").trim().toLowerCase();
+      return /\bsrc\s*=/i.test(attributes) || !["application/json", "application/ld+json"].includes(mediaType);
+    });
+    if (executableScript || /<[a-z][^>]*\s+on[a-z]+\s*=/i.test(content)) {
+      return {
+        ok: false,
+        error: "HTML artifact previews are static and block JavaScript. Publish interactive content with interactive_visualizer_create (or repair it with interactive_visualizer_revise) so its scripts, theme and in-chat display are validated together. Do not use a plain HTML artifact as a visualizer fallback.",
+      };
+    }
     return { ok: true };
   },
   async render(content, context) {
@@ -494,6 +505,13 @@ const registry = new Map<ArtifactRendererId, ArtifactRenderer>([
   ["data-file", importOnlyRenderer("data-file", "data", "application/json", ".json")],
   ["model-file", importOnlyRenderer("model-file", "model", "model/gltf-binary", ".glb")],
   ["archive-file", importOnlyRenderer("archive-file", "unknown", "application/zip", ".zip")],
+  // Any other produced file the store cannot look inside — a MATLAB live
+  // script, a font, a compiled binary — still gets a card with a download; the
+  // alternative is a file that exists on disk and nowhere in the chat.
+  ["binary-file", importOnlyRenderer("binary-file", "unknown", "application/octet-stream", ".bin")],
+  // A produced folder is stored as one ZIP of its contents; the card opens the
+  // original directory in the system file explorer when it still exists.
+  ["folder-archive", importOnlyRenderer("folder-archive", "folder", "application/zip", ".zip")],
   ["text-file", importOnlyRenderer("text-file", "text", "text/plain; charset=utf-8", ".txt")],
   ["markdown-file", importOnlyRenderer("markdown-file", "markdown", "text/markdown; charset=utf-8", ".md")],
   ["html-file", importOnlyRenderer("html-file", "html", "text/html; charset=utf-8", ".html")],

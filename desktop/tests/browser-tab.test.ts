@@ -74,7 +74,12 @@ const until = async (probe, label, timeoutMs = 15000) => {
 const listen = (server) => new Promise((resolve) => {
   server.listen(0, "127.0.0.1", () => resolve("http://127.0.0.1:" + server.address().port));
 });
-const close = (server) => new Promise((resolve) => server.close(resolve));
+const close = (server) => new Promise((resolve) => {
+  server.close(resolve);
+  // The cancelled new-tab request deliberately has no response. Release that
+  // fixture connection so teardown cannot hang after all browser checks finish.
+  server.closeAllConnections();
+});
 app.setPath("userData", path.join(${JSON.stringify(fixture)}, "electron-user-data"));
 const browserAgentDebuggingPort = configureBrowserAgentDebugging(
   app.commandLine,
@@ -172,19 +177,19 @@ app.whenReady().then(async () => {
     contents.executeJavaScript("window.breadboardDesktop.tabs(" + JSON.stringify(value) + ")");
 
   const opened = await command(base, { type: "browser", url: webOrigin + "/one" });
-  const loadingView = await until(() => window.contentView.children.find((view) =>
-    view.webContents.getURL().includes("loading.html")), "cold browser loading view");
-  const coldLoadingTop = loadingView.getBounds().y;
   await until(() => releaseShellResponse, "held browser shell request");
+  const loadingViewInWindow = () => window.contentView.children.find((view) =>
+    view.webContents.getURL().includes("loading.html"));
+  const coldLoadingVisible = Boolean(loadingViewInWindow());
   releaseShellResponse();
   await until(() => shellFrameWaiting, "DOM-ready browser shell awaiting its compositor frame");
-  // A resize forces a loading-view layout while the arriving shell has DOM
-  // but remains parked offscreen. The previous page's navbar is still visible.
+  // Website navigation retains the outgoing page even when a resize lays out
+  // the arriving shell after its DOM is ready but before its frame is ready.
   const [loadingWidth, loadingHeight] = window.getContentSize();
   const loadingResize = new Promise((resolve) => window.once("resize", resolve));
   window.setContentSize(loadingWidth - 10, loadingHeight - 10);
   await loadingResize;
-  const domReadyLoadingTop = loadingView.getBounds().y;
+  const domReadyLoadingVisible = Boolean(loadingViewInWindow());
   const loadingShellView = window.contentView.children.find((view) =>
     view.webContents.getURL().endsWith("/browser"));
   const loadingShellStillOffscreen = loadingShellView.getBounds().y < 0;
@@ -211,6 +216,7 @@ app.whenReady().then(async () => {
   holdNewTab = true;
   const plusOpened = await command(shellContents, { type: "new" });
   await until(() => releaseNewTabResponse, "held plus-button new tab");
+  const loadingView = await until(loadingViewInWindow, "explicit cold new-tab scene");
   const retainedShellState = await stateIn(shellContents);
   const retainedShellPush = await until(async () => {
     const state = await shellContents.executeJavaScript("window.__states.at(-1)");
@@ -245,7 +251,7 @@ app.whenReady().then(async () => {
   await command(shellContents, { type: "back" });
   await until(() => webContents.getURL() === webOrigin + "/one", "browser history");
   // A successful popup now returns a native Window, which cannot cross IPC.
-  const popupOpened = await webContents.executeJavaScript("window.open(" + JSON.stringify(webOrigin + "/popup") + ") !== null");
+  const popupOpened = await webContents.executeJavaScript("window.open(" + JSON.stringify(webOrigin + "/popup") + ") !== null", true);
   if (!popupOpened) throw new Error("browser popup was reported as blocked");
   const popupState = await until(async () => {
     const state = await stateIn(base);
@@ -402,8 +408,8 @@ app.whenReady().then(async () => {
   }, "dashboard window.open in a Breadboard browser tab");
   fs.writeFileSync(resultFile, JSON.stringify({
     opened,
-    coldLoadingTop,
-    domReadyLoadingTop,
+    coldLoadingVisible,
+    domReadyLoadingVisible,
     loadingShellStillOffscreen,
     plusOpened,
     retainedShellState,
@@ -450,7 +456,7 @@ app.whenReady().then(async () => {
   window.destroy();
   await close(shellServer);
   await close(webServer);
-  app.quit();
+  app.exit(0);
 }).catch((error) => {
   fs.writeFileSync(resultFile, JSON.stringify({ error: error && error.stack ? error.stack : String(error) }));
   app.exit(1);
@@ -470,12 +476,12 @@ app.whenReady().then(async () => {
       windowsHide: true,
     });
     assert.equal(run.error, undefined, run.error?.message);
-    assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
     const result = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+    assert.equal(run.status, 0, result.error ?? `${run.stdout}\n${run.stderr}`);
     assert.equal(result.error, undefined, result.error);
     assert.equal(result.opened, true);
     assert.equal(result.loadingShellStillOffscreen, true);
-    assert.equal(result.coldLoadingTop, 101);
+    assert.equal(result.coldLoadingVisible, false, "website navigation uses the outgoing page's top bar");
     assert.equal(result.plusOpened, true);
     assert.equal(result.retainedShellVisible, true, "the outgoing navbar remains onscreen during plus loading");
     assert.equal(result.plusLoadingTop, 101, "the plus loader meets the retained navbar");
@@ -486,9 +492,9 @@ app.whenReady().then(async () => {
       assert.equal(state.tabs.find((tab) => tab.id === state.activeId)?.browser, undefined);
     }
     assert.equal(
-      result.domReadyLoadingTop,
-      101,
-      "DOM-ready must not expose a 34px gap while the browser chrome is still offscreen",
+      result.domReadyLoadingVisible,
+      false,
+      "DOM-ready must not introduce a loading scene while the browser chrome is still offscreen",
     );
     assert.equal(result.noBridge, "undefined", "untrusted pages never receive the desktop bridge");
     assert.equal(result.browserPartition, true, "browser storage is isolated from the dashboard");

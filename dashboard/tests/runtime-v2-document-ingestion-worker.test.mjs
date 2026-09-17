@@ -8,12 +8,14 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  MAX_PROGRESS_CHECKPOINTS,
   atomicWrite,
   canonicalRuntimeV2IngestBlobPath,
   createRuntimeV2IngestionEventWriter,
   loadRuntimeV2DocumentIngestionLaunch,
   openCanonicalRuntimeV2IngestBlob,
   parseRuntimeV2IngestionStopRecord,
+  retryGardenMutationBusy,
   serializeRuntimeV2DocumentIngestionResult,
   shouldCleanupCreatedIngestionAssets,
   validateRuntimeV2DocumentIngestionRequest,
@@ -24,6 +26,54 @@ const dashboardRoot = path.resolve(
   "..",
 );
 const repoRoot = path.resolve(dashboardRoot, "..");
+
+test("ingestion progress remains observable for multi-thousand-page documents", () => {
+  // VLM parsing emits once per page and later phases emit additional updates.
+  // This covers the 1,694-page regression corpus with bounded headroom.
+  assert.ok(MAX_PROGRESS_CHECKPOINTS >= 4_096);
+});
+
+test("ingestion waits for a transient Garden mutation lease", async () => {
+  let attempts = 0;
+  const waits = [];
+  const conflicts = [];
+  const value = await retryGardenMutationBusy(
+    () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error("Garden is busy");
+        error.code = "GARDEN_MUTATION_BUSY";
+        throw error;
+      }
+      return "ready";
+    },
+    {
+      retryDelayMs: 25,
+      onBusy: (error) => conflicts.push(error.code),
+      wait: async (delayMs) => waits.push(delayMs),
+    },
+  );
+
+  assert.equal(value, "ready");
+  assert.equal(attempts, 3);
+  assert.deepEqual(waits, [25, 25]);
+  assert.deepEqual(conflicts, ["GARDEN_MUTATION_BUSY"]);
+});
+
+test("ingestion does not retry a non-lease failure", async () => {
+  let waits = 0;
+  const failure = new Error("parser failed");
+  await assert.rejects(
+    retryGardenMutationBusy(
+      () => {
+        throw failure;
+      },
+      { wait: async () => (waits += 1) },
+    ),
+    failure,
+  );
+  assert.equal(waits, 0);
+});
 
 test("a terminal event write failure preserves assets after the garden commit", () => {
   assert.equal(shouldCleanupCreatedIngestionAssets("committed"), false);
@@ -532,6 +582,75 @@ test("Runtime V2 ingestion uses the exact stop and bounded durable result envelo
       privateWarnings.toString("utf8"),
       /provider\.internal|private\\\\scan|renderer\.exe|gateway/u,
     );
+
+    const retainedTopic = {
+      slug: "bounded-result-topic",
+      title: "Bounded result topic",
+      locations: ["Page 1"],
+      action: "created",
+    };
+    const oversizedSafetyResult = serializeRuntimeV2DocumentIngestionResult({
+      identity: current.identity,
+      completionSequence: 10,
+      value: {
+        success: true,
+        filename: "large-safety-report.pdf",
+        slug: "large-safety-report",
+        sourceRelPath: "garden-1/sources/large-safety-report.md",
+        wordCount: 10,
+        topicCount: 1,
+        imageCount: 0,
+        mapGenerated: true,
+        durationMs: 1,
+        hiddenContentWarning: "Hidden content was recorded on the source note.",
+        hiddenContentVerdict: "warning",
+        hiddenContentFindings: Array.from({ length: 18 }, (_, index) => ({
+          severity: "warning",
+          type: "Near-white text",
+          where: `Page ${index + 1}`,
+          detail: "x".repeat(60 * 1024),
+        })),
+        topics: [retainedTopic],
+      },
+    });
+    const boundedSafetyResult = JSON.parse(
+      oversizedSafetyResult.toString("utf8"),
+    ).result;
+    assert.equal(boundedSafetyResult.hiddenContentFindings, undefined);
+    assert.deepEqual(boundedSafetyResult.topics, [retainedTopic]);
+    assert.equal(
+      boundedSafetyResult.hiddenContentWarning,
+      "Hidden content was recorded on the source note.",
+    );
+    assert.ok(oversizedSafetyResult.byteLength <= 1024 * 1024);
+
+    const oversizedTopicsResult = serializeRuntimeV2DocumentIngestionResult({
+      identity: current.identity,
+      completionSequence: 11,
+      value: {
+        success: true,
+        filename: "large-topic-list.pdf",
+        slug: "large-topic-list",
+        sourceRelPath: "garden-1/sources/large-topic-list.md",
+        wordCount: 10,
+        topicCount: 18,
+        imageCount: 0,
+        mapGenerated: true,
+        durationMs: 1,
+        topics: Array.from({ length: 18 }, (_, index) => ({
+          slug: `large-topic-${index}`,
+          title: `${index}-${"y".repeat(60 * 1024)}`,
+          locations: ["Page 1"],
+          action: "created",
+        })),
+      },
+    });
+    const boundedTopicsResult = JSON.parse(
+      oversizedTopicsResult.toString("utf8"),
+    ).result;
+    assert.equal(boundedTopicsResult.topics, undefined);
+    assert.equal(boundedTopicsResult.topicCount, 18);
+    assert.ok(oversizedTopicsResult.byteLength <= 1024 * 1024);
   } finally {
     fs.rmSync(current.dataRoot, { recursive: true, force: true });
   }

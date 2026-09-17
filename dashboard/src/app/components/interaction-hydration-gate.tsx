@@ -1,7 +1,8 @@
 "use client";
 
-import { useLayoutEffect, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, type ReactNode } from "react";
 import { finishInteractionHydration } from "./interaction-hydration-bridge";
+import { markStartupHydrated } from "./startup-readiness";
 
 /**
  * Marks the page interactive only after this complete child tree has hydrated.
@@ -9,6 +10,7 @@ import { finishInteractionHydration } from "./interaction-hydration-bridge";
  * shells as direct body children for the existing desktop layout selectors.
  */
 export default function InteractionHydrationGate({ children }: { children: ReactNode }) {
+  useEffect(markStartupHydrated, []);
   useLayoutEffect(() => {
     finishInteractionHydration(window);
   }, []);

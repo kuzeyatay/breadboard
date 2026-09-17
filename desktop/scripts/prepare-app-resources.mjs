@@ -17,7 +17,6 @@
 //     scientific-agent-skills/    <- pinned K-Dense scientific skills (read-only)
 //     patent-disclosure-skill/     <- pinned patent guidance only (read-only)
 //     auto-claude-code-research-in-sleep/ <- ARIS guide + research skills (read-only)
-//     openGym/                 <- exercise catalogue + upstream notices (read-only)
 //     quartz-template/            <- Quartz program files (no content/public)
 //     ruflo/                       <- frozen Ruflo CLI + production dependencies
 //     gbrain-adapter/              <- authenticated loopback retrieval adapter
@@ -35,6 +34,8 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CODEX_WINDOWS_RUNTIME_FILES } from "./codex-runtime-files.mjs";
+import { stageQuartzHighlightAssets } from "./quartz-highlight-assets.mjs";
 
 import {
   assertPinnedCleanCheckout,
@@ -48,6 +49,7 @@ import {
   shouldExcludePackagedDashboardPath,
 } from "./packaged-dashboard-input.mjs";
 import { assertVoiceboxArtifactReceipt } from "./voicebox-artifact-receipt.mjs";
+import { stagePinnedCuaDriverRuntime } from "./cua-driver-runtime-artifact.mjs";
 import { stagePinnedVlmOcrRuntime } from "./vlm-ocr-runtime-artifact.mjs";
 import {
   isPatentDisclosurePackageFile,
@@ -498,8 +500,8 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeSha256: "227E429CEEFA8C3D9F37AF5BAB72689D4DD1C09C25C693CF28144F1054D560E5",
     pythonRuntimeFileCount: 34,
     pythonLicenseSha256: "59688D8633CE27B1D8220F223B9520C4E039E4BA6CCCEB345793A74FD5C155B9",
-    sourceGitTree: "347738d7d0e2777d29fa5c53ed954baaa8e3e04e",
-    sourceSha256: "1AB986E95F77763929C6BEFC001C83985D2D547C532F5F04C3815EA3650E0CF5",
+    sourceGitTree: "d60ab616237fb3d32dbbdd2d0a14c5cc9b448b19",
+    sourceSha256: "2C3C10077FE1E82FDD0FA83AA38A9146E6C28D412C2A2AEAE6A373D8CE27DB15",
     sourceFileCount: 8,
     pyprojectSha256: "D4CE90C6D505D706A5A68D1DA1EE3C7F92E7B8D6A68D15A579A67BA483D2E5A7",
     requirementsSha256: "D1E773C7578D36CB1A9AF6DF0581B20C0E6A7BE3BCA288894EBE617344412559",
@@ -1014,6 +1016,13 @@ const codexTarget = path.join(
 log(`staging Codex coding agent from ${codexSource}`);
 fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
 fs.copyFileSync(codexSource, codexTarget);
+if (process.platform === "win32") {
+  for (const name of CODEX_WINDOWS_RUNTIME_FILES.filter((name) => name !== "codex.exe")) {
+    const companion = path.join(path.dirname(codexSource), name);
+    if (!fs.existsSync(companion)) fail(`The Codex distribution is incomplete: missing ${name} beside ${codexSource}.`);
+    fs.copyFileSync(companion, path.join(path.dirname(codexTarget), name));
+  }
+}
 if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
 
 // Voicebox ships its Python/ML dependency closure as a native sidecar. Its
@@ -1147,6 +1156,23 @@ if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
   );
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
+
+// Hermes owns the Computer Use tool and safety policy. Breadboard ships the
+// exact native driver closure it invokes so neither chat nor taught workflows
+// depend on a machine-global install or an ambient PATH.
+await stagePinnedCuaDriverRuntime({
+  targetRoot: path.join(desktopRoot, "resources", "bin", "cua-driver"),
+  licensesRoot: path.join(desktopRoot, "build-resources", "licenses"),
+  suppliedPaths: {
+    archive: process.env.BREADBOARD_CUA_DRIVER_ARCHIVE,
+    notices: {
+      "cua-driver-LICENSE.txt": process.env.BREADBOARD_CUA_DRIVER_LICENSE,
+      "cua-driver-node-runtime-NOTICE.txt": process.env.BREADBOARD_CUA_DRIVER_NODE_NOTICE,
+    },
+  },
+  offline: process.env.BREADBOARD_OFFLINE_PACKAGE_ASSEMBLY === "1",
+  log,
+});
 
 // VLM OCR ships an immutable, CPU-portable llama.cpp server plus the exact
 // HunyuanOCR Q8 model/projector pair. The two large model files are streamed
@@ -1392,6 +1418,14 @@ for (const relative of [
   ["lib", "generated-visual-browser-tests.ts"],
   ["lib", "generated-visual-compiler.ts"],
   ["lib", "generated-visuals.ts"],
+  ["lib", "learn-native-visualizer.ts"],
+  ["lib", "learn-native-visualizer-compiler.ts"],
+  ["lib", "learn-native-visualizer-browser.ts"],
+  ["lib", "learn-native-visualizer-contract.ts"],
+  ["lib", "learn-visualization-runners.ts"],
+  ["lib", "learn-visualization-worker.ts"],
+  ["lib", "hermes", "interactive-visualizer-custom.ts"],
+  ["lib", "hermes", "interactive-visualizer-wheel.ts"],
 ]) {
   const staged = path.join(
     dashboardTarget,
@@ -1649,6 +1683,10 @@ log("staging finite-worker production dependency closures");
   // Clicky's Electron-owned mouse input uses the same bundled N-API FFI as
   // dashboard workers. Keep its native platform dependency outside the ASAR.
   copyDependency("koffi", sourceModules, runtimeServiceModules, runtimeServiceModules, runtimeServiceCopied);
+  for (const dependency of ["mqtt", "basic-ftp"]) {
+    copyDependency(dependency, sourceModules, runtimeServiceModules, runtimeServiceModules, runtimeServiceCopied);
+  }
+  copyTree(path.join(repoRoot, "dashboard", "third-party", "bambu-printer-mcp"), path.join(stagingRoot, "dashboard", "third-party", "bambu-printer-mcp"));
   copyDependency(
     "@modelcontextprotocol/sdk",
     sourceModules,
@@ -2243,11 +2281,13 @@ for (const entry of [
   "runtime-v2-document-ingestion-worker.mjs",
   "runtime-v2-anydoc-pdf-worker.mjs",
   "runtime-v2-office-artifact-worker.mjs",
+  "genoffice-worker-imports.mjs",
   "runtime-v2-agent-browser-worker.mjs",
   "runtime-v2-agent-browser-executor.mjs",
   "runtime-v2-quartz-publish-worker.mjs",
   "runtime-v2-quartz-publish-executor.mjs",
   "runtime-v2-quartz-static-service.mjs",
+  "quartz-canonical-reader-bridge.mjs",
   "runtime-v2-background-worker.mjs",
   "runtime-v2-background-executor.mjs",
   "runtime-v2-gateway-http.mjs",
@@ -2262,6 +2302,8 @@ for (const entry of [
   "runtime-v2-cliproxy-service.mjs",
   "runtime-v2-inbox-zero-service.mjs",
   "runtime-v2-spotify-playback-service.mjs",
+  "runtime-v2-bambu-service.mjs",
+  "bambu-lan-adapter.mjs",
   "runtime-v2-solidworks-mcp-service.mjs",
   "runtime-v2-audio-analyzer-worker.mjs",
   "runtime-v2-image-search-worker.mjs",
@@ -2290,7 +2332,6 @@ for (const entry of [
   "runtime-v2-cinema-agent-worker-core.mjs",
   "runtime-v2-cinema-agent-adapters.mjs",
   "runtime-v2-shorts-worker.mjs",
-  "runtime-v2-open-gym-worker.mjs",
   "runtime-v2-agent-reach-setup-worker.mjs",
   "runtime-v2-agent-reach-setup-executor.mjs",
   "runtime-v2-agent-reach-configure.py",
@@ -2930,8 +2971,8 @@ await stagePinnedTrackedSourceClosure({
 
   // Hermes's Baileys WhatsApp bridge. The Runtime V2 WhatsApp gateway service
   // owns this Node child tree, so it must ship with its production dependencies
-  // already installed — the bundled Node runtime is node.exe alone, with no npm
-  // available to mutate an installed application on first use.
+  // already installed: managed npm setup writes only to durable Runtime data,
+  // never to an installed application's source tree.
   const bridgeSource = path.join(hermesRoot, "scripts", "whatsapp-bridge");
   if (!fs.existsSync(bridgeSource)) fail(`Hermes WhatsApp bridge missing: ${bridgeSource}`);
   log("staging Hermes WhatsApp bridge and production dependencies");
@@ -2969,6 +3010,19 @@ for (const entry of [
   if (!fs.existsSync(source)) continue;
   copyTree(source, path.join(quartzTarget, entry), (rel) => rel.startsWith(".git"));
 }
+// Quartz is relocated independently of dashboard worker-src in packaged apps.
+// Keep one source for wheel behavior, and close the template's local import.
+const quartzVisualScripts = path.join(quartzTarget, "quartz", "components", "scripts");
+fs.copyFileSync(
+  path.join(repoRoot, "dashboard", "src", "lib", "hermes", "interactive-visualizer-wheel.ts"),
+  path.join(quartzVisualScripts, "interactiveVisualizerWheel.ts"),
+);
+const quartzVisualHost = path.join(quartzVisualScripts, "breadboardGeneratedVisual.inline.ts");
+const quartzVisualHostSource = fs.readFileSync(quartzVisualHost, "utf8");
+const wheelSourceImport = "../../../../dashboard/src/lib/hermes/interactive-visualizer-wheel";
+if (!quartzVisualHostSource.includes(wheelSourceImport)) fail("Quartz visualizer wheel import was not staged");
+fs.writeFileSync(quartzVisualHost, quartzVisualHostSource.replace(wheelSourceImport, "./interactiveVisualizerWheel"));
+stageQuartzHighlightAssets(repoRoot, quartzTarget);
 
 // --- scriberr (compose only, optional Docker compatibility mode) ----------
 log("staging scriberr compose file");
@@ -2977,26 +3031,6 @@ fs.copyFileSync(
   path.join(repoRoot, "scriberr", "docker-compose.yml"),
   path.join(stagingRoot, "scriberr", "docker-compose.yml"),
 );
-
-// --- openGym catalogue ----------------------------------------------------
-// openGym's fresh Runtime V2 worker needs only the compact immutable catalogue;
-// animations are loaded from a local data-root cache when present and otherwise
-// fetched from the dataset's pinned CDN revision.
-{
-  const openGymRoot = path.join(repoRoot, "openGym");
-  const openGymTarget = path.join(stagingRoot, "openGym");
-  const catalogue = path.join(openGymRoot, "frontend", "src", "lib", "exercises-data.js");
-  if (!fs.existsSync(catalogue)) fail(`openGym catalogue not found: ${catalogue}`);
-  log("staging openGym exercise catalogue");
-  freshDir(openGymTarget);
-  const catalogueTarget = path.join(openGymTarget, "frontend", "src", "lib");
-  fs.mkdirSync(catalogueTarget, { recursive: true });
-  fs.copyFileSync(catalogue, path.join(catalogueTarget, "exercises-data.js"));
-  for (const notice of ["LICENSE", "NOTICE.md", "README.md"]) {
-    const source = path.join(openGymRoot, notice);
-    if (fs.existsSync(source)) fs.copyFileSync(source, path.join(openGymTarget, notice));
-  }
-}
 
 // --- Shorts immutable Python source --------------------------------------
 // Authenticated setup builds the mutable venv below the Runtime data root. A
@@ -5106,7 +5140,6 @@ const licenseSources = [
   ["hermes-agent", path.join(hermesRoot, "LICENSE")],
   ["humanizer-THIRD-PARTY-NOTICES", path.join(repoRoot, "humanizer-service", "THIRD_PARTY_NOTICES.md")],
   ["mem0", path.join(repoRoot, "mem0", "LICENSE")],
-  ["openGym", path.join(repoRoot, "openGym", "LICENSE")],
   ["openscience", path.join(repoRoot, "openscience", "LICENSE")],
   ["scientific-agent-skills", path.join(scientificSkillsRoot, "LICENSE.md")],
   ["quartz", path.join(repoRoot, "quartz", "LICENSE.txt")],

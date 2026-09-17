@@ -35,6 +35,104 @@ export interface ArtifactImportProfile {
   previewAvailable: boolean;
 }
 
+/**
+ * Extensions the store treats as an archive of other files. A produced folder is
+ * stored the same way (as one ZIP), which is why the two share a validator.
+ */
+const ARCHIVE_MIME_TYPES: Record<string, string> = {
+  ".zip": "application/zip",
+  ".tar": "application/x-tar",
+  ".gz": "application/gzip",
+  ".tgz": "application/gzip",
+  ".bz2": "application/x-bzip2",
+  ".xz": "application/x-xz",
+  ".7z": "application/x-7z-compressed",
+  ".rar": "application/vnd.rar",
+};
+
+const TEXT_EXTENSIONS = new Set([".txt", ".text", ".log", ".srt", ".vtt", ".sub", ".nfo"]);
+const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown", ".mdx"]);
+const HTML_EXTENSIONS = new Set([".html", ".htm", ".xhtml"]);
+const DATA_EXTENSIONS = new Set([
+  ".json", ".jsonl", ".ndjson", ".geojson", ".ipynb", ".xml", ".yaml", ".yml", ".toml",
+]);
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".odt", ".doc", ".rtf", ".epub"]);
+const PRESENTATION_EXTENSIONS = new Set([".pptx", ".odp", ".ppt"]);
+const SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".ods", ".xls", ".csv", ".tsv"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"]);
+const DIAGRAM_EXTENSIONS = new Set([".svg"]);
+/**
+ * Source and script files. The list only needs the formats whose extension is
+ * not already claimed by a richer kind; anything else textual is still
+ * importable as code by `inspectArtifactImport`.
+ */
+const CODE_EXTENSIONS = new Set([
+  ".m", ".py", ".ipy", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".java", ".kt",
+  ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".scala",
+  ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql", ".r", ".jl", ".lua", ".pl", ".tex",
+  ".bib", ".sty", ".cls", ".css", ".scss", ".less", ".vue", ".svelte", ".dart", ".ex", ".exs",
+  ".erl", ".hs", ".ml", ".clj", ".lisp", ".el", ".vim", ".mk", ".cmake", ".gradle", ".ini",
+  ".cfg", ".conf", ".env", ".properties", ".mmd", ".mermaid", ".dot", ".gv", ".proto",
+  ".graphql", ".asm", ".s", ".v", ".vhd", ".vhdl", ".ino", ".nb", ".wl", ".do", ".sas",
+  ".rmd", ".qmd",
+]);
+
+/**
+ * The artifact kind a produced file most plausibly is, from its extension alone.
+ * The verdict is a starting point for `inspectArtifactImport`, which checks the
+ * bytes; a file that fails that check is imported as `unknown` instead so it
+ * still gets a card.
+ */
+export function inferArtifactKindForFile(filename: string): ArtifactKind {
+  const extension = path.extname(filename).toLowerCase();
+  const format = extension.slice(1);
+  if (extension === ".pdf") return "pdf";
+  if (TEXT_EXTENSIONS.has(extension)) return "text";
+  if (MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
+  if (HTML_EXTENSIONS.has(extension)) return "html";
+  if (DOCUMENT_EXTENSIONS.has(extension)) return "document";
+  if (PRESENTATION_EXTENSIONS.has(extension)) return "presentation";
+  if (SPREADSHEET_EXTENSIONS.has(extension)) return "spreadsheet";
+  if (IMAGE_EXTENSIONS.has(extension)) return "image";
+  if (DIAGRAM_EXTENSIONS.has(extension)) return "diagram";
+  if (DATA_EXTENSIONS.has(extension)) return "data";
+  if (format && format in AUDIO_ATTACHMENT_FORMATS) return "audio";
+  if (format && format in VIDEO_ATTACHMENT_FORMATS) return "video";
+  if (format && isModelAttachmentFormat(format)) return "model";
+  if (CODE_EXTENSIONS.has(extension)) return "code";
+  return "unknown";
+}
+
+/** MIME type for an archive extension, or null when it is not one. */
+export function archiveMimeType(filename: string): string | null {
+  return ARCHIVE_MIME_TYPES[path.extname(filename).toLowerCase()] ?? null;
+}
+
+/**
+ * The entries inside a ZIP, as the folder card lists them. Bounded, because a
+ * produced folder can be a whole project and the card only needs enough to
+ * say what is inside.
+ */
+export function listZipEntries(
+  filePath: string,
+  limit = 200,
+): { entries: Array<{ path: string; byteSize: number }>; total: number } {
+  let archive: AdmZip;
+  try {
+    archive = new AdmZip(filePath);
+  } catch {
+    return { entries: [], total: 0 };
+  }
+  const files = archive.getEntries().filter((entry) => !entry.isDirectory);
+  return {
+    entries: files.slice(0, limit).map((entry) => ({
+      path: entry.entryName.replace(/\\/g, "/"),
+      byteSize: entry.header.size,
+    })),
+    total: files.length,
+  };
+}
+
 export class ArtifactImportError extends Error {
   readonly code: string;
 
@@ -129,7 +227,24 @@ function imageProfile(header: Buffer, extension: string): ArtifactImportProfile 
   if (ascii(header, 0, 4) === "RIFF" && ascii(header, 8, 4) === "WEBP") {
     return profile("image-file", "image/webp", ".webp");
   }
+  if (ascii(header, 0, 2) === "BM" && extension === ".bmp") {
+    return profile("image-file", "image/bmp", ".bmp");
+  }
+  if (
+    (startsWith(header, [0x49, 0x49, 0x2a, 0x00]) || startsWith(header, [0x4d, 0x4d, 0x00, 0x2a])) &&
+    (extension === ".tif" || extension === ".tiff")
+  ) {
+    // Browsers do not render TIFF, so the card offers a download rather than a
+    // preview that would come up blank.
+    return profile("image-file", "image/tiff", extension, false);
+  }
   return null;
+}
+
+const OLE_COMPOUND_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
+function safeExtension(extension: string, fallback: string): string {
+  return /^[.][a-z0-9+_-]{1,12}$/i.test(extension) ? extension : fallback;
 }
 
 function mediaProfile(
@@ -251,21 +366,21 @@ export function inspectArtifactImport(
       "The file is not a PDF document.",
     );
   }
-  if (kind === "text" && extension === ".txt") {
+  if (kind === "text" && TEXT_EXTENSIONS.has(extension)) {
     if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
       throw new ArtifactImportError("artifact_import_too_large", "Text imports cannot exceed 16 MiB.");
     }
     validateText(filePath);
-    return profile("text-file", "text/plain; charset=utf-8", ".txt");
+    return profile("text-file", "text/plain; charset=utf-8", extension);
   }
-  if (kind === "markdown" && (extension === ".md" || extension === ".markdown")) {
+  if (kind === "markdown" && MARKDOWN_EXTENSIONS.has(extension)) {
     if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
       throw new ArtifactImportError("artifact_import_too_large", "Markdown imports cannot exceed 16 MiB.");
     }
     validateText(filePath);
     return profile("markdown-file", "text/markdown; charset=utf-8", extension);
   }
-  if (kind === "html" && (extension === ".html" || extension === ".htm")) {
+  if (kind === "html" && HTML_EXTENSIONS.has(extension)) {
     if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
       throw new ArtifactImportError("artifact_import_too_large", "HTML imports cannot exceed 16 MiB.");
     }
@@ -303,6 +418,25 @@ export function inspectArtifactImport(
     validateZipArchive(filePath, "content.xml");
     return profile("document-file", "application/vnd.oasis.opendocument.text", ".odt", false);
   }
+  if (kind === "document" && extension === ".rtf") {
+    if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
+      throw new ArtifactImportError("artifact_import_too_large", "Document imports cannot exceed 16 MiB.");
+    }
+    if (ascii(header, 0, 5) !== "{\\rtf") {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not an RTF document.");
+    }
+    return profile("document-file", "application/rtf", ".rtf", false);
+  }
+  if (kind === "document" && extension === ".doc") {
+    if (!startsWith(header, OLE_COMPOUND_SIGNATURE)) {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not a Word 97-2003 document.");
+    }
+    return profile("document-file", "application/msword", ".doc", false);
+  }
+  if (kind === "document" && extension === ".epub") {
+    validateZipArchive(filePath, "META-INF/container.xml");
+    return profile("document-file", "application/epub+zip", ".epub", false);
+  }
   if (kind === "presentation" && extension === ".pptx") {
     if (stat.size > MAX_OFFICE_ARTIFACT_BYTES) {
       throw new ArtifactImportError("artifact_import_too_large", "Presentation imports cannot exceed 32 MiB.");
@@ -318,6 +452,12 @@ export function inspectArtifactImport(
   if (kind === "presentation" && extension === ".odp") {
     validateZipArchive(filePath, "content.xml");
     return profile("presentation-file", "application/vnd.oasis.opendocument.presentation", ".odp", false);
+  }
+  if (kind === "presentation" && extension === ".ppt") {
+    if (!startsWith(header, OLE_COMPOUND_SIGNATURE)) {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not a PowerPoint 97-2003 deck.");
+    }
+    return profile("presentation-file", "application/vnd.ms-powerpoint", ".ppt", false);
   }
   if (kind === "spreadsheet") {
     if (extension === ".xlsx") {
@@ -335,6 +475,12 @@ export function inspectArtifactImport(
     if (extension === ".ods") {
       validateZipArchive(filePath, "content.xml");
       return profile("spreadsheet-file", "application/vnd.oasis.opendocument.spreadsheet", ".ods", false);
+    }
+    if (extension === ".xls") {
+      if (!startsWith(header, OLE_COMPOUND_SIGNATURE)) {
+        throw new ArtifactImportError("artifact_import_signature", "The file is not an Excel 97-2003 workbook.");
+      }
+      return profile("spreadsheet-file", "application/vnd.ms-excel", ".xls", false);
     }
     if (extension === ".csv" || extension === ".tsv") {
       if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
@@ -367,6 +513,33 @@ export function inspectArtifactImport(
     if (extension === ".csv") {
       return profile("data-file", "text/csv; charset=utf-8", ".csv");
     }
+    if (extension === ".ipynb" || extension === ".geojson") {
+      try {
+        JSON.parse(content);
+      } catch {
+        throw new ArtifactImportError("artifact_import_signature", `The selected ${extension.slice(1)} artifact is not valid JSON.`);
+      }
+      return profile(
+        "data-file",
+        extension === ".ipynb" ? "application/x-ipynb+json; charset=utf-8" : "application/geo+json; charset=utf-8",
+        extension,
+      );
+    }
+    if (extension === ".jsonl" || extension === ".ndjson") {
+      return profile("data-file", "application/x-ndjson; charset=utf-8", extension);
+    }
+    if (extension === ".xml") {
+      return profile("data-file", "application/xml; charset=utf-8", ".xml");
+    }
+    if (extension === ".yaml" || extension === ".yml") {
+      return profile("data-file", "application/yaml; charset=utf-8", extension);
+    }
+    if (extension === ".toml") {
+      return profile("data-file", "application/toml; charset=utf-8", ".toml");
+    }
+    if (extension === ".tsv") {
+      return profile("data-file", "text/tab-separated-values; charset=utf-8", ".tsv");
+    }
   }
   if (kind === "code") {
     if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
@@ -392,6 +565,33 @@ export function inspectArtifactImport(
   if (kind === "unknown" && extension === ".zip") {
     validateZipArchive(filePath);
     return profile("archive-file", "application/zip", ".zip", false);
+  }
+  if (kind === "unknown" && extension in ARCHIVE_MIME_TYPES) {
+    if (extension === ".gz" || extension === ".tgz") {
+      if (!startsWith(header, [0x1f, 0x8b])) {
+        throw new ArtifactImportError("artifact_import_signature", "The file is not a gzip archive.");
+      }
+    } else if (extension === ".7z" && !startsWith(header, [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])) {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not a 7-Zip archive.");
+    } else if (extension === ".rar" && ascii(header, 0, 4) !== "Rar!") {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not a RAR archive.");
+    } else if (extension === ".bz2" && ascii(header, 0, 3) !== "BZh") {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not a bzip2 archive.");
+    } else if (extension === ".xz" && !startsWith(header, [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00])) {
+      throw new ArtifactImportError("artifact_import_signature", "The file is not an xz archive.");
+    }
+    return profile("archive-file", ARCHIVE_MIME_TYPES[extension]!, extension, false);
+  }
+  if (kind === "unknown") {
+    // Whatever else a turn produced — a MATLAB live script, a compiled
+    // binary, a font — is still the user's file. It gets a card with a
+    // download and no preview; refusing it here is what left produced files
+    // sitting in Downloads with nothing in the chat to show for them.
+    return profile("binary-file", "application/octet-stream", safeExtension(extension, ".bin"), false);
+  }
+  if (kind === "folder" && extension === ".zip") {
+    validateZipArchive(filePath);
+    return profile("folder-archive", "application/zip", ".zip", false);
   }
 
   throw new ArtifactImportError(

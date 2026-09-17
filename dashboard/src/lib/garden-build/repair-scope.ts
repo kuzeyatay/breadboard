@@ -305,15 +305,24 @@ function modelPacket(issue: GardenIssue, state: GardenBuildState, scope: LearnRe
   const page = state.pages[issue.target.pageId ?? scope.pageIds[0] ?? ""];
   const unit = state.units[issue.target.unitId ?? page?.unitId ?? scope.unitIds[0] ?? ""];
   const anchors = scope.anchorIds.map((id) => state.sourceAnchors[id]).filter(Boolean);
-  return {
+  // The packet is both the model's prompt (JSON text) and the Council request
+  // context, whose canonical hash rejects undefined. Imported state leaves
+  // optional fields undefined, so hand both the same JSON-clean value.
+  return jsonCleanPacket({
     issue: { issueId: issue.issueId, type: issue.type, target: issue.target, evidence: issue.evidence },
     unit: unit ? { id: unit.id, title: unit.title, role: unit.role, learningQuestion: unit.learningQuestion } : undefined,
-    page: page ? { id: page.id, title: page.title, excerpt: page.body.slice(0, 6000), formulaEntries: page.formulaEntries, visualIds: page.embeddedVisualIds } : undefined,
+    // The complete body: a prose repair returns the whole page through
+    // set_page_body, so an excerpt would invite a truncated page.
+    page: page ? { id: page.id, title: page.title, body: page.body, formulaEntries: page.formulaEntries, visualIds: page.embeddedVisualIds } : undefined,
     relevantSourceEvidence: anchors,
     contractFragment: unit,
     allowedEntityIds: { unitIds: scope.unitIds, pageIds: scope.pageIds, sectionIds: scope.sectionIds, anchorIds: scope.anchorIds, visualIds: scope.visualIds },
     allowedOperations: scope.allowedSemanticOperations.map((operation) => operation.type),
-  };
+  });
+}
+
+function jsonCleanPacket(packet: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(packet)) as Record<string, unknown>;
 }
 
 function decisionOperations(decision: unknown): GardenBuildOperation[] {
@@ -353,6 +362,21 @@ function operationScopeProblem(operation: GardenBuildOperation, state: GardenBui
   return undefined;
 }
 
+/** A prose repair removes or rewrites a few sentences; it never drops a large
+ * part of the lesson. Anything shorter than this share of the current body is
+ * treated as a truncated or partial page, not a repair. */
+export const MIN_REPAIRED_PAGE_BODY_RATIO = 0.85;
+
+function pageBodyShrinkProblem(operation: GardenBuildOperation, state: GardenBuildState): string | undefined {
+  if (operation.type !== "set_page_body") return undefined;
+  const current = state.pages[operation.pageId]?.body ?? "";
+  if (!current.trim()) return undefined;
+  if (typeof operation.body !== "string" || operation.body.trim().length < current.trim().length * MIN_REPAIRED_PAGE_BODY_RATIO) {
+    return `set_page_body for ${operation.pageId} keeps ${typeof operation.body === "string" ? operation.body.trim().length : 0} of ${current.trim().length} characters; a repair must return the complete page`;
+  }
+  return undefined;
+}
+
 export function verifyScopedRepairDecision(
   issue: GardenIssue,
   decision: unknown,
@@ -370,6 +394,8 @@ export function verifyScopedRepairDecision(
     if (FORMULA_ISSUES.has(issue.type) && ["set_page_body", "set_visual_body", "replace_page_visual_block"].includes(operation.type)) {
       return { valid: false, operations: [], reason: "formula metadata issues cannot authorize prose or visual rewrites" };
     }
+    const shrinkProblem = pageBodyShrinkProblem(operation, state);
+    if (shrinkProblem) return { valid: false, operations: [], reason: shrinkProblem };
   }
   return { valid: true, operations, reason: `verified ${operations.length} scoped typed operation(s)` };
 }

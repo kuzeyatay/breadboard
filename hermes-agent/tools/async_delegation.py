@@ -215,7 +215,8 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     with _DB_LOCK, _connect() as conn:
         conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
+               event_json=?, result_json=?,
+               delivery_state=CASE WHEN delivery_state='dropped' THEN 'dropped' ELSE 'pending' END
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
@@ -1025,6 +1026,33 @@ def interrupt_for_session(
             count, reason,
         )
     return count
+
+
+def cancel_for_session(session_key: str = "", origin_ui_session_id: str = "") -> int:
+    """Stop children and permanently suppress their queued or late completions.
+
+    Unlike session teardown, an explicit Stop must also discard results which
+    finished while the parent was busy. Keep the durable tombstone so recovery
+    cannot wake the stopped turn after a restart.
+    """
+    if not session_key and not origin_ui_session_id:
+        return 0
+    try:
+        with _DB_LOCK, _connect() as conn:
+            conn.execute(
+                """UPDATE async_delegations SET delivery_state='dropped', updated_at=?,
+                          delivery_claim=NULL, delivery_claimed_at=NULL
+                   WHERE delivery_state='pending' AND
+                     ((? != '' AND origin_session=?) OR
+                      (? != '' AND origin_ui_session_id=?))""",
+                (time.time(), session_key, session_key, origin_ui_session_id, origin_ui_session_id),
+            )
+    finally:
+        interrupted = interrupt_for_session(
+            session_key=session_key, origin_ui_session_id=origin_ui_session_id,
+            reason="user_stop",
+        )
+    return interrupted
 
 
 def _reset_for_tests() -> None:

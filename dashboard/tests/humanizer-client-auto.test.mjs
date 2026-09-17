@@ -51,6 +51,18 @@ test("a tied standing rewrite reports its score and keeps the original", async (
   assert.equal(outcome.review.rewrite, 0);
 });
 
+test("unchanged wording still returns a score without creating a duplicate version", async () => {
+  const { calls, outcome } = await runWithFetch({
+    rewrittenText: "Original response.", unchanged: true,
+    scores: { original: { score: 12 }, rewrite: { score: 12 }, delta: 0, tied: true, worsened: false },
+    integrity: { passed: true, issues: [] },
+  });
+  assert.deepEqual(calls, ["/api/humanizer/rewrite"]);
+  assert.equal(outcome.adopted, false);
+  assert.equal(outcome.review.original, 12);
+  assert.equal(outcome.review.rewrite, 12);
+});
+
 test("a structurally damaged standing rewrite is never stored", async () => {
   const { calls, outcome } = await runWithFetch({
     rewrittenText: "roken response.",

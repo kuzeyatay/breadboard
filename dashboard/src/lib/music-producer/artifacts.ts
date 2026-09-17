@@ -1,7 +1,7 @@
 import { getConversationForUser } from "../conversations/store.ts";
 import { findExternalAgentAssistantMessage } from "../conversations/external-agent-turns.ts";
 import { getRuntimeSessionByConversation, runtimeExternalSessionId } from "../hermes/runtime-store.ts";
-import { beginRuntimeRun } from "../hermes/run-store.ts";
+import { recordRuntimeArtifactRun } from "../hermes/run-store.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { createImportedArtifact, getArtifactForUser, importArtifactVersion, listArtifactsForUser, listArtifactVersions } from "../hermes/artifact-store.ts";
@@ -15,13 +15,17 @@ export function musicArtifactContext(userId: number, id: string) {
   const session = getRuntimeSessionByConversation(conversation.id);
   const hermesSessionId = session && runtimeExternalSessionId(session);
   const message = findExternalAgentAssistantMessage({ conversationId: conversation.id, runId: id });
-  if (!session || !hermesSessionId || !message)
+  if (!message)
     throw new Error("Music run is missing its originating assistant message.");
-  const run = beginRuntimeRun({ runtimeSessionId: session.id, instruction: launch.task, dispatch: { conversationPublicId: conversation.public_id, runtimeText: launch.task } });
+  if (!session || !hermesSessionId)
+    throw new Error("Music run's runtime session is not initialized.");
+  // Reserve a stable provenance id only. The worker records it when audio is
+  // ready to publish; planning/admission must never occupy the chat runtime.
+  const runId = `music_artifact_${id}`;
   return {
     userId, conversationId: conversation.id, runtimeSessionId: session.id, hermesSessionId,
     clusterId: conversation.surface === "garden_chat" ? conversation.default_garden_id : null,
-    surface: conversation.surface, assistantMessageId: message.id, runId: run.id
+    surface: conversation.surface, assistantMessageId: message.id, runId
   };
 }
 export function assertMusicCollectible(userId: number, id: string): void {
@@ -43,6 +47,12 @@ export async function publishMusic(input: {
   const launch = musicLaunch(input.userId, input.id);
   const check = () => { input.signal.throwIfAborted(); assertMusicCollectible(input.userId, input.id); };
   check();
+  recordRuntimeArtifactRun({
+    id: input.context.runId,
+    runtimeSessionId: input.context.runtimeSessionId,
+    instruction: launch.task,
+    dispatch: { conversationPublicId: launch.conversation_public_id, runtimeText: launch.task },
+  });
   const metadata = { ...input.metadata, musicProducerRunId: input.id, operation: input.request.operation, source: input.request.source, requested: input.request };
   // Lookup includes all versions: a crash after import must not publish the same revision twice.
   const existing = listArtifactsForUser({ userId: input.userId, conversationPublicId: launch.conversation_public_id });

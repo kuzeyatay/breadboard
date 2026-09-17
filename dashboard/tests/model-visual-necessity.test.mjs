@@ -808,6 +808,42 @@ describe("model-authored visual necessity batch", () => {
     );
   });
 
+  test("a malformed (non-JSON text) targeted repair answer is a repairable shape problem", async () => {
+    // Live 2026-09-16: the web chat model closed a targeted repair with a stray
+    // brace ("...}}}]}"). callCouncilJson now passes such text through instead
+    // of null, so the stage treats it as a rejected response shape and retries,
+    // while an absent/empty answer stays terminal (see the test above).
+    const { packet, learningUnits, response } = fixture({
+      gardenId: "generic-malformed-repair-garden",
+    });
+    const invalid = structuredClone(response);
+    invalid.decisions[0].interaction.controls.push({
+      id: "advance_case",
+      kind: "protocol_action",
+      label: "Next case",
+      type: "button",
+      protocolRole: "reveal_outcome",
+      defaultValue: 0,
+      evidence: [],
+    });
+    const targetedRequests = [];
+    const result = await runModelVisualNecessityPlanning({
+      packet,
+      learningUnits,
+      provider: async () => invalid,
+      targetedRepairProvider: async (request) => {
+        targetedRequests.push(request);
+        if (targetedRequests.length === 1) return '{"schemaVersion":1,"decisions":[{"unitId":"U1"}}]}';
+        const replacement = structuredClone(invalid.decisions[0]);
+        delete replacement.interaction.controls[1].protocolRole;
+        return { schemaVersion: 1, gardenId: packet.gardenId, decisions: [replacement] };
+      },
+    });
+    assert.equal(targetedRequests.length, 2);
+    assert.equal(result.targetedRepairCalls, 2);
+    assert.equal("protocolRole" in result.plan.response.decisions[0].interaction.controls[1], false);
+  });
+
   test("the five-call exhaustion path carries the same actionable rule into whole-batch repair", async () => {
     const { packet, learningUnits, response } = fixture({
       gardenId: "generic-five-call-garden",

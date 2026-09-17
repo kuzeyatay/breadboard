@@ -10,7 +10,6 @@ import {
   parseCurrentLocationPayload,
   renderCurrentLocationContext,
   requestUsesCurrentLocation,
-  requestUsesShoppingLocation,
 } from "../src/lib/hermes/current-location-context.ts";
 
 const NOW = Date.parse("2026-08-11T12:00:00.000Z");
@@ -60,7 +59,7 @@ test("the route parser shares validation, coarse rounding, and freshness rules",
   assert.equal(normalized.longitude, 28.98);
 });
 
-test("English requests use current location only for local decisions", () => {
+test("enabled location is available for every turn regardless of topic or language", () => {
   for (const request of [
     "What are the best museums near me?",
     "What's the weather?",
@@ -69,41 +68,22 @@ test("English requests use current location only for local decisions", () => {
     "How long is the commute from here?",
     "Is there a Bluetooth trackpad I can buy?",
     "Recommend a laptop for video editing",
-  ]) {
-    assert.equal(requestUsesCurrentLocation(request), true, request);
-  }
-
-  for (const request of [
+    "where can i buy these tests",
     "Explain how museum curation works",
     "Summarize this document",
     "What else?",
+    "And those?",
+    "Waar kan ik dit krijgen?",
+    "これをどこで入手できますか？",
+    "👍",
   ]) {
-    assert.equal(requestUsesCurrentLocation(request), false, request);
+    assert.equal(requestUsesCurrentLocation(request), true, request);
+    assert.match(renderCurrentLocationContext({ request, location: location(), now: NOW }), /# approximate_current_location/);
   }
+  assert.equal(requestUsesCurrentLocation("  "), false);
 });
 
-test("shopping requests use current location as a country-level market", () => {
-  for (const request of [
-    "Is there a Bluetooth trackpad I can buy?",
-    "Recommend a laptop for video editing",
-    "Welke draadloze muis kan ik kopen?",
-  ]) {
-    assert.equal(requestUsesShoppingLocation(request), true, request);
-  }
-  assert.equal(requestUsesShoppingLocation("Explain how a trackpad works"), false);
-  assert.equal(
-    requestUsesShoppingLocation("What else?", ["Recommend a laptop"]),
-    true,
-  );
-  assert.equal(
-    requestUsesShoppingLocation(
-      "Recommend a laptop without using my location",
-    ),
-    false,
-  );
-});
-
-test("Turkish requests and bounded local follow-ups use current location", () => {
+test("location remains available across topic changes and short follow-ups", () => {
   for (const request of [
     "Yakınımda ilginç müzeler var mı?",
     "Bana yakın iyi restoran öner",
@@ -130,8 +110,8 @@ test("Turkish requests and bounded local follow-ups use current location", () =>
       "Recommend a restaurant near me",
       "Explain binary trees",
     ]),
-    false,
-    "an unrelated intervening request ends the local thread",
+    true,
+    "context availability no longer depends on classifying earlier messages",
   );
 });
 
@@ -153,10 +133,10 @@ test("explicit location opt-outs override otherwise local requests", () => {
   );
 });
 
-test("the rendered hint is ephemeral, coarse, and limited to relevant fresh turns", () => {
+test("the rendered hint keeps the detected area, coarse coordinates, and freshness", () => {
   const rendered = renderCurrentLocationContext({
     request: "What are the best museums near me?",
-    location: location(),
+    location: location({ label: "Istanbul, Türkiye" }),
     now: NOW,
   });
   assert.match(rendered, /# approximate_current_location/);
@@ -164,16 +144,19 @@ test("the rendered hint is ephemeral, coarse, and limited to relevant fresh turn
   assert.doesNotMatch(rendered, /41\.008237|28\.978359/);
   assert.match(rendered, /Captured at: 2026-08-11T11:58:14\.000Z\./);
   assert.match(rendered, /Device time zone: Europe\/Istanbul\./);
+  assert.match(rendered, /Approximate area .*"Istanbul, Türkiye"/);
+  assert.match(rendered, /substitute a default country/);
+  assert.match(rendered, /earlier assistant assumption/);
   assert.match(rendered, /A place the user names explicitly always wins/);
   assert.match(rendered, /Do not infer a home, residence, identity, or exact position/);
 
-  assert.equal(
+  assert.match(
     renderCurrentLocationContext({
       request: "Explain how video codecs work",
       location: location(),
       now: NOW,
     }),
-    "",
+    /# approximate_current_location/,
   );
   assert.equal(
     renderCurrentLocationContext({
@@ -195,6 +178,24 @@ test("the rendered hint is ephemeral, coarse, and limited to relevant fresh turn
   );
 });
 
+test("the detected country follows the fix even when the time zone differs", () => {
+  for (const fix of [
+    { latitude: 52.37, longitude: 4.90, label: "Amsterdam, Netherlands" },
+    { latitude: 35.68, longitude: 139.69, label: "Tokyo, Japan" },
+    { latitude: -33.87, longitude: 151.21, label: "Sydney, Australia" },
+  ]) {
+    const rendered = renderCurrentLocationContext({
+      request: "And those?",
+      location: location({ ...fix, timeZone: "Europe/London" }),
+      now: NOW,
+    });
+    assert.ok(rendered.includes(JSON.stringify(fix.label)));
+    assert.ok(rendered.includes(`${fix.latitude.toFixed(2)}, ${fix.longitude.toFixed(2)}`));
+    assert.doesNotMatch(rendered, /United Kingdom|Istanbul/);
+  }
+  assert.equal(renderCurrentLocationContext({ request: "And those?", now: NOW }), "");
+});
+
 test("both message routes independently parse the untrusted location payload", () => {
   const agentRoute = source(
     "../src/app/api/hermes/sessions/[sessionId]/messages/route.ts",
@@ -213,15 +214,16 @@ test("both message routes independently parse the untrusted location payload", (
   assert.match(directRoute, /currentLocation:[\s\S]{0,100}?parseCurrentLocationPayload/);
 });
 
-test("the browser attaches a fresh opted-in fix only after local-intent classification", () => {
+test("both chat transports share location preparation after the turn can be stopped", () => {
   const client = source("../src/app/components/hermes/use-agent-session.ts");
   assert.match(
     client,
-    /const currentLocation =[\s\S]{0,700}?locationPreference\.useForAnswers[\s\S]{0,300}?locationPreference\.state === "available"[\s\S]{0,300}?requestUsesCurrentLocation\(trimmed, priorLocationRequests\)/,
+    /const currentLocation = options\?\.internalAgentContinuation !== true\s*\? await getCurrentLocationForTurn\(trimmed\)\s*: undefined;\s*if \(turnWasStopped\(\)\) return;/,
   );
+  assert.doesNotMatch(client, /priorLocationRequests|requestUsesCurrentLocation/);
   assert.match(
     client,
-    /streamDirectTurn\(\{[\s\S]{0,400}?currentLocation,/,
+    /streamDirectTurn\(\{[\s\S]{0,800}?currentLocation,/,
   );
   const agentRequest = client.indexOf(
     "/api/hermes/sessions/${activeSessionId}/messages",
@@ -256,15 +258,15 @@ test("agent turns persist the base prompt but run with the ephemeral location pr
   assert.match(liveDispatch, /system: runtimeSystem/);
   assert.match(
     turns,
-    /const runtimeSystem = currentLocationContext[\s\S]{0,160}?baseSystem[\s\S]{0,160}?currentLocationContext/,
+    /const runtimeSystem = \[baseSystem, currentLocationContext, browserContext\]/,
   );
 });
 
-test("direct-provider turns render relevant location into their non-persisted prompt", () => {
+test("direct-provider turns render device location into their non-persisted prompt", () => {
   const direct = source("../src/lib/conversations/direct-turn-service.ts");
   assert.match(
     direct,
-    /instructions: directSystemPrompt\([\s\S]{0,900}?renderCurrentLocationContext\(\{[\s\S]{0,350}?request: input\.text[\s\S]{0,350}?location: input\.currentLocation/,
+    /instructions: directSystemPrompt\([\s\S]{0,900}?renderCurrentLocationContext\(\{[\s\S]{0,350}?request: requestText[\s\S]{0,350}?location: input\.currentLocation/,
   );
   assert.match(
     direct,

@@ -10,11 +10,11 @@ import { capturePagePreservingVisibility } from "./capture-page";
 import type { ClickyLauncher } from "./clicky-launcher";
 
 const ROUTES: Record<string, string> = {
-  garden: "/garden", dashboard: "/dashboard", home: "/new-tab", settings: "/profile",
+  garden: "/garden", dashboard: "/dashboard", home: "/new-tab", settings: "/profile", profile: "/profile",
   calendar: "/calendar", plan: "/plan", workflows: "/workflows", processes: "/processes",
 };
 const KEYS = new Set(["Enter", "Escape", "Tab", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Backspace", "Delete"]);
-const ACTIONS = new Set(["state", "open", "navigate", "activate", "close", "snapshot", "screenshot", "click", "fill", "press", "scroll", "close_voice", "launch_clicky"]);
+const ACTIONS = new Set(["state", "open", "navigate", "activate", "close", "snapshot", "screenshot", "click", "set_checked", "fill", "press", "scroll", "close_voice", "launch_clicky"]);
 
 async function bounded<T>(operation: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -77,7 +77,7 @@ export class BreadboardUseBridge {
     const result = await bounded(contents.executeJavaScript(`(() => {
       try { return { ok: true, value: (${breadboardDomOperation.toString()})(${JSON.stringify(args)}) }; }
       catch (error) { return { ok: false, error: error.message || 'Page interaction failed.' }; }
-    })()`, true));
+    })()`, args.action !== "snapshot"));
     if (!result.ok) throw new Error(result.error);
     return result.value;
   }
@@ -126,7 +126,16 @@ export class BreadboardUseBridge {
         if (!route) throw new Error(`Choose browser or ${Object.keys(ROUTES).join(", ")}.`);
         const url = new URL(route, base).href;
         const existing = targets.find(t => t.kind === "app" && t.contents.getURL() === url && t.windowId === target.windowId);
-        ok = await command(existing ? { type: "activate", id: existing.tabId } : { type: "open", url });
+        // Profile contains the switch that restores tab navigation. It must
+        // remain reachable while tabs are off, through the active app page.
+        if (route === "/profile" && !this.options.tabs.isEnabled) {
+          const app = targets.find(t => t.windowId === target.windowId && t.active && t.kind === "app" &&
+            new URL(t.contents.getURL()).origin === new URL(base).origin);
+          if (!app) throw new Error("Choose an active Breadboard app page to open Profile.");
+          this.snapshots.delete(app.contents.id);
+          await bounded(app.contents.loadURL(url));
+          ok = true;
+        } else ok = await command(existing ? { type: "activate", id: existing.tabId } : { type: "open", url });
       }
       if (!ok) throw new Error("Breadboard could not open that page. Check whether tab navigation is enabled.");
       return { performed: true, ...this.state() };
@@ -144,23 +153,22 @@ export class BreadboardUseBridge {
       return { performed: true, ...this.state() };
     }
     const inspecting = args.action === "snapshot" || args.action === "screenshot";
-    // A target chosen from state can belong to a background tab. Bring that
-    // exact tab into view within the capture request, without requiring a
-    // separate activation round trip before the agent can inspect its controls.
-    if (inspecting && !target.active) {
-      if (!await command({ type: "activate", id: target.tabId })) {
-        throw new Error("Breadboard could not activate that tab. Read fresh state and choose a targetId.");
-      }
+    // Inspections often arrive after the user has switched tabs. Read the
+    // requested page in place; only an explicit activation may bring it back.
+    // Detached views may never deliver a screenshot frame. Fail promptly
+    // instead of selecting the old tab or waiting for a capture timeout.
+    if (args.action === "screenshot" && !target.active) {
+      throw new Error("The target tab is in the background. Use snapshot to inspect it without changing the user's active tab.");
     }
-    if (!this.targets().some(t => t.contents.id === contents.id && t.active)) {
-      throw new Error("Activate this target's tab before inspecting or interacting with it.");
+    if (!inspecting && !this.targets().some(t => t.contents.id === contents.id && t.active)) {
+      throw new Error("Activate this target's tab before interacting with it.");
     }
     if (contents.isLoadingMainFrame()) throw new Error("The page is loading. Read state again before interacting.");
     if (inspecting) {
       this.snapshots.delete(contents.id);
       const id = randomUUID();
       const url = contents.getURL();
-      const page = await this.dom(contents, { action: "snapshot", snapshotId: id });
+      const page = await this.dom(contents, { action: "snapshot", snapshotId: id, offset: args.offset });
       let screenshot;
       if (args.action === "screenshot") {
         let capture = await bounded(capturePagePreservingVisibility(contents));
@@ -170,27 +178,31 @@ export class BreadboardUseBridge {
         screenshot = { dataUrl: `data:image/jpeg;base64,${capture.toJPEG(80).toString("base64")}`, ...capture.getSize() };
       }
       if (contents.isDestroyed() || contents.getURL() !== url || contents.isLoadingMainFrame()) throw new Error("The page changed during capture. Take another snapshot.");
-      if (!this.targets().some(t => t.contents.id === contents.id && t.active)) {
-        throw new Error("The active tab changed during capture. Take another snapshot of the intended target.");
+      const current = this.targets().find(t => t.contents.id === contents.id);
+      if (!current) throw new Error("The target tab closed during capture. Read fresh state and choose a targetId.");
+      if (args.action === "screenshot" && !current.active) {
+        throw new Error("The active tab changed during capture. Use snapshot to inspect the background tab.");
       }
       this.snapshots.set(contents.id, { id, url, expires: Date.now() + 120_000, sessionId });
-      return { targetId: contents.id, url, title: contents.getTitle(), ...page, ...(screenshot ? { screenshot } : {}) };
+      return { targetId: contents.id, url, title: contents.getTitle(), active: current.active, ...page, ...(screenshot ? { screenshot } : {}) };
     }
     const snapshot = this.snapshots.get(contents.id);
     if (!snapshot || snapshot.id !== args.snapshotId || snapshot.sessionId !== sessionId || snapshot.url !== contents.getURL() || snapshot.expires < Date.now()) {
       throw new Error("Snapshot expired. Take another snapshot before acting.");
     }
-    if (["click", "fill"].includes(args.action) && typeof args.ref !== "string") throw new Error("Choose a ref from the snapshot.");
+    if (["click", "fill", "set_checked"].includes(args.action) && typeof args.ref !== "string") throw new Error("Choose a ref from the snapshot.");
+    if (args.action === "set_checked" && typeof args.checked !== "boolean") throw new Error("Provide checked as true or false.");
     if (args.action === "fill" && (typeof args.text !== "string" || args.text.length > 10000)) throw new Error("Provide text up to 10,000 characters.");
     if (args.action === "scroll" && !["up", "down", "top", "bottom"].includes(String(args.direction))) throw new Error("Choose up, down, top, or bottom.");
+    let outcome: Record<string, unknown> = {};
     if (args.action === "press") {
       if (!KEYS.has(String(args.key))) throw new Error("Unsupported key.");
       if (args.ref) await this.dom(contents, { ...args, action: "focus" });
       contents.sendInputEvent({ type: "keyDown", keyCode: args.key as string });
       contents.sendInputEvent({ type: "keyUp", keyCode: args.key as string });
-    } else await this.dom(contents, args);
+    } else outcome = await this.dom(contents, args);
     this.snapshots.delete(contents.id);
-    return { performed: true, targetId: contents.id, next: "Take a fresh snapshot to verify the result." };
+    return { ...outcome, performed: true, targetId: contents.id, next: "Take a fresh snapshot to verify the result and any save error before reporting success." };
   }
 
   private webUrl(value: unknown): string {

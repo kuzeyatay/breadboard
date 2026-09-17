@@ -27,6 +27,18 @@ const PUBLIC_INGEST_DOCUMENT_WARNING =
   "Some document content or page previews could not be processed.";
 const PUBLIC_INGEST_MAP_WARNING =
   "Map generation failed, so the source was saved without extracted lesson topics. You can retry with Learn after upload.";
+// Mirrors the worker's fixed wording for a quota/credit refusal. Any other
+// failure text is rejected below, so the sanitized boundary stays closed.
+const PUBLIC_INGEST_MODEL_QUOTA_FAILURE =
+  "The selected model and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
+const PUBLIC_INGEST_FAILURE_MESSAGES = new Set([
+  SANITIZED_RUNTIME_FAILURE_MESSAGE,
+  PUBLIC_INGEST_MODEL_QUOTA_FAILURE,
+]);
+// A retained-upload id the worker attaches to a failure (see
+// `retainIngestRecovery`); it is an opaque handle for the garden's recovery
+// routes, never a path.
+const INGEST_RECOVERY_ID = /^rec_[0-9a-f]{32}$/u;
 const RESULT_SAFETY_VERDICTS = new Set(["suspicious", "review", "notes", "clean"]);
 const RESULT_SAFETY_SEVERITIES = new Set(["critical", "warning", "info"]);
 const TERMINAL_JOB_STATES = new Set([
@@ -59,7 +71,11 @@ type ParsedCheckpoint = {
   readonly updatedAt: number;
   readonly step: string;
   readonly tokenUsage: IngestTokenUsage | null;
-  readonly failure: { readonly error: string; readonly visionError: string | null } | null;
+  readonly failure: {
+    readonly error: string;
+    readonly visionError: string | null;
+    readonly recoveryId: string | null;
+  } | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -155,16 +171,28 @@ function parseCheckpoint(
   if (content.failure !== null) {
     if (
       !isRecord(content.failure) ||
-      !hasExactKeys(content.failure, ["error", "visionError"]) ||
-      content.failure.error !== SANITIZED_RUNTIME_FAILURE_MESSAGE ||
+      // Workers before recovery retention wrote two keys; both shapes are live
+      // while a job started under the older worker finishes.
+      !(hasExactKeys(content.failure, ["error", "visionError"]) ||
+        hasExactKeys(content.failure, ["error", "visionError", "recoveryId"])) ||
+      typeof content.failure.error !== "string" ||
+      !PUBLIC_INGEST_FAILURE_MESSAGES.has(content.failure.error) ||
       (content.failure.visionError !== null &&
-        content.failure.visionError !== PUBLIC_INGEST_VISION_WARNING)
+        content.failure.visionError !== PUBLIC_INGEST_VISION_WARNING) ||
+      !(content.failure.recoveryId === undefined ||
+        content.failure.recoveryId === null ||
+        (typeof content.failure.recoveryId === "string" &&
+          INGEST_RECOVERY_ID.test(content.failure.recoveryId)))
     ) {
       throw new Error("Runtime returned an invalid ingestion failure checkpoint.");
     }
     failure = {
       error: content.failure.error,
       visionError: content.failure.visionError,
+      recoveryId:
+        typeof content.failure.recoveryId === "string"
+          ? content.failure.recoveryId
+          : null,
     };
   }
   return {
@@ -413,6 +441,9 @@ function terminalErrorEvent(
     durationMs: elapsedMs,
     tokenUsage,
     ...(failure?.visionError ? { visionError: failure.visionError } : {}),
+    ...(job.state === "failed" && failure?.recoveryId
+      ? { recoveryId: failure.recoveryId }
+      : {}),
   };
 }
 

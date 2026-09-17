@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const userId = await requireUserId();
-    return NextResponse.json({ settings: getSpeechSettings(userId) });
+    return NextResponse.json({ userId: String(userId), settings: getSpeechSettings(userId) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return routeErrorResponse(error);
   }
@@ -22,4 +22,3 @@ export async function PATCH(request: Request) {
     return routeErrorResponse(error);
   }
 }
-

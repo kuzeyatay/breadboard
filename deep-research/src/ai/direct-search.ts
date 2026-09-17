@@ -17,8 +17,10 @@
 // difference between a thin answer and no answer.
 
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
+import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { SearchDocument, SearchResponse } from './search';
@@ -313,11 +315,52 @@ const DUCKDUCKGO_ENDPOINTS = [
  * interpreter path arrives as `DEEP_RESEARCH_DDGS_PYTHON`; without it this
  * simply doesn't run and the HTTP scrape below is used instead.
  */
+/**
+ * The interpreter that carries `ddgs`, or null when there is none.
+ *
+ * `DEEP_RESEARCH_DDGS_PYTHON` wins when set; nothing in the runtime sets it
+ * today, and with the variable unset every run reached the HTML scrape
+ * below, which DuckDuckGo answers with a challenge page — so the fallback that
+ * exists to rescue a search-less ChatMock route produced zero hits itself and
+ * whole reports finished with "0 findings from 0 sources". The runtime's
+ * bundled Python (`runtimes/python`, a sibling of the `runtimes/node` this
+ * sidecar runs on, and the interpreter Hermes searches with) ships `ddgs`, so
+ * it is found by position: next to `process.execPath`, then under the app
+ * root's dev copy. Each candidate must exist on disk, nothing more — a stale
+ * layout yields null and the scrape, never a broken subprocess.
+ */
+function ddgsPython(): string | null {
+  const configured = (process.env.DEEP_RESEARCH_DDGS_PYTHON ?? '').trim();
+  // "none" is the explicit opt-out (tests that stub `fetch` need the scrape
+  // path, not a real subprocess); an empty value means "find it".
+  if (configured.toLowerCase() === 'none') return null;
+  if (configured) return configured;
+  const executable = process.platform === 'win32' ? 'python.exe' : 'bin/python3';
+  // Runtime V2 launches Node services with an extended-length (`\\?\`)
+  // execPath; spawning a program by such a path returns ENOENT, so the prefix
+  // is dropped before the interpreter is derived from it.
+  const execPath = process.execPath.startsWith('\\\\?\\')
+    ? process.execPath.slice(4)
+    : process.execPath;
+  const candidates = [
+    resolve(dirname(execPath), '..', 'python', executable),
+    resolve(process.cwd(), '..', 'desktop', 'build-resources', 'runtimes', 'python', executable),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      // An unreadable path is the same as an absent one.
+    }
+  }
+  return null;
+}
+
 async function ddgsPackageSearch(
   query: string,
   limit: number,
 ): Promise<DirectSearchResult[] | null> {
-  const python = (process.env.DEEP_RESEARCH_DDGS_PYTHON ?? '').trim();
+  const python = ddgsPython();
   if (!python) return null;
   const program = [
     'import json, sys',
@@ -387,6 +430,9 @@ export async function duckDuckGoSearch(
   if (lastStatus >= 400) {
     throw new Error(`DuckDuckGo search returned ${lastStatus}`);
   }
+  console.warn(
+    `[search] DuckDuckGo returned no parseable results (last status ${lastStatus || 'none'}; ddgs ${viaPackage ? 'found nothing' : 'unavailable'}).`,
+  );
   return [];
 }
 

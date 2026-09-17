@@ -106,6 +106,24 @@ export type SourceFormulaPlacement =
   | "inside_metric_definition"
   | "inside_result_interpretation";
 
+/** How a required formula earns its place on the page. The writer owes a
+ * different move for each: show the route for "derived", name the evidence for
+ * "empirical", say what is being fixed for "axiom", and say the result is taken
+ * as given for "asserted_in_source". Defaults to "asserted_in_source" so an
+ * unclassified formula is never presented as if it had been established. */
+export type SourceFormulaGrounding =
+  | "derived"
+  | "empirical"
+  | "axiom"
+  | "asserted_in_source";
+
+export const SOURCE_FORMULA_GROUNDINGS: readonly SourceFormulaGrounding[] = [
+  "derived",
+  "empirical",
+  "axiom",
+  "asserted_in_source",
+];
+
 export type SourceTablePlacement = "inside_comparison" | "inside_result_interpretation";
 
 export interface SourceFigureContract {
@@ -121,6 +139,12 @@ export interface SourceFormulaContract {
   teachingGoal: string;
   termsToDefine: string[];
   placement: SourceFormulaPlacement;
+  /** Whether the page owes the learner a derivation, an honest "this is
+   * measured", or an honest "this is taken as given". */
+  grounding: SourceFormulaGrounding;
+  /** For "derived": the earlier anchor ids or prior unit results the route
+   * starts from. Empty for every other grounding. */
+  derivableFrom: string[];
 }
 
 export interface SourceTableContract {
@@ -176,6 +200,8 @@ export interface LearningUnitContract {
   knowledgeClaims?: KnowledgeClaimPlan[];
 
   mustNotRepeat: string[];
+  /** Advisory model-authored estimate, never a prose limit. [0, 0] means a
+   * legacy/fallback record has no estimate; new model-authored plans require one. */
   expectedWordRange: [number, number];
 
   /**
@@ -1399,11 +1425,28 @@ function normalizeFormula(raw: unknown): SourceFormulaContract | null {
     rawPlacement === "inside_metric_definition" || rawPlacement === "inside_result_interpretation"
       ? (rawPlacement as SourceFormulaPlacement)
       : "before_example";
+  const rawGrounding = compact(record.grounding ?? record.groundingKind)
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  // Unclassified formulas fall back to "asserted_in_source": the page then says
+  // the result is taken as given instead of implying it was established. A
+  // contract written before this field existed keeps working and stays honest.
+  const grounding: SourceFormulaGrounding = (SOURCE_FORMULA_GROUNDINGS as readonly string[]).includes(
+    rawGrounding,
+  )
+    ? (rawGrounding as SourceFormulaGrounding)
+    : "asserted_in_source";
+  const derivableFrom =
+    grounding === "derived"
+      ? asStringArray(record.derivableFrom ?? record.derivedFrom ?? record.followsFrom)
+      : [];
   return {
     id,
     teachingGoal: compact(record.teachingGoal ?? record.goal),
     termsToDefine: asStringArray(record.termsToDefine ?? record.terms),
     placement,
+    grounding,
+    derivableFrom,
   };
 }
 
@@ -1840,7 +1883,7 @@ function normalizeWordRange(raw: unknown): [number, number] {
       return [Math.round(lo), Math.round(hi)];
     }
   }
-  return [700, 1100];
+  return [0, 0];
 }
 
 /** Parse raw council output (array of units, or `{ learningUnits: [...] }`)

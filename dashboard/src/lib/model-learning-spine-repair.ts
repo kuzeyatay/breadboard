@@ -1,3 +1,4 @@
+import { LEARN_LENGTH_PLANNING_RULES } from "./learn-pedagogy.ts";
 import {
   modelAuthoredLearningUnitParseProblems,
   type LearningUnitContract,
@@ -279,7 +280,8 @@ export function buildLearningSpineTargetedRepairRequest(input: {
 Return ONLY this exact JSON shape:
 {"learningUnits":[COMPLETE_REPLACEMENT_UNIT_RECORD,...]}
 
-Use this complete unit-record schema (optional fields are marked OPTIONAL):
+${LEARN_LENGTH_PLANNING_RULES}
+Use this unit-record schema, also including expectedWordRange as described above (optional fields are marked OPTIONAL):
 {
   "id": "exact requested unit id",
   "title": "precise learner-facing teaching step",
@@ -331,7 +333,6 @@ Use this complete unit-record schema (optional fields are marked OPTIONAL):
   }],
   "zettelNotes": [{"handle":"canonical-atomic-handle","claim":"readable atomic note","connectedTo":["canonical-atomic-handle"]}],
   "mustNotRepeat": ["already-used motif, framing, or example"],
-  "expectedWordRange": [700, 1100],
   "sectionPlan": {
     "id": "existing section id",
     "title": "existing learner-facing section title",

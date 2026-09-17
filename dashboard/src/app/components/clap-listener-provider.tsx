@@ -8,7 +8,7 @@ import { clapSnapshot, clapServerSnapshot, gestureSettings, loadClapControls, su
 import { controlQuery, trustedClapPath, type GestureControl } from '@/lib/speech/clap/preferences';
 import { dispatchClapSpeech } from '@/lib/speech/clap/targets';
 import { actionForGesturePrompt } from '@/lib/profile/clap-action';
-import { openGestureAction, takeGestureLaunch, waitForGesturePlayer, type GestureLaunch } from '@/lib/speech/clap/action-launch';
+import { openGestureAction, takeGestureLaunch, gestureMusicPlayer, type GestureLaunch } from '@/lib/speech/clap/action-launch';
 import { describeMicrophoneBlock } from '@/lib/speech/microphone-access';
 import { gestureForegroundPresence } from '@/lib/speech/clap/foreground-presence';
 
@@ -35,6 +35,7 @@ export default function ClapListenerProvider() {
     let alive = true; let owner: AbortController | null = null; let signature = '';
     let timer: number | undefined; let settlingUntil = 0; let receiving = false;
     const lifecycle = new AbortController();
+    const ensureMusicPlayer = gestureMusicPlayer(lifecycle.signal);
     const desktop = desktopTabsBridge();
     let desktopState: DesktopTabsState | null = null;
     const eligible = () => trustedClapPath(routeRef.current) && (desktop
@@ -77,9 +78,24 @@ export default function ClapListenerProvider() {
         const saved = binding.action.action;
         const action = saved.kind === 'assistant' ? actionForGesturePrompt(saved.prompt) : saved;
         setNotice(null);
-        await openGestureAction({ userId: current.userId, control, eventId: event.id, action: saved }, action);
+        const launch = { userId: current.userId, control, eventId: event.id, action: saved, at: Date.now() };
+        if (action.kind === 'music') await executeAction(launch, action, controller.signal);
+        else await openGestureAction(launch, action);
       } catch (error) { if (!controller.signal.aborted) setNotice(error instanceof Error ? error.message : 'The gesture action could not open.'); }
       finally { busy.current = false; signature = ''; settlingUntil = performance.now() + 1500; if (alive) sync(); }
+    }
+
+    async function executeAction(launch: GestureLaunch, action: ReturnType<typeof actionForGesturePrompt>, signal: AbortSignal) {
+      if (action.kind === 'music') await ensureMusicPlayer(signal);
+      const response = await fetch(`/api/profile/clap-action/execute${controlQuery(launch.control)}`, { method: 'POST', signal,
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: launch.eventId, expectedAction: launch.action }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'The gesture action could not run.');
+      if (!signal.aborted) {
+        if (action.kind === 'assistant' && typeof result.href === 'string' && /^\/dashboard\?terminalChat=conv_[A-Za-z0-9_-]+$/.test(result.href)) router.replace(result.href);
+        else if (result.failed) throw new Error(result.message);
+        if (action.kind === 'music') window.dispatchEvent(new Event('breadboard:spotify-playback-changed'));
+      }
     }
 
     async function receive(launch: GestureLaunch) {
@@ -94,16 +110,7 @@ export default function ClapListenerProvider() {
           if (!await dispatchClapSpeech(action.kind, controller.signal, { waitForTarget: true }) && !controller.signal.aborted)
             throw new Error('The speech controls could not load. Try your gesture again.');
         } else if (action.kind === 'music' || action.kind === 'assistant') {
-          if (action.kind === 'music') await waitForGesturePlayer(controller.signal);
-          const response = await fetch(`/api/profile/clap-action/execute${controlQuery(launch.control)}`, { method: 'POST', signal: controller.signal,
-            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: launch.eventId, expectedAction: saved }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || 'The gesture action could not run.');
-          if (!controller.signal.aborted) {
-            if (typeof result.href === 'string' && /^\/dashboard\?terminalChat=conv_[A-Za-z0-9_-]+$/.test(result.href)) router.replace(result.href);
-            else if (result.failed) throw new Error(result.message);
-            if (action.kind === 'music') window.dispatchEvent(new Event('breadboard:spotify-playback-changed'));
-          }
+          await executeAction(launch, action, controller.signal);
         }
       } catch (error) { if (!controller.signal.aborted) setNotice(error instanceof Error ? error.message : 'The clap action could not run.'); }
       finally { busy.current = false; receiving = false; signature = ''; settlingUntil = performance.now() + 1500; if (alive) sync(); }

@@ -1477,16 +1477,28 @@ function parseFailedReceiptProof(
   prepared: PreparedGeneratedVisualCouncilRequest,
 ): FailedReceiptProof | null {
   const receipt = recordValue(value);
+  // ChatMock stamps createdAt/updatedAt on the failed-receipt metadata (the
+  // durable start boundary recovery clients outwait). They are optional here;
+  // a proof with them was read as corrupt and failed a Learn generation on
+  // 2026-09-16 ("failed_receipt_metadata_invalid").
+  const requiredProofKeys = [
+    "dispatchGeneration",
+    "dispatchCount",
+    "redispatchCount",
+    "redispatchAllowed",
+    "failureCode",
+    "attempts",
+  ];
+  const optionalProofKeys = ["createdAt", "updatedAt"];
   if (
     !receipt ||
-    !hasExactKeys(receipt, [
-      "dispatchGeneration",
-      "dispatchCount",
-      "redispatchCount",
-      "redispatchAllowed",
-      "failureCode",
-      "attempts",
-    ]) ||
+    requiredProofKeys.some((key) => !Object.hasOwn(receipt, key)) ||
+    Object.keys(receipt).some(
+      (key) => !requiredProofKeys.includes(key) && !optionalProofKeys.includes(key),
+    ) ||
+    optionalProofKeys.some(
+      (key) => Object.hasOwn(receipt, key) && typeof receipt[key] !== "string",
+    ) ||
     (receipt.dispatchGeneration !== 1 && receipt.dispatchGeneration !== 2) ||
     (receipt.dispatchCount !== 1 && receipt.dispatchCount !== 2) ||
     receipt.dispatchCount !== receipt.dispatchGeneration ||

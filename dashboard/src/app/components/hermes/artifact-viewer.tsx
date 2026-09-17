@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
@@ -17,6 +18,7 @@ import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { useArtifactDockHost } from "./artifact-dock-host";
 import ChatMarkdown from "@/app/components/chat-markdown";
+import { markdownReadingMinutes } from "@/lib/markdown-reading-time";
 import {
   ReclaimingAudio,
   ReclaimingVideo,
@@ -41,6 +43,11 @@ import ArtifactGenOfficeEditor from "./artifact-genoffice-editor";
 import ArtifactVvvebEditor from "./artifact-vvveb-editor";
 import { dispatchArtifactAiEdit } from "./artifact-ai-edit";
 import { subscribeToArtifactUpdates } from "@/lib/hermes/artifact-update-channel";
+import {
+  artifactLocalPath,
+  fileExplorerControl,
+  openInFileExplorer,
+} from "@/lib/desktop-file-explorer";
 
 export { ARTIFACT_AI_EDIT_EVENT } from "./artifact-ai-edit";
 
@@ -116,7 +123,8 @@ const MarkdownArtifactEditor = dynamic(
 );
 
 export const ARTIFACT_BROWSER_EVENT = "breadboard:artifact-event";
-export const GARDEN_DOCUMENTS_CHANGED_EVENT = "breadboard:garden-documents-changed";
+import { GARDEN_DOCUMENTS_CHANGED_EVENT } from "@/lib/garden-document-events";
+export { GARDEN_DOCUMENTS_CHANGED_EVENT } from "@/lib/garden-document-events";
 
 const ARTIFACTS_FOLDER = "artifacts";
 
@@ -161,6 +169,8 @@ const kindLabels: Partial<Record<ArtifactKind, string>> = {
   data: "Data",
   diagram: "Diagram",
   document: "Document",
+  folder: "Folder",
+  unknown: "File",
   html: "Web page",
   image: "Image",
   markdown: "Markdown",
@@ -238,7 +248,141 @@ export function artifactDescription(artifact: PresentedArtifact): string {
       .join(" · ");
   }
   const kind = kindLabels[artifact.kind] ?? "Artifact";
+  if (artifact.metadata?.importedFromUpload === true) return `Uploaded file · ${extensionLabel(artifact.filename)}`;
+  if (artifact.kind === "folder" || artifact.renderer === "archive-file") {
+    const count = artifact.metadata?.entryCount;
+    return [
+      artifact.kind === "folder" ? "Folder" : `Archive · ${extensionLabel(artifact.filename)}`,
+      typeof count === "number" ? `${count} file${count === 1 ? "" : "s"}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
   return `${kind} · ${extensionLabel(artifact.filename)}`;
+}
+
+const noopSubscribe = () => () => {};
+
+/**
+ * Whether this page can open a path in the system file explorer. False on
+ * the server and in an ordinary browser; true only under the desktop bridge,
+ * read after hydration so the first paint matches what the server sent.
+ */
+export function useFileExplorerAvailable(): boolean {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () => fileExplorerControl() !== null,
+    () => false,
+  );
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * What is inside a folder or archive artifact, with the way back to the
+ * folder itself. The listing is the card's own metadata, so it opens without
+ * unpacking anything; the button is only offered where a file explorer exists.
+ */
+function ArtifactEntriesView({
+  artifact,
+  explorerAvailable,
+}: {
+  artifact: PresentedArtifact;
+  explorerAvailable: boolean;
+}) {
+  const [notice, setNotice] = useState<string | null>(null);
+  const entries = Array.isArray(artifact.metadata?.entries)
+    ? (artifact.metadata.entries as Array<{ path?: unknown; byteSize?: unknown }>)
+        .filter((entry) => typeof entry?.path === "string")
+        .map((entry) => ({
+          path: entry.path as string,
+          byteSize: typeof entry.byteSize === "number" ? entry.byteSize : null,
+        }))
+    : [];
+  const total = typeof artifact.metadata?.entryCount === "number"
+    ? artifact.metadata.entryCount
+    : entries.length;
+  const location = artifactLocalPath(artifact.metadata);
+  const isFolder = artifact.kind === "folder";
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      {location ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--ink-muted)]" title={location.path}>
+            {location.path}
+          </span>
+          {explorerAvailable ? (
+            <button
+              type="button"
+              className="neu-button rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs font-medium text-[var(--ink)]"
+              onClick={() => {
+                void openInFileExplorer(location).then((opened) => {
+                  setNotice(opened ? null : "That folder no longer exists at this path. The ZIP below still has its contents.");
+                });
+              }}
+            >
+              {location.isFolder ? "Open folder" : "Show in folder"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {notice ? <p className="text-xs text-[var(--ink-muted)]">{notice}</p> : null}
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-[var(--line)] bg-[var(--paper-raised)]">
+        {entries.length === 0 ? (
+          <p className="p-3 text-sm text-[var(--ink-muted)]">
+            {isFolder ? "This folder's listing is unavailable. Download the ZIP to see its contents." : "No listing is available for this archive. Download it to see its contents."}
+          </p>
+        ) : (
+          <ul className="divide-y divide-[var(--line)]" aria-label={`Files in ${artifact.title}`}>
+            {entries.map((entry) => (
+              <li key={entry.path} className="flex items-center gap-3 px-3 py-1.5 text-sm">
+                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-[var(--botanical)] [&_svg]:h-4 [&_svg]:w-4 [&_svg]:stroke-current [&_svg]:[stroke-width:1.6]">
+                  <ArtifactFileIcon kind={kindForEntryPath(entry.path)} />
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--ink)]" title={entry.path}>
+                  {entry.path}
+                </span>
+                {entry.byteSize !== null ? (
+                  <span className="shrink-0 text-xs text-[var(--ink-muted)]">{formatBytes(entry.byteSize)}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {total > entries.length ? (
+        <p className="text-xs text-[var(--ink-muted)]">
+          Showing {entries.length} of {total} files. Download the ZIP for the rest.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** An icon for a listed entry, from its extension. Display only. */
+function kindForEntryPath(entryPath: string): ArtifactKind {
+  const extension = entryPath.toLowerCase().match(/\.([a-z0-9]{1,12})$/)?.[1] ?? "";
+  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"].includes(extension)) return "image";
+  if (extension === "svg") return "diagram";
+  if (["mp3", "wav", "flac", "ogg", "m4a", "aac"].includes(extension)) return "audio";
+  if (["mp4", "mov", "webm", "mkv", "avi", "m4v"].includes(extension)) return "video";
+  if (["csv", "tsv", "xlsx", "xls", "ods"].includes(extension)) return "spreadsheet";
+  if (["json", "xml", "yaml", "yml", "toml", "ipynb"].includes(extension)) return "data";
+  if (["pptx", "ppt", "odp"].includes(extension)) return "presentation";
+  if (["html", "htm"].includes(extension)) return "html";
+  if (["glb", "gltf", "stl", "obj", "3mf"].includes(extension)) return "model";
+  if (["zip", "tar", "gz", "tgz", "7z", "rar"].includes(extension)) return "unknown";
+  if (["md", "markdown"].includes(extension)) return "markdown";
+  if (["pdf"].includes(extension)) return "pdf";
+  if (["docx", "doc", "odt", "rtf"].includes(extension)) return "document";
+  if (["txt", "log"].includes(extension)) return "text";
+  return extension ? "code" : "text";
 }
 
 export function artifactUrl(
@@ -349,7 +493,32 @@ export function ArtifactArchiveIcon({
   );
 }
 
-export function ArtifactFileIcon({ kind }: { kind: ArtifactKind }) {
+export function ArtifactFileIcon({
+  kind,
+  renderer,
+}: {
+  kind: ArtifactKind;
+  /** Distinguishes an archive from any other file the store cannot preview. */
+  renderer?: string;
+}) {
+  if (kind === "folder") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4.5l2 2H19a1.5 1.5 0 0 1 1.5 1.5V17A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17v-10.5Z" />
+        <path d="M3.5 10h17" />
+      </svg>
+    );
+  }
+
+  if (kind === "unknown" && renderer === "archive-file") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4.5 7.5h15v10a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5v-10Z" />
+        <path d="M3.5 4.5h17v3h-17v-3ZM10 11h4" />
+      </svg>
+    );
+  }
+
   if (kind === "spreadsheet" || kind === "data") {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -638,6 +807,13 @@ export default function ArtifactViewer({
   );
   const pdfEditorHref = artifact ? artifactPdfHref(artifact) : null;
   const markdownEditorHref = artifact ? artifactMarkdownEditorHref(artifact) : null;
+  // A produced file remembers where it came from; on the desktop that place
+  // can be opened. The folder body carries its own button, so the header only
+  // offers one for a single file.
+  const explorerAvailable = useFileExplorerAvailable();
+  const localPath = artifact && artifact.kind !== "folder" && artifact.renderer !== "archive-file"
+    ? artifactLocalPath(artifact.metadata)
+    : null;
   const interactiveChannel = useMemo(
     () => interactive && artifactId
       ? `${artifactId}:${artifactVersion}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
@@ -703,6 +879,12 @@ export default function ArtifactViewer({
   const resolved = preview?.url === previewUrl ? preview : null;
   const text = resolved?.text ?? null;
   const loading = isTextual && Boolean(artifact?.previewAvailable) && resolved === null;
+  const readingMinutes = useMemo(
+    () => artifact?.kind === "markdown" && text !== null
+      ? markdownReadingMinutes(text)
+      : null,
+    [artifact?.kind, text],
+  );
 
   // A stored blueprint is validated before it renders: a design that no longer
   // matches its schema must say so rather than render half a circuit.
@@ -1154,6 +1336,9 @@ export default function ArtifactViewer({
         />
       );
     }
+    if (artifact.kind === "folder" || artifact.renderer === "archive-file") {
+      return <ArtifactEntriesView artifact={artifact} explorerAvailable={explorerAvailable} />;
+    }
     return (
       <p className="text-sm text-[var(--ink-muted)]">
         No preview is available for this artifact. Use Download to open it.
@@ -1189,8 +1374,13 @@ export default function ArtifactViewer({
             wrap under the title rather than squeezing it out of the row. */}
         <header className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-5 py-3">
           <div className="min-w-[12rem] flex-1">
-            <p className="truncate text-sm font-semibold text-[var(--ink-heading)]">
-              {artifact.title}
+            <p className="flex min-w-0 items-baseline gap-1.5 text-sm font-semibold text-[var(--ink-heading)]">
+              <span className="truncate" title={artifact.title}>{artifact.title}</span>
+              {readingMinutes !== null ? (
+                <span className="shrink-0 whitespace-nowrap text-xs font-normal text-[var(--ink-muted)]" title="Estimated reading time">
+                  <span aria-hidden="true">· </span>{readingMinutes} min read
+                </span>
+              ) : null}
             </p>
             <p className="truncate text-xs text-[var(--ink-muted)]">
               {artifactDescription(artifact)} · {artifact.filename}
@@ -1263,6 +1453,16 @@ export default function ArtifactViewer({
               aria-pressed={editingDocument}
             >
               {editingDocument ? "Preview" : "Edit"}
+            </button>
+          ) : null}
+          {localPath && explorerAvailable ? (
+            <button
+              type="button"
+              className={actionButton}
+              onClick={() => void openInFileExplorer(localPath)}
+              title={localPath.path}
+            >
+              Show in folder
             </button>
           ) : null}
           {artifact.downloadAvailable ? (

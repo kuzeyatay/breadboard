@@ -259,7 +259,7 @@ test("a delegated run stays private and leaves the originating assistant message
   assert.match(panel, /message\.delegatedAgentPreamble/);
   assert.match(
     panel,
-    /message\.delegatedAgentRun && !message\.openGymRun[\s\S]*?\? "hidden"[\s\S]*?: "contents"/,
+    /message\.delegatedAgentRun[\s\S]*?\? "hidden"[\s\S]*?: "contents"/,
   );
   assert.match(route, /body\.attachToExistingTurn === true/);
   assert.match(route, /attachExternalAgentRun\(\{/);

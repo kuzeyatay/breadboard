@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyFile } from "node:fs/promises";
 
 import { build } from "esbuild";
 
@@ -9,7 +10,7 @@ const quartzDirectory = path.resolve(dashboardDirectory, "..", "quartz");
 
 await build({
   absWorkingDir: quartzDirectory,
-  entryPoints: ["quartz/components/scripts/thoughtTopologyRenderer.ts"],
+  entryPoints: ["quartz/components/scripts/thoughtTopologyViewer.ts"],
   outfile: path.join(
     dashboardDirectory,
     "src",
@@ -24,6 +25,11 @@ await build({
   external: ["d3", "katex", "pixi.js"],
   legalComments: "none",
   banner: {
-    js: "// Generated from ../quartz/quartz/components/scripts/thoughtTopologyRenderer.ts. Do not edit by hand.",
+    js: "// Generated from ../quartz/quartz/components/scripts/thoughtTopologyViewer.ts. Do not edit by hand.",
   },
 });
+
+await copyFile(
+  path.join(quartzDirectory, "quartz/components/styles/thoughtTopologyViewer.css"),
+  path.join(dashboardDirectory, "src/vendor/quartz-thought-topology/viewer.css"),
+);

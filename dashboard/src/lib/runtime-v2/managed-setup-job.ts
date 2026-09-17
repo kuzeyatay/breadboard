@@ -144,6 +144,16 @@ function parseResult(job: RuntimeJobSnapshot, content: unknown): ManagedSetupRes
   };
 }
 
+/** Read the fenced operation result: a completed worker can report a failed install. */
+export async function readManagedSetupResult(
+  userId: number,
+  job: RuntimeJobSnapshot,
+): Promise<ManagedSetupResult> {
+  assertManagedSetupSnapshot(job);
+  if (job.state !== "succeeded") throw new Error("Setup has not finished.");
+  return parseResult(job, (await readRuntimeJobOutput(authority(userId), job.jobId, "result")).content);
+}
+
 async function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
   await new Promise<void>((resolve, reject) => {
@@ -193,10 +203,7 @@ export async function runManagedSetupJob(input: {
       assertManagedSetupSnapshot(snapshot);
     }
     if (snapshot.state === "succeeded") {
-      return parseResult(
-        snapshot,
-        (await readRuntimeJobOutput(jobAuthority, snapshot.jobId, "result")).content,
-      );
+      return readManagedSetupResult(input.userId, snapshot);
     }
     if (snapshot.state === "cancelled") {
       return { ok: false, message: "Setup was cancelled.", detail: "" };

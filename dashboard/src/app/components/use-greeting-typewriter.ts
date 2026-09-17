@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 /** Shared erase/pause/type sequence for browser and new-tab greetings. */
 export function useGreetingTypewriter(target: string, initialText = "") {
   const displayedRef = useRef(initialText);
-  const initializedRef = useRef(Boolean(initialText));
   const [displayed, setDisplayed] = useState(initialText);
   const [animating, setAnimating] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -23,8 +22,7 @@ export function useGreetingTypewriter(target: string, initialText = "") {
     let cancelled = false;
     let timer: number | null = null;
     const frame = window.requestAnimationFrame(() => {
-      if (!initializedRef.current || reducedMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        initializedRef.current = true;
+      if (reducedMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
         displayedRef.current = target;
         setDisplayed(target);
         setAnimating(false);
@@ -57,7 +55,11 @@ export function useGreetingTypewriter(target: string, initialText = "") {
           timer = window.setTimeout(() => write(1), 260);
         }
       };
-      erase();
+      // A greeting that arrived asynchronously should become visible at once.
+      // Keep the pause only between an old greeting being erased and its
+      // replacement; an initially empty line has nothing to pause after.
+      if (current.length === 0) write(1);
+      else erase();
     });
     return () => {
       cancelled = true;

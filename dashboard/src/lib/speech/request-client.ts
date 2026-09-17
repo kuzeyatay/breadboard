@@ -5,9 +5,11 @@ export async function speechRequest(url: string, init: RequestInit = {}): Promis
   const status = await fetch("/api/speech/settings", { cache: "no-store", signal: init.signal });
   if (!status.ok) return status;
   const { settings } = await status.json();
-  if (settings.speechProvider === "local") return fetch(url, init);
+  // OpenAI (web) speaks and transcribes server-side through the chatgpt.com
+  // page, exactly like the other request/response providers.
+  if (settings.speechProvider === "local" || settings.speechProvider === "elevenlabs" || settings.speechProvider === "openaiweb") return fetch(url, init);
   if (!settings.enabled) return Response.json({ error: "Speech is turned off in Voice settings." }, { status: 409 });
-  if (settings.speechProvider !== "chatgpt") return Response.json({ error: "Choose Local or ChatGPT subscription in Voice settings." }, { status: 409 });
+  if (settings.speechProvider !== "chatgpt") return Response.json({ error: "Choose a speech provider in Voice settings." }, { status: 409 });
   try {
     if (url === "/api/speech/synthesize" || url === "/api/speech/synthesize/mp3") {
       const { text } = JSON.parse(String(init.body));

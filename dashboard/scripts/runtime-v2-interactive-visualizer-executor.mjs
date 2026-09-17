@@ -999,8 +999,10 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
   fs.mkdirSync(outputDir, { recursive: true });
   const htmlPath = path.join(outputDir, "candidate.html");
   fs.writeFileSync(htmlPath, html, { encoding: "utf8", flag: "wx" });
+  // Breadboard is a desktop app. Validate the desktop light/dark and reduced
+  // motion views; a phone preview must not block an otherwise working bundle.
   const scenarios = [
-    { name: "375x667 light", width: 375, height: 667, flags: [] },
+    { name: "1280x800 light", width: 1280, height: 800, flags: [] },
     { name: "1280x800 dark", width: 1280, height: 800, flags: ["--force-dark-mode"] },
     {
       name: "1280x800 reduced-motion",
@@ -1125,7 +1127,6 @@ export async function runInteractiveVisualizerBrowserTestsInWorker({
   let screenshotCreated = true;
   for (const preview of [
     { name: "desktop", width: 1000, height: 720 },
-    { name: "mobile", width: 375, height: 667 },
   ]) {
     const screenshotPath = path.join(outputDir, `${preview.name}.png`);
     const screenshot = await runIsolatedBrowser({

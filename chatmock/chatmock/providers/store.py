@@ -17,11 +17,17 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Tuple
 
 from ..utils import eprint, get_home_dir
-from .catalog import CHATGPT_PROVIDER_ID, ProviderSpec, iter_provider_specs, provider_spec
+from .catalog import (
+    CHATGPT_PROVIDER_ID,
+    KIND_CHATGPT_WEB,
+    ProviderSpec,
+    iter_provider_specs,
+    provider_spec,
+)
 
 SETTINGS_FILENAME = "providers.json"
 SETTINGS_VERSION = 1
@@ -30,7 +36,12 @@ SETTINGS_VERSION = 1
 # Subsystems (Hermes, OpenCode, UI-TARS, deep-research) send this so the choice
 # made in the dashboard applies without restarting every process.
 DEFAULT_MODEL_SENTINEL = "default"
-_SENTINELS = frozenset({DEFAULT_MODEL_SENTINEL, "auto", ""})
+# Sentinel for a concrete model pinned by a running chat, independent of the
+# profile default used by background tasks.
+CHAT_MODEL_SENTINEL = "chat"
+# Unlike a missing setting, this explicitly disables the shared fallback.
+NO_MODEL_SENTINEL = "none"
+_SENTINELS = frozenset({DEFAULT_MODEL_SENTINEL, CHAT_MODEL_SENTINEL, "auto", ""})
 
 
 @dataclass
@@ -76,12 +87,14 @@ class ProviderRecord:
 @dataclass
 class ProviderSettings:
     default_model: str | None = None
+    chat_model: str | None = None
     providers: Dict[str, ProviderRecord] = field(default_factory=dict)
 
     def to_json(self) -> Dict[str, Any]:
         return {
             "version": SETTINGS_VERSION,
             "default_model": self.default_model,
+            "chat_model": self.chat_model,
             "providers": {pid: record.to_json() for pid, record in self.providers.items()},
         }
 
@@ -125,6 +138,7 @@ def _parse_settings(raw: Any) -> ProviderSettings:
             providers[pid.strip().lower()] = ProviderRecord.from_json(value)
     return ProviderSettings(
         default_model=_clean_str(raw.get("default_model")),
+        chat_model=_clean_str(raw.get("chat_model")),
         providers=providers,
     )
 
@@ -237,6 +251,13 @@ def resolve_credentials(spec: ProviderSpec) -> ResolvedCredentials:
 
     if not record.enabled:
         return ResolvedCredentials(spec.id, api_key, base_url, False, "provider is turned off")
+    if spec.kind == KIND_CHATGPT_WEB:
+        # No key and no URL to check: the credential is a signed-in browser
+        # session, and the page module keeps the last sign-in check on disk.
+        from . import chatgpt_web
+
+        reason = chatgpt_web.unavailable_reason()
+        return ResolvedCredentials(spec.id, None, base_url, reason is None, reason)
     if spec.requires_api_key and not api_key:
         return ResolvedCredentials(spec.id, api_key, base_url, False, "no API key is configured")
     if not base_url:
@@ -367,24 +388,47 @@ def delete_provider(provider_id: str) -> bool:
 
 def get_default_model(fallback: str) -> str:
     """The model that backs every subsystem that asks for `default`."""
+    stored = read_settings().default_model
+    if stored == NO_MODEL_SENTINEL:
+        return stored
     configured = _clean_str(os.getenv("CHATMOCK_DEFAULT_MODEL"))
     if configured and configured.lower() not in _SENTINELS:
         return configured
-    stored = read_settings().default_model
     if stored and stored.lower() not in _SENTINELS:
         return stored
     return fallback
 
 
 def set_default_model(model: str | None) -> bool:
+    """Save the profile default without changing a running chat's model."""
+    cleaned = _clean_str(model)
+    selected = None if cleaned is None or cleaned.lower() in _SENTINELS else cleaned
+    # Leave the cached settings untouched until persistence succeeds.
+    settings = replace(read_settings(), default_model=selected)
+    return write_settings(settings)
+
+
+def get_chat_model(fallback: str) -> str:
+    """The model the composer last picked; the background model until then."""
+    stored = read_settings().chat_model
+    if stored and stored.lower() not in _SENTINELS:
+        return stored
+    return fallback
+
+
+def set_chat_model(model: str | None) -> bool:
     settings = read_settings()
     cleaned = _clean_str(model)
-    settings.default_model = None if cleaned is None or cleaned.lower() in _SENTINELS else cleaned
+    settings.chat_model = None if cleaned is None or cleaned.lower() in _SENTINELS else cleaned
     return write_settings(settings)
 
 
 def is_default_sentinel(model: Any) -> bool:
     return isinstance(model, str) and model.strip().lower() in _SENTINELS
+
+
+def is_chat_sentinel(model: Any) -> bool:
+    return isinstance(model, str) and model.strip().lower() == CHAT_MODEL_SENTINEL
 
 
 def chatgpt_enabled() -> bool:

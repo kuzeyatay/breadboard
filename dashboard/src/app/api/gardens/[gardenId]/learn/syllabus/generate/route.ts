@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   InvalidLearnRouteBodyError,
   readLearnRouteJsonObject,
+  resolveLearnRequestModel,
 } from "@/lib/learn-route-errors";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
@@ -21,6 +22,7 @@ import {
   routeErrorResponse,
 } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
+import { LEARN_MODEL_CLIENT_OPTIONS } from "@/lib/learn";
 
 export const dynamic = "force-dynamic";
 
@@ -70,12 +72,13 @@ export async function POST(
       // A garden with nothing in it yet still gets a syllabus.
     }
 
+    const model = resolveLearnRequestModel(body, selectedModelForUser(userId));
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const client = createChatmockClient(baseURL);
+    const client = createChatmockClient(baseURL, LEARN_MODEL_CLIENT_OPTIONS);
     let raw = "";
     try {
       const response = await client.chat.completions.create({
-        model: selectedModelForUser(userId),
+        model,
         messages: syllabusDraftMessages(prompt, gardenDocuments),
       });
       raw = response.choices[0]?.message?.content ?? "";

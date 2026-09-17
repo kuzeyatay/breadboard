@@ -5,6 +5,7 @@ import {
   InvalidLearnRouteBodyError,
   isLearnRouteConflict,
   readLearnRouteJsonObject,
+  resolveLearnRequestModel,
   requireExpectedLearnModel,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
@@ -46,7 +47,7 @@ export async function POST(
     // Treat the map's planning model as a concurrency token. Validate it in
     // Next before a worker can start, then let the worker validate the durable
     // map-to-planning-job binding again before creating a generation job.
-    const model = selectedModelForUser(userId);
+    const model = resolveLearnRequestModel(body, selectedModelForUser(userId));
     const expectedModel = requireExpectedLearnModel(body, model, {
       requiresReplanOnConflict: true,
     });

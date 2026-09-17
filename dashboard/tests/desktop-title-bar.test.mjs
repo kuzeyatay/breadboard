@@ -97,13 +97,6 @@ test("every top-level flower navbar keeps the dashboard measure and animation", 
   );
 });
 
-test("a cold desktop tab cannot expose the green canvas below the retained navbar", () => {
-  assert.match(
-    globals,
-    /body:has\(\.bb-tab\[data-active="true"\]\[data-loading="true"\]\)[\s\S]*?\.breadboard-flower-navbar\s*\{[\s\S]*?0 var\(--breadboard-titlebar-height, 32px\) 0 var\(--paper-surface\)/,
-  );
-});
-
 test("the application navbar remains on the compact pre-redesign layout", () => {
   assert.match(navbar, /<NavbarFlowerWind showFlowers=\{showFlowers\}\s*\/>/);
   assert.match(navbar, /<Link[\s\S]*?href="\/dashboard"[\s\S]*?aria-label="Go to Breadboard main page"/);

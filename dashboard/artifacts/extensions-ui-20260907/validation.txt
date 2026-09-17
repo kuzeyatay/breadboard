@@ -1,0 +1,11 @@
+Extensions popup UI validation
+
+Preview images use sample extensions and placeholder artwork; the app reads icons from installed extension manifests.
+
+Passed: desktop build, focused dashboard typecheck, ESLint, 12 extension tests, and the Electron installation integration check after rebuilding.
+Passed browser checks: 350 x 307 popup, open action, extension options, reload, removal and focus restoration, Manage extensions, load error and retry, Tab and Shift+Tab wrapping, Escape, private mode, narrow viewport scrolling, long labels, empty state, no runtime errors.
+
+Existing unrelated failure: dashboard/tests/browser-tab.test.mjs, browser home provides live dock data, search suggestions, and editable shortcuts (pageUrl={browser.address} source assertion). The extensions-specific assertion passes.
+
+Regenerate preview: node dashboard/artifacts/extensions-ui-20260907/build.mjs
+Run browser checks: node dashboard/artifacts/extensions-ui-20260907/smoke.mjs

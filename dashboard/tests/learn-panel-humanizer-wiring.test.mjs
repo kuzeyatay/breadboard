@@ -24,7 +24,8 @@ const statusBar = workspace.slice(statusBarStart, tokenRowStart);
 
 test("the Learn panel puts Rewrite naturally at the far right of the token row", () => {
   assert.doesNotMatch(workspace, /aria-label="Close Learn panel"/);
-  assert.match(workspace, /useHumanizerMode\(\)/);
+  assert.match(workspace, /useLearnHumanizerMode\(\)/);
+  assert.doesNotMatch(workspace, /\buseHumanizerMode\b|previousHumanizerPreferenceRef/);
   assert.match(
     workspace,
     /const learnPanelAvailable = Boolean\([\s\S]{0,120}hasExistingLearnContent/,
@@ -53,7 +54,7 @@ test("Learn humanization is a validated post-build pass, never a page-generation
   assert.match(learn, /validate: \(\) => \{[\s\S]{0,500}verifyFinalArtifactNoMutation/);
   assert.match(postBuild, /path\.join\(gardenDir, "learning"\)/);
   assert.match(postBuild, /restoreOriginals\(originals\)/);
-  assert.match(postBuild, /storedTextHumanizerForUser/);
+  assert.match(postBuild, /storedLearnTextHumanizerForUser/);
   assert.doesNotMatch(postBuild, /\.breadboard[\\/]planning|sources[\\/]/);
 });
 
@@ -76,7 +77,15 @@ test("publication refreshes final validation after critic and humanizer work", (
   );
 });
 
-test("a finished Learn version follows later Rewrite naturally changes", () => {
+test("only the Learn switch queues changes to a finished Learn version", () => {
+  assert.match(tokenRow, /onClick=\{\(\) => \{\s*pendingFinishedLearnHumanizerRef\.current = !humanizerEnabled;/);
+  assert.equal(
+    [...workspace.matchAll(/pendingFinishedLearnHumanizerRef\.current = (?!null)/g)].length,
+    1,
+    "hydration and menu changes must not queue finished-copy work",
+  );
+  assert.match(switchRoute, /composerSwitches: \{ learnHumanizerAuto: enabled \}/);
+  assert.doesNotMatch(switchRoute, /\{ humanizerAuto: enabled \}/);
   assert.match(
     workspace,
     /\/learn\/humanizer[\s\S]{0,500}expectedVersionId: versionId/,

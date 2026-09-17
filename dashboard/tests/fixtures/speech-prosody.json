@@ -1,0 +1,17 @@
+[
+  { "id": "heading", "text": "## Requirements\nInstall Python 3.11 before continuing.", "spoken": "Requirements.\n\nInstall Python 3.11 before continuing.", "listenFor": "A brief pause after the heading; no stress on the version punctuation." },
+  { "id": "list", "text": "Bring:\n- a notebook\n- a pen\n- your ID", "spoken": "Bring:\n\na notebook.\n\na pen.\n\nyour ID.", "listenFor": "Three separate items, with no spoken bullet markers." },
+  { "id": "ordered-list", "text": "1. Open Settings\n2. Choose Voice\n3. Play the preview", "spoken": "Open Settings.\n\nChoose Voice.\n\nPlay the preview.", "listenFor": "A short pause between each action." },
+  { "id": "soft-wrap", "text": "The small bird landed\non the branch and waited.", "spoken": "The small bird landed on the branch and waited.", "listenFor": "No pause between landed and on." },
+  { "id": "paragraphs", "text": "We finished the first experiment.\n\nThe next experiment starts tomorrow.", "spoken": "We finished the first experiment.\n\nThe next experiment starts tomorrow.", "listenFor": "A paragraph pause without a change in voice or pace." },
+  { "id": "question", "text": "## **Ready?**\nWould you prefer tea or coffee?", "spoken": "Ready?\n\nWould you prefer tea or coffee?", "listenFor": "Natural question intonation, without exaggerating the heading." },
+  { "id": "contrast", "text": "I said Tuesday, not Thursday. The time stays the same.", "spoken": "I said Tuesday, not Thursday. The time stays the same.", "listenFor": "Light contrast between the days, without stressing articles." },
+  { "id": "abbreviations", "text": "Dr. Smith met Prof. Jones in the U.S. office at 3 p.m. on Friday.", "spoken": "Dr. Smith met Prof. Jones in the U.S. office at 3 p.m. on Friday.", "listenFor": "Titles and abbreviations stay connected to the following words." },
+  { "id": "numbers", "text": "The total is $1,234.56, up 3.5%. Version 2.10.3 is ready at 12:30.", "spoken": "The total is $1,234.56, up 3.5%. Version 2.10.3 is ready at 12:30.", "listenFor": "Correct numeric values, with no artificial pause inside decimals or times." },
+  { "id": "quotes", "text": "She said, “Take your time.” Then she closed the door.", "spoken": "She said, “Take your time.” Then she closed the door.", "listenFor": "A sentence ending after the closing quotation; consistent narrator voice." },
+  { "id": "formula", "text": "## Energy\nThe formula is $E=mc^2$.", "spoken": "Energy.\n\nThe formula is E equals m c squared.", "listenFor": "Readable mathematics after a brief heading pause." },
+  { "id": "table", "text": "| Item | Quantity |\n| --- | --- |\n| Apples | 3 |\n| Pears | 2 |", "spoken": "Item; Quantity.\n\nApples; 3.\n\nPears; 2.", "listenFor": "Separate cells and rows, without merging quantities." },
+  { "id": "names", "text": "José and Zoë work on SQL APIs.", "spoken": "José and Zoë work on SQL APIs.", "listenFor": "Name pronunciation; compare SQL with the optional SQL = sequel correction." },
+  { "id": "japanese", "text": "準備ができました。次の手順に進みましょう！", "spoken": "準備ができました。次の手順に進みましょう！", "listenFor": "Natural sentence breaks even without spaces between sentences." },
+  { "id": "dutch", "text": "## Volgende stap\nWil je eerst de instellingen controleren?", "spoken": "Volgende stap.\n\nWil je eerst de instellingen controleren?", "listenFor": "Dutch pronunciation and a neutral heading; use a Dutch-capable voice." }
+]

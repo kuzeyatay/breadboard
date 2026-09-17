@@ -16,6 +16,7 @@
 import type { Dirent } from "node:fs";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { isGardenUserPath } from "./garden-user-content.ts";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import {
@@ -47,6 +48,7 @@ export const NON_ACTIVE_PROJECTION_PREFIXES = [
 export function isActiveLearnerProjectionPath(relativePath: string, activeBuildId: string): boolean {
   void activeBuildId;
   const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (isGardenUserPath(normalized)) return false;
   if (!normalized.endsWith(".md")) return false;
   return !NON_ACTIVE_PROJECTION_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(prefix));
 }

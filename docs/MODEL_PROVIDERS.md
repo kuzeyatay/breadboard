@@ -287,6 +287,139 @@ that wraps this same binary as a sidecar. Breadboard uses **none of its code**
 management-API protocol, provider taxonomy and per-provider key/base-URL/model
 shape were the reference for this integration.
 
+## OpenAI (web): chatgpt.com in Breadboard's browser
+
+The `openaiweb` provider is the same ChatGPT plan as the OAuth `chatgpt`
+provider, reached the way the website reaches it: a signed-in browser page and
+the site's own composer. It exists because the two are not the same thing —
+the website has its own model picker (including web-only models and the
+`auto` router), its own usage windows separate from the Codex endpoint's, and
+no API in between. Every model it offers appears in the Intelligence menu
+under an **OpenAI (web)** heading, each marked `(web)`
+(`openaiweb/gpt-5-6` → "GPT-5.6 (web)").
+
+The approach is the one [Chat On Steroids](https://github.com/totec448-spec/chat-on-steroids)
+takes: no API key and no OAuth client — the person signs in to chatgpt.com
+exactly as they would to use it, and the app types into the page. Where that
+project pairs a Chrome extension with its app, ChatMock drives a page over the
+DevTools protocol (`chatmock/chatmock/providers/chatgpt_web.py`). Its page
+script is a port of the extension's two working parts: chatgpt-dom.js's
+composer insert/send (`execCommand('insertHTML')` and the native send button)
+and usage.js's passive `fetch` observer, which reads the conversation event
+stream the page itself receives instead of scraping rendered HTML. A rendered
+reader stays behind it for pages whose answer arrives another way (the
+logged-out renderer streams HTML; some accounts get a WebSocket transport).
+
+### The page lives inside Breadboard, out of sight
+
+The page is a Chromium page of Breadboard's own browser profile
+(`persist:breadboard-browser`), so the chatgpt.com sign-in is the one the
+person already has there. It is not a tab: nothing in the tab strip shows it,
+because it is not the person's browsing - it is where their requests are
+typed. ChatMock cannot ask the desktop shell for a page directly (the shell
+has no HTTP surface and Runtime V2 keeps every service's control token
+separate), so the request travels through a Breadboard page, which does have
+the preload bridge:
+
+```
+ChatMock ── queues {nonce, foreground, reset} ── GET /v1/providers/openaiweb/tab-requests (long-poll)
+   │                                              ▲
+   │      dashboard page (chatgpt-web-tab-agent.tsx, one page holds a Web Lock)
+   │             └─ breadboardDesktop.chatgptWebTab({foreground, reset})
+   │                     └─ shell: tab-manager.openChatgptWebTab → about:blank#breadboard-chatgpt-web=<nonce>
+   │                               reads the page's own CDP target id, answers {cdpPort, targetId}
+   │      page ── POST /v1/providers/openaiweb/tab-requests/<nonce> ──> ChatMock
+   └── attaches to ws://127.0.0.1:<cdpPort>/devtools/page/<targetId>, navigates it to chatgpt.com
+```
+
+**Why "out of sight" is a window and not an absence.** Three things were
+measured against the live site, and each rules out something simpler:
+
+* A page whose window has never been shown gets a **0x0 viewport**, and
+  chatgpt.com will not focus a composer that has no box.
+* A view attached to a window *before* that window is first shown stays a
+  **hidden page** even after the window appears - so the window is shown
+  first, then given the page.
+* A shown window parked off every display counts as **occluded**, which is
+  hidden again; a hidden page accepts the message and then never renders the
+  answer.
+
+So the window is on screen, above everything (nothing can occlude it into
+Chromium's hidden state) and drawn at **zero opacity**, which hides
+chatgpt.com's own opaque page as `transparent: true` would not. Clicks pass
+through it, and it stays out of the taskbar and Alt-Tab. Signing in is the one
+thing only a person can do, so that - and only that - restores its opacity and
+brings it forward; closing it parks it again rather than ending the session
+ChatMock is attached to.
+
+**When the page stops answering.** A renderer that has crashed (or been
+killed for memory) leaves its `WebContents` alive and its DevTools target
+listed, so reattaching succeeds and then every command hangs unanswered - what
+that used to surface as was `the browser did not answer Page.enable in time`,
+once per request, forever. Both ends now treat it as what it is. The shell
+drops the page on `render-process-gone` and refuses to hand back one whose
+renderer `isCrashed()`, and a tab request can carry `reset` to demand a
+replacement outright. ChatMock bounds its attach (`ATTACH_TIMEOUT_SECONDS`,
+15s), and when a page answers nothing it asks once more with `reset: true`;
+only if that fresh page is silent too does it give up, and then it says so in
+words rather than in a protocol method name. The session is a cookie in the
+shared browser profile, not page state, so a replacement costs a reload.
+
+Two details worth knowing if this ever misbehaves. The page is identified by
+the DevTools **target id it reports about itself** (`Target.getTargetInfo`
+over the in-process debugger), because `/json/list` can report a stale URL for
+a page whose document changed only by fragment. And the sandboxed browser
+preload asks for the notification permission **synchronously** on every
+document: without a per-page reply the renderer's main thread blocks forever,
+which looks exactly like a page that has stopped answering CDP.
+
+Without a shell (ChatMock alone, `npm run dev` in an ordinary browser) the
+provider refuses with a message saying so. `CHATMOCK_CHATGPT_WEB_SYSTEM_BROWSER=1`
+lets ChatMock launch a Chrome/Edge of its own on a profile beside
+`providers.json` instead - the escape hatch the live probes use.
+
+### Signing in and what is stored
+
+Settings → Accounts → **OpenAI (web)** → Sign in opens the tab on
+chatgpt.com in front of the person; ChatMock polls the page's own
+`/api/auth/session` until a user appears, reads `/backend-api/models` for the
+plan's model list, and writes `chatgpt-web.json` beside `providers.json`:
+signed-in flag, email, plan, and the model slugs with their titles. No token
+or cookie is ever copied out of the browser. Sign out navigates the tab to
+the site's logout route and clears that file.
+
+### One request, one temporary chat
+
+A chat completion becomes one message in a new *temporary* chat:
+`/?temporary-chat=true&model=<slug>` (plus `reasoning_effort=` when the
+request carries one the site's picker understands), so nothing lands in the
+person's ChatGPT history. A lone user message is sent verbatim; a transcript
+with a system prompt, earlier turns or tool results is framed as
+instructions + conversation + "continue as the assistant". Function calling
+does not exist on the website, so `tools` are not forwarded and the model
+answers in prose. The answer streams back as OpenAI chunks; the page is a
+single composer, so requests are served one at a time (`_turn_lock`).
+
+A 429 from the site is a quota refusal like any other provider's: the model
+is cooled down and a stand-in tried.
+
+Learn can run on these models too: they reach its picker through the shared
+model list, and one turn here is one message and one submit, which satisfies
+Learn's one-call routing contract. Two limits are worth knowing before
+choosing one for a long build - the website honours no `response_format`, so
+JSON comes back only because the prompt asks for it, and its composer accepts
+a bounded message, so a very large prompt fails honestly (the insert is
+verified against what was typed) rather than being silently truncated.
+
+Tests: `chatmock/tests/test_chatgpt_web.py` (the page reducer runs under
+Node; Learn's strict routing is admitted),
+`desktop/tests/chatgpt-web-tab-integration.test.ts` (a real Electron window:
+the handshake end to end, the page parked and shown and parked again, and
+ChatMock's Python driver attaching to it),
+`dashboard/tests/ai-models.test.mjs` and
+`dashboard/tests/learn-openai-web-model.test.mjs` (menu section, `(web)`
+labels, and the Learn picker's unfiltered list).
+
 ## Embeddings
 
 ChatMock also serves `POST /v1/embeddings`, and the backend follows from the

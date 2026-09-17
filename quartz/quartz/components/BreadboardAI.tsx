@@ -79,6 +79,10 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
           </div>
         </div>
 
+        <div class="breadboard-ai-temporary-banner" role="status" hidden>
+          Temporary chat enabled
+        </div>
+
         <div class="breadboard-ai-history" hidden>
           <div class="breadboard-ai-history-status" aria-live="polite"></div>
           <ul class="breadboard-ai-history-list"></ul>
@@ -97,6 +101,26 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
         {/* Positioning context for the message rail, which floats against the
             right edge of the transcript rather than scrolling with it. */}
         <div class="breadboard-ai-transcript">
+          <button
+            class="breadboard-ai-temporary"
+            title="Temporary chat: start a chat kept out of history and memory"
+            aria-label="Turn on temporary chat"
+            aria-pressed="false"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path
+                class="breadboard-ai-temporary-outline"
+                stroke-dasharray="3.6 3"
+                d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+              />
+              <path
+                class="breadboard-ai-temporary-check"
+                stroke-width="2"
+                d="M8.6 12.1l2.4 2.4 4.6-5"
+                hidden
+              />
+            </svg>
+          </button>
           <div class="breadboard-ai-messages" aria-live="polite"></div>
           <div class="breadboard-ai-rail" hidden>
             <div class="breadboard-ai-rail-label" aria-hidden="true"></div>

@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { parseImageResults, type ImageResultItem } from '@/lib/hermes/image-results';
 
 // Renders the ```image-results fenced block the `image_search` tool asks the
 // model to emit: a grid of thumbnail cards in the transcript, and a portalled
@@ -10,79 +11,9 @@ import { createPortal } from 'react-dom';
 // transform inside the virtualized list, which makes any inline `fixed`
 // overlay position against the row instead of the viewport.
 
-interface ImageResultItem {
-  title: string;
-  image: string;
-  thumb: string;
-  page: string;
-  site: string;
-  w?: number;
-  h?: number;
-}
-
-interface ImageResults {
-  query: string;
-  items: ImageResultItem[];
-}
-
-const MAX_ITEMS = 10;
-
 export function wrappedImageIndex(index: number, delta: -1 | 1, itemCount: number): number {
   if (!Number.isInteger(index) || !Number.isInteger(itemCount) || itemCount < 1) return 0;
   return (index + delta + itemCount) % itemCount;
-}
-
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function httpUrl(value: unknown): string {
-  const raw = asString(value);
-  return /^https?:\/\//i.test(raw) ? raw : '';
-}
-
-function imageDimension(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.round(value)
-    : undefined;
-}
-
-// Tolerant on purpose: while the answer streams, the fenced block exists with
-// a truncated body, and a partial JSON payload must render as nothing rather
-// than throw the whole markdown tree.
-function parseImageResults(code: string): ImageResults | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(code.trim());
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const record = parsed as { query?: unknown; items?: unknown };
-  if (!Array.isArray(record.items)) return null;
-  const items = record.items
-    .flatMap((item): ImageResultItem[] => {
-      if (!item || typeof item !== 'object') return [];
-      const raw = item as Record<string, unknown>;
-      const image = httpUrl(raw.image);
-      const thumb = httpUrl(raw.thumb);
-      if (!image && !thumb) return [];
-      const width = imageDimension(raw.w);
-      const height = imageDimension(raw.h);
-      return [
-        {
-          title: asString(raw.title),
-          image: image || thumb,
-          thumb,
-          page: httpUrl(raw.page),
-          site: asString(raw.site),
-          ...(width && height ? { w: width, h: height } : {}),
-        },
-      ];
-    })
-    .slice(0, MAX_ITEMS);
-  if (items.length === 0) return null;
-  return { query: asString(record.query), items };
 }
 
 /** "flugzeuginfo.net" -> "Flugzeuginfo", for the attribution card. */
@@ -303,7 +234,7 @@ function ChatImageResults({ code }: { code: string }) {
 
   return (
     <div className="chat-image-results" data-selection-exclude>
-      <div className="columns-2 gap-2">
+      <div className={results.items.length === 1 ? 'max-w-lg columns-1 gap-2' : 'columns-2 gap-2'}>
         {results.items.map((item, index) => (
           <button
             key={`${item.image}-${index}`}

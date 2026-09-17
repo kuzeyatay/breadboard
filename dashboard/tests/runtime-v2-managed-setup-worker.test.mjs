@@ -10,6 +10,8 @@ import test from "node:test";
 import {
   MANAGED_SETUP_OPERATIONS,
   executeManagedSetup,
+  managedNpmLauncher,
+  prepareHyperframesBrowser,
   runManagedSetupCommand,
   validateManagedSetupRequest,
 } from "../scripts/runtime-v2-managed-setup-executor.mjs";
@@ -351,6 +353,79 @@ test("Bolt Slides installs locked dependencies into a Runtime toolchain", async 
   }
 });
 
+test("simultaneous first HyperFrames installs reuse the published CLI", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-race-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dataRoot = path.join(root, "data");
+  const appRoot = path.join(root, "app");
+  const source = path.join(appRoot, "hyperframes");
+  fs.mkdirSync(dataRoot);
+  fs.mkdirSync(path.join(source, "skills", "hyperframes"), { recursive: true });
+  fs.mkdirSync(path.join(source, "packages", "cli"), { recursive: true });
+  fs.writeFileSync(path.join(source, "skills", "hyperframes", "SKILL.md"), "# fixture");
+  fs.writeFileSync(path.join(source, "packages", "cli", "package.json"), '{"version":"0.7.94"}');
+  let installs = 0;
+  const entry = (prefix) => path.join(prefix, "node_modules", "hyperframes", "bin", "hyperframes.mjs");
+  const context = {
+    dataRoot, appRoot, env: {}, signal: new AbortController().signal,
+    spawnImpl: (_command, args, options) => {
+      if (!args.includes("install")) return fakeChild("0.7.94\n");
+      const install = ++installs;
+      return fakeChild("", () => {
+        fs.mkdirSync(path.dirname(entry(options.cwd)), { recursive: true });
+        fs.writeFileSync(entry(options.cwd), `// install ${install}`);
+      });
+    },
+  };
+  const request = { protocolVersion: 1, operation: "hyperframes", action: "install-cli" };
+  let winner;
+  const results = await Promise.all([0, 1].map(async () => {
+    const result = await executeManagedSetup(request, context);
+    winner ??= fs.readFileSync(entry(path.join(dataRoot, "hyperframes-cli")), "utf8");
+    return result;
+  }));
+  assert.ok(results.every((result) => result.ok));
+  assert.equal(fs.readFileSync(entry(path.join(dataRoot, "hyperframes-cli")), "utf8"), winner);
+  assert.deepEqual(fs.readdirSync(dataRoot), ["hyperframes-cli"]);
+});
+
+test("HyperFrames resolves a durable browser before entering a private run home", async (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-browser-"));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  const browser = path.join(dataRoot, "hyperframes-browser", "chrome.exe");
+  const launches = [];
+  const options = {
+    dataRoot,
+    env: { OPENAI_API_KEY: "secret", USERPROFILE: "personal-home", HYPERFRAMES_BROWSER_PATH: "system-edge" },
+    signal: new AbortController().signal,
+    spawnImpl: (command, args, options) => {
+      launches.push({ command, args, options });
+      return fakeChild(args.at(-1) === "path" ? `${browser}\n` : "ready", () => {
+        fs.writeFileSync(browser, "fixture");
+      });
+    },
+  };
+  const launcher = { command: process.execPath, baseArgs: ["pinned-cli.mjs"] };
+  assert.equal(await prepareHyperframesBrowser(launcher, options), fs.realpathSync.native(browser));
+  assert.equal(await prepareHyperframesBrowser(launcher, options), fs.realpathSync.native(browser));
+  assert.deepEqual(launches.map((launch) => launch.args), [
+    ["pinned-cli.mjs", "browser", "ensure"], ["pinned-cli.mjs", "browser", "path"],
+    ["pinned-cli.mjs", "browser", "ensure"], ["pinned-cli.mjs", "browser", "path"],
+  ]);
+  for (const { options } of launches) {
+    assert.equal(options.env.HOME, path.join(dataRoot, "hyperframes-browser"));
+    assert.equal(options.env.USERPROFILE, options.env.HOME);
+    assert.equal(options.env.OPENAI_API_KEY, undefined);
+    assert.equal(options.env.HYPERFRAMES_BROWSER_PATH, undefined);
+    assert.equal(options.detached, false);
+  }
+  await assert.rejects(prepareHyperframesBrowser(launcher, {
+    ...options,
+    signal: AbortSignal.abort(),
+    spawnImpl: () => assert.fail("must not start browser setup after cancellation"),
+  }), { name: "AbortError" });
+});
+
 test("Wardrobe stages its source and dependencies without mutating the clone", async (t) => {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-wardrobe-data-"));
   const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-wardrobe-app-"));
@@ -672,6 +747,45 @@ test("Claude account status and logout use only the fixed CLI with its credentia
   }
 });
 
+test("Claude usage recovery makes one bounded Haiku call with no tools, project context, or saved session", async (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-claude-wake-"));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  const command = path.join(dataRoot, process.platform === "win32" ? "claude.exe" : "claude");
+  fs.writeFileSync(command, "fixture");
+  const launches = [];
+  let reply = { type: "result", subtype: "success", is_error: false, result: "OK" };
+  const run = () => executeManagedSetup(
+    { protocolVersion: 1, operation: "claude-code", action: "refresh-usage" },
+    {
+      dataRoot, appRoot: dataRoot, signal: new AbortController().signal,
+      env: { CLAUDE_CLI_PATH: command, CLAUDE_CONFIG_DIR: dataRoot, ANTHROPIC_API_KEY: "private-key", ANTHROPIC_DEFAULT_HAIKU_MODEL: "opus", BREADBOARD_SUPERVISOR_CONTROL_TOKEN: "private-token" },
+      spawnImpl: (executable, args, options) => {
+        launches.push({ executable, args, options });
+        return fakeChild(JSON.stringify(reply));
+      },
+    },
+  );
+  assert.equal((await run()).ok, true);
+  assert.equal(launches.length, 1);
+  const { args, options } = launches[0];
+  assert.equal(args[args.indexOf("--model") + 1], "haiku");
+  assert.equal(args[args.indexOf("--tools") + 1], "");
+  assert.equal(args[args.indexOf("--max-turns") + 1], "1");
+  assert.equal(args[args.indexOf("--max-budget-usd") + 1], "0.01");
+  assert.ok(args.includes("--safe-mode") && args.includes("--no-session-persistence"));
+  assert.equal(args.at(-1), "Reply OK.");
+  assert.equal(options.env.CLAUDE_CONFIG_DIR, dataRoot);
+  assert.equal(options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "8");
+  assert.equal(options.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(options.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined);
+  assert.equal(options.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN, undefined);
+  assert.equal(options.windowsHide, true);
+  reply = { type: "result", subtype: "error_max_budget_usd", is_error: false, result: "private diagnostic" };
+  const failed = await run();
+  assert.equal(failed.ok, false, "exit zero with an exhausted budget is not a successful wake-up");
+  assert.equal(failed.detail, "");
+});
+
 test("Resource2Skill installs Python and Chromium only under Runtime service data", async (t) => {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-resource2skill-data-"));
   const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-resource2skill-app-"));
@@ -920,6 +1034,71 @@ test("MoneyPrinter stages writable config and storage under Runtime data", async
   assert.equal(fs.existsSync(path.join(runtime, "storage", "local_videos", "fixture.mp4")), true);
 });
 
+test("managed npm runs through its Node installation without relying on PATH", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-managed-npm-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const executable = path.join(root, path.basename(process.execPath));
+  fs.copyFileSync(process.execPath, executable);
+  const entry = path.join(root, "node_modules", "npm", "bin", "npm-cli.js");
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.writeFileSync(entry, 'console.log(JSON.stringify(process.argv.slice(2)));');
+  const launcher = managedNpmLauncher(path.toNamespacedPath(executable));
+  assert.equal(launcher.command, executable);
+  const result = await runManagedSetupCommand(launcher.command, [...launcher.baseArgs, "--version"], {
+    cwd: root, env: { SystemRoot: process.env.SystemRoot, PATH: "" },
+    signal: new AbortController().signal, timeoutMs: 10_000,
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ["--version"]);
+});
+
+test("HyperFrames accepts Windows Runtime paths while rejecting redirected sources", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-native-path-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dataRoot = path.join(root, "data");
+  const appRoot = path.join(root, "app");
+  const source = path.join(appRoot, "hyperframes");
+  fs.mkdirSync(dataRoot);
+  fs.mkdirSync(path.join(source, "skills", "hyperframes"), { recursive: true });
+  fs.mkdirSync(path.join(source, "packages", "cli"), { recursive: true });
+  fs.writeFileSync(path.join(source, "skills", "hyperframes", "SKILL.md"), "# fixture");
+  fs.writeFileSync(path.join(source, "packages", "cli", "package.json"), '{"version":"0.7.94"}');
+  const launches = [];
+  const context = {
+    // Rust canonicalize supplies these extended-length paths to real workers.
+    dataRoot: path.toNamespacedPath(dataRoot),
+    appRoot: path.toNamespacedPath(appRoot),
+    env: { HYPERFRAMES_ROOT: path.toNamespacedPath(source) },
+    signal: new AbortController().signal,
+    spawnImpl: (_command, args, options) => {
+      launches.push(args);
+      return fakeChild("0.7.94\n", () => {
+        if (!args.includes("install")) return;
+        const entry = path.join(options.cwd, "node_modules", "hyperframes", "bin", "hyperframes.mjs");
+        fs.mkdirSync(path.dirname(entry), { recursive: true });
+        fs.writeFileSync(entry, "export {};");
+      });
+    },
+  };
+  const request = { protocolVersion: 1, operation: "hyperframes", action: "install-cli" };
+  assert.equal((await executeManagedSetup(request, context)).ok, true);
+  assert.equal(launches.filter((args) => args.includes("install")).length, 1);
+
+  // Normalizing the namespace must not allow a real junction or one in an ancestor.
+  const redirected = path.join(root, "redirected");
+  fs.symlinkSync(appRoot, redirected, "junction");
+  await assert.rejects(executeManagedSetup(request, {
+    ...context,
+    env: { HYPERFRAMES_ROOT: path.toNamespacedPath(redirected) },
+  }), /not found in this Breadboard installation/u);
+  await assert.rejects(executeManagedSetup(request, {
+    ...context,
+    env: { HYPERFRAMES_ROOT: path.toNamespacedPath(path.join(redirected, "hyperframes")) },
+  }), /not found in this Breadboard installation/u);
+});
+
 test("HyperFrames installs the clone-pinned CLI only under Runtime data", async (t) => {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-data-"));
   const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-hyperframes-app-"));
@@ -933,7 +1112,7 @@ test("HyperFrames installs the clone-pinned CLI only under Runtime data", async 
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    const installing = args[0] === "install";
+    const installing = args.includes("install");
     return fakeChild(installing ? "" : "1.2.3\n", installing
       ? () => {
           const entry = path.join(
@@ -964,12 +1143,20 @@ test("HyperFrames installs the clone-pinned CLI only under Runtime data", async 
     true,
   );
   assert.equal(fs.existsSync(path.join(source, "node_modules")), false);
-  assert.match(launches[0].args[1], /^hyperframes@1\.2\.3$/u);
+  assert.match(launches[0].args[launches[0].args.indexOf("install") + 1], /^hyperframes@1\.2\.3$/u);
   for (const launch of launches) {
     assert.equal(launch.options.detached, false);
     assert.equal(launch.options.env.OPENAI_API_KEY, undefined);
     assert.ok(launch.options.cwd.startsWith(dataRoot));
+    assert.equal(launch.options.env.HYPERFRAMES_SKIP_SKILLS, "1");
+    assert.equal(launch.options.env.HYPERFRAMES_NO_UPDATE_CHECK, "1");
   }
+  const again = await executeManagedSetup(
+    { protocolVersion: 1, operation: "hyperframes", action: "install-cli" },
+    { dataRoot, appRoot, env: { PATH: process.env.PATH }, signal: new AbortController().signal, spawnImpl },
+  );
+  assert.equal(again.ok, true);
+  assert.equal(launches.filter((launch) => launch.args.includes("install")).length, 1);
 });
 
 test("OpenScience installs its pinned CLI and creates an isolated data workspace", async (t) => {

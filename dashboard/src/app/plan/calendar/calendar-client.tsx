@@ -1,4 +1,5 @@
 "use client";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 
 // The calendar shell: toolbar, sidebar and the grid, plus the data loading and
 // mutations behind them.
@@ -120,6 +121,7 @@ export default function CalendarClient({
   const [occurrences, setOccurrences] = useState<CalendarOccurrence[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  useStartupLoading(loading);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState<EventDraft | null>(null);
@@ -195,13 +197,14 @@ export default function CalendarClient({
       const body = (await response.json()) as {
         occurrences: CalendarOccurrence[];
         events: CalendarEvent[];
+        syncError?: string | null;
       };
       // A slower earlier request must not overwrite a newer one.
       if (id !== requestId.current) return;
 
       setOccurrences(body.occurrences ?? []);
       setEvents(body.events ?? []);
-      setLoadError(null);
+      setLoadError(body.syncError ?? null);
     } catch (error) {
       if (id !== requestId.current) return;
       setLoadError(error instanceof Error ? error.message : "Could not load events");
@@ -214,11 +217,48 @@ export default function CalendarClient({
     void loadOccurrences();
   }, [loadOccurrences]);
 
+  // Discover newly connected calendars even when this view was already open.
+  useEffect(() => {
+    let disposed = false;
+    let pending = false;
+    const refresh = async () => {
+      if (document.visibilityState === "hidden" || pending) return;
+      pending = true;
+      try {
+        const response = await fetch("/api/calendar/calendars", { cache: "no-store" });
+        if (!response.ok) throw new Error("Could not update calendars.");
+        const body = await response.json() as { calendars: CalendarCollection[]; syncError?: string | null };
+        if (!disposed) {
+          setCalendars(body.calendars);
+          setLoadError(body.syncError ?? null);
+        }
+      } catch (error) {
+        if (!disposed) setLoadError(error instanceof Error ? error.message : "Could not update calendars.");
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 60_000);
+    const onRefresh = () => { void refresh(); };
+    window.addEventListener("focus", onRefresh);
+    window.addEventListener("breadboard:calendar:changed", onRefresh);
+    document.addEventListener("visibilitychange", onRefresh);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onRefresh);
+      window.removeEventListener("breadboard:calendar:changed", onRefresh);
+      document.removeEventListener("visibilitychange", onRefresh);
+    };
+  }, []);
+
   // ------------------------------------------------------------- mutations
 
   const openNewEvent = useCallback(
     (start: string, allDay: boolean) => {
-      const calendarId = visibleCalendarIds[0] ?? calendars[0]?.id;
+      const calendarId = calendars.find((calendar) => calendar.visible && !calendar.readOnly)?.id
+        ?? calendars.find((calendar) => !calendar.readOnly)?.id;
       if (!calendarId) return;
 
       const end = allDay ? start : addMinutes(start, DEFAULT_EVENT_MINUTES);
@@ -230,6 +270,8 @@ export default function CalendarClient({
         description: "",
         location: "",
         allDay,
+        notificationsEnabled: true,
+        leadReminderEnabled: true,
         startDate: dateOf(start),
         startTime: timeOf(start),
         endDate: dateOf(end),
@@ -247,7 +289,7 @@ export default function CalendarClient({
         readOnly: false,
       });
     },
-    [calendars, visibleCalendarIds],
+    [calendars],
   );
 
   const openOccurrence = useCallback(
@@ -263,6 +305,8 @@ export default function CalendarClient({
         description: event.description ?? "",
         location: event.location ?? "",
         allDay: event.allDay,
+        notificationsEnabled: occurrence.notificationsEnabled !== false,
+        leadReminderEnabled: occurrence.leadReminderEnabled !== false,
         startDate: dateOf(event.startsAt),
         startTime: timeOf(event.startsAt),
         endDate: dateOf(event.endsAt),
@@ -338,12 +382,22 @@ export default function CalendarClient({
     setSaveError(null);
     try {
       const isNew = next.eventId === null;
+      const payload = draftToPayload(next);
+      const reminderOnly = !isNew && (next.readOnly || (draft !== null &&
+        JSON.stringify({
+          ...payload,
+          notificationsEnabled: draft.notificationsEnabled,
+          leadReminderEnabled: draft.leadReminderEnabled,
+        }) ===
+          JSON.stringify(draftToPayload(draft))));
       const response = await fetch(
         isNew ? "/api/calendar/events" : `/api/calendar/events/${next.eventId}`,
         {
           method: isNew ? "POST" : "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(draftToPayload(next)),
+          body: JSON.stringify(reminderOnly
+            ? { notificationsEnabled: next.notificationsEnabled, leadReminderEnabled: next.leadReminderEnabled }
+            : payload),
         },
       );
       if (!response.ok) throw new Error(await readError(response, "Could not save event"));

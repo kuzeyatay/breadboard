@@ -74,6 +74,13 @@ async function pollOnce(): Promise<void> {
     if (!message.chatId) continue;
     serialize(message.chatId, () => handleMessage(message));
   }
+  const owner = (await store()).settings().ownerUserId;
+  if (owner !== null) {
+    const { queueMessagingNotifications } = await import("../messaging-notifications/instance.ts");
+    queueMessagingNotifications(owner, "whatsapp", (chatId, text) =>
+      // The bridge applies the Breadboard prefix and self-chat echo guard.
+      bridge.sendMessage(chatId, text));
+  }
 }
 
 /** Start the process-wide drain loop. Safe to call repeatedly (dev hot reloads). */

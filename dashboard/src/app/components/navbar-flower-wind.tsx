@@ -10,10 +10,6 @@ interface Plant {
   left: string;
   bottom: number;
   scale: number;
-  delay: string;
-  duration: string;
-  sway: string;
-  rotate: string;
   variant: PlantVariant;
   flowerColor?: string;
   flowerCenter?: string;
@@ -23,9 +19,6 @@ interface Star {
   left: string;
   top: string;
   size: string;
-  delay: string;
-  duration: string;
-  drift: string;
   color: string;
 }
 
@@ -42,7 +35,7 @@ interface Comet {
 const PLANT_COUNT = 24;
 const FLOWER_COUNT = 6;
 const STAR_COUNT = 56;
-const COMET_COUNT = 3;
+const COMET_COUNT = 1;
 const FLOWER_COLORS = ["#F2C94C", "#E88CA5", "#7FADE8", "#B99AE8"] as const;
 const STAR_COLORS = ["#d6ddd5", "#9fb5c4", "#b2a6c4", "#a8c4bb"] as const;
 const DEFAULT_CENTER = "#F2C94C";
@@ -123,10 +116,6 @@ function createPlants(random: RandomSource): Plant[] {
             : between(random, 0.9, 1.04),
           2,
         ),
-        delay: `-${toFixedNumber(between(random, 0.1, 5.4))}s`,
-        duration: `${toFixedNumber(between(random, 3.1, 5.5))}s`,
-        sway: `${toFixedNumber(between(random, 5.2, 8))}px`,
-        rotate: `${toFixedNumber(between(random, 2.8, 4.8))}deg`,
         variant,
         flowerColor,
         flowerCenter: flowerColor === "#F2C94C" ? YELLOW_CENTER : DEFAULT_CENTER,
@@ -142,10 +131,6 @@ function createPlants(random: RandomSource): Plant[] {
         tallGrass ? between(random, 0.72, 1) : between(random, 0.64, 0.9),
         2,
       ),
-      delay: `-${toFixedNumber(between(random, 0.1, 5.2))}s`,
-      duration: `${toFixedNumber(between(random, 3.1, 5.4))}s`,
-      sway: `${toFixedNumber(between(random, 4, 7.2))}px`,
-      rotate: `${toFixedNumber(between(random, 2, 4.2))}deg`,
       variant: tallGrass ? "grassTall" : "grassShort",
     };
   });
@@ -158,9 +143,6 @@ function createStars(random: RandomSource): Star[] {
     left: `${toFixedNumber(between(random, 1, 99))}%`,
     top: `${toFixedNumber(between(random, 8, 88))}%`,
     size: `${toFixedNumber(between(random, 1, index % 7 === 0 ? 3 : 2.2))}px`,
-    delay: `-${toFixedNumber(between(random, 0.1, 7.5))}s`,
-    duration: `${toFixedNumber(between(random, 3.8, 8.2))}s`,
-    drift: `${toFixedNumber(between(random, -3, 3))}px`,
     color: STAR_COLORS[index % STAR_COLORS.length],
   }));
 }
@@ -205,29 +187,11 @@ function synchronizedDelay(
 
 function plantStyle(
   plant: Plant,
-  animationClockMs: number | null,
 ): CSSProperties {
-  const sway = Number.parseFloat(plant.sway);
-  const rotate = Number.parseFloat(plant.rotate);
-
   return {
     "--plant-left": plant.left,
     "--plant-bottom": `${plant.bottom}px`,
     "--plant-scale": plant.scale,
-    "--plant-delay": synchronizedDelay(
-      plant.delay,
-      plant.duration,
-      animationClockMs,
-    ),
-    "--plant-duration": plant.duration,
-    "--plant-sway-left": `${-(sway * 0.45).toFixed(1)}px`,
-    "--plant-sway-right": plant.sway,
-    "--plant-sway-soft": `${(sway * 0.8).toFixed(1)}px`,
-    "--plant-sway-rest": `${(sway * 0.25).toFixed(1)}px`,
-    "--plant-rotate-left": `${-(rotate * 0.75).toFixed(1)}deg`,
-    "--plant-rotate-right": plant.rotate,
-    "--plant-rotate-soft": `${(rotate * 0.75).toFixed(1)}deg`,
-    "--plant-rotate-rest": `${(rotate * 0.2).toFixed(1)}deg`,
     "--flower-head": plant.flowerColor ?? "#F2C94C",
     "--flower-center": plant.flowerCenter ?? DEFAULT_CENTER,
   } as CSSProperties;
@@ -380,13 +344,17 @@ export default function NavbarFlowerWind({
   return (
     <>
       <div className={styles.plantAnimation} aria-hidden="true">
-        <div className={styles.wind} data-animation-ready={animationReady}>
+        <div
+          className={styles.wind}
+          data-animation-ready={animationReady}
+          style={{ "--wind-delay": synchronizedDelay("0s", "6s", animationClockMs) } as CSSProperties}
+        >
           <div className={styles.grassBed} />
           {INITIAL_PLANTS.map((plant, index) => (
             <span
               key={`${plant.variant}-${index}`}
               className={styles.plant}
-              style={plantStyle(plant, animationClockMs)}
+              style={plantStyle(plant)}
             >
               <span className={styles.plantSprite}>
                 <PlantSprite
@@ -399,7 +367,11 @@ export default function NavbarFlowerWind({
         </div>
       </div>
       <div className={styles.skyAnimation} aria-hidden="true">
-        <div className={styles.starField} data-animation-ready={animationReady}>
+        <div
+          className={styles.starField}
+          data-animation-ready={animationReady}
+          style={{ "--sky-delay": synchronizedDelay("0s", "12s", animationClockMs) } as CSSProperties}
+        >
           {INITIAL_STARS.map((star, index) => (
             <span
               key={index}
@@ -409,13 +381,6 @@ export default function NavbarFlowerWind({
                   "--star-left": star.left,
                   "--star-top": star.top,
                   "--star-size": star.size,
-                  "--star-delay": synchronizedDelay(
-                    star.delay,
-                    star.duration,
-                    animationClockMs,
-                  ),
-                  "--star-duration": star.duration,
-                  "--star-drift": star.drift,
                   "--star-color": star.color,
                 } as CSSProperties
               }

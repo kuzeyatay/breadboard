@@ -1,21 +1,20 @@
-// One surface over six agents that were never built to be interchangeable.
+// One surface over research participants with different execution models.
 //
 // Five of them own a run: they take a task, return a run id, emit events, and
 // eventually settle. Their signatures already agree closely enough that a thin
 // adapter is honest rather than a pretence — `startRun`, `getEventsSince`,
 // `isTerminal`, `abortRun`, in that shape, in every one of them.
 //
-// ARIS is the exception and stays one. It is not a runtime that fetches
-// anything; it is the cloned harness's own research methodology, which shapes
-// how the question is approached and how the results are reconciled. Modelling
-// it as a sixth fetcher would mean inventing a run for it and reporting an
-// empty result as a failure, so it resolves immediately with guidance instead.
+// Feynman is a stateless public-catalog pass over its bundled PaperRank engine.
+// ARIS applies the cloned harness's methodology in a fresh model review of
+// the retrieved evidence. Its critique is not independent empirical evidence.
 //
 // Nothing here reaches a service at module load: every runtime is imported at
 // call time, so an unavailable participant does not load a runtime it cannot use.
 
 import { DEFAULT_RESULT_LIMIT } from "../get-doc/identity.ts";
 import type { MaxResearchParticipant } from "./plan.ts";
+import { deepResearchCommissions, type DeepResearchCommission } from "./evidence.ts";
 
 export interface ParticipantResult {
   participant: MaxResearchParticipant;
@@ -48,6 +47,8 @@ export interface ParticipantContext {
   reasoningEffort: string;
   baseUrl: string;
   conversationContext?: string;
+  /** Findings from earlier waves, kept separate from the user's conversation. */
+  priorEvidence?: string;
   /** Sealed by the Max Research facade; never inferred inside the worker. */
   praxistTaskPath?: string;
   /** Aborts every participant when the orchestrating run is stopped. */
@@ -153,7 +154,7 @@ async function driveRun(input: {
       }
       return {
         participant: input.participant,
-        status: partial ? "completed" : "failed",
+        status: "failed",
         output: partial,
         runId,
         reason: partial
@@ -235,9 +236,6 @@ export function maxResearchLiteratureQuery(question: string): string {
  */
 function withRealFindings(result: ParticipantResult): ParticipantResult {
   if (result.status !== "completed") return result;
-  // ARIS contributes method rather than retrieval, and its guidance is
-  // deliberately short. It is not measured against a findings threshold.
-  if (result.participant === "aris") return result;
   const output = result.output.trim();
   if (output.length >= MINIMUM_USEFUL_OUTPUT) return result;
   return {
@@ -277,6 +275,8 @@ export function participantRuntime(
       });
     case "get_doc":
       return getDocRuntime();
+    case "feynman":
+      return feynmanRuntime();
     case "openscience":
       return openscienceRuntime();
     case "praxist":
@@ -284,6 +284,38 @@ export function participantRuntime(
     case "aris":
       return arisRuntime();
   }
+}
+
+function feynmanRuntime(): ParticipantRuntime {
+  return {
+    async available() {
+      // Bundled deterministic engine; public catalogs need no account or keys.
+      return { available: true };
+    },
+    async run(brief, context) {
+      try {
+        const { researchFeynman, feynmanEvidenceText } = await import("../feynman/service.ts");
+        const { planSearch } = await import("../get-doc/query-plan.ts");
+        const { plan } = await planSearch({
+          baseUrl: context.baseUrl, model: context.model,
+          reasoningEffort: context.reasoningEffort, task: brief.question,
+        });
+        const { collectFeynmanFacets } = await import("./feynman-facets.ts");
+        const results = await collectFeynmanFacets(plan.queries.map(maxResearchLiteratureQuery),
+          (input) => researchFeynman(input, { signal: context.signal }));
+        const papers = results.flatMap(result => result.papers);
+        if (!papers.length) return failed("feynman", new Error("The public catalogs returned no papers for the planned research queries."));
+        return {
+          participant: "feynman", status: "completed", output: results.map(feynmanEvidenceText).join("\n\n"),
+          websites: papers.flatMap((paper) => paper.urls.filter((url) => url.type === "landing").map((url) => ({ url: url.url, title: paper.title }))),
+          limitations: results.flatMap(result => result.sources.filter((source) => source.status === "error").map((source) => ({ name: source.source, detail: source.reason ?? "Source unavailable." }))),
+        };
+      } catch (error) {
+        if (context.signal?.aborted) return { participant: "feynman", status: "aborted", output: "" };
+        return failed("feynman", error);
+      }
+    },
+  };
 }
 
 function praxistRuntime(): ParticipantRuntime {
@@ -295,12 +327,6 @@ function praxistRuntime(): ParticipantRuntime {
         if (!readiness.available) {
           return { available: false, reason: readiness.reason ?? "Praxist is unavailable." };
         }
-        if (!context?.praxistTaskPath) {
-          return {
-            available: false,
-            reason: "Set PRAXIST_MAX_RESEARCH_TASK_PATH to an existing Praxist task project before including it in Max Research.",
-          };
-        }
         return { available: true };
       } catch (error) {
         return {
@@ -309,14 +335,12 @@ function praxistRuntime(): ParticipantRuntime {
         };
       }
     },
-    async run(_brief, context) {
-      const taskPath = context.praxistTaskPath;
-      if (!taskPath) {
-        return unavailable(
-          "praxist",
-          "PRAXIST_MAX_RESEARCH_TASK_PATH does not name a valid Praxist task project.",
-        );
-      }
+    async run(brief, context) {
+      const { prepareResearchTask } = await import("../praxist/research-task.ts");
+      const taskPath = context.praxistTaskPath ?? prepareResearchTask({
+        question: brief.question, evidence: context.priorEvidence,
+        reasoningEffort: context.reasoningEffort,
+      });
       const manager = await import("../praxist/run-manager.ts");
       return driveRun({
         participant: "praxist",
@@ -434,7 +458,12 @@ function openscienceRuntime(): ParticipantRuntime {
         start: () => {
           const summary = runManager.startRun({
             userId: context.userId,
-            task: brief.brief,
+            task: [
+              "You are the computational reviewer in a larger research team. Complete one bounded verification pass and return its findings in this turn. Other participants already handle broad literature retrieval and the final user-facing plan.",
+              brief.brief,
+              context.priorEvidence ?? "",
+              "Check the calculations, units, internal consistency, uncertainty and decision thresholds relevant to this question. Use a small reproducible script where useful. Distinguish arithmetic or modeled scenarios from observations about the real world. Inspect only sources needed to settle a material discrepancy. Do not begin a new open-ended research project or duplicate the whole literature review. Return the checked numbers, assumptions, corrections and remaining limitations, with source URLs when available.",
+            ].filter(Boolean).join("\n\n"),
             model: context.model,
             reasoningEffort: context.reasoningEffort,
             baseUrl: context.baseUrl,
@@ -542,93 +571,121 @@ function deepResearchRuntime(): ParticipantRuntime {
     },
     async run(brief, context) {
       const service = await import("../deep-research/service.ts");
-      let runId: string;
-      // The service caps how many runs it will hold at once and answers a
-      // request over that cap with `too_many_runs`. Treating that as a failure
-      // drops the participant that contributes the most evidence over a queue
-      // that clears in minutes — which is what happened the moment three
-      // orchestrations overlapped. A full service is a reason to wait, not a
-      // reason to give up: this run is going to take twenty minutes anyway.
-      const startDeadline = Date.now() + BUSY_SERVICE_GRACE_MS;
-      for (;;) {
-        try {
-          const summary = await service.startRun(context.userId, {
-            query: brief.brief,
-            output: "report",
-            ...(context.conversationContext
-              ? { conversationPublicId: undefined }
-              : {}),
-          });
-          runId = summary.runId;
-          break;
-        } catch (error) {
-          // `too_many_runs` is the cap; `service_unavailable` is the same
-          // service under the same pressure answering a different way. Three
-          // overlapping orchestrations produced one of each, and only the first
-          // was being waited out.
-          const busy =
-            error instanceof Error &&
-            /too_many_runs|service_unavailable|429|503/.test(error.message);
-          if (!busy || Date.now() >= startDeadline || context.signal?.aborted) {
-            return busy
-              ? {
-                  participant: "deep_research",
-                  status: "failed",
-                  output: "",
-                  reason:
-                    "The Deep Research service stayed busy for the whole time this orchestration waited for a slot.",
-                }
-              : failed("deep_research", error);
-          }
-          await new Promise((resolve) => setTimeout(resolve, 15_000));
-        }
-      }
-
+      const commissions = deepResearchCommissions(brief.brief);
       const deadline = Date.now() + PARTICIPANT_TIMEOUT_MS;
-      for (;;) {
-        if (context.signal?.aborted) {
-          await service.abortRun(context.userId, runId).catch(() => undefined);
-          return { participant: "deep_research", status: "aborted", output: "", runId };
+      const runPart = async (commission: DeepResearchCommission): Promise<ParticipantResult> => {
+        if (Date.now() > deadline || context.signal?.aborted) return failed("deep_research", new Error("The research section did not start before the run deadline."));
+        let runId: string;
+        // The service caps how many runs it will hold at once and answers a
+        // request over that cap with `too_many_runs`. Treating that as a failure
+        // drops the participant that contributes the most evidence over a queue
+        // that clears in minutes — which is what happened the moment three
+        // orchestrations overlapped. A full service is a reason to wait, not a
+        // reason to give up: this run is going to take twenty minutes anyway.
+        const startDeadline = Date.now() + BUSY_SERVICE_GRACE_MS;
+        for (;;) {
+          try {
+            const summary = await service.startRun(context.userId, {
+              ...commission,
+              output: "report",
+              ...(context.conversationContext
+                ? { conversationPublicId: undefined }
+                : {}),
+            });
+            runId = summary.runId;
+            break;
+          } catch (error) {
+            // `too_many_runs` is the cap; `service_unavailable` is the same
+            // service under the same pressure answering a different way. Three
+            // overlapping orchestrations produced one of each, and only the first
+            // was being waited out.
+            const busy =
+              error instanceof Error &&
+              /too_many_runs|service_unavailable|429|503/.test(error.message);
+            if (!busy || Date.now() >= startDeadline || context.signal?.aborted) {
+              return busy
+                ? {
+                    participant: "deep_research",
+                    status: "failed",
+                    output: "",
+                    reason:
+                      "The Deep Research service stayed busy for the whole time this orchestration waited for a slot.",
+                  }
+                : failed("deep_research", error);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 15_000));
+          }
         }
-        let summary;
-        try {
-          summary = await service.getRun(context.userId, runId);
-        } catch (error) {
-          return failed("deep_research", error, runId);
-        }
-        if (summary.status !== "running") {
-          if (summary.status !== "completed" || !summary.result) {
+
+        for (;;) {
+          if (context.signal?.aborted) {
+            await service.abortRun(context.userId, runId).catch(() => undefined);
+            return { participant: "deep_research", status: "aborted", output: "", runId };
+          }
+          let summary;
+          try {
+            summary = await service.getRun(context.userId, runId);
+          } catch (error) {
+            return failed("deep_research", error, runId);
+          }
+          if (summary.status !== "running") {
+            if (summary.status !== "completed" || !summary.result) {
+              return {
+                participant: "deep_research",
+                status: summary.status === "aborted" ? "aborted" : "failed",
+                output: "",
+                runId,
+                reason: summary.failure?.message ?? "The run produced no report.",
+              };
+            }
+            const websites = await service
+              .runWebsites(context.userId, runId)
+              .catch(() => []);
             return {
               participant: "deep_research",
-              status: summary.status === "aborted" ? "aborted" : "failed",
-              output: "",
+              status: "completed",
+              output: summary.result,
               runId,
-              reason: summary.failure?.message ?? "The run produced no report.",
+              ...(websites.length ? { websites } : {}),
             };
           }
-          const websites = await service
-            .runWebsites(context.userId, runId)
-            .catch(() => []);
-          return {
-            participant: "deep_research",
-            status: "completed",
-            output: summary.result,
-            runId,
-            ...(websites.length ? { websites } : {}),
-          };
+          if (Date.now() > deadline) {
+            await service.abortRun(context.userId, runId).catch(() => undefined);
+            return {
+              participant: "deep_research",
+              status: "failed",
+              output: "",
+              runId,
+              reason: "The run exceeded the time this orchestration allows it.",
+            };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 4_000));
         }
-        if (Date.now() > deadline) {
-          await service.abortRun(context.userId, runId).catch(() => undefined);
-          return {
-            participant: "deep_research",
-            status: "failed",
-            output: "",
-            runId,
-            reason: "The run exceeded the time this orchestration allows it.",
-          };
+      };
+      const results: ParticipantResult[] = new Array(commissions.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(2, commissions.length) }, async () => {
+        while (next < commissions.length) {
+          const index = next++;
+          results[index] = await runPart(commissions[index]).catch(error => failed("deep_research", error));
         }
-        await new Promise((resolve) => setTimeout(resolve, 4_000));
-      }
+      }));
+      if (results.length === 1) return results[0];
+      let citation = 0;
+      const output = results.map((result, index) => {
+        const markers = new Map<string, number>();
+        const report = result.output.replace(/\[S(\d+)\]/g, (_marker, source: string) => {
+          if (!markers.has(source)) markers.set(source, ++citation);
+          return `[S${markers.get(source)}]`;
+        });
+        return `Research section ${index + 1}/${results.length} (${result.status}):\n${report || result.reason || "No report."}`;
+      }).join("\n\n");
+      const incomplete = results.filter(result => result.status !== "completed");
+      return {
+        participant: "deep_research", status: incomplete.length ? "failed" : "completed", output,
+        runId: results[0]?.runId, websites: results.flatMap(result => result.websites ?? []),
+        ...(incomplete.length ? { reason: incomplete.map(result => result.reason).filter(Boolean).join("; ") } : {}),
+      };
     },
   };
 }
@@ -769,7 +826,7 @@ function getDocRuntime(): ParticipantRuntime {
             model: context.model,
             reasoningEffort: context.reasoningEffort,
             baseUrl: context.baseUrl,
-            conversationContext: [context.conversationContext, brief.guidance]
+            conversationContext: [context.conversationContext, brief.question, brief.guidance]
               .filter(Boolean)
               .join("\n\n"),
           }),
@@ -798,10 +855,8 @@ function getDocRuntime(): ParticipantRuntime {
 /**
  * ARIS: methodology, not retrieval.
  *
- * It resolves at once with the cloned harness's own research guidance for this
- * question. That guidance is what the synthesis is written under, which is the
- * whole of its contribution — and reporting "unavailable" when the clone is
- * absent is the truthful outcome rather than a failed fetch.
+ * A fresh review applies the cloned guide to this question and the evidence.
+ * It reports concrete defects and corrections, with provisional independence.
  */
 function arisRuntime(): ParticipantRuntime {
   return {
@@ -812,18 +867,27 @@ function arisRuntime(): ParticipantRuntime {
         ? { available: true }
         : { available: false, reason: state.reason ?? "ARIS is not installed." };
     },
-    async run(brief) {
-      const { arisAvailability, renderArisTurnGuidance } = await import(
+    async run(brief, context) {
+      const { arisAvailability, loadArisAgentDefinition, renderArisTurnGuidance } = await import(
         "../aris/agent.ts"
       );
       const state = arisAvailability();
       if (!state.available) {
         return unavailable("aris", state.reason ?? "ARIS is not installed.");
       }
+      const definition = loadArisAgentDefinition();
+      if (!definition) return unavailable("aris", "ARIS could not load its research guide.");
       const guidance = renderArisTurnGuidance(brief.question);
-      return guidance
-        ? { participant: "aris", status: "completed", output: guidance }
-        : unavailable("aris", "ARIS matched no workflow to this question.");
+      const { arisEvidenceReviewPrompt } = await import("./aris-review.ts");
+      const { completeText } = await import("./completion.ts");
+      try {
+        const output = await completeText({
+          baseUrl: context.baseUrl, model: context.model, reasoningEffort: context.reasoningEffort,
+          signal: context.signal,
+          prompt: arisEvidenceReviewPrompt({question: brief.question, evidence: context.priorEvidence ?? "", methodology: `${definition.instructions}\n\n${guidance}`}),
+        });
+        return withRealFindings({ participant: "aris", status: "completed", output });
+      } catch (error) { return failed("aris", error); }
     },
   };
 }

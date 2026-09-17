@@ -32,6 +32,16 @@ interface ColumnPatch {
  * REFERENCES clause must default to NULL, which every one of these does.
  */
 const COLUMN_PATCHES: readonly ColumnPatch[] = [
+  {
+    table: "calendar_events",
+    column: "notifications_enabled",
+    definition: "INTEGER NOT NULL DEFAULT 1 CHECK (notifications_enabled IN (0, 1))",
+  },
+  {
+    table: "calendar_events",
+    column: "lead_reminder_enabled",
+    definition: "INTEGER NOT NULL DEFAULT 1 CHECK (lead_reminder_enabled IN (0, 1))",
+  },
   // --- per-instance edits of a recurring series -----------------------------
   // An override is a normal event row that names the master it replaces and the
   // occurrence it stands in for, so it can be moved, retitled or recoloured
@@ -70,6 +80,8 @@ const COLUMN_PATCHES: readonly ColumnPatch[] = [
   },
   { table: "calendar_collections", column: "last_synced_at", definition: "TEXT" },
   { table: "calendar_collections", column: "sync_error", definition: "TEXT" },
+  { table: "calendar_collections", column: "google_account_id", definition: "TEXT" },
+  { table: "calendar_collections", column: "google_calendar_id", definition: "TEXT" },
 
   // --- two-way CalDAV -------------------------------------------------------
   // A subscribed calendar mirrors an ICS document over GET (`source_url`); a
@@ -259,8 +271,13 @@ export function ensureCalendarSchema(db: Db): void {
     -- Guarded so it cannot chase its own tail: it fires only when the flag was
     -- clean and stayed clean, which is never true of the update it makes itself
     -- or of the one that clears the flag after a successful push.
-    CREATE TRIGGER IF NOT EXISTS trg_calendar_events_dirty_update
-    AFTER UPDATE ON calendar_events
+    -- Personal reminder preferences do not change the remote event.
+    DROP TRIGGER IF EXISTS trg_calendar_events_dirty_update;
+    CREATE TRIGGER IF NOT EXISTS trg_calendar_events_content_dirty_update
+    AFTER UPDATE OF calendar_id, title, description, location, all_day,
+      starts_at, ends_at, recurrence, recurrence_interval, recurrence_until,
+      recurrence_count, parent_event_id, recurrence_id, excluded_dates, uid,
+      organizer_email, organizer_name, updated_at ON calendar_events
     WHEN NEW.remote_dirty = 0 AND OLD.remote_dirty = 0
     BEGIN
       UPDATE calendar_events SET remote_dirty = 1 WHERE id = NEW.id;

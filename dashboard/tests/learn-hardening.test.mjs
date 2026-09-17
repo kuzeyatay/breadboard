@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   assessLessonQuality,
+  proseWordCount,
   formatQualityProblemForRepair,
   hasPlaceholderText,
   hasFallbackFingerprint,
@@ -35,7 +36,7 @@ import { isPublicGardenPath } from "../src/lib/learning-garden.ts";
 const GOOD_BODY = [
   "Imagine a sensor watching a mostly still scene. " +
     "A spiking neuron stays quiet until its membrane potential crosses a threshold, then fires a discrete spike and resets. ".repeat(
-      40,
+      90,
     ),
   "",
   "For example, raising the input current makes the potential climb faster and the neuron fire sooner.",
@@ -154,6 +155,40 @@ describe("fallback + commentary detectors", () => {
       formatQualityProblemForRepair(problem),
       `placeholder: contains placeholder / meta-instruction text; offending text: ${JSON.stringify(offending)}`,
     );
+  });
+
+  test("callCouncilJson hands malformed JSON text to the stage instead of pretending the answer was empty", async () => {
+    // Live 2026-09-16: a stray brace inside a 2.7 KB visual-necessity repair
+    // ("...}}}]}") parsed to null and the plan died as "no nonempty candidate".
+    const { parseJsonCandidate } = await import("../src/lib/learn-utils.ts");
+    const malformed = '{"schemaVersion":1,"decisions":[{"unitId":"U21","evidence":{"a":1}}}]}';
+    assert.equal(parseJsonCandidate(malformed), null, "a brace inside the object is not repairable by parsing");
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    const council = learnSource.slice(
+      learnSource.indexOf("async function callCouncilJson("),
+      learnSource.indexOf("async function requestVisualizationContractRepair("),
+    );
+    assert.match(council, /parsed \?\? \(trimmed && trimmed !== "null" \? result\.content : null\)/);
+  });
+
+  test("chat-assistant commentary and document wrappers fail lesson quality", () => {
+    for (const offending of [
+      "I'm using the pasted run contract directly. The answer will stay within the supplied CDMA source.",
+      "I’ll treat the pasted text as the full request and produce the Erlang B lesson subsection.",
+      ':::writing{variant="document" id="48371" title="Reading a TDMA Radio Allocation"}',
+    ]) {
+      const result = assessLessonQuality(`${GOOD_BODY}
+
+${offending}`);
+      const problem = result.problems.find((candidate) => candidate.code === "chat-assistant-commentary");
+      assert.ok(problem, offending);
+      assert.equal(problem.hard, true);
+      assert.deepEqual(problem.evidence, [offending]);
+    }
+    const clean = assessLessonQuality(`${GOOD_BODY}
+
+I will use the Erlang B table to size the trunk group.`);
+    assert.equal(clean.problems.some((candidate) => candidate.code === "chat-assistant-commentary"), false);
   });
 
   test("source-formula gate inspects model-authored display math before Quartz rewrites it", () => {
@@ -358,11 +393,42 @@ describe("fallback + commentary detectors", () => {
     assert.equal(assessLessonQuality(repaired).hardFail, false);
   });
 
-  test("assessLessonQuality hard-fails short, commentary, fallback, and reference-dump pages", () => {
+  test("lesson quality enforces the 1400-word minimum without an upper word limit", () => {
+    const concise = `Imagine walking three metres east and then one metre west along a straight path. Your feet have travelled four metres altogether. Distance counts every part of that journey, regardless of which way you were facing. Displacement instead describes the change from your starting position to your finishing position, including its direction. You finish two metres east of where you began, so your displacement is two metres east.
+
+To calculate that change, choose east as the positive direction and place your starting point at zero. The first walk changes your position by positive three metres. Walking west changes it by negative one metre. Adding those changes gives positive two metres. The sign records direction; it does not mean that you walked a negative distance. Choosing west as positive would reverse the sign of the displacement while describing exactly the same journey.
+
+For example, if you now walk two metres west, you return to the starting point. Your total distance rises to six metres, but your overall displacement becomes zero because your final and initial positions coincide. This distinction lets you describe both how much ground was covered and where the journey left you.
+
+**Question.** A walker travels five metres east and then five metres west. What are the total distance and displacement?
+
+<details>
+<summary>Answer</summary>
+
+**Answer.** The distance is ten metres because both legs count toward the ground covered. The displacement is zero because the walker finishes at the starting point.
+
+</details>`;
+    assert.ok(proseWordCount(concise) >= 120 && proseWordCount(concise) < 1400);
+    assert.deepEqual(assessLessonQuality(concise).problems.map((p) => p.code), ["short"]);
+    assert.equal(assessLessonQuality(concise).hardFail, true);
+    const boundary = `${concise}\n\n${"distance ".repeat(1399 - proseWordCount(concise))}`;
+    assert.equal(proseWordCount(boundary), 1399);
+    assert.ok(assessLessonQuality(boundary).problems.some((p) => p.code === "short" && p.hard));
+    assert.deepEqual(assessLessonQuality(`${boundary} distance`).problems, []);
+    const overview = `${concise}\n\nDistance describes the journey; displacement describes where you end up.`;
+    assert.deepEqual(assessLessonQuality(overview, { minWords: 250 }).problems, []);
+    // Semantic review judges repetition and explanatory depth separately;
+    // the local gate must not impose an upper length limit on a long draft.
+    const long = GOOD_BODY.repeat(3);
+    assert.ok(proseWordCount(long) > 2000);
+    assert.deepEqual(assessLessonQuality(long).problems, []);
+  });
+
+  test("assessLessonQuality hard-fails stubs, commentary, fallback, and reference-dump pages", () => {
     assert.equal(assessLessonQuality(GOOD_BODY).hardFail, false);
 
-    const short = "**Question.** a\n\n**Answer.** b\n\nImagine a thing. " + "word ".repeat(200);
-    assert.equal(assessLessonQuality(short).hardFail, true, "short page is a hard fail");
+    const stub = "Imagine walking along a path. **Question.** What changed? **Answer.** Your position.";
+    assert.ok(assessLessonQuality(stub).problems.some((p) => p.code === "empty" && p.hard));
 
     const commentary = GOOD_BODY + "\n\nAccording to the source, this is true.";
     const c = assessLessonQuality(commentary);
@@ -563,5 +629,19 @@ describe("routing + terminology helpers", () => {
 
     assert.ok(problems.some((problem) => /source-a.*declares 2 figure captions.*registered 1/i.test(problem)));
     assert.ok(problems.some((problem) => /source-b.*produced no registered figures/i.test(problem)));
+  });
+
+  test("source visual inventory coverage scopes OCR declarations to scanned pages", () => {
+    const sources = [{
+      slug: "long-book",
+      body: "## Page 1\nIntroductory text.\n## Page 200\nFigure 99: Later chapter figure.",
+      sourceImages: ["/garden/assets/long-book-page-001.png"],
+    }];
+    const problems = sourceVisualInventoryCoverageProblems(
+      sources,
+      [],
+      new Map([["long-book", ["/garden/assets/long-book-page-001.png"]]]),
+    );
+    assert.deepEqual(problems, []);
   });
 });

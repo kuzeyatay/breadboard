@@ -1,3 +1,11 @@
+import {
+  isNotificationPageActive,
+  isInlineSelectionNotificationViewed,
+  readNotificationViewTargets,
+  setNotificationViewTargets,
+} from './notification-view-presence.ts';
+import { sendDesktopTabsCommand } from './desktop-browser-tabs.ts';
+
 /**
  * `garden_learn` is the Learn pipeline of one Garden: its notices open the
  * Garden with the Learn panel showing, and `chatId` carries the learn job id
@@ -13,11 +21,14 @@ export interface ChatNotificationTarget {
   /** The id understood by the destination UI (canonical for Terminal, legacy for Garden, job id for Learn). */
   chatId: string;
   gardenSlug?: string;
+  /** Canonical identity when a Garden conversation is also open in the hub. */
+  conversationId?: string;
 }
 
 export const CHAT_RESPONSE_NOTIFICATION_TITLES = [
   "Response ready",
   "Response failed",
+  "Answer needed",
 ] as const;
 
 export const LEARN_NOTIFICATION_TITLES = [
@@ -33,10 +44,12 @@ export type ChatNotificationTitle =
   | (typeof CHAT_RESPONSE_NOTIFICATION_TITLES)[number]
   | (typeof LEARN_NOTIFICATION_TITLES)[number];
 
-export type ChatNotificationKind = "chat_response" | "learn";
+export type ChatNotificationKind = "chat_response" | "chat_question" | "learn";
 
 export interface ChatNotificationRecord {
   id: string;
+  /** Stable highlight identity across inline answer retries and migrated rows. */
+  inlineSelectionId?: string;
   title: ChatNotificationTitle;
   type: "success" | "error";
   /**
@@ -66,6 +79,7 @@ export const CHAT_NOTIFICATION_OPEN_REQUEST_EVENT =
 
 const PENDING_REPLY_KEY = "breadboard:chat-notification-pending-reply:v1";
 let activelyViewedTarget: ChatNotificationTarget | null = null;
+const embeddedChatTargets = new Map<symbol, ChatNotificationTarget>();
 let activelyViewedLearnGarden: string | null = null;
 
 /** The Learn pipeline of every job in one Garden: used as a `seen` target. */
@@ -86,6 +100,8 @@ export function isChatNotificationTarget(
   if (typeof candidate.chatId !== "string" || !candidate.chatId.trim()) {
     return false;
   }
+  if (candidate.conversationId !== undefined &&
+      (typeof candidate.conversationId !== "string" || !candidate.conversationId.trim())) return false;
   return candidate.surface === "dashboard_terminal" ||
     (typeof candidate.gardenSlug === "string" && Boolean(candidate.gardenSlug.trim()));
 }
@@ -101,6 +117,8 @@ export function isChatNotificationRecord(
     (LEARN_NOTIFICATION_TITLES as readonly string[]).includes(candidate.title as string);
   return (
     typeof candidate.id === "string" &&
+    (candidate.inlineSelectionId === undefined ||
+      (typeof candidate.inlineSelectionId === "string" && Boolean(candidate.inlineSelectionId.trim()))) &&
     knownTitle &&
     (candidate.type === "success" || candidate.type === "error") &&
     typeof candidate.response === "string" &&
@@ -108,6 +126,7 @@ export function isChatNotificationRecord(
     typeof candidate.updatedAt === "string" &&
     (candidate.kind === undefined ||
       candidate.kind === "chat_response" ||
+      candidate.kind === "chat_question" ||
       candidate.kind === "learn") &&
     (candidate.message === undefined || typeof candidate.message === "string") &&
     (candidate.progressPercent === undefined ||
@@ -138,7 +157,47 @@ export function sameChatNotificationTarget(
   left: ChatNotificationTarget,
   right: ChatNotificationTarget,
 ): boolean {
+  const canonicalId = (target: ChatNotificationTarget) =>
+    target.surface === 'garden_learn' ? undefined :
+      target.surface === 'dashboard_terminal' ? target.chatId : target.conversationId;
+  const leftId = canonicalId(left);
+  const rightId = canonicalId(right);
+  if (leftId && rightId) return leftId === rightId;
   return chatNotificationTargetKey(left) === chatNotificationTargetKey(right);
+}
+
+export function isChatNotificationTargetViewed(target: ChatNotificationTarget): boolean {
+  return readNotificationViewTargets().filter(isChatNotificationTarget).some(viewed =>
+    viewed.surface === 'garden_learn'
+      ? target.surface === 'garden_learn' && viewed.gardenSlug === target.gardenSlug &&
+        (viewed.chatId === LEARN_NOTIFICATION_ANY_JOB || viewed.chatId === target.chatId)
+      : sameChatNotificationTarget(viewed, target));
+}
+
+export function isChatNotificationRecordViewed(record: ChatNotificationRecord): boolean {
+  return isChatNotificationTargetViewed(record.target) ||
+    Boolean(record.inlineSelectionId && isInlineSelectionNotificationViewed(record.inlineSelectionId));
+}
+
+function publishNotificationViews(): void {
+  const targets: ChatNotificationTarget[] = [
+    ...(activelyViewedTarget ? [activelyViewedTarget] : []),
+    ...embeddedChatTargets.values(),
+    ...(activelyViewedLearnGarden ? [{
+      surface: 'garden_learn' as const,
+      gardenSlug: activelyViewedLearnGarden,
+      chatId: LEARN_NOTIFICATION_ANY_JOB,
+    }] : []),
+  ];
+  setNotificationViewTargets(targets);
+  // Keep the shell informed even when this tab is in the background. The
+  // selected conversation can change without changing the page's URL.
+  if (typeof window !== 'undefined') {
+    void sendDesktopTabsCommand({
+      type: 'notification-targets',
+      urls: targets.flatMap(chatNotificationUrls),
+    });
+  }
 }
 
 export function chatNotificationHref(target: ChatNotificationTarget): string {
@@ -149,6 +208,16 @@ export function chatNotificationHref(target: ChatNotificationTarget): string {
     return `/gardens/${encodeURIComponent(target.gardenSlug ?? "")}?chat=${encodeURIComponent(target.chatId)}`;
   }
   return `/dashboard?terminalChat=${encodeURIComponent(target.chatId)}`;
+}
+
+/** A Garden chat and its hub conversation are the same notification target. */
+export function chatNotificationUrls(target: ChatNotificationTarget): string[] {
+  if (typeof window === 'undefined') return [];
+  const hrefs = [chatNotificationHref(target)];
+  if (target.surface === 'garden_chat' && target.conversationId) {
+    hrefs.push(chatNotificationHref({ surface: 'dashboard_terminal', chatId: target.conversationId }));
+  }
+  return hrefs.map(href => new URL(href, window.location.origin).toString());
 }
 
 /**
@@ -174,7 +243,24 @@ export async function sendChatNotificationReply(
 }
 
 export function activeChatNotificationTarget(): ChatNotificationTarget | null {
-  return activelyViewedTarget;
+  return activeChatNotificationTargets()[0] ?? null;
+}
+
+export function activeChatNotificationTargets(): ChatNotificationTarget[] {
+  return isNotificationPageActive()
+    ? [...(activelyViewedTarget ? [activelyViewedTarget] : []), ...embeddedChatTargets.values()]
+    : [];
+}
+
+/** Embedded editors release only their own presence when closed. */
+export function registerChatNotificationTarget(target: ChatNotificationTarget): () => void {
+  const owner = Symbol();
+  embeddedChatTargets.set(owner, target);
+  publishNotificationViews();
+  if (typeof window !== "undefined" && isNotificationPageActive()) {
+    window.dispatchEvent(new CustomEvent<ChatNotificationTarget>(CHAT_NOTIFICATION_OPENED_EVENT, { detail: target }));
+  }
+  return () => { embeddedChatTargets.delete(owner); publishNotificationViews(); };
 }
 
 /** A page is showing this Garden's Learn panel: its Learn notices are read. */
@@ -182,7 +268,7 @@ export const LEARN_NOTIFICATION_OPENED_EVENT =
   "breadboard:learn-notification-opened";
 
 export function activeLearnNotificationGarden(): string | null {
-  return activelyViewedLearnGarden;
+  return isNotificationPageActive() ? activelyViewedLearnGarden : null;
 }
 
 /**
@@ -192,7 +278,8 @@ export function activeLearnNotificationGarden(): string | null {
  */
 export function setActiveLearnNotificationGarden(gardenSlug: string | null): void {
   activelyViewedLearnGarden = gardenSlug;
-  if (typeof window === "undefined" || !gardenSlug) return;
+  publishNotificationViews();
+  if (typeof window === "undefined" || !gardenSlug || !isNotificationPageActive()) return;
   window.dispatchEvent(
     new CustomEvent<ChatNotificationTarget>(LEARN_NOTIFICATION_OPENED_EVENT, {
       detail: {
@@ -208,7 +295,8 @@ export function setActiveChatNotificationTarget(
   target: ChatNotificationTarget | null,
 ): void {
   activelyViewedTarget = target;
-  if (typeof window === "undefined" || !target) return;
+  publishNotificationViews();
+  if (typeof window === "undefined" || !target || !isNotificationPageActive()) return;
   window.dispatchEvent(
     new CustomEvent<ChatNotificationTarget>(CHAT_NOTIFICATION_OPENED_EVENT, {
       detail: target,

@@ -153,7 +153,7 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
-def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
+def test_same_tool_failure_warning_allows_a_supported_answer_or_clarification():
     agent = _make_agent("terminal")
     guardrails = getattr(agent, "_tool_guardrails")
     guardrails.after_call(
@@ -177,8 +177,8 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
 
     content = messages[0]["content"]
     assert "same_tool_failure_warning" in content
-    assert "Do not switch to text-only replies" in content
-    assert "keep using tools" in content
+    assert "give the supported answer" in content
+    assert "ask the user" in content
     assert "pwd && ls -la" in content
     assert "absolute path" in content
     assert "different tool" in content
@@ -208,16 +208,15 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     with patch("run_agent.handle_function_call", side_effect=fake_handle):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
 
-    assert executed == [("web_search", allowed_args, "c-allow")]
+    assert executed == []
     assert [m["tool_call_id"] for m in messages] == ["c-block", "c-allow"]
     assert "repeated_exact_failure_block" in messages[0]["content"]
-    assert json.loads(messages[1]["content"]) == {"ok": "allowed"}
-    assert starts == [("c-allow", "web_search", allowed_args)]
+    assert "turn_finalization_required" in messages[1]["content"]
+    assert starts == []
     started_events = [event for event in progress_events if event[0] == "tool.started"]
     completed_events = [event for event in progress_events if event[0] == "tool.completed"]
-    assert started_events == [("tool.started", "web_search", allowed_args, {})]
-    assert len(completed_events) == 1
-    assert completed_events[0][1] == "web_search"
+    assert started_events == []
+    assert completed_events == []
 
 
 def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
@@ -268,6 +267,39 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
+def test_guardrail_allows_one_supported_answer_without_more_tool_work():
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    agent.client.chat.completions.create.side_effect = [
+        *[_mock_response(content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", '{"query":"same"}')]) for _ in range(3)],
+        _mock_response(content="The readable part is solved. What is the blurred exponent?"),
+    ]
+    with (patch("run_agent.handle_function_call", return_value='{"error":"unavailable"}') as execute,
+          patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
+          patch.object(agent, "_cleanup_task_resources")):
+        result = agent.run_conversation("Solve the image")
+    assert execute.call_count == 2
+    assert agent.client.chat.completions.create.call_count == 4
+    assert agent.client.chat.completions.create.call_args.kwargs["tool_choice"] == "none"
+    assert result["final_response"] == "The readable part is solved. What is the blurred exponent?"
+
+
+def test_empty_guardrail_answer_does_not_start_another_model_request():
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    agent.client.chat.completions.create.side_effect = [
+        *[_mock_response(content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", '{"query":"same"}')]) for _ in range(3)],
+        _mock_response(content=""),
+    ]
+    with (patch("run_agent.handle_function_call", return_value='{"error":"unavailable"}'),
+          patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
+          patch.object(agent, "_cleanup_task_resources")):
+        result = agent.run_conversation("Solve the image")
+    assert agent.client.chat.completions.create.call_count == 4
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["final_response"]
+
+
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}
@@ -290,7 +322,7 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         result = agent.run_conversation("search repeatedly")
 
     assert mock_hfc.call_count == 2
-    assert result["api_calls"] == 3
+    assert result["api_calls"] == 4  # One final answer-only attempt; ignored tools stay blocked.
     assert result["api_calls"] < agent.max_iterations
     assert result["turn_exit_reason"] == "guardrail_halt"
     assert "error" not in result

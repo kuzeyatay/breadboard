@@ -444,6 +444,49 @@ function readReceipt(
   }
 }
 
+/** A Runtime Learn worker heartbeats every few seconds; a heartbeat older
+ * than this means the worker is gone, whatever its durable row still says. */
+export const LIVE_LEARN_WORKER_HEARTBEAT_MS = 2 * 60 * 1000;
+
+/**
+ * True when the garden's current Runtime receipt names a Learn job that is
+ * still running and heartbeating. Abandoned-job recovery uses this to avoid
+ * restoring a garden out from under a worker that is merely waiting on a long
+ * model answer (seen live 2026-09-16: a 10-minute syllabus-coverage call). Any
+ * read failure returns null, which leaves the caller's own rules in force.
+ */
+export async function runtimeLearnWorkerIsLive(
+  contentPath: string,
+  gardenId: string,
+  nowMs: number = Date.now(),
+): Promise<boolean | null> {
+  let stored: unknown;
+  try {
+    const target = receiptPath(contentPath, gardenId);
+    const raw = fs.readFileSync(target, "utf8");
+    if (raw.length > MAX_RECEIPT_BYTES) return null;
+    stored = JSON.parse(raw);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? false : null;
+  }
+  if (!isRecord(stored) || typeof stored.userId !== "number" || stored.gardenId !== gardenId) return null;
+  if (!validReceipt(stored, { userId: stored.userId, gardenId })) return null;
+  const receipt = normalizeReceipt(stored);
+  try {
+    const job = await inspectRuntimeJobForStatus(
+      { userId: receipt.userId, gardenId: receipt.gardenId, conversationId: null },
+      receipt.runtimeJobId,
+    );
+    if (!isRuntimeV2LearnJob(job, gardenId)) return null;
+    if (job.state !== "running") return false;
+    const heartbeat = job.lastHeartbeatAt ?? job.updatedAt;
+    return nowMs - heartbeat < LIVE_LEARN_WORKER_HEARTBEAT_MS;
+  } catch (error) {
+    if (error instanceof RuntimeJobControlError && error.code === "JOB_NOT_FOUND") return false;
+    return null;
+  }
+}
+
 function writeReceipt(
   contentPath: string,
   receipt: RuntimeV2LearnReceipt,
@@ -782,6 +825,44 @@ function compatibilityJob(
   };
 }
 
+function humanizerFailureMessage(
+  existing: Record<string, unknown>,
+  receipt: RuntimeV2LearnReceipt,
+  job: RuntimeJobSnapshot,
+): string {
+  const enabled = receipt.humanizerEnabled === true;
+  const action = enabled ? "rewrite the finished lessons" : "restore the original AI lessons";
+  const updatedAt = typeof existing.updatedAt === "string" ? Date.parse(existing.updatedAt) : NaN;
+  // The worker saves a product-facing failure before exiting. Keep that cause
+  // only when it belongs to this version, switch direction and execution window;
+  // an earlier attempt's marker must not explain a later startup failure.
+  if (
+    job.state === "failed" &&
+    receipt.humanizerVersionId !== null &&
+    existing.versionId === receipt.humanizerVersionId &&
+    existing.requested === enabled &&
+    existing.status === "failed" &&
+    updatedAt >= Date.parse(receipt.submittedAt) &&
+    updatedAt <= (job.finishedAt ?? job.updatedAt) &&
+    typeof existing.error === "string" &&
+    existing.error.trim() &&
+    existing.error.trim() !== "Runtime job execution failed."
+  ) {
+    if (existing.error === "The finished Learn prose was not switched: promoted tree failed manifest verification; destination untouched") {
+      return `The ${enabled ? "rewritten" : "restored AI"} lessons failed verification and were not applied. The published lessons are unchanged.`;
+    }
+    const operation = enabled ? "Rewriting the finished lessons" : "Restoring the original AI lessons";
+    return `${operation} failed: ${existing.error.trim()}`;
+  }
+  if (job.state === "resource_exhausted") {
+    return `There was not enough memory or execution capacity to ${action}. Close memory-heavy work, then retry.`;
+  }
+  if (job.state === "interrupted" || job.state === "uncertain") {
+    return `The attempt to ${action} was interrupted before completion could be confirmed. Check the Learn panel before retrying.`;
+  }
+  return `Could not ${action}. Check the Learn panel before retrying.`;
+}
+
 function compatibilityHumanizer(
   snapshot: Record<string, unknown>,
   receipt: RuntimeV2LearnReceipt,
@@ -789,17 +870,17 @@ function compatibilityHumanizer(
 ): Record<string, unknown> {
   const existing = isRecord(snapshot.humanizer) ? snapshot.humanizer : {};
   const enabled = receipt.humanizerEnabled === true;
-  let status: string;
-  if (job.state === "succeeded") status = enabled ? "humanized" : "ai";
-  else if (job.state === "cancelled") {
-    status = typeof existing.status === "string"
-      ? existing.status
-      : enabled ? "ai" : "humanized";
-  } else if (terminal(job)) status = "failed";
-  else status = enabled ? "running" : "restoring_ai";
   const activeCopy = existing.activeCopy === "humanized" || existing.activeCopy === "ai"
     ? existing.activeCopy
     : enabled ? "ai" : "humanized";
+  let status: string;
+  if (job.state === "succeeded") status = enabled ? "humanized" : "ai";
+  else if (job.state === "cancelled") {
+    // Stop can terminate the isolated worker before it rewrites its marker.
+    // The preserved copy is settled even if that marker still says running.
+    status = activeCopy;
+  } else if (terminal(job)) status = "failed";
+  else status = enabled ? "running" : "restoring_ai";
   return {
     versionId:
       receipt.humanizerVersionId ??
@@ -811,9 +892,29 @@ function compatibilityHumanizer(
     activeCopy,
     status,
     reason: compatibilityStep(job),
-    ...(job.failureMessage ? { error: job.failureMessage } : {}),
+    ...(status === "failed" ? { error: humanizerFailureMessage(existing, receipt, job) } : {}),
     updatedAt: runtimeIso(job.updatedAt, receipt.submittedAt),
   };
+}
+
+/**
+ * Name the failure when Runtime job control cannot be reached at all, or null
+ * when the error is a real answer about the job (scope, integrity, 4xx) that a
+ * status read must still surface.
+ */
+function runtimeUnreachableReason(error: unknown): string | null {
+  if (error instanceof RuntimeJobControlError) {
+    return error.code === "RUNTIME_UNAVAILABLE" || error.status >= 500
+      ? error.message
+      : null;
+  }
+  if (!(error instanceof Error)) return null;
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return "Runtime job control did not answer in time.";
+  }
+  return error.message.startsWith("Runtime control transport failed")
+    ? error.message
+    : null;
 }
 
 /**
@@ -827,11 +928,30 @@ export async function mergeRuntimeV2LearnStatus(
 ): Promise<Record<string, unknown>> {
   const receipt = readReceipt(input.contentPath, input.userId, input.gardenId);
   if (!receipt) return snapshot;
-  const runtimeJob = await inspectReceiptJob(
-    runtimeAuthority(input.userId, input.gardenId),
-    receipt,
-    true,
-  );
+  let runtimeJob: RuntimeJobSnapshot | null;
+  try {
+    runtimeJob = await inspectReceiptJob(
+      runtimeAuthority(input.userId, input.gardenId),
+      receipt,
+      true,
+    );
+  } catch (error) {
+    const reason = runtimeUnreachableReason(error);
+    if (reason === null) throw error;
+    // The durable snapshot still describes the garden's sources, maps and
+    // textbook. Failing the whole status read here would leave the Learn
+    // panel unopenable for as long as Runtime is restarting, which is exactly
+    // when the user wants to see what happened to the submitted run.
+    return {
+      ...snapshot,
+      runtimeUnavailable: {
+        runtimeJobId: receipt.runtimeJobId,
+        operation: receipt.operation,
+        submittedAt: receipt.submittedAt,
+        reason,
+      },
+    };
+  }
   if (!runtimeJob) return snapshot;
   const withRuntime = { ...snapshot, runtimeJob };
   if (receipt.operation === "humanizer") {
@@ -1052,7 +1172,9 @@ export async function executeLearnOperationForRoute<T>(
     if (previousJob && !terminal(previousJob)) {
       if (previous.requestDigest !== digest) {
         throw new LearnWorkerConflictError(
-          `Another Learn operation (${previous.runtimeJobId}) is still active for this garden.`,
+          previous.operation === "humanizer"
+            ? `${previous.humanizerEnabled ? "Rewrite naturally is still rewriting the finished lessons" : "The original AI lesson copy is still being restored"}. Wait for it to finish or cancel it in the Learn panel before starting another operation.`
+            : `Another Learn operation (${previous.runtimeJobId}) is still active for this garden.`,
         );
       }
       key = previous.idempotencyKey;

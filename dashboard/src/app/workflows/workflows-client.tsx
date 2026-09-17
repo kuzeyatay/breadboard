@@ -1,4 +1,5 @@
 "use client";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 
 // Native workflow canvas entry point, replacing the n8n iframe client. Two
 // views behind one route (mirrors the old file's shape, which kept `/workflows`
@@ -11,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import { startNavigationProgress } from "@/app/components/navigation-progress";
 import { backLabelFor } from "@/lib/nav-history";
 import { readTeachSetupDraft } from "@/lib/teach/setup-draft";
 import { consumeWorkflowReturnPath, peekWorkflowReturnPath } from "@/lib/workflows/navigation";
@@ -199,6 +201,7 @@ function HomeView({
 }) {
   const [items, setItems] = useState<WorkflowListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  useStartupLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
@@ -455,6 +458,7 @@ export default function WorkflowsClient({
   function leaveWorkflows() {
     const returnPath = consumeWorkflowReturnPath();
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    startNavigationProgress();
     router.replace(returnPath ?? "/dashboard", { scroll: false });
   }
 

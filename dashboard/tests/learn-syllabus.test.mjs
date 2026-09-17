@@ -437,7 +437,48 @@ describe("Learn syllabus prompting", () => {
       learnSource,
       /withSyllabusRules\(\s*SUBSECTION_PROMPT,\s*SYLLABUS_PAGE_RULES,/,
     );
-    assert.match(learnSource, /outline: truncate\(syllabus\.body, MAX_SYLLABUS_DOSSIER_CHARS\)/);
+    assert.match(learnSource, /outline: truncate\(syllabusMaterialText\(syllabus\.body\), MAX_SYLLABUS_DOSSIER_CHARS\)/);
+  });
+
+  test("the reader sees the whole study guide, not its generated preamble", () => {
+    // A 12k cut once ended mid-page 4 of a seven-page guide, before the
+    // "lecture / subject matter / book section" table on page 6, so the
+    // reader returned one unit and never saw a single section locator.
+    assert.match(learnSource, /const MAX_SYLLABUS_PROMPT_CHARS = 60_000;/);
+    assert.match(learnSource, /content: truncate\(syllabusMaterialText\(syllabus\.body\), maxChars\)/);
+    assert.match(learnSource, /return canonicalSourceMaterialBody\(body\)\.trim\(\) \|\| String\(body \?\? ""\);/);
+    // Dual-parser ingestion keeps a second transcription of the same PDF; the
+    // page-image parser dropped six of thirteen lecture numbers from a
+    // schedule table that the layout parser kept, so the reader gets both.
+    assert.match(learnSource, /crossCheckTranscript: truncate\(crossCheck, maxChars\)/);
+    const prompt = learnSource.match(/const SYLLABUS_READING_PROMPT = `([\s\S]*?)`;/)?.[1] ?? "";
+    assert.match(prompt, /syllabus\.crossCheckTranscript/);
+    assert.match(prompt, /follow the transcription that kept the row numbers/);
+  });
+
+  test("the reader is told to turn a lecture schedule into units with per-row book sections", () => {
+    const prompt = learnSource.match(/const SYLLABUS_READING_PROMPT = `([\s\S]*?)`;/)?.[1] ?? "";
+    assert.match(prompt, /Read the WHOLE document before answering/);
+    assert.match(prompt, /return one unit per lecture\/week\/session row/);
+    assert.match(prompt, /create ONE referencedMaterial per assignment cell/);
+    assert.match(prompt, /"1\.1 - 1\.7" assigns 1\.1, 1\.2, 1\.3, 1\.4, 1\.5, 1\.6 and 1\.7/);
+    assert.match(prompt, /"sections": \[/);
+    assert.match(prompt, /never invent a locator from a delivery note/);
+  });
+
+  test("the planner and page writer are held to the assigned sections", () => {
+    const rules = SYLLABUS_RULES_TEXT();
+    assert.match(rules, /unit\.assignedMaterials/);
+    assert.match(rules, /those sections are the primary source for that unit/);
+    assert.match(rules, /Do not substitute a different chapter/);
+    assert.match(learnSource, /dossier\.syllabusUnits\[\]\.assignedReadings/);
+    assert.match(learnSource, /assignedReadings\.length > 0 \? \{ assignedReadings \} : \{\}/);
+  });
+
+  test("the coverage reviewer gets the whole-document heading index", () => {
+    const prompt = learnSource.match(/const SYLLABUS_COVERAGE_PROMPT = `([\s\S]*?)`;/)?.[1] ?? "";
+    assert.match(prompt, /canonicalHeadingIndex\.entries/);
+    assert.match(prompt, /Check every expanded section/);
   });
 });
 

@@ -4,6 +4,7 @@
 // existing garden routes while ensuring runtime health cannot swap in a second
 // launcher with a different identity.
 
+import type { RefObject } from 'react';
 import GardenAssistant from '@/app/garden/garden-assistant';
 import type {
   QuartzAssistantSelectionRequest,
@@ -30,6 +31,9 @@ interface Props {
   onInlineAnswerUpdate?: (update: QuartzInlineAnswerUpdate) => void;
   initialOpen?: boolean;
   launcherHidden?: boolean;
+  onPanelWidthChange?: (width: number) => void;
+  quartzIframeRef?: RefObject<HTMLIFrameElement | null>;
+  quartzOrigin?: string;
 }
 
 export default function GardenAssistantSwitch(props: Props) {

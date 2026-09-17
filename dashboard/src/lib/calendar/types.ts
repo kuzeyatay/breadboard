@@ -65,6 +65,10 @@ export interface CalendarEvent {
   description: string | null;
   location: string | null;
   allDay: boolean;
+  /** Controls all personal phone reminders for this event, including its start. */
+  notificationsEnabled: boolean;
+  /** Adds a reminder 20 minutes before start when event notifications are enabled. */
+  leadReminderEnabled: boolean;
   /** Wall-clock stamp, "YYYY-MM-DDTHH:MM". All-day events start at 00:00. */
   startsAt: string;
   /** Inclusive end. All-day events end at 23:59 on their last day. */
@@ -117,6 +121,8 @@ export interface CalendarOccurrence {
   description: string | null;
   location: string | null;
   allDay: boolean;
+  notificationsEnabled: boolean;
+  leadReminderEnabled: boolean;
   start: string;
   end: string;
   /** True when this instance came from a recurrence rule. */
@@ -133,6 +139,8 @@ export interface CalendarEventInput {
   description?: string | null;
   location?: string | null;
   allDay?: boolean;
+  notificationsEnabled?: boolean;
+  leadReminderEnabled?: boolean;
   startsAt: string;
   endsAt: string;
   recurrence?: Partial<RecurrenceRule> | null;
@@ -175,6 +183,9 @@ export interface CalendarCollection {
   caldavUrl: string | null;
   /** The account the binding authenticates as. Shown; never the password. */
   caldavUsername: string | null;
+  /** Google Calendar mirrored through the user's Composio connection. */
+  googleAccountId?: string | null;
+  googleCalendarId?: string | null;
   createdAt: string;
 }
 

@@ -1,6 +1,10 @@
-import { spawn, spawnSync } from "node:child_process";
+import {
+  externalRuntimeSpawn as spawn,
+  externalRuntimeSpawnSync as spawnSync,
+} from "../external-runtime-process.ts";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { praxistDockerCommand, PRAXIST_CONTAINER_IMAGE } from "./container-config.ts";
 import {
   externalRuntimeLstat,
   externalRuntimePathExists,
@@ -160,13 +164,20 @@ export function runtimeReadiness(env: NodeJS.ProcessEnv = process.env): PraxistR
   const agreementPayload = parseJsonObject(agreement.stdout ?? "");
   const agreementAccepted = agreement.status === 0 && agreementPayload?.accepted === true;
   const codexInstalled = codex.status === 0;
+  const docker = praxistDockerCommand();
+  const linuxPrepared = process.platform !== "win32" || spawnSync(docker.command,
+    [...docker.args,"image","inspect",PRAXIST_CONTAINER_IMAGE],
+    {windowsHide:true,encoding:"utf8",timeout:10_000,stdio:"ignore"},
+  ).status === 0;
   const reason = !codexInstalled
     ? "PRAXIST needs its codex optional dependency before Breadboard can run it."
     : !agreementAccepted
       ? "PRAXIST requires the operator to review and accept its current legal terms in a local terminal."
+      : !linuxPrepared
+        ? "Praxist needs Docker Desktop's Linux engine and its prepared image on Windows. Run node dashboard/scripts/prepare-praxist-container.mjs."
       : undefined;
   return {
-    available: Boolean(codexInstalled && agreementAccepted),
+    available: Boolean(codexInstalled && agreementAccepted && linuxPrepared),
     cloned: true,
     runtime,
     agreementAccepted,

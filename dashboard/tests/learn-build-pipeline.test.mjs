@@ -12,6 +12,7 @@ import {
   disposeLearnBuildWorkspace,
   fingerprintDurableGardenState,
   prepareLearnWorkspaceRoot,
+  pruneRetainedLearnBuildWorkspaces,
   retainFailedLearnWorkspacesForJob,
   retainLearnBuildWorkspace,
   seedDurableInputs,
@@ -2251,4 +2252,55 @@ test("chatmock-unavailable with a non-deterministic blocker stops as chatmock_un
     stateFingerprint: () => "s",
   });
   assert.equal(result.stoppedReason, "chatmock_unavailable");
+});
+
+test("retaining a failed workspace disposes older retained ones beyond the per-garden cap", () => {
+  // Live 2026-09-16: eight superseded telecom-1 workspaces (6.4 GB) filled the
+  // disk and a Learn rollback died with ENOSPC.
+  const repo = tmp("retention-repo");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const runtimeRoot = tmp("retention-runtime");
+  const originalRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+  const originalDataRoot = process.env.BREADBOARD_DATA_DIR;
+  const gardenSlug = `g-retention-${crypto.randomUUID()}`;
+  try {
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
+    delete process.env.BREADBOARD_DATA_DIR;
+    const workspaces = [];
+    for (let index = 0; index < 4; index += 1) {
+      const ws = createLearnBuildWorkspace({
+        gardenSlug,
+        jobId: `job-retained-${index}`,
+        mode: "generate",
+        repositoryGardenDir: repo,
+        contractFingerprint: `cf-${index}`,
+        sourceSetFingerprint: `sf-${index}`,
+      });
+      retainLearnBuildWorkspace(ws, {
+        reason: "generation_failure",
+        retainedAt: new Date(Date.UTC(2026, 8, 16, 0, index)).toISOString(),
+      });
+      workspaces.push(ws);
+    }
+    const surviving = workspaces.filter((ws) => fs.existsSync(ws.workspaceRoot)).map((ws) => ws.jobId);
+    assert.deepEqual(surviving, ["job-retained-2", "job-retained-3"], "only the newest two retained workspaces survive");
+
+    const active = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId: "job-active",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-active",
+      sourceSetFingerprint: "sf-active",
+    });
+    assert.deepEqual(pruneRetainedLearnBuildWorkspaces({ gardenSlug, limit: 1 }), [workspaces[2].workspaceRoot]);
+    assert.ok(fs.existsSync(active.workspaceRoot), "an active workspace is never pruned");
+    assert.ok(fs.existsSync(workspaces[3].workspaceRoot));
+    disposeLearnBuildWorkspace(active);
+    disposeLearnBuildWorkspace(workspaces[3]);
+  } finally {
+    if (originalRuntimeRoot === undefined) delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    else process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalRuntimeRoot;
+    if (originalDataRoot !== undefined) process.env.BREADBOARD_DATA_DIR = originalDataRoot;
+  }
 });

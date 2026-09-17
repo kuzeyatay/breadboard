@@ -6,6 +6,7 @@ import { WorkflowSourceIcon } from "@/app/workflows/components/workflow-source-i
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from "@/lib/workflows/navigation";
 import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 
 // Native replacement for the n8n-backed template/local-automation browser.
 // Lists the user's own workflows from the native engine (/api/workflows/local)
@@ -92,6 +93,7 @@ function toLocalWorkflowSummary(item: LocalWorkflowListItem): LocalWorkflowSumma
 }
 
 export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disabled = false }: Props) {
+  const { confirm: confirmDelete, confirmDialog } = useConfirmDialog();
   const [input, setInput] = useState("");
   const [items, setItems] = useState<LocalWorkflowListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -190,7 +192,17 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
 
   async function deleteWorkflow(workflow: LocalWorkflowListItem) {
     if (deletingId) return;
-    if (!window.confirm(`Delete “${workflow.name}”? This cannot be undone.`)) return;
+    if (
+      !(await confirmDelete({
+        title: "Delete workflow?",
+        subject: workflow.name,
+        body: "This permanently removes the workflow and its run history. This cannot be undone.",
+        confirmLabel: "Delete workflow",
+        tone: "danger",
+      }))
+    ) {
+      return;
+    }
 
     setDeletingId(workflow.id);
     setError(null);
@@ -336,6 +348,8 @@ export default function WorkflowTemplatesPanel({ onRunWorkflow, onNavigate, disa
           <p className="mt-1 text-xs text-[var(--ink-muted)]">Build one on the canvas or teach Breadboard by recording the task.</p>
         </div>
       ) : null}
+
+      {confirmDialog}
     </div>
   );
 }

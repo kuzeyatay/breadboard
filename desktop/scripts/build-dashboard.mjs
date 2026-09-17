@@ -74,6 +74,12 @@ if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
 const clapWorklet = spawnSync(process.execPath, [path.join(dashboardDir, 'scripts', 'build-clap-worklet.mjs')],
   { cwd: dashboardDir, stdio: 'inherit', windowsHide: true });
 if (clapWorklet.status !== 0) process.exit(clapWorklet.status ?? 1);
+const assistantWidgets = spawnSync(process.execPath, [path.join(dashboardDir, 'scripts', 'build-assistant-widgets.mjs')],
+  { cwd: dashboardDir, stdio: 'inherit', windowsHide: true });
+if (assistantWidgets.status !== 0) process.exit(assistantWidgets.status ?? 1);
+const quartzReader = spawnSync(process.execPath, [path.join(dashboardDir, 'scripts', 'build-quartz-reader.mjs')],
+  { cwd: dashboardDir, stdio: 'inherit', windowsHide: true });
+if (quartzReader.status !== 0) process.exit(quartzReader.status ?? 1);
 
 // Turbopack keeps the route graph in its Rust worker instead of retaining the
 // whole graph in V8. Keep the existing one-time ceiling for Next's JavaScript
@@ -130,7 +136,16 @@ function runDashboardBuildAttempt() {
 
 let result;
 for (let attempt = 1; attempt <= maxDashboardBuildAttempts; attempt += 1) {
-  beginDashboardBuild(repoRoot);
+  try {
+    beginDashboardBuild(repoRoot);
+  } catch (error) {
+    if (
+      error?.code !== "BREADBOARD_DASHBOARD_OUTPUT_LOCKED" &&
+      error?.code !== "BREADBOARD_DASHBOARD_OUTPUT_IN_USE"
+    ) throw error;
+    process.stderr.write(`[desktop] ${error.message}\n`);
+    process.exit(2);
+  }
   result = await runDashboardBuildAttempt();
   if (result.status === 0) break;
 

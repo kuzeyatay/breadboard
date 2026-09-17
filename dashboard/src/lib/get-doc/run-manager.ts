@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { availableSources, contactEmail } from "./sources.ts";
 import { describeDocuments, planSearch } from "./query-plan.ts";
+import { mergeQueryResults } from "./query-results.ts";
 import { searchDocuments } from "./search.ts";
 import type { DocumentSearchRequest, DocumentSourceId } from "./identity.ts";
 import type { DocumentHit, SourceReport } from "./types.ts";
@@ -150,6 +151,8 @@ export function summarizeDocuments(input: {
       `${index + 1}. **${document.title}**`,
       `   ${authorLine(document)}`,
       document.description ? `   ${document.description}` : "",
+      document.bearing === "adjacent" ? "   Adjacent evidence: check the population and context before applying it." : "",
+      !document.bearing ? "   Relevance not reviewed; this is a catalog match." : "",
       links.length ? `   ${links.join(" · ")}${saved ? " · saved to artifacts" : ""}` : "",
     ]
       .filter(Boolean)
@@ -243,17 +246,14 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   const yearFrom = request.yearFrom ?? planned.plan.yearFrom;
   const yearTo = request.yearTo ?? planned.plan.yearTo;
 
-  const collected: DocumentHit[] = [];
+  const queryResults: DocumentHit[][] = [];
   const reports: SourceReport[] = [];
-  const seen = new Set<string>();
   let unpaywallSkipped = false;
 
-  // Each planned query is a separate pass over every catalog. The first is
-  // usually enough; the rest exist for the request that needs rephrasing to
-  // find anything at all, so they stop as soon as the list is full.
+  // Queries cover complementary evidence needs. Run each bounded pass before
+  // sharing the result limit across them, even when the first pass is full.
   for (const [index, query] of planned.plan.queries.entries()) {
     if (run.aborted) return;
-    if (collected.length >= request.limit) break;
     emit(run, "search.started", { query, attempt: index + 1, sources: selected });
     const outcome = await searchDocuments({
       query: {
@@ -274,19 +274,13 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     for (const report of outcome.reports) {
       if (!reports.some((existing) => existing.source === report.source)) reports.push(report);
     }
-    for (const document of outcome.documents) {
-      const key = document.doi ?? document.title.toLowerCase().replace(/[^a-z0-9]+/g, "");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      collected.push(document);
-      if (collected.length >= request.limit) break;
-    }
-    emit(run, "search.completed", { query, found: collected.length });
+    queryResults.push(outcome.documents);
+    emit(run, "search.completed", { query, found: mergeQueryResults(queryResults, request.limit).length });
   }
 
   // Ids are handed out here, after merging across queries, so `doc_3` means the
   // same paper for the whole life of the run — including its download.
-  const documents = collected.slice(0, request.limit).map((document, index) => ({
+  const documents = mergeQueryResults(queryResults, request.limit).map((document, index) => ({
     ...document,
     id: `doc_${index + 1}`,
   }));
@@ -303,7 +297,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     if (run.aborted) return;
     usage.inputTokens += described.usage.inputTokens;
     usage.outputTokens += described.usage.outputTokens;
-    if (described.usage.inputTokens || described.usage.outputTokens) usage.calls += 1;
+    usage.calls += described.calls;
     // Catalog keyword matches on the wrong subject are set aside here rather
     // than reported. A live search for heat-pump economics returned papers on
     // a multi-agent competition, wurtzite magnetism and "Is Winter Coming?",
@@ -314,6 +308,11 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     run.documents = described.documents
       .filter((document) => document.bearing !== "none")
       .map((document, index) => ({ ...document, id: `doc_${index + 1}` }));
+    emit(run, "describe.completed", {
+      reviewed: described.documents.filter(document => document.bearing).length,
+      unreviewed: described.documents.filter(document => !document.bearing).length,
+      setAside: run.setAside.length,
+    });
   } else {
     run.documents = documents;
   }

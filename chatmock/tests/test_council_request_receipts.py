@@ -281,6 +281,35 @@ class StrictCouncilReceiptStoreTests(unittest.TestCase):
             receipt_accounting(f"crun_{request_id}"),
         )
 
+    def test_started_receipts_left_by_a_previous_process_settle_as_redispatchable_failures(self) -> None:
+        # A ChatMock restart mid-call left `started` receipts that no later
+        # process could ever complete; every Learn resume then read
+        # request_started and outwaited the provider lifetime for nothing.
+        orphan = "lrq_fixture_orphan_0001"
+        self.store.reserve(orphan, self.request_hash, dispatch_mode="direct_council")
+        live = "lrq_fixture_live_0001"
+        self.store.reserve(live, self.request_hash, dispatch_mode="direct_council")
+        self.store.complete(
+            live,
+            self.request_hash,
+            {**receipt_accounting("crun_live", answer='{"ok":true}'), "finalAnswer": '{"ok":true}'},
+        )
+
+        restarted = StrictCouncilReceiptStore(self.tmp.name)
+        self.assertEqual(restarted.fail_orphaned_started_receipts(), [orphan])
+        settled = restarted.read(orphan, self.request_hash)
+        self.assertEqual(settled["state"], "failed")
+        self.assertEqual(settled["failureCode"], "council_no_final_answer")
+        self.assertEqual(len(settled["attempts"]), 1)
+        self.assertIs(settled["attempts"][0]["finalAnswerPresent"], False)
+        metadata = restarted.promptless_metadata(orphan, self.request_hash)
+        self.assertTrue(metadata["redispatchAllowed"], metadata)
+        self.assertEqual(restarted.read(live, self.request_hash)["state"], "completed")
+        self.assertEqual(restarted.fail_orphaned_started_receipts(), [], "a settled receipt is not settled twice")
+        # The client may now redispatch exactly once, as after any real no-answer failure.
+        restarted.claim_failed_redispatch(orphan, self.request_hash)
+        self.assertEqual(restarted.read(orphan, self.request_hash)["state"], "started")
+
     def test_failed_receipt_claim_is_one_cross_instance_cas(self) -> None:
         request_id = "lrq_fixture_concurrent_0001"
         self._failed(request_id)
@@ -871,6 +900,8 @@ class RecoverableCouncilRouteTests(unittest.TestCase):
         self.assertEqual(body["receipt"]["dispatchCount"], 1)
         self.assertEqual(body["receipt"]["redispatchCount"], 0)
         self.assertTrue(body["receipt"]["redispatchAllowed"])
+        self.assertIn("createdAt", body["receipt"])
+        self.assertIn("updatedAt", body["receipt"])
         self.assertEqual(
             body["receipt"]["failureCode"],
             "council_no_final_answer",

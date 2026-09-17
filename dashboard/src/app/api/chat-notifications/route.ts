@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { RouteError, requireUserId } from "@/lib/server-auth";
 import db from "@/lib/db";
+import { dismissQuestionNotifications, listPendingQuestionNotifications, questionNotificationId } from "@/lib/chat-notifications/questions";
 import {
   chatNotificationMessageId,
   dismissChatNotifications,
   dismissChatNotificationsForTarget,
   listPendingChatNotifications,
+  listUnreadChatMessages,
+  markUnreadChatMessagesSeen,
 } from "@/lib/chat-notifications/store";
 import {
   dismissLearnNotifications,
@@ -42,16 +45,20 @@ function notificationTime(record: ChatNotificationRecord): number {
 }
 
 /**
- * The account's live set of undismissed notices — chat answers and Learn
+ * The account's live set of undismissed notices — chat answers, questions and Learn
  * pipeline updates together, oldest first. Every open window polls this and
  * shows exactly this list, so a dismissal made anywhere disappears
  * everywhere on the next poll.
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
+    if (new URL(request.url).searchParams.get("unread") === "1") {
+      return NextResponse.json({ unread: listUnreadChatMessages(db, userId) });
+    }
     const messages = [
       ...listPendingChatNotifications(db, userId),
+      ...listPendingQuestionNotifications(db, userId),
       ...listPendingLearnNotifications(db, userId),
     ].sort((left, right) => notificationTime(left) - notificationTime(right));
     return NextResponse.json({ messages });
@@ -61,7 +68,9 @@ export async function GET() {
 }
 
 interface DismissRequest {
-  /** Notice ids (`msg_<n>` or `learn_<job>:<phase>`) the person closed. */
+  /** Exact response ids shown by a chat surface, including surfaces without toasts. */
+  read?: unknown;
+  /** Notice ids (`msg_<n>`, `question_<n>` or `learn_<job>:<phase>`) the person closed. */
   dismiss?: unknown;
   /** A chat or a Garden's Learn panel the person is looking at: everything in it is seen. */
   seen?: unknown;
@@ -80,8 +89,13 @@ export async function POST(request: Request) {
           .slice(0, MAX_DISMISSALS_PER_REQUEST)
           .filter((id): id is string => typeof id === "string")
       : [];
+    const readIds = Array.isArray(body.read) ? body.read.slice(0, MAX_DISMISSALS_PER_REQUEST)
+      .filter((id): id is string => typeof id === "string")
+      .map(chatNotificationMessageId).filter((id): id is number => id !== null) : [];
     const messageIds = requestedIds
       .map(chatNotificationMessageId)
+      .filter((id): id is number => id !== null);
+    const questionIds = requestedIds.map(questionNotificationId)
       .filter((id): id is number => id !== null);
     const learnIds = requestedIds
       .map(parseLearnNotificationId)
@@ -89,11 +103,13 @@ export async function POST(request: Request) {
     const seen: ChatNotificationTarget | null = isChatNotificationTarget(body.seen)
       ? body.seen
       : null;
-    if (messageIds.length === 0 && learnIds.length === 0 && !seen) {
+    if (messageIds.length === 0 && questionIds.length === 0 && learnIds.length === 0 && readIds.length === 0 && !seen) {
       throw new RouteError(400, "Nothing to dismiss.");
     }
 
     let dismissed = dismissChatNotifications(db, userId, messageIds);
+    dismissed += dismissQuestionNotifications(db, userId, questionIds, seen);
+    dismissed += markUnreadChatMessagesSeen(db, userId, readIds, seen);
     dismissed += dismissLearnNotifications(db, userId, learnIds);
     if (seen) {
       dismissed += seen.surface === "garden_learn"

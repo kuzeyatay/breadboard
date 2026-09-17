@@ -19,6 +19,7 @@ import {
   delegatedWorkersForMessage,
   delegatedWorkersOutcome,
   delegatedWorkersOutcomeNote,
+  interruptedDelegationMessage,
 } from "../src/lib/hermes/super-agent-activity.ts";
 import { MAX_RESEARCH_STOPPED_BY_USER } from "../src/lib/max-research/conversation-persistence.ts";
 
@@ -70,6 +71,26 @@ test("the launching row reads the hidden worker rows that follow it", () => {
     [messages[3]],
   );
   assert.deepEqual(delegatedWorkersForMessage(messages, 0), []);
+});
+
+test("an interrupted worker replaces the pending hand-off with a finished normal message", () => {
+  const parent = { ...handOff, responseStartedAt: "2026-09-06T19:15:56.283Z" };
+  const stopped = worker("aborted", {
+    externalAgentResult: "Interrupted", responseCompletedAt: "2026-09-06T20:18:28.852Z",
+  });
+  const messages = [user("research"), parent, user("brief", { internalAgentContinuation: true }), stopped];
+  const visible = interruptedDelegationMessage(parent, delegatedWorkersForMessage(messages, 1));
+  assert.equal(visible.content, "Interrupted");
+  assert.equal(visible.interrupted, true);
+  assert.equal(visible.responseCompletedAt, stopped.responseCompletedAt);
+  assert.equal(visible.responseDurationMs, 3752569);
+  assert.equal(visible.verification, parent.verification);
+  assert.equal(parent.content, handOff.content, "retain the launch receipt in history");
+  assert.equal(interruptedDelegationMessage(parent, [stopped, worker("running")]), parent);
+  assert.equal(interruptedDelegationMessage(parent, [worker("completed")]), parent);
+  assert.equal(interruptedDelegationMessage(parent, [worker("aborted", { externalAgentResult: "Stopped by the user." })]), parent);
+  const later = [...messages, user("next request"), assistant("A later answer")];
+  assert.equal(interruptedDelegationMessage(later[5], delegatedWorkersForMessage(later, 5)), later[5]);
 });
 
 test("a batch is running while any worker runs, and otherwise reports its worst end", () => {
@@ -156,7 +177,7 @@ test("both transcript surfaces label the row by its workers' outcome and show th
   for (const [name, source] of [["Terminal", panel], ["Garden", garden]]) {
     assert.match(source, /delegatedWorkersForMessage\(\s*messages,\s*(index|i),?\s*\)/, name);
     assert.match(source, /delegatedAgentOutcomeLabelForMessage\(/, name);
-    assert.match(source, /\|\|\s*delegatedWorkerOutcome === "running";/, name);
+    assert.match(source, /\|\|\s*delegatedWorkerOutcome === "running"\);/, name);
     assert.match(source, /data-testid="delegated-worker-outcome"/, name);
     assert.match(source, /!delegatedAgentActive[\s\S]{0,160}\?\s*delegatedWorkersOutcomeNote\(delegatedWorkers\)/, name);
   }
@@ -177,11 +198,14 @@ test("both transcript surfaces label the row by its workers' outcome and show th
   );
 });
 
-test("a hidden Max Research card reports its stage to the row that launched it", () => {
-  const card = read("../src/app/components/hermes/inline-max-research-run.tsx");
+test("both chat surfaces observe Max Research progress outside virtualized worker cards", () => {
   const panel = read("../src/app/components/hermes/agent-runtime-panel.tsx");
-  assert.match(card, /onStage\?: \(stage: string\) => void;/);
-  assert.match(card, /describeStage\(stage, participants\)/);
-  assert.match(panel, /onStage=\{\s*message\.delegatedAgentRun === true/);
+  const garden = read("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
+  for (const source of [panel, garden]) {
+    assert.match(source, /useMaxResearchProgress\(messages\)/);
+    assert.match(source, /delegatedResearchProgressForMessage\(messages, (?:index|i), maxResearchProgress\)/);
+    assert.match(source, /delegatedThinkingUpdates\(\s*(?:message|msg),\s*continuationPreamble,\s*researchProgress,/);
+  }
   assert.match(panel, /\$\{delegatedAgentActivity\} · \$\{delegatedWorkerStage\}/);
+  assert.match(garden, /delegatedAgentCompleted, researchProgress\.stage/);
 });

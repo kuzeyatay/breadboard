@@ -33,6 +33,7 @@ export async function POST(request: Request) {
     const run = await startRun({
       userId, task, model, reasoningEffort: effort, baseUrl: baseURL,
       clientMessageId: body.clientMessageId, conversationPublicId: conversation.public_id,
+      branchGroupId: typeof body.branchGroupId === "string" ? body.branchGroupId : undefined,
       conversationContext: conversationContextFromBody(userId, body), defaults: musicDefaults(agentSettingsFor(userId, MUSIC_PRODUCER_AGENT_ID)), explicit,
       delegatedAgentRun: body.delegatedAgentRun === true, internalAgentContinuation: body.internalAgentContinuation === true, attachToExistingTurn: body.attachToExistingTurn === true
     });

@@ -8,7 +8,7 @@
     "start": "tsx --env-file=.env.local src/run.ts",
     "api": "tsx --env-file=.env.local src/api.ts",
     "docker": "tsx src/run.ts",
-    "test": "tsx --test src/ai/search.test.ts src/ai/direct-search.test.ts src/ai/structured-output.test.ts src/citations.test.ts src/research-budget.test.ts src/source-quality.test.ts src/report-writing.test.ts src/api.test.ts"
+    "test": "tsx --test src/ai/search.test.ts src/ai/direct-search.test.ts src/ai/structured-output.test.ts src/ai/writing-budget.test.ts src/citations.test.ts src/research-budget.test.ts src/source-quality.test.ts src/report-writing.test.ts src/api.test.ts"
   },
   "author": "",
   "license": "ISC",

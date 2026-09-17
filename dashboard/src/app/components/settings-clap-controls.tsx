@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useId, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore, type ComponentProps } from 'react';
 import { clapSnapshot, clapServerSnapshot, gestureSettings, finishClapTest, loadClapControls, pauseClapControls, saveClapAction, saveClapPreferences, setClapTestMode, subscribeClapControls, updateClapRuntime } from '@/lib/speech/clap/client';
 import { DEFAULT_SNAP_ACTION, describeClapAction } from '@/lib/profile/clap-action';
 import type { ClapPreferences, GestureControl } from '@/lib/speech/clap/preferences';
@@ -8,6 +8,12 @@ import MicrophonePermissionHelp from './microphone-permission-help';
 
 const statusLabels = { off: 'Off', requesting: 'Requesting microphone permission…', calibrating: 'Measuring ambient sound…', listening: 'Listening', paused: 'Paused for another audio feature, tab, or window', suspended: 'Audio is suspended. Click Retry to resume.', error: 'Microphone needs attention' };
 type WorkflowChoice = { id: string; name: string };
+function GestureSwitch({ checked, ...props }: { checked: boolean } & Omit<ComponentProps<'button'>, 'children' | 'className'>) {
+  return <button {...props} type="button" role="switch" aria-checked={checked}
+    className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${checked ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}>
+    <span aria-hidden="true" className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+  </button>;
+}
 export default function SettingsClapControls({ visible = true, control = 'clap' }: { visible?: boolean; control?: GestureControl }) {
   const state = useSyncExternalStore(subscribeClapControls, clapSnapshot, clapServerSnapshot);
   const binding = gestureSettings(state, control);
@@ -88,9 +94,9 @@ export default function SettingsClapControls({ visible = true, control = 'clap' 
   return <section id={`${control}-controls`} className="clap-settings neu-surface-raised" aria-labelledby={`${id}-heading`}>
     <header>
       <div><h3 id={`${id}-heading`}>{title}</h3><p>{snap ? 'Use a finger snap as a shortcut. Detection runs locally.' : 'Use a clap gesture as a shortcut. Detection runs locally.'}</p></div>
-      <button type="button" role="switch" className="clap-switch" aria-checked={binding.active}
+      <GestureSwitch checked={binding.active}
         aria-labelledby={`${id}-heading`} aria-describedby={`${id}-status`} disabled={!state.loaded || saving}
-        onClick={toggleListening}><span aria-hidden="true" /></button>
+        onClick={toggleListening} />
     </header>
     <p id={`${id}-status`} role="status" className={`clap-status${status === 'off' || status === 'listening' ? ' sr-only' : ''}`}>{status === 'paused' && binding.pauseReason ? binding.pauseReason : statusLabels[status]}</p>
     <div className="clap-fields">
@@ -120,12 +126,17 @@ export default function SettingsClapControls({ visible = true, control = 'clap' 
         .catch(e => setError(e.message)).finally(() => setSaving(false));
     }}><option value="">Choose a workflow…</option>{savedWorkflow && !workflows.some(w => w.id === savedWorkflow.workflowId) && <option value={savedWorkflow.workflowId}>{savedWorkflow.name}</option>}{workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>}
     <p className="clap-detail">{describeClapAction(binding.action.action)}</p>
-    <label className="clap-checkbox"><input type="checkbox" checked={p.resumeOnStartup} disabled={saving} onChange={e => void save({ resumeOnStartup: e.target.checked })} />Resume listening when Breadboard starts</label>
-    <div className="clap-parallel-option">
+    <div className="clap-toggle-option">
+      <label id={`${id}-startup-label`} htmlFor={`${id}-startup`}>Resume listening when Breadboard starts</label>
+      <GestureSwitch id={`${id}-startup`} checked={p.resumeOnStartup}
+        aria-labelledby={`${id}-startup-label`} disabled={!state.loaded || saving}
+        onClick={() => void save({ resumeOnStartup: !p.resumeOnStartup })} />
+    </div>
+    <div className="clap-toggle-option">
       <div><p id={`${id}-parallel-label`}>Keep listening in parallel</p><p id={`${id}-parallel-hint`} className="clap-detail">Listen during other audio and in background tabs or windows. Playback may trigger your {gestureWord} action.</p></div>
-      <button type="button" role="switch" className="clap-switch" aria-checked={p.allowConcurrentListening}
+      <GestureSwitch checked={p.allowConcurrentListening}
         aria-labelledby={`${id}-parallel-label`} aria-describedby={`${id}-parallel-hint`} disabled={!state.loaded || saving}
-        onClick={() => void save({ allowConcurrentListening: !p.allowConcurrentListening })}><span /></button>
+        onClick={() => void save({ allowConcurrentListening: !p.allowConcurrentListening })} />
     </div>
     <div className="clap-buttons">
       <button type="button" onClick={() => testMode(testing ? 'actions' : 'test')}>{testing ? 'Finish test' : snap ? 'Test snaps' : 'Test claps'}</button>

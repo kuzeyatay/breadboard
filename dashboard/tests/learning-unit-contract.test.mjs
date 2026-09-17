@@ -166,6 +166,16 @@ test("verified formulas can support conceptual and mechanism teaching moves", ()
   }), []);
 });
 
+test("legacy normalization leaves length unestimated and preserves unit-specific estimates", () => {
+  const base = { id: "U1", title: "Displacement", learningQuestion: "Where does the journey leave you?" };
+  const [missing] = normalizeLearningUnits([base]);
+  assert.deepEqual(missing.expectedWordRange, [0, 0]);
+  for (const expectedWordRange of [[200, 400], [1800, 3200]]) {
+    const [unit] = normalizeLearningUnits([{ ...base, expectedWordRange }]);
+    assert.deepEqual(unit.expectedWordRange, expectedWordRange);
+  }
+});
+
 test("model-only normalization never invents concepts, roles, word ranges, or sections", () => {
   const [unit] = normalizeLearningUnits([{
     id: "U1",

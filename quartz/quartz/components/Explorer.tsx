@@ -145,6 +145,8 @@ export default ((userOpts?: Partial<Options>) => {
           class="explorer-toggle mobile-explorer hide-until-loaded"
           data-mobile={true}
           aria-controls={id}
+          aria-label={opts.title ?? i18n(cfg.locale).components.explorer.title}
+          aria-expanded={false}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -166,6 +168,7 @@ export default ((userOpts?: Partial<Options>) => {
             type="button"
             class="title-button explorer-toggle desktop-explorer"
             data-mobile={false}
+            aria-controls={id}
             aria-expanded={true}
           >
             <h2>{opts.title ?? i18n(cfg.locale).components.explorer.title}</h2>

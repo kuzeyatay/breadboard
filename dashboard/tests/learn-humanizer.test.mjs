@@ -107,8 +107,36 @@ test("Learn does nothing when Rewrite naturally is off", async () => {
   );
 });
 
-test("Learn humanizes only finished learner Markdown and validates before adoption", async () => {
+test("the Intelligence menu cannot opt Learn into post-build rewriting", async () => {
   settings.setHermesUserSettings(1, { humanizerAuto: true });
+  const outcome = await humanizeFinishedLearnBuild({
+    userId: 1,
+    gardenDir: gardenRoot,
+    validate: () => { throw new Error("Learn must not start a rewrite"); },
+  });
+  assert.equal(outcome.requested, false);
+  assert.equal(requestCount, 0);
+  assert.equal(settings.getHermesUserSettings(1).humanizerAuto, true);
+});
+
+test("turning off the Learn switch leaves the chat rewrite preference enabled", async () => {
+  settings.setHermesUserSettings(1, {
+    humanizerAuto: true,
+    composerSwitches: { learnHumanizerAuto: true },
+  });
+  settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: false } });
+  const outcome = await humanizeFinishedLearnBuild({
+    userId: 1,
+    gardenDir: gardenRoot,
+    validate: () => ({ accepted: true }),
+  });
+  assert.equal(outcome.requested, false);
+  assert.equal(requestCount, 0);
+  assert.equal(settings.getHermesUserSettings(1).humanizerAuto, true);
+});
+
+test("Learn humanizes only finished learner Markdown and validates before adoption", async () => {
+  settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: true } });
   let validatedText = "";
   const outcome = await humanizeFinishedLearnBuild({
     userId: 1,
@@ -123,6 +151,7 @@ test("Learn humanizes only finished learner Markdown and validates before adopti
   });
 
   assert.equal(outcome.adopted, true);
+  assert.equal(settings.getHermesUserSettings(1).humanizerAuto, false);
   assert.equal(outcome.adoptedFiles, 1);
   assert.match(validatedText, /helps teams organize/);
   assert.equal(requestCount, 1);
@@ -137,7 +166,7 @@ test("Learn humanizes only finished learner Markdown and validates before adopti
 });
 
 test("Learn restores every original byte when final verification rejects a rewrite", async () => {
-  settings.setHermesUserSettings(1, { humanizerAuto: true });
+  settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: true } });
   const outcome = await humanizeFinishedLearnBuild({
     userId: 1,
     gardenDir: gardenRoot,
@@ -154,7 +183,7 @@ test("Learn restores every original byte when final verification rejects a rewri
 });
 
 test("a completed humanized Learn version can switch back to its saved AI copy", async () => {
-  settings.setHermesUserSettings(1, { humanizerAuto: true });
+  settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: true } });
   const versionId = "learning_test_version";
   const humanized = await humanizeFinishedLearnBuild({
     userId: 1,
@@ -215,7 +244,7 @@ test("a completed humanized Learn version can switch back to its saved AI copy",
 });
 
 test("a rejected AI-copy restore leaves the completed humanized copy intact", async () => {
-  settings.setHermesUserSettings(1, { humanizerAuto: true });
+  settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: true } });
   const versionId = "learning_rejected_restore";
   await humanizeFinishedLearnBuild({
     userId: 1,

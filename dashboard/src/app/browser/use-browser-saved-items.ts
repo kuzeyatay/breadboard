@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 import {
   loadSavedBrowserItems,
   saveBrowserItems,
@@ -24,6 +25,7 @@ export function useBrowserSavedItems<T>(
     saving: boolean;
     error: string | null;
   }>({ owner: null, items: [], ready: false, saving: false, error: null });
+  useStartupLoading(!state.ready && !state.error);
   const readyRef = useRef(false);
   const savingRef = useRef(false);
   const generationRef = useRef(0);

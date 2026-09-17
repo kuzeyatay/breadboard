@@ -119,9 +119,20 @@ export function quartzUrl(...segments: string[]): string {
 export function quartzUrlFromBase(baseUrl: string, ...segments: string[]): string {
   const base = normalizeAbsoluteUrl(baseUrl) ?? resolveQuartzBaseUrl();
   const path = segments
-    .map((segment) => segment.trim().replace(/^\/+|\/+$/g, ''))
+    .flatMap((segment) => segment.trim().split('/'))
     .filter(Boolean)
-    .map(encodeURIComponent)
+    // Match quartz/quartz/util/path.ts: the document API uses original
+    // filenames, but Quartz publishes spaces and special characters as slugs.
+    .map((segment, index, parts) => {
+      const name = index === parts.length - 1
+        ? segment.replace(/\.(md|html)$/, '').replace(/^_index$/, 'index')
+        : segment;
+      return encodeURIComponent(name
+        .replace(/\s/g, '-')
+        .replace(/&/g, '-and-')
+        .replace(/%/g, '-percent')
+        .replace(/[?#]/g, ''));
+    })
     .join('/');
 
   return path ? `${base}/${path}/` : `${base}/`;

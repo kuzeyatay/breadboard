@@ -97,8 +97,11 @@ export async function completeText(input: {
         lastError = error;
       } else {
         const data = (await readBoundedJson(response)) as {
-          choices?: Array<{ message?: { content?: string | null } }>;
+          choices?: Array<{ finish_reason?: string; message?: { content?: string | null } }>;
         };
+        if (data.choices?.[0]?.finish_reason === "length") {
+          throw new PermanentCompletionError("The model response was truncated before it finished.");
+        }
         const content = data.choices?.[0]?.message?.content ?? "";
         if (Buffer.byteLength(content, "utf8") > MAX_CONTENT_BYTES) {
           throw new PermanentCompletionError(

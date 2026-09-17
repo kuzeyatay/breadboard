@@ -207,7 +207,9 @@ async function waitForVisualizerJob(
   }
   if (job.state !== "succeeded") {
     if (job.state === "cancelled") {
-      throw new Error("Interactive visualizer cancelled by user");
+      throw new Error(
+        "Interactive visualizer job was cancelled by the user or superseded by a newer attempt.",
+      );
     }
     throw new Error(
       job.failureMessage ?? `Interactive visualizer processing ended as ${job.state}.`,

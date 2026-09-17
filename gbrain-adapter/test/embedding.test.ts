@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { chatmockProvider, cosine, resolveProvider } from "../src/embedding.ts";
+import { chatmockProvider, cosine, resolveProvider, wellFormed } from "../src/embedding.ts";
 import { GBrainStore } from "../src/store.ts";
 
 // An address nothing listens on, so "the endpoint is configured but down" is
@@ -49,4 +49,30 @@ test("vectors of different widths are not comparable", () => {
   expect(cosine(short, long)).toBe(0);
   expect(cosine(short, short)).toBeCloseTo(1, 6);
   expect(cosine([], [])).toBe(0);
+});
+
+test("a lone surrogate never reaches the embedding endpoint", async () => {
+  // Text clipped inside an emoji or a mathematical symbol keeps half of the
+  // pair; the tokenizer behind /v1/embeddings throws on it, and the whole
+  // batch used to fail as "embedding unavailable".
+  const seen: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      const body = (await request.json()) as { input: string };
+      seen.push(body.input);
+      return Response.json({ data: [{ embedding: [1, 0, 0] }] });
+    },
+  });
+  try {
+    const provider = chatmockProvider({ baseUrl: `http://127.0.0.1:${server.port}/v1` });
+    expect(await provider.embed("edge \ud83d")).toEqual([1, 0, 0]);
+    expect(await provider.embed("\udc00 start, 😀 intact")).toEqual([1, 0, 0]);
+    expect(seen).toEqual(["edge �", "� start, 😀 intact"]);
+    expect(seen.every((text) => text === text.toWellFormed())).toBe(true);
+    expect(wellFormed("plain")).toBe("plain");
+  } finally {
+    server.stop(true);
+  }
 });

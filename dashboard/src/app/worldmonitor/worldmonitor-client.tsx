@@ -1,4 +1,5 @@
 "use client";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 
 // The world monitor shell.
 //
@@ -214,11 +215,10 @@ export default function WorldMonitorClient({ panels }: Props) {
 
   const [climate, setClimate] = useState<ClimateSnapshot | null>(null);
   const [climateLoading, setClimateLoading] = useState(true);
+  useStartupLoading(loading || climateLoading);
   const [climateError, setClimateError] = useState<string | null>(null);
 
-  // The model the composer is pointing at right now. The hook reads the same
-  // localStorage key the chat pickers write and follows their change event, so
-  // switching model in a chat switches what writes the brief here too.
+  // Briefs follow the profile default; individual chat picks stay in their chats.
   const { model: assistantModel, reasoningEffort } = useAssistantIntelligence();
 
   // Read through a ref inside the loaders: picking a different model must not

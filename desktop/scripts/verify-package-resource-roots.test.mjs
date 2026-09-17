@@ -98,6 +98,11 @@ test("producers and electron-builder agree that native artifacts stage in resour
     preparer,
     /const voiceboxTarget = path\.join\(desktopRoot, "resources", "bin", voiceboxExecutable\);/u,
   );
+  assert.match(
+    preparer,
+    /stagePinnedCuaDriverRuntime\(\{[\s\S]*targetRoot: path\.join\(desktopRoot, "resources", "bin", "cua-driver"\)/u,
+  );
+  assert.match(verifier, /PINNED_CUA_DRIVER_RUNTIME/u);
   assert.match(electronBuilder, /- from: resources\/bin\s+to: bin/u);
   assert.doesNotMatch(nativeBuilder, /"build-resources", "bin"/u);
   assert.doesNotMatch(preparer, /"build-resources", "bin"/u);

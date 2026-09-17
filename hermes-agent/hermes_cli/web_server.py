@@ -1695,6 +1695,26 @@ async def _status_active_sessions() -> int:
     return 0
 
 
+async def _run_status_executor(func, *args):
+    """Run a non-critical status probe without making liveness depend on a thread.
+
+    ``/api/status`` is also used by the desktop supervisor while the machine
+    is under pressure.  Python's default executor can reject a new worker with
+    ``RuntimeError: can't start new thread``; letting that escape makes the
+    health endpoint fail and prevents on-demand runtimes (including Telegram)
+    from being woken.  The probes are bounded, read-only status garnish, so a
+    synchronous fallback is preferable to losing the whole status response.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, func, *args)
+    except RuntimeError as exc:
+        if str(exc) != "can't start new thread":
+            raise
+        _log.warning("/api/status executor unavailable; running probe inline")
+        return func(*args)
+
+
 # Image MIME types this endpoint will serve. Extension-allowlisted so an
 # authenticated caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -3053,7 +3073,7 @@ async def get_status(profile: Optional[str] = None):
             loop = asyncio.get_running_loop()
             try:
                 alive, remote_health_body = await asyncio.wait_for(
-                    loop.run_in_executor(None, _probe_gateway_health),
+                    _run_status_executor(_probe_gateway_health),
                     timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT,
                 )
             except TimeoutError:
@@ -3155,8 +3175,8 @@ async def get_status(profile: Optional[str] = None):
         # exceeding the desktop handshake's 15s socket timeout.  After the
         # first call the module is in sys.modules and run_in_executor returns
         # in microseconds.
-        restart_drain_timeout = await asyncio.get_running_loop().run_in_executor(
-            None, _resolve_restart_drain_timeout
+        restart_drain_timeout = await _run_status_executor(
+            _resolve_restart_drain_timeout
         )
 
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged
@@ -3248,8 +3268,8 @@ async def get_status(profile: Optional[str] = None):
         try:
             from gateway.readiness import _probe_state_db
 
-            storage_check = await asyncio.get_running_loop().run_in_executor(
-                None, functools.partial(_probe_state_db, get_hermes_home())
+            storage_check = await _run_status_executor(
+                _probe_state_db, get_hermes_home()
             )
             components["storage"] = {"status": storage_check.get("status", "degraded")}
         except Exception:
@@ -3309,9 +3329,7 @@ async def get_status(profile: Optional[str] = None):
         # the network (a gated bind), so they must survive the auth gate. The
         # per-gateway ``gateways[]`` detail carries host ports (deployment
         # recon), so it stays gated with the host paths / PID below.
-        topology = await asyncio.get_running_loop().run_in_executor(
-            None, _collect_profile_gateway_topology
-        )
+        topology = await _run_status_executor(_collect_profile_gateway_topology)
         status["profiles"] = topology["profiles"]
         status["gateway_mode"] = topology["gateway_mode"]
 

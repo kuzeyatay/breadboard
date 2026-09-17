@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { commitAtomicDirectorySwap } from "./atomic-artifact-swap.mjs";
 import { ensureChatMockSourceHook } from "./chatmock-python-source-hook.mjs";
 import { ensureHermesSourceHook } from "./hermes-python-source-hook.mjs";
+import { ensureHermesComputerUseClient } from "./hermes-computer-use-runtime.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
@@ -127,8 +128,8 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeSha256: "227E429CEEFA8C3D9F37AF5BAB72689D4DD1C09C25C693CF28144F1054D560E5",
     pythonRuntimeFileCount: 34,
     pythonLicenseSha256: "59688D8633CE27B1D8220F223B9520C4E039E4BA6CCCEB345793A74FD5C155B9",
-    sourceGitTree: "347738d7d0e2777d29fa5c53ed954baaa8e3e04e",
-    sourceSha256: "1AB986E95F77763929C6BEFC001C83985D2D547C532F5F04C3815EA3650E0CF5",
+    sourceGitTree: "d60ab616237fb3d32dbbdd2d0a14c5cc9b448b19",
+    sourceSha256: "2C3C10077FE1E82FDD0FA83AA38A9146E6C28D412C2A2AEAE6A373D8CE27DB15",
     sourceFileCount: 8,
     pyprojectSha256: "D4CE90C6D505D706A5A68D1DA1EE3C7F92E7B8D6A68D15A579A67BA483D2E5A7",
     requirementsSha256: "D1E773C7578D36CB1A9AF6DF0581B20C0E6A7BE3BCA288894EBE617344412559",
@@ -543,7 +544,22 @@ async function prepareNode() {
   const target = path.join(runtimesDir, "node");
   fs.mkdirSync(target, { recursive: true });
   const nodeExe = process.execPath;
-  fs.copyFileSync(nodeExe, path.join(target, path.basename(nodeExe)));
+  const nodeTarget = path.join(target, path.basename(nodeExe));
+  // An identical Node may already be running while we repair missing npm files.
+  if (!fs.existsSync(nodeTarget) || await sha256File(nodeTarget) !== await sha256File(nodeExe)) {
+    fs.copyFileSync(nodeExe, nodeTarget);
+  }
+  // First-run managed tools install with this Node's npm, without a user PATH.
+  const nodeDirectory = path.dirname(nodeExe);
+  const npmSource = path.join(nodeDirectory, "node_modules", "npm");
+  if (!fs.existsSync(path.join(npmSource, "bin", "npm-cli.js"))) {
+    fail("The Node installation must include npm to prepare managed tools.");
+  }
+  fs.cpSync(npmSource, path.join(target, "node_modules", "npm"), { recursive: true });
+  for (const shim of ["npm", "npm.cmd", "npx", "npx.cmd"]) {
+    const source = path.join(nodeDirectory, shim);
+    if (fs.existsSync(source)) fs.copyFileSync(source, path.join(target, shim));
+  }
   log(`node ${process.version} copied from ${nodeExe}`);
   return { runtime: "node", version: process.version, source: nodeExe };
 }
@@ -1273,6 +1289,7 @@ async function preparePython() {
     }
     ensureChatMockSourceHook(target);
     ensureHermesImportPath(target);
+    ensureHermesComputerUseClient(cachedPython, uv, hermesRoot);
     log(`python ${fullVersion} runtime already assembled — skipping`);
     return { runtime: "python", version: fullVersion, source: "cached" };
   }
@@ -1341,6 +1358,8 @@ async function preparePython() {
       hermesRoot,
       "--frozen",
       "--no-dev",
+      "--extra",
+      "computer-use",
       "--no-emit-project",
       "--no-hashes",
       "--format",
@@ -1368,6 +1387,7 @@ async function preparePython() {
   if (hermesInstall.status !== 0) {
     fail("Hermes dependency install for the bundled Python runtime failed");
   }
+  ensureHermesComputerUseClient(pythonExecutable, uv, hermesRoot);
 
   log(`installing iFixAi ${ifixAiCommit.slice(0, 12)} and its dependencies`);
   const ifixAiInstall = spawnSync(

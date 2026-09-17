@@ -504,9 +504,30 @@ export async function embeddedProviderRequest(input: {
     throw new ApiError(503, "provider_unavailable", "The connected app could not be reached.");
   }
   const payload = await readProviderPayload(response);
+  if (input.integration.slug === "spotify" && response.status === 429) {
+    const retryAfter = response.headers.get("Retry-After");
+    const seconds = retryAfter === null ? Number.NaN : Number(retryAfter);
+    const retryAfterMs = Number.isFinite(seconds)
+      ? Math.max(0, seconds * 1_000)
+      : Math.max(0, Date.parse(retryAfter ?? "") - Date.now());
+    throw Object.assign(
+      new ApiError(429, "spotify_rate_limited", "Spotify is receiving too many requests. Try again shortly."),
+      { retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : 60_000 },
+    );
+  }
   if (!response.ok) {
     const authenticationFailed = response.status === 401;
     const forbidden = response.status === 403;
+    const spotify = input.integration.slug === "spotify";
+    const playbackCommand = input.request.method !== "GET" && /^\/v1\/me\/player(?:\/|$)/.test(endpoint);
+    const providerError = objectRecord(objectRecord(payload)?.error);
+    if (spotify && playbackCommand && response.status === 404 && (
+      providerError?.reason === "NO_ACTIVE_DEVICE" ||
+      (typeof providerError?.message === "string" && /no active device|device (?:not found|not available)/i.test(providerError.message))
+    )) {
+      throw new ApiError(409, "spotify_device_unavailable", "Spotify could not find the playback device. Wait for the player to reconnect, then try again.");
+    }
+    const spotifyOperation = endpoint === "/v1/search" ? "song search" : playbackCommand ? "playback request" : "request";
     throw new ApiError(
       authenticationFailed ? 409 : forbidden ? 403 : 502,
       authenticationFailed
@@ -518,7 +539,9 @@ export async function embeddedProviderRequest(input: {
         ? `${input.integration.name} must be reconnected.`
         : forbidden
           ? `${input.integration.name} does not allow this action for the connected account.`
-          : "The connected app rejected the request.",
+          : spotify
+            ? `Spotify rejected the ${spotifyOperation} (HTTP ${response.status}). Try again shortly.`
+            : "The connected app rejected the request.",
     );
   }
   return payload;

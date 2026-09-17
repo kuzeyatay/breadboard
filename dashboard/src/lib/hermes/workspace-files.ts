@@ -20,8 +20,9 @@
 // for Breadboard-owned runtime metadata, so a path naming that directory is
 // refused outright rather than merely hidden.
 
-import fs from "node:fs";
-import path from "node:path";
+import type { Dirent, Stats } from "node:fs";
+import { externalRuntimeFilesystem as fs, externalRuntimePortableRealpath } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 export class WorkspaceFileError extends Error {
   // Declared and assigned rather than written as constructor parameter
@@ -129,8 +130,8 @@ export function containedWorkspaceFile(
     existing = path.dirname(existing);
   }
   try {
-    const realRoot = fs.realpathSync(root);
-    const realExisting = fs.realpathSync(existing);
+    const realRoot = externalRuntimePortableRealpath(root);
+    const realExisting = externalRuntimePortableRealpath(existing);
     const realRelative = path.relative(realRoot, realExisting);
     if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) throw denied(value);
   } catch (error) {
@@ -173,7 +174,7 @@ function boundedInteger(args: Record<string, unknown>, key: string, fallback: nu
  * and returning replacement characters would let it "edit" the file into ruin.
  */
 function readText(target: ContainedPath): string {
-  let stats: fs.Stats;
+  let stats: Stats;
   try {
     stats = fs.statSync(target.absolute);
   } catch {
@@ -349,7 +350,7 @@ function walk(root: string, start: ContainedPath): { files: WalkedFile[]; trunca
   let seen = 0;
   while (queue.length) {
     const directory = queue.shift() as string;
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch {

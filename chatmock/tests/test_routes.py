@@ -308,6 +308,33 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(body["model"], "gpt5.4-mini")
 
     @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_preserves_all_application_instruction_roles(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream([
+                {"type": "response.output_text.delta", "delta": "An explanation."},
+                {"type": "response.completed", "response": {"id": "resp-scoped"}},
+            ]), None,
+        )
+        messages = [
+            {"role": "system", "content": "Apply formatting only within its original task."},
+            {"role": "system", "content": [{"type": "text", "text": "Honor explicit standing preferences."}]},
+            {"role": "developer", "content": "A detailed question is not automatically a draft continuation."},
+            {"role": "user", "content": "For my old draft, put visuals in parentheses."},
+            {"role": "assistant", "content": "The draft is complete."},
+            {"role": "user", "content": "Now explain the transient."},
+        ]
+        original = json.dumps(messages)
+        response = self.client.post("/v1/chat/completions", json={
+            "model": "gpt-5.6-sol", "council": False, "messages": messages,
+        })
+        self.assertEqual(response.status_code, 200)
+        items = mock_start.call_args.args[1]
+        self.assertEqual([item["role"] for item in items],
+                         ["developer", "developer", "developer", "user", "assistant", "user"])
+        self.assertIn("Honor explicit standing preferences.", json.dumps(items))
+        self.assertEqual(json.dumps(messages), original)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions_reports_the_upstream_refusal_verbatim(self, mock_start) -> None:
         # The regression: the ChatGPT backend refuses a model with a `detail`
         # body, not an `error.message` one, so every refusal reached the caller
@@ -326,6 +353,36 @@ class RouteTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["error"]["message"], detail)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_names_the_account_and_window_on_a_quota_refusal(
+        self, mock_start
+    ) -> None:
+        # "The usage limit has been reached" sent a reader to the five-hour
+        # meter (12% used) while it was the weekly window that had closed on an
+        # account they had not chatted on. The relay names all three.
+        upstream = FakeUpstream(
+            status_code=429,
+            content=json.dumps(
+                {"error": {"message": "The usage limit has been reached", "resets_in_seconds": 338668}}
+            ).encode("utf-8"),
+        )
+        upstream.chatmock_quota_refusal = {
+            "account": "plus@example.com",
+            "detail": "The weekly Codex usage limit has been reached",
+            "resetsInSeconds": 338668,
+        }
+        mock_start.return_value = (upstream, None)
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "The weekly Codex usage limit has been reached for plus@example.com; it resets in 3d 22h. "
+            "Sign in with another ChatGPT account or pick a model from a different provider.",
+        )
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions_falls_back_when_the_body_says_nothing(self, mock_start) -> None:

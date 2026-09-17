@@ -4,6 +4,7 @@ import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-h
 import { getConversationForLegacyChatSession, getConversationForUser } from "@/lib/conversations/store.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { listArtifactsForUser, presentArtifact, ArtifactStoreError } from "@/lib/hermes/artifact-store.ts";
+import { recoverHyperframesArtifacts } from "@/lib/hyperframes/artifact.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,7 @@ export async function GET(request: Request) {
       if (sourceSurface && conversation.surface !== sourceSurface) {
         throw new ApiError(400, "invalid_artifact_scope", "The conversation does not belong to the requested artifact surface.");
       }
+      await recoverHyperframesArtifacts(userId, conversation.id);
     }
     if (gardenSlug) authorizeGardenAccess(userId, gardenSlug);
     const artifacts = listArtifactsForUser({
@@ -44,6 +46,7 @@ export async function GET(request: Request) {
       conversationPublicId: conversationId,
       gardenSlug,
       sourceSurface,
+      presentation: url.searchParams.get("presentation") === "transcript" ? "transcript" : undefined,
     });
     for (const slug of new Set(artifacts.map((artifact) => artifact.garden_slug).filter((slug): slug is string => Boolean(slug)))) {
       authorizeGardenAccess(userId, slug);

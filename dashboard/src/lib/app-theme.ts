@@ -287,7 +287,7 @@ export function nextAppThemeTransition(
  */
 export type AppThemeSchedule =
   | { mode: "manual" }
-  | { mode: "sun"; sunriseMinutes: number; sunsetMinutes: number };
+  | { mode: "sun"; sunriseMinutes: number; sunsetMinutes: number; overrideUntil?: number };
 
 function minuteOfDay(date: Date): number {
   return date.getHours() * 60 + date.getMinutes();
@@ -299,11 +299,28 @@ export function appThemeScheduleForShell(
 ): AppThemeSchedule {
   if (getStoredAppThemeMode(storage) !== "sun") return { mode: "manual" };
   const times = effectiveSolarTimes(now, getStoredAppThemeLocation(storage));
+  const overrideUntil = getStoredAppThemeOverrideUntil(storage);
   return {
     mode: "sun",
     sunriseMinutes: minuteOfDay(times.sunrise),
     sunsetMinutes: minuteOfDay(times.sunset),
+    ...(overrideUntil !== null && overrideUntil > now.getTime() ? { overrideUntil } : {}),
   };
+}
+
+/** A desktop origin can change ports between launches. Restore the durable
+ * preference before resolving the theme or hydrating account switches. */
+export function restoreAppThemeFromShell(
+  state: { theme: AppTheme; schedule: AppThemeSchedule },
+  storage: Pick<Storage, "setItem" | "removeItem">,
+): void {
+  storage.setItem(APP_THEME_STORAGE_KEY, state.theme);
+  storage.setItem(APP_THEME_MODE_STORAGE_KEY, state.schedule.mode);
+  if (state.schedule.mode === "sun" && state.schedule.overrideUntil) {
+    storage.setItem(APP_THEME_OVERRIDE_STORAGE_KEY, String(state.schedule.overrideUntil));
+  } else {
+    storage.removeItem(APP_THEME_OVERRIDE_STORAGE_KEY);
+  }
 }
 
 function writeStorage(key: string, value: string): void {
@@ -328,66 +345,25 @@ export function clearAppThemeOverride(): void {
   removeStorage(APP_THEME_OVERRIDE_STORAGE_KEY);
 }
 
-let activeThemeTransition: ViewTransition | null = null;
-let pendingAppTheme: AppTheme | null = null;
-let themeTransitionSequence = 0;
-
 /**
- * Paint a changed theme as a short crossfade. The first render stays instant:
- * the inline layout script has already selected its theme before this module
- * runs, and animating hydration would turn a correct first paint into a flash.
+ * Paint a changed theme immediately.
+ *
+ * A root View Transition snapshots the entire renderer into GPU textures. In
+ * Breadboard that renderer can contain long chats, canvases, videos, and many
+ * embedded tools, so a cosmetic crossfade can stall Electron and retain a
+ * large amount of memory. A theme is only a token swap and must stay cheap no
+ * matter how complex the current page is.
  */
 export function rememberEffectiveAppTheme(
   theme: AppTheme,
-  options: { animate?: boolean; persist?: boolean } = {},
+  options: { persist?: boolean } = {},
 ): void {
   if (options.persist !== false) writeStorage(APP_THEME_STORAGE_KEY, theme);
 
   const root = document.documentElement;
-  const currentTheme = root.dataset.theme;
-  if (pendingAppTheme === theme) return;
-  if (currentTheme === theme && pendingAppTheme === null) return;
-
-  const canAnimate =
-    options.animate !== false &&
-    isAppTheme(currentTheme) &&
-    currentTheme !== theme &&
-    document.visibilityState !== "hidden" &&
-    typeof document.startViewTransition === "function";
-  const sequence = ++themeTransitionSequence;
-
-  activeThemeTransition?.skipTransition();
-  activeThemeTransition = null;
-  pendingAppTheme = null;
-
-  if (!canAnimate) {
-    delete root.dataset.themeTransition;
-    root.dataset.theme = theme;
-    return;
-  }
-
-  root.dataset.themeTransition = "true";
-  pendingAppTheme = theme;
-  try {
-    const transition = document.startViewTransition(() => {
-      if (sequence !== themeTransitionSequence) return;
-      root.dataset.theme = theme;
-    });
-    activeThemeTransition = transition;
-    void transition.finished
-      .catch(() => undefined)
-      .then(() => {
-        if (sequence !== themeTransitionSequence) return;
-        activeThemeTransition = null;
-        pendingAppTheme = null;
-        delete root.dataset.themeTransition;
-      });
-  } catch {
-    activeThemeTransition = null;
-    pendingAppTheme = null;
-    delete root.dataset.themeTransition;
-    root.dataset.theme = theme;
-  }
+  if (root.dataset.theme === theme) return;
+  delete root.dataset.themeTransition;
+  root.dataset.theme = theme;
 }
 
 /**

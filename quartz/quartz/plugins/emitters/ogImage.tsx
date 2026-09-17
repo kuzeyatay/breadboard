@@ -10,6 +10,7 @@ import { Readable } from "stream"
 import { write } from "./helpers"
 import { BuildCtx } from "../../util/ctx"
 import { QuartzPluginData } from "../vfile"
+import { fileOf } from "../../processors/treeSpill"
 import fs from "node:fs/promises"
 import { styleText } from "util"
 
@@ -115,7 +116,8 @@ export const CustomOgImages: QuartzEmitterPlugin<Partial<SocialImageOptions>> = 
       const bodyFont = cfg.theme.typography.body
       const fonts = await getSatoriFonts(headerFont, bodyFont)
 
-      for (const [_tree, vfile] of content) {
+      for (const entry of content) {
+        const vfile = fileOf(entry)
         if (vfile.data.frontmatter?.socialImage !== undefined) continue
         yield processOgImage(ctx, vfile.data, fonts, fullOptions)
       }

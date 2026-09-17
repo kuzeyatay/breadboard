@@ -1,5 +1,6 @@
 import { FullSlug, isRelativeURL, resolveRelative, simplifySlug } from "../../util/path"
 import { QuartzEmitterPlugin } from "../types"
+import { fileOf } from "../../processors/treeSpill"
 import { write } from "./helpers"
 import { BuildCtx } from "../../util/ctx"
 import { VFile } from "vfile"
@@ -39,8 +40,8 @@ async function* processFile(ctx: BuildCtx, file: VFile) {
 export const AliasRedirects: QuartzEmitterPlugin = () => ({
   name: "AliasRedirects",
   async *emit(ctx, content) {
-    for (const [_tree, file] of content) {
-      yield* processFile(ctx, file)
+    for (const entry of content) {
+      yield* processFile(ctx, fileOf(entry))
     }
   },
   async *partialEmit(ctx, _content, _resources, changeEvents) {

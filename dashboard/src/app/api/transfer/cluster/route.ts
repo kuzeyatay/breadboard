@@ -15,8 +15,10 @@ export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
     const path = new URL(request.url).searchParams.get("path") ?? "";
-    return transferDownloadResponse(exportClusterArchive(userId, path));
+    return transferDownloadResponse(exportClusterArchive(userId, path), request.method === "HEAD");
   } catch (error) {
     return transferErrorResponse(error);
   }
 }
+
+export const HEAD = GET;

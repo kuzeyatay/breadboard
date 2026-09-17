@@ -30,13 +30,31 @@ import {
   type InteractiveVisualizerVersionManifest,
 } from "./interactive-visualizer-types.ts";
 import {
+  interactiveVisualizerPlanForAttempt,
   validateInteractiveVisualizerPlan,
 } from "./interactive-visualizer-plan.ts";
 import { interactiveVisualizerConfig } from "./interactive-visualizer-config.ts";
+import { precheckInteractiveVisualizerPackage } from "./interactive-visualizer-plan.ts";
 import {
   isInlineInteractiveVisualizerSkill,
   isInteractiveVisualizerSkill,
 } from "./interactive-visualizer-skills.ts";
+
+/**
+ * A request the model can repair by itself: the plan or package failed the
+ * structural validators before any job, attempt, or Runtime work was spent.
+ * Carries an HTTP status so the tool route answers 400 with the field-level
+ * message instead of collapsing it into a sanitized 500.
+ */
+export class InteractiveVisualizerInputError extends Error {
+  readonly status = 400;
+  readonly code = "interactive_visualizer_invalid_input";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "InteractiveVisualizerInputError";
+  }
+}
 
 interface InteractiveVisualizerRow {
   artifact_id: string;
@@ -277,7 +295,9 @@ export function planInteractiveVisualizer(input: {
   plan: unknown;
 }): { artifact: ReturnType<typeof presentArtifact>; plan: InteractiveVisualizerPlan } {
   const checked = validateInteractiveVisualizerPlan(input.plan);
-  if (!checked.plan) throw new Error(checked.errors.join("; "));
+  if (!checked.plan) {
+    throw new InteractiveVisualizerInputError(checked.errors.join("; ").slice(0, 1_500));
+  }
   const plan = checked.plan;
   const inlineInChat = isInlineInteractiveVisualizerSkill(input.context.sourceSkill);
   const artifactInput: CreateArtifactInput = {
@@ -350,6 +370,10 @@ export async function createInteractiveVisualizer(input: {
   plan: unknown;
   packageValue: unknown;
 }) {
+  const packageProblems = precheckInteractiveVisualizerPackage(input.packageValue);
+  if (packageProblems.length > 0) {
+    throw new InteractiveVisualizerInputError(packageProblems.join("; ").slice(0, 1_500));
+  }
   const planned = planInteractiveVisualizer({
     context: input.context,
     title: input.title,
@@ -385,6 +409,10 @@ export async function generateInteractiveVisualizer(input: {
     !isInteractiveVisualizerSkill(input.artifact.source_skill)
   ) {
     throw new Error("The artifact is not owned by an interactive visualizer skill.");
+  }
+  const packageProblems = precheckInteractiveVisualizerPackage(input.packageValue);
+  if (packageProblems.length > 0) {
+    throw new InteractiveVisualizerInputError(packageProblems.join("; ").slice(0, 1_500));
   }
   const visualizer = visualizerRow(input.artifact.id);
   const attempt = visualizer.repair_attempt + 1;
@@ -431,7 +459,12 @@ export async function generateInteractiveVisualizer(input: {
     },
   });
 
-  const plan = JSON.parse(visualizer.plan_json) as InteractiveVisualizerPlan;
+  const plan = interactiveVisualizerPlanForAttempt({
+    plan: JSON.parse(visualizer.plan_json) as InteractiveVisualizerPlan,
+    operation: input.operation,
+    packageValue: input.packageValue,
+    revisionPrompt: input.revisionPrompt,
+  });
   setLifecycle({ artifactId: input.artifact.id, status: "validating" });
   updateJob({ id: jobId, status: "validating" });
   recordArtifactPipelineEvent({
@@ -674,7 +707,13 @@ export async function generateInteractiveVisualizer(input: {
         failureCategory: "browser",
       };
     }
-    if (visualizerRow(input.artifact.id).cancellation_requested) {
+    const latest = visualizerRow(input.artifact.id);
+    if (latest.current_job_id !== jobId) {
+      throw new Error(
+        "interactive visualizer job was superseded by a newer attempt before publication",
+      );
+    }
+    if (latest.cancellation_requested) {
       throw new Error("interactive visualizer cancelled by user");
     }
     if (!compiled.sourceHash || !bundle.hash || !bundle.html) {
@@ -746,13 +785,14 @@ export async function generateInteractiveVisualizer(input: {
     const transaction = db.transaction(() => {
       db.prepare(`
         UPDATE hermes_interactive_visualizers
-        SET lifecycle_status = 'ready', active_version = ?, mode = ?,
+        SET lifecycle_status = 'ready', active_version = ?, mode = ?, plan_json = ?,
             current_job_id = NULL, repair_attempt = 0,
             cancellation_requested = 0, last_error_json = NULL, updated_at = ?
         WHERE artifact_id = ?
       `).run(
         candidateVersion,
         compiled.manifest!.mode === "hybrid" ? "3d" : compiled.manifest!.mode,
+        json(plan),
         now,
         input.artifact.id,
       );
@@ -788,15 +828,31 @@ export async function generateInteractiveVisualizer(input: {
       attemptsRemaining: maxAttempts,
     };
   } catch (error) {
-    const cancelled = /cancel/i.test(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    const cancelled = /cancel/i.test(message);
+    const superseded = /superseded/i.test(message) ||
+      visualizerRow(input.artifact.id).current_job_id !== jobId;
     const safe = publicError(error);
     updateJob({
       id: jobId,
-      status: cancelled ? "cancelled" : "failed",
+      status: cancelled || superseded ? "cancelled" : "failed",
       validation,
       tests,
       error: safe,
     });
+    if (superseded) {
+      // A newer attempt owns the artifact row now. Writing "cancelled" or the
+      // cancellation flag here would make that attempt discard its own
+      // successful publication a minute later; only this job row records it.
+      return {
+        artifact: presentArtifact(getArtifactById(input.artifact.id)!),
+        validation,
+        tests,
+        repairable: false,
+        attemptsRemaining: Math.max(0, maxAttempts - attempt),
+        failureCategory: "cancelled",
+      };
+    }
     setLifecycle({
       artifactId: input.artifact.id,
       status: cancelled ? "cancelled" : "failed",
@@ -905,18 +961,23 @@ export function rollbackInteractiveVisualizer(input: {
     runId: input.context.runId,
     assistantMessageId: input.context.assistantMessageId,
   });
-  const manifest = (metadata.interactiveVisualizer as Record<string, unknown>).manifest as
+  const versionMetadata = metadata.interactiveVisualizer as Record<string, unknown>;
+  const manifest = versionMetadata.manifest as
     | InteractiveVisualizerVersionManifest
     | undefined;
   db.prepare(`
     UPDATE hermes_interactive_visualizers
-    SET lifecycle_status = 'ready', active_version = ?, mode = ?,
+    SET lifecycle_status = 'ready', active_version = ?, mode = ?, plan_json = ?,
         current_job_id = NULL, repair_attempt = 0, cancellation_requested = 0,
         last_error_json = NULL, updated_at = ?
     WHERE artifact_id = ?
   `).run(
     input.version,
-    manifest?.mode ?? visualizer.mode,
+    manifest?.mode === "hybrid" ? "3d" : manifest?.mode ?? visualizer.mode,
+    json(versionMetadata.plan ?? {
+      ...JSON.parse(visualizer.plan_json),
+      mode: manifest?.mode ?? visualizer.mode,
+    }),
     new Date().toISOString(),
     input.artifact.id,
   );

@@ -99,7 +99,7 @@ test("current location remains an ephemeral, geography-only hint", () => {
   assert.match(prompt, /only when geography materially changes the requested answer/i);
   assert.match(prompt, /destination the user names in their message always takes precedence/i);
   assert.match(prompt, /do not infer a home\s+or save the location to memory/i);
-  assert.match(prompt, /never claim current location is available/i);
+  assert.match(prompt, /never claim current\s+location is available/i);
 });
 
 test("current recommendations are researched, ranked, and made practical", () => {

@@ -54,10 +54,25 @@ export function longHeaderTimeoutFetch(): typeof fetch {
   return chatmockFetch;
 }
 
-export function createChatmockClient(baseURL?: string): OpenAI {
+export interface ChatmockClientOptions {
+  /** Whole-request deadline. The SDK's own default is ten minutes, which a
+   * deep reasoning model on a long prompt routinely exceeds. */
+  timeout?: number;
+  /** SDK-internal retries. Callers that account for exactly one provider POST
+   * per logical call (Learn) must pass 0: a retry after an ambiguous timeout
+   * is a duplicate request behind their back. */
+  maxRetries?: number;
+}
+
+export function createChatmockClient(
+  baseURL?: string,
+  options: ChatmockClientOptions = {},
+): OpenAI {
   return new OpenAI({
     baseURL: baseURL ?? process.env.OPENAI_BASE_URL,
     apiKey: process.env.OPENAI_API_KEY,
     fetch: longHeaderTimeoutFetch(),
+    ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+    ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
   });
 }

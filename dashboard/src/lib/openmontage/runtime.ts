@@ -18,7 +18,7 @@
 // install needs no admin rights and no second copy of anything.
 
 import { spawnSync } from "node:child_process";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   dashboardDataDir,
   repositoryRoot,

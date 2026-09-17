@@ -1,10 +1,12 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
-import { THOUGHT_TOPOLOGY_SCHEMA_VERSION, type ThoughtTopology, type ThoughtTopologyCache } from "./types.ts";
+import { THOUGHT_TOPOLOGY_SCHEMA_VERSION, type ThoughtTopology, type ThoughtTopologyCache, type ThoughtTopologyCacheNode, type ThoughtTopologyCacheEdge } from "./types.ts";
 
 export const TOPOLOGY_ARTIFACT_REL_PATH = ".breadboard/thought-topology.json";
 export const TOPOLOGY_CACHE_REL_PATH = ".breadboard/thought-topology-cache.json";
+const BUILD_CACHE_REL_PATH = ".breadboard/thought-topology-build-cache.json";
+const BUILD_JOURNAL_REL_PATH = ".breadboard/thought-topology-build-journal.jsonl";
 
 function readJson<T>(filePath: string): T | null {
   try {
@@ -45,6 +47,60 @@ export function readThoughtTopologyCache(gardenDir: string): ThoughtTopologyCach
   return value?.schemaVersion === THOUGHT_TOPOLOGY_SCHEMA_VERSION && value.nodes && value.edges
     ? value
     : null;
+}
+
+/** Private, resumable work. The published cache/artifact remain untouched until
+ * the complete graph passes content verification. Hashes are checked by the
+ * builder before reusing any record, including across Garden edits. */
+export function openThoughtTopologyBuildCache(gardenDir: string, published: ThoughtTopologyCache | null) {
+  const snapshotPath = path.join(gardenDir, BUILD_CACHE_REL_PATH);
+  const journalPath = path.join(gardenDir, BUILD_JOURNAL_REL_PATH);
+  const saved = readJson<ThoughtTopologyCache>(snapshotPath);
+  const resume = saved?.schemaVersion === THOUGHT_TOPOLOGY_SCHEMA_VERSION && saved.nodes && saved.edges ? saved : null;
+  const cache: ThoughtTopologyCache = {
+    schemaVersion: THOUGHT_TOPOLOGY_SCHEMA_VERSION,
+    sourceRevision: published?.sourceRevision ?? resume?.sourceRevision ?? "pending",
+    scoringVersion: published?.scoringVersion ?? resume?.scoringVersion ?? "pending",
+    nodes: { ...published?.nodes, ...resume?.nodes },
+    edges: { ...published?.edges, ...resume?.edges },
+  };
+  try {
+    if (fs.statSync(journalPath).size <= 64 * 1024 * 1024) {
+      for (const line of fs.readFileSync(journalPath, "utf8").split("\n")) {
+        // A process killed mid-append can leave one truncated final record.
+        try {
+          const entry = JSON.parse(line);
+          if (entry.schemaVersion !== THOUGHT_TOPOLOGY_SCHEMA_VERSION) continue;
+          if (entry.kind === "node" && typeof entry.value?.id === "string" && entry.value.summary) cache.nodes[entry.value.id] = entry.value;
+          if (entry.kind === "edge" && typeof entry.value?.pairHash === "string" && entry.value.explanation) cache.edges[entry.value.pairHash] = entry.value;
+        } catch { /* Keep every complete record preceding a torn append. */ }
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  // Compact before reopening the journal. A crash between these writes only
+  // replays duplicate records, which are idempotent by their cache keys.
+  atomicJson(snapshotPath, cache);
+  fs.writeFileSync(journalPath, "", { mode: 0o600 });
+  const append = (kind: "node" | "edge", value: ThoughtTopologyCacheNode | ThoughtTopologyCacheEdge) => {
+    const handle = fs.openSync(journalPath, "a", 0o600);
+    try {
+      fs.writeFileSync(handle, `${JSON.stringify({ schemaVersion: THOUGHT_TOPOLOGY_SCHEMA_VERSION, kind, value })}\n`, "utf8");
+      fs.fsyncSync(handle);
+    } finally { fs.closeSync(handle); }
+  };
+  return {
+    cache,
+    node(value: ThoughtTopologyCacheNode) { append("node", value); },
+    edge(value: ThoughtTopologyCacheEdge) { append("edge", value); },
+  };
+}
+
+export function clearThoughtTopologyBuildCache(gardenDir: string): void {
+  for (const relative of [BUILD_CACHE_REL_PATH, BUILD_JOURNAL_REL_PATH]) {
+    fs.rmSync(path.join(gardenDir, relative), { force: true });
+  }
 }
 
 /** A renderer snapshot is complete only when every connection has durable

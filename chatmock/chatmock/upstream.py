@@ -14,7 +14,7 @@ from websockets.sync.client import connect as websocket_connect
 
 from .config import CHATGPT_RESPONSES_URL
 from .http_replay_safety import is_proven_preconnect_failure
-from .limits import parse_rate_limit_headers
+from .limits import parse_rate_limit_headers, spent_window_message
 from .http import build_cors_headers
 from .model_registry import normalize_model_name
 from .accounts import note_account_exhausted, select_account
@@ -80,11 +80,12 @@ def _note_account_exhausted_quietly(
     account_key: str,
     *,
     reason: str,
+    seconds: int | None = None,
 ) -> None:
     """Persist quota state without replacing the upstream's exact response."""
 
     try:
-        note_account_exhausted(account_key, reason=reason)
+        note_account_exhausted(account_key, reason=reason, seconds=seconds)
     except Exception:
         pass
 
@@ -323,8 +324,8 @@ def start_upstream_raw_request(
         # different account, and hand the caller a sibling's answer instead of
         # the rejection when one is available.
         if status_code == 429 and account is not None:
-            detail = _quota_detail(upstream)
-            _note_account_exhausted_quietly(account.key, reason=detail)
+            detail, resets_in = _quota_detail(upstream)
+            _note_account_exhausted_quietly(account.key, reason=detail, seconds=resets_in)
             if verbose:
                 print(f"[ChatMock] account {account.label} is out of quota; trying the next one")
             retry = None if strict_single_attempt else _retry_with_next_account(
@@ -336,34 +337,125 @@ def start_upstream_raw_request(
             if retry is not None:
                 _close_quietly(upstream)
                 return retry
+            # No sibling can take it: the client sees this account's refusal.
+            # The response itself stays exactly as the backend sent it — the
+            # receipts and rate-limit readers depend on that — but it carries
+            # the account, so the relay can say whose window is spent.
+            _tag_quota_refusal(upstream, account.label, detail, resets_in)
 
+        _tag_account(upstream, account)
         return upstream, None
 
     raise AssertionError("pre-connect retry loop ended unexpectedly")
 
 
-def _quota_detail(upstream: Any) -> str:
-    """The upstream's own explanation of a 429, when it gives one."""
+def _human_duration(seconds: int) -> str:
+    days, rest = divmod(max(0, int(seconds)), 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{max(1, minutes)}m"
+
+
+def _tag_account(upstream: Any, account: Any) -> None:
+    """Name the account that paid for this response, for the usage ledger."""
+    try:
+        upstream.chatmock_account = account
+    except Exception:
+        pass
+
+
+def _tag_quota_refusal(upstream: Any, account_label: str, detail: str, resets_in: int | None) -> None:
+    try:
+        upstream.chatmock_quota_refusal = {
+            "account": account_label,
+            "detail": detail,
+            "resetsInSeconds": resets_in,
+        }
+    except Exception:
+        pass
+
+
+def quota_refusal_message(upstream: Any) -> str | None:
+    """A 429 the reader can act on, or None when this is not a tagged refusal.
+
+    The backend's body says only "The usage limit has been reached", which a
+    reader checks against the wrong meter. Name the account, the window, and
+    when it comes back instead.
+    """
+    tag = getattr(upstream, "chatmock_quota_refusal", None)
+    if not isinstance(tag, dict):
+        return None
+    sentence = str(tag.get("detail") or "The usage limit has been reached").rstrip(".")
+    message = f"{sentence} for {tag.get('account') or 'the signed-in ChatGPT account'}"
+    resets_in = tag.get("resetsInSeconds")
+    if isinstance(resets_in, int) and resets_in > 0:
+        message += f"; it resets in {_human_duration(resets_in)}"
+    return message + ". Sign in with another ChatGPT account or pick a model from a different provider."
+
+
+def _quota_detail(upstream: Any) -> tuple[str, int | None]:
+    """The upstream's own explanation of a 429, and how long it says it lasts.
+
+    The body of a plan-window rejection carries `resets_in_seconds`; the rate
+    limit headers say the same for the window that is spent. Without it the
+    account would rest for the default quarter hour and be re-benched every
+    quarter hour for days, each time failing one request over to a sibling.
+
+    The message names the window when that can be told. The backend's own
+    sentence, "The usage limit has been reached", sent a reader to the
+    five-hour meter — nearly empty — and left the three-day reset on a
+    barely used account looking like a bug in the app.
+    """
+    message: str | None = None
+    resets_in: int | None = None
     try:
         body = upstream.json()
         error = body.get("error") if isinstance(body, dict) else None
-        message = error.get("message") if isinstance(error, dict) else None
-        if isinstance(message, str) and message.strip():
-            return message.strip()[:300]
+        if isinstance(error, dict):
+            text = error.get("message")
+            if isinstance(text, str) and text.strip():
+                message = text.strip()[:300]
+            resets_in = _positive_seconds(error.get("resets_in_seconds"))
     except Exception:
         pass
-    reset = None
+    snapshot = None
     try:
         snapshot = parse_rate_limit_headers(upstream.headers)
-        if snapshot is not None and snapshot.primary is not None:
-            reset = snapshot.primary.resets_in_seconds
     except Exception:
-        reset = None
-    return (
-        f"the plan's usage window is spent; it resets in about {int(reset) // 3600}h"
-        if isinstance(reset, (int, float)) and reset > 0
-        else "the plan's usage window is spent"
-    )
+        snapshot = None
+    if resets_in is None and snapshot is not None:
+        windows = [w for w in (snapshot.primary, snapshot.secondary) if w is not None]
+        spent = [w for w in windows if (w.used_percent or 0) >= 100] or windows
+        resets_in = next(
+            (
+                _positive_seconds(w.resets_in_seconds)
+                for w in spent
+                if _positive_seconds(w.resets_in_seconds) is not None
+            ),
+            None,
+        )
+    window = spent_window_message(resets_in, snapshot)
+    if window is not None:
+        message = window
+    if message is None:
+        message = (
+            f"the plan's usage window is spent; it resets in about {resets_in // 3600}h"
+            if resets_in is not None and resets_in >= 3600
+            else "the plan's usage window is spent"
+        )
+    return message, resets_in
+
+
+def _positive_seconds(value: Any) -> int | None:
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 def _retry_with_next_account(
@@ -441,12 +533,11 @@ def _retry_with_next_account(
         return None, error_response
 
     if getattr(upstream, "status_code", None) == 429:
-        _note_account_exhausted_quietly(
-            replacement.key,
-            reason=_quota_detail(upstream),
-        )
+        detail, resets_in = _quota_detail(upstream)
+        _note_account_exhausted_quietly(replacement.key, reason=detail, seconds=resets_in)
         _close_quietly(upstream)
         return None
+    _tag_account(upstream, replacement)
     return upstream, None
 
 

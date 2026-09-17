@@ -26,7 +26,7 @@ test("audio previews use the Breadboard transport and start closed and paused", 
     dialog.indexOf('source.playable === false ? ('),
   );
 
-  assert.match(dialog, /<DialogPrimitive\.Root defaultOpen=\{false\}>/);
+  assert.match(dialog, /<DialogPrimitive\.Root open=\{open\} onOpenChange=\{handleOpenChange\}>/);
   assert.match(dialog, /<BreadboardAudioPlayer[\s\S]*?src=\{source\.href\}[\s\S]*?label=\{source\.name\}/);
   assert.doesNotMatch(dialog, /<ReclaimingAudio/);
   assert.doesNotMatch(audioBranch, /autoPlay/);
@@ -34,6 +34,14 @@ test("audio previews use the Breadboard transport and start closed and paused", 
   assert.match(player, /className=\{styles\.scrubber\}/);
   assert.match(player, /preload="metadata"/);
   assert.doesNotMatch(player, /autoPlay/);
+});
+
+test("attachment previews reject detached pointer click replays", () => {
+  assert.match(dialog, /const pointerActivationAtRef = useRef<number \| null>\(null\)/);
+  assert.match(dialog, /onPointerDown=\{\(event\) => \{[\s\S]*?pointerActivationAtRef\.current = event\.timeStamp/);
+  assert.match(dialog, /event\.detail === 0 \|\|[\s\S]*?pointerActivationDelay <= 1_000/);
+  assert.match(dialog, /if \(!hasDirectActivation\) event\.preventDefault\(\)/);
+  assert.match(dialog, /dialogState\.sourceIdentity === sourceIdentity && dialogState\.open/);
 });
 
 test("PDF and video have a context menu while audio deliberately does not", () => {

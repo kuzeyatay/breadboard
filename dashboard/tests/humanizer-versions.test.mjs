@@ -131,6 +131,28 @@ test("a manual edit is stored as its own reversible origin", () => {
   assert.equal(state.activeIndex, 1);
 });
 
+test("garden history follows rewritten versions and restores original verification", () => {
+  const { conversation, assistant } = completedTurn();
+  db.prepare("INSERT INTO clusters(id, user_id, name, slug) VALUES (1, 1, 'Physics', 'physics')").run();
+  db.prepare("INSERT INTO chat_sessions(id, cluster_id, user_id, title) VALUES (1, 1, 1, 'Charge')").run();
+  db.prepare(`INSERT INTO chat_messages(session_id, role, content, order_index, canonical_message_id)
+    VALUES (1, 'assistant', ?, 0, ?)`).run(ORIGINAL, assistant.id);
+  const legacy = () => db.prepare("SELECT content, tool_calls FROM chat_messages WHERE canonical_message_id = ?").get(assistant.id);
+
+  versions.addAssistantContentVersion({ conversationId: conversation.id, messageId: assistant.id,
+    expectedContent: ORIGINAL, content: REWRITE, origin: "humanizer" });
+  assert.equal(legacy().content, REWRITE);
+  const metadata = JSON.parse(legacy().tool_calls);
+  assert.equal(metadata.contentVersions[0].content, ORIGINAL);
+  assert.equal(metadata.activeContentVersion, 1);
+  assert.equal(metadata.verification, undefined);
+  assert.match(metadata.progressNotes.at(-1), /Rewritten naturally/);
+
+  versions.selectAssistantContentVersion({ conversationId: conversation.id, messageId: assistant.id, index: 0 });
+  assert.equal(legacy().content, ORIGINAL);
+  assert.equal(JSON.parse(legacy().tool_calls).verification.state, "verified");
+});
+
 test("an adopted rewrite keeps its compact score for transcript reloads", () => {
   const { conversation, assistant } = completedTurn();
   const review = {

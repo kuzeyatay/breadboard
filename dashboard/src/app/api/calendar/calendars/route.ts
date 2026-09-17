@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
+import { refreshGoogleCalendars } from "@/lib/calendar/google-service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +10,10 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const userId = await requireUserId();
+    const sync = await refreshGoogleCalendars(userId);
     return NextResponse.json({
       calendars: getCalendarStore().listCalendarsEnsuringDefault(userId),
+      syncError: sync.error,
     });
   } catch (error) {
     return apiErrorResponse(error);

@@ -21,6 +21,8 @@ import {
   readOpenDocument,
 } from "@/lib/document-structure/index.ts";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { readPdfAttachment } from "@/lib/pdf-attachment-reader.ts";
+import { storeDocumentText } from "@/lib/conversations/document-reading-store.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,10 +43,8 @@ export const runtime = "nodejs";
  * The file arrives as the raw request body rather than a form part, so a large
  * board pack is not parsed into memory; the filename rides in a header.
  *
- * **PDFs are stored here but read elsewhere.** `/api/extract-text` already
- * renders their pages and falls back to transcribing them with a vision model
- * when a scan has no text layer — a mature path worth reusing rather than
- * reimplementing. So a PDF gets its bytes kept here and its words from there.
+ * PDFs are read page by page, with OCR for scans, and the reading is saved
+ * beside the original so a retried turn receives the same document context.
  */
 export async function POST(request: Request) {
   try {
@@ -83,14 +83,22 @@ export async function POST(request: Request) {
     const stored = await writeDocumentBlob({ userId, format, body: request.body });
 
     if (format === "pdf") {
+      const reading = await readPdfAttachment(fs.readFileSync(stored.path), {
+        signal: request.signal,
+        handwriting: request.headers.get("x-document-handwriting") === "true",
+      }).catch((error) => {
+        removeDocumentBlob({ userId, blobId: stored.blobId });
+        throw new ApiError(422, "document_read_failed", error instanceof Error ? error.message : "The PDF could not be read. Retry the attachment.");
+      });
+      storeDocumentText({ userId, blobId: stored.blobId }, reading.text);
       return NextResponse.json({
         blobId: stored.blobId,
         format: stored.format,
         sizeBytes: stored.byteSize,
-        text: null,
+        text: reading.text,
         summary: null,
         figures: [],
-        warnings: [],
+        warnings: reading.warning ? [reading.warning] : [],
       });
     }
 
@@ -142,6 +150,7 @@ export async function POST(request: Request) {
       text = documentContextText({ filename, summary: null, markdown: "", warnings });
     }
 
+    storeDocumentText({ userId, blobId: stored.blobId }, text);
     // Rendering and embedding a hundred pages is tens of seconds of GPU work,
     // so it happens after this response rather than inside it. Until it lands,
     // the retrieval path reads the status sidecar and inlines the whole

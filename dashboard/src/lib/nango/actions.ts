@@ -1,5 +1,7 @@
 import type { ConnectedAppProxyRequest } from "../connected-apps/types.ts";
+import { randomUUID } from "node:crypto";
 import { ApiError } from "../hermes/route-core.ts";
+import { readGoogleExportOptions } from "../calendar/google-export.ts";
 
 // The exported identifier is retained for source compatibility; agents see a
 // provider-neutral built-in namespace.
@@ -479,7 +481,19 @@ function emailAddressList(
   return values?.map((value) => newlineSafe(value, field));
 }
 
-function rawGmailMessage(args: Args): string {
+export interface GmailAttachment {
+  filename: string;
+  mimeType: string;
+  data: Buffer;
+}
+
+export const MAX_GMAIL_ATTACHMENT_BYTES = 25_000_000;
+
+export function gmailGardenSlugs(args: Args): string[] {
+  return optionalStringArray(args, "gardenSlugs", 20, 200) ?? [];
+}
+
+export function rawGmailMessage(args: Args, attachments: GmailAttachment[] = []): string {
   const to = emailAddressList(args, "to", true) ?? [];
   const cc = emailAddressList(args, "cc", false);
   const bcc = emailAddressList(args, "bcc", false);
@@ -490,21 +504,42 @@ function rawGmailMessage(args: Args): string {
   if (!["text/plain", "text/html"].includes(contentType)) {
     invalid("contentType", "must be text/plain or text/html");
   }
-  const lines = [
+  const headers = [
     `To: ${to.join(", ")}`,
     ...(cc?.length ? [`Cc: ${cc.join(", ")}`] : []),
     ...(bcc?.length ? [`Bcc: ${bcc.join(", ")}`] : []),
     `Subject: ${subject}`,
     "MIME-Version: 1.0",
+  ];
+  const textPart = [
     `Content-Type: ${contentType}; charset=UTF-8`,
     "Content-Transfer-Encoding: 8bit",
     "",
     body,
   ];
+  if (!attachments.length) {
+    return Buffer.from([...headers, ...textPart].join("\r\n"), "utf8").toString("base64url");
+  }
+  if (attachments.reduce((sum, item) => sum + item.data.length, 0) > MAX_GMAIL_ATTACHMENT_BYTES) {
+    throw new ApiError(413, "gmail_attachment_too_large", "Gmail attachments exceed 25 MB. Export the garden and share it using a file-sharing service, then email its accessible link. No email was sent.");
+  }
+  const boundary = `breadboard-${randomUUID()}`;
+  const lines = [...headers, `Content-Type: multipart/mixed; boundary="${boundary}"`, "",
+    `--${boundary}`, ...textPart];
+  for (const attachment of attachments) {
+    const filename = newlineSafe(attachment.filename, "filename").replace(/["\\]/g, "_");
+    const mimeType = newlineSafe(attachment.mimeType, "mimeType");
+    lines.push(`--${boundary}`, `Content-Type: ${mimeType}; name="${filename}"`,
+      `Content-Disposition: attachment; filename="${filename}"`,
+      "Content-Transfer-Encoding: base64", "",
+      attachment.data.toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "");
+  }
+  lines.push(`--${boundary}--`, "");
   return Buffer.from(lines.join("\r\n"), "utf8").toString("base64url");
 }
 
 const mailComposeProperties = {
+  gardenSlugs: stringArrayProperty("Optional exact Garden slugs from garden_list to attach as complete .garden files. Breadboard exports them server-side; do not put local paths or base64 in the message body. Gmail's 25 MB attachment limit applies.", 20),
   to: stringArrayProperty("Recipient email addresses.", 100),
   cc: stringArrayProperty("Optional CC recipient email addresses.", 100),
   bcc: stringArrayProperty("Optional BCC recipient email addresses.", 100),
@@ -522,6 +557,9 @@ const mailComposeProperties = {
 };
 
 function gmailSendBody(args: Args): Record<string, unknown> {
+  if (gmailGardenSlugs(args).length) {
+    throw new ApiError(400, "garden_attachments_require_scope", "Garden attachments must be prepared with the current user's authorized Garden scope.");
+  }
   const threadId = optionalString(args, "threadId", 500);
   return withoutUndefined({
     raw: rawGmailMessage(args),
@@ -562,7 +600,7 @@ function googleEventBody(args: Args, partial: boolean): Record<string, unknown> 
     invalid("start/end", "must be supplied together");
   }
   const allDay = optionalBoolean(args, "allDay") ?? false;
-  const timeZone = optionalString(args, "timeZone", 100);
+  const timeZone = optionalString(args, "timeZone", 100) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const attendeeEmails = optionalStringArray(args, "attendees", 200, 500);
   const body = withoutUndefined({
     summary,
@@ -633,12 +671,33 @@ const googleEventProperties = {
     "ISO 8601 start time, or YYYY-MM-DD when allDay is true.",
   ),
   end: stringProperty(
-    "ISO 8601 end time, or YYYY-MM-DD when allDay is true.",
+    "Exclusive ISO 8601 end time, or the day AFTER the last all-day date as YYYY-MM-DD when allDay is true.",
   ),
   allDay: booleanProperty("Treat start and end as all-day dates."),
-  timeZone: stringProperty("Optional IANA time zone."),
+  timeZone: stringProperty("IANA time zone; defaults to the desktop time zone."),
   attendees: stringArrayProperty("Optional attendee email addresses.", 200),
 };
+
+const googleExportProperties = {
+  calendarId: stringProperty("Destination Google calendar ID; defaults to primary. Use the resolved ID returned by the preview."),
+  sourceCalendarIds: { type: "array", items: { type: "integer", minimum: 1 }, minItems: 1,
+    description: "Optional Breadboard source calendar IDs. Omit to copy all local and subscribed calendars; Google mirrors are always skipped." },
+  eventIds: { type: "array", items: { type: "integer", minimum: 1 }, minItems: 1,
+    description: "Optional Breadboard event IDs. Omit to copy every stored event, including past events and recurring series." },
+  timeZone: stringProperty("IANA time zone for Breadboard wall-clock times; defaults to the desktop time zone."),
+  afterEventId: integerProperty("Continuation cursor returned in nextArgs; omit for the first batch.", 0, Number.MAX_SAFE_INTEGER),
+  throughEventId: integerProperty("Snapshot boundary returned by preview or nextArgs. Preserve it for every batch.", 0, Number.MAX_SAFE_INTEGER),
+};
+
+function googleExportRequest(args: Args, preview: boolean): ConnectedAppProxyRequest {
+  try {
+    readGoogleExportOptions(args);
+  } catch (error) {
+    throw new ApiError(400, "google_export_invalid_arguments", error instanceof Error ? error.message : "Invalid calendar export arguments.");
+  }
+  // Server-owned operation, intercepted by the Composio executor before proxying.
+  return { method: preview ? "GET" : "POST", endpoint: "/breadboard/calendar/google-export" };
+}
 
 const graphEventProperties = {
   subject: stringProperty("Event title.", { maxLength: 10_000 }),
@@ -1378,6 +1437,20 @@ const actions: NangoActionDefinition[] = [
   }),
 
   // Google Calendar
+  fixedAction({
+    name: "google_calendar_preview_breadboard_export",
+    title: "Preview Breadboard calendar export",
+    description: "Prepare copying Breadboard events to Google Calendar: report the destination, source calendars and full event count without writing to Google. Returns exportArgs for google_calendar_export_breadboard_events. Includes past events and recurrence; skips Google mirrors.",
+    connectionSlug: "google-calendar", risk: "read", inputSchema: schema(googleExportProperties),
+    build: (args) => googleExportRequest(args, true),
+  }),
+  fixedAction({
+    name: "google_calendar_export_breadboard_events",
+    title: "Copy Breadboard events to Google Calendar",
+    description: "Copy a resumable batch of Breadboard calendar events to Google, preserving times, all-day dates and recurrence. Use preview exportArgs first. Retry safely: existing copies are verified and skipped. Continue with nextArgs until complete=true; report failures and never claim all copied while remaining>0. Does not send invitations.",
+    connectionSlug: "google-calendar", risk: "write", inputSchema: schema(googleExportProperties),
+    build: (args) => googleExportRequest(args, false),
+  }),
   fixedAction({
     name: "google_calendar_list_calendars",
     title: "List Google calendars",

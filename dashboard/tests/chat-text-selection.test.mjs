@@ -96,6 +96,11 @@ test("selected-text questions are explicitly grounded in their excerpt", () => {
   assert.match(prompt, /"sourceResponse":"The complete source response/);
   assert.match(prompt, /User question:\nlike how many\?/);
   assert.match(prompt, /Do not switch to another topic/);
+  assert.match(prompt, /Ask here.*side-conversation turn/);
+  assert.match(prompt, /scope of this question only/);
+  assert.match(prompt, /preserving the goals, constraints, preferences/);
+  assert.match(prompt, /selection instructions expire after this answer/);
+  assert.match(prompt, /interpret the new request against the full conversation/);
 });
 
 test("a selection follow-up never owes live web evidence", () => {
@@ -116,14 +121,25 @@ test("the transcript exposes highlight and both question actions", () => {
   const ui = source("src/app/components/chat-text-selection-ui.tsx");
   const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
   const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
+  const controller = source("src/app/components/use-text-selection-controller.tsx");
+  const pdf = source("src/app/components/pdf-assistant.tsx");
   assert.match(ui, /CHAT_HIGHLIGHT_COLORS\.map/);
   assert.match(ui, /aria-label="Highlight color"/);
+  assert.doesNotMatch(ui, />\s*Highlight\s*<\/span>/);
+  assert.match(ui, /aria-label=\{note \? "Edit note" : "Add note"\}/);
+  assert.match(ui, /aria-label="Note about selected text"/);
+  assert.match(ui, />\s*Save note\s*</);
   assert.match(ui, />\s*Ask in chat\s*</);
   assert.match(ui, />\s*Ask here\s*</);
   assert.match(panel, /CHAT_HIGHLIGHT_STORAGE_PREFIX/);
-  assert.match(panel, /loadChatHighlights/);
+  assert.match(panel, /useTextHighlights/);
+  assert.match(panel, /normalizeChatHighlights/);
   assert.match(panel, /applySelectionHighlight/);
   assert.match(panel, /removeSelectionHighlight/);
+  assert.match(panel, /onSaveNote=\{saveSelectionNote\}/);
+  assert.match(garden, /onSaveNote=\{saveSelectionNote\}/);
+  assert.match(controller, /onSaveNote=\{saveNote\}/);
+  assert.match(pdf, /onSaveNote=\{\(note\) =>/);
   assert.match(panel, /kind: "highlight"/);
   assert.match(panel, /message\.textSelection\?\.mode === "inline"/);
   assert.match(panel, /QuotedChatSelection/);
@@ -136,19 +152,14 @@ test("the transcript exposes highlight and both question actions", () => {
   assert.match(ui, /widthClassName = "max-w-3xl"/);
   assert.match(panel, /widthClassName=\{chatColumnWidthClass\}/);
   assert.match(garden, /widthClassName="max-w-5xl"/);
-  // "Ask here" replaces a running response and keeps its rich selection
-  // payload. It must never be flattened into the plain-text follow-up queue.
+  // "Ask here" keeps its selection and starts an independent runtime turn.
   assert.match(composer, /if \(canSubmitDuringRun\) \{\s*onSubmitDuringRun\?\.\(\);/);
   assert.match(
     panel,
     /onSubmitDuringRun=\{[\s\S]*?composerSelection\?\.mode === "inline"/,
   );
-  assert.match(garden, /const replacesActiveTurn =[\s\S]*?mode === "inline"/);
-  assert.match(garden, /agentActivity\.abort\(\)\.finally/);
-  assert.match(
-    garden,
-    /handleSubmit\(question, undefined, \[\], false, undefined, \{\s*textSelection: selection/,
-  );
+  assert.match(garden, /void sendInlineQuestion\(question, selection, attachments\)/);
+  assert.doesNotMatch(garden, /replacesActiveTurn|pendingImmediateInlineQuestion/);
 });
 
 test("selection context and anchors persist through the canonical turn API", () => {
@@ -215,8 +226,8 @@ test("nested Ask here cards preserve their ancestors", () => {
     assert.match(surface, /if \(mode === "chat"\) setOpenInlineAnswers\(\[\]\)/);
     assert.doesNotMatch(surface, /setOpenInlineAnswer\(null\)/);
   }
-  // Interacting with a child card is not an outside click on its parent.
-  assert.match(ui, /target\.closest\("\.bb-chat-selection-menu, \.bb-inline-answer"\)/);
+  // Typing a follow-up keeps the reading panel open.
+  assert.match(ui, /target\.closest\("\.bb-chat-selection-menu, \.bb-inline-answer, \.bb-composer-overlay"\)/);
 });
 
 test("inline answers use Breadboard's pastel-yellow theme token", () => {
@@ -252,6 +263,7 @@ test("plain highlights use a neutral treatment instead of Ask here's yellow", ()
   );
   assert.match(markdown, /'data-chat-selection-kind': annotation\.kind \?\? 'answer'/);
   assert.match(markdown, /'data-chat-highlight-color': annotation\.color \?\? 'blue'/);
+  assert.match(markdown, /annotation\.note === b\[index\]\.note/);
   assert.match(markdown, /resolveChatTextSelectionAnchor/);
   assert.match(markdown, /language-image-results/);
   assert.match(markdown, /Open highlight options/);

@@ -6,6 +6,7 @@ import { speechRequest } from "@/lib/speech/request-client";
 import { playSubscriptionText } from "@/lib/speech/playback";
 import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
 import { useEffect, useRef, useState } from "react";
+import MetalSendButton from "@/app/components/effects/metal-send-button";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ClickyMessage, ClickyPoint, ClickySnapshot } from "@/lib/clicky/companion";
@@ -427,6 +428,10 @@ export default function ClickyPage() {
                 <span className={styles.srOnly}>Cancel</span>
               </button>
             )}
+            <MetalSendButton
+              variant="circle"
+              disabled={!bridge || busy || recording || !question.trim()}
+            >
             <button
               type="submit"
               disabled={!bridge || busy || recording || !question.trim()}
@@ -437,6 +442,7 @@ export default function ClickyPage() {
               <svg viewBox="0 0 24 24" aria-hidden><path d="M12 19.5v-15m0 0-6 6m6-6 6 6" /></svg>
               <span className={styles.srOnly}>Send</span>
             </button>
+            </MetalSendButton>
           </div>
         </form>
         <div className={styles.preferences}>

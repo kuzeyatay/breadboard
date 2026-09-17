@@ -21,7 +21,7 @@ test("a right-click offers a new tab and a new window, and no longer copies the 
   assert.doesNotMatch(linkMenu, /CopyLinkItem|Copy link|clipboard/);
   // The default menu lists the tab first, then the window, as a browser does.
   assert.match(linkMenu, /<OpenInNewTabItem href=\{href\} \/>\s*<OpenInNewWindowItem href=\{href\} \/>/);
-  // "Open in new window" keeps the navbar's contract: a real `target="_blank"`
+  // "Open in new window" keeps its explicit contract: a real `target="_blank"`
   // anchor the desktop shell turns into a window of its own.
   assert.match(
     linkMenu,
@@ -109,6 +109,8 @@ test("a tab is named after the place it shows, not the product", async () => {
   assert.equal(describeTabUrl(at("/gardens/quantum")).kind, "workspace");
   assert.equal(describeTabUrl(at("/garden/quantum")).kind, "lessons");
   assert.equal(describeTabUrl(at("/plan")).kind, "plan");
+  assert.equal(describeTabUrl(at("/pdf?src=%2Fapi%2Ffiles%2Fnotes.pdf")).kind, "pdf");
+  assert.equal(tabLabel("notes.pdf", at("/pdf?src=%2Fapi%2Ffiles%2Fnotes.pdf")), "notes.pdf");
   assert.equal(describeTabUrl("not a url").label, "New tab");
 });
 

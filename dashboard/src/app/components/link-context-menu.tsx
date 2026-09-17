@@ -115,7 +115,7 @@ function openBrowserWindow(event: MouseEvent<HTMLAnchorElement>, href: string): 
 
 /**
  * A menu row that opens `href` in a new window. It is a real anchor with
- * `target="_blank"`, the same contract the navbar uses: the desktop shell
+ * `target="_blank"`: the desktop shell
  * turns that into a new Breadboard window.
  */
 export function OpenInNewWindowItem({

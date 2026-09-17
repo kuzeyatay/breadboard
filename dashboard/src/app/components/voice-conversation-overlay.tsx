@@ -5,10 +5,10 @@ import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/
 /**
  * Voice mode — the whole screen, one drawn ring, and the chat underneath.
  *
- * Double-tapping the composer's microphone opens this. Everything said here is
- * sent through the host's ordinary chat send, so the conversation is already in
- * the transcript the moment the screen is closed: this is a way to talk to the
- * same chat, not a second one.
+ * Double-tapping the composer's microphone opens this. Spoken turns, except
+ * requests to close voice mode, go through the host's ordinary chat send, so the
+ * conversation is already in the transcript the moment the screen is closed:
+ * this is a way to talk to the same chat, not a second one.
  */
 
 import { speechRequest } from "@/lib/speech/request-client";
@@ -18,10 +18,15 @@ import { createPortal } from 'react-dom';
 import { encodePcm16Wav } from '@/lib/speech/live-dictation';
 import { describeMicrophoneBlock, type MicrophoneFix } from '@/lib/speech/microphone-access';
 import { playSpeechBlob, stopSpeechPlayback } from '@/lib/speech/playback';
+import { playVoicePassages } from '@/lib/speech/voice-playback';
+import { createReadingPosition } from '@/lib/speech/reading-position';
 import { prepareLocalSpeech, speechErrorMessage } from '@/lib/speech/prepare-client';
 import { holdClapWake } from '@/lib/speech/clap-wake';
 import { desktopTabsBridge } from '@/lib/desktop-browser-tabs';
-import { speakVoiceGreeting, VOICE_GREETING } from '@/lib/speech/voice-greeting';
+import { nextVoiceGreeting, speakVoiceGreeting } from '@/lib/speech/voice-greeting';
+import { voiceCompanionBridge } from '@/lib/speech/voice-window';
+import VoiceResponse from './voice-response';
+import { useVoiceMiniDrag } from './use-voice-mini-drag';
 import {
   advanceVoiceTurn,
   createVoiceNarrationQueue,
@@ -30,14 +35,17 @@ import {
   initialVoiceTurn,
   inkRingPath,
   inkUnderlinePath,
+  isVoiceExitRequest,
   latestAssistantReply,
   scribbleRings,
   speakableText,
   speechThreshold,
   stageLabel,
+  voiceTranscriptMessages,
   voiceTurnVerdict,
   type VoiceMessage,
   type VoiceStage,
+  type VoiceTranscriptQuestion,
 } from '@/lib/speech/voice-conversation';
 
 /** The desktop shell, where one exists: it paints the window's own chrome. */
@@ -48,16 +56,20 @@ interface DesktopWindowBridge {
 interface Props {
   open: boolean;
   compact?: boolean;
+  /** A dedicated voice tab stays open when another tab is selected. */
+  closeOnTabChange?: boolean;
   notice?: React.ReactNode;
   greetOnOpen?: boolean;
   onClose: () => void;
   onOpenSettings?: () => void;
   /** Sends one spoken turn through the host's normal chat send. */
-  onSend: (text: string) => void;
+  onSend: (text: string) => void | Promise<void>;
   /** The host's live chat messages — where the answer to read out comes from. */
   messages: readonly VoiceMessage[];
   /** True while the host is generating an answer. */
   busy: boolean;
+  /** Ask-question tools must be spoken before listening for their answer. */
+  clarification?: { requestId: string; question: string } | null;
 }
 
 /**
@@ -93,6 +105,7 @@ async function responseMessage(response: Response, fallback: string): Promise<st
 export default function VoiceConversationOverlay({
   open,
   compact = false,
+  closeOnTabChange = true,
   notice,
   greetOnOpen = false,
   onClose,
@@ -100,18 +113,30 @@ export default function VoiceConversationOverlay({
   onSend,
   messages,
   busy,
+  clarification = null,
 }: Props) {
   const [stage, setStage] = useState<VoiceStage>('opening');
   const [heard, setHeard] = useState('');
+  const [liveHeard, setLiveHeard] = useState('');
+  const [questions, setQuestions] = useState<VoiceTranscriptQuestion[]>([]);
   const [reply, setReply] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [blocked, setBlocked] = useState<MicrophoneFix | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
-  const [greeting, setGreeting] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const [greeting, setGreeting] = useState<string | null>(null);
   const greetingAbortRef = useRef<AbortController | null>(null);
 
   const stageNodeRef = useRef<HTMLDivElement | null>(null);
+  const miniDrag = useVoiceMiniDrag(open && minimized && !voiceCompanionBridge()?.setMinimized, stageNodeRef);
   const ringButtonRef = useRef<HTMLButtonElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const captionRef = useRef<HTMLDivElement | null>(null);
+  const narratedTextRef = useRef<HTMLDivElement | null>(null);
+  const narrationProgressRef = useRef(0);
+  const [spokenReply, setSpokenReply] = useState('');
+  const followTranscriptRef = useRef(true);
+  const spokenQuestionRef = useRef<string | null>(null);
   const captureRef = useRef<{
     stream: MediaStream;
     context: AudioContext;
@@ -121,27 +146,37 @@ export default function VoiceConversationOverlay({
   } | null>(null);
   const chunksRef = useRef<Float32Array[]>([]);
   const subscriptionRef = useRef<SubscriptionVoice | null>(null);
+  const recoveryControllerRef = useRef<AbortController | null>(null);
+  const recoveryAttemptsRef = useRef(0);
+  const subscriptionErrorRef = useRef<unknown>(null);
+  const recoverSubscriptionRef = useRef<(error: unknown) => Promise<void>>(async () => {});
+  const openingSessionRef = useRef<number | null>(null);
   const turnRef = useRef(initialVoiceTurn());
   const listeningRef = useRef(false);
   const levelRef = useRef(0);
   const smoothedRef = useRef(0);
   const stageRef = useRef<VoiceStage>('opening');
   const awaitingRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const narrationRef = useRef<ReturnType<typeof createVoiceNarrationQueue> | null>(null);
   const watchdogRef = useRef<number | null>(null);
   const deferredFinishRef = useRef<number | null>(null);
   const resumeListeningRef = useRef<number | null>(null);
   const requestAbortRef = useRef<Set<AbortController>>(new Set());
-  /** The chat has taken the turn: it is generating, or the turn is in its log. */
+  /** The chat has recorded this particular spoken turn. */
   const dispatchedRef = useRef(false);
   const sentMessageCountRef = useRef(0);
+  const sentTurnRef = useRef<{ text: string; questionId?: string } | null>(null);
   /** Bumped on every close, so audio callbacks from a past session go nowhere. */
   const sessionRef = useRef(0);
   const messagesRef = useRef(messages);
-  const busyRef = useRef(busy);
+  const onSendRef = useRef(onSend);
+  const clarificationRef = useRef(clarification);
 
   messagesRef.current = messages;
-  busyRef.current = busy;
+  onSendRef.current = onSend;
+  clarificationRef.current = clarification;
 
   const enterStage = useCallback((next: VoiceStage) => {
     stageRef.current = next;
@@ -167,6 +202,8 @@ export default function VoiceConversationOverlay({
   }, []);
 
   const releaseMicrophone = useCallback(() => {
+    recoveryControllerRef.current?.abort();
+    recoveryControllerRef.current = null;
     void subscriptionRef.current?.close();
     subscriptionRef.current = null;
     listeningRef.current = false;
@@ -190,7 +227,13 @@ export default function VoiceConversationOverlay({
   }, []);
 
   const beginTurn = useCallback(() => {
+    if (recoveryControllerRef.current) return;
+    if (subscriptionRef.current?.isHealthy?.() === false) {
+      void recoverSubscriptionRef.current(subscriptionErrorRef.current);
+      return;
+    }
     stopNarration();
+    setLiveHeard('');
     if (resumeListeningRef.current !== null) {
       window.clearTimeout(resumeListeningRef.current);
       resumeListeningRef.current = null;
@@ -203,49 +246,69 @@ export default function VoiceConversationOverlay({
     enterStage('listening');
   }, [enterStage, stopNarration]);
 
-  const startNarration = useCallback(() => {
+  const startNarration = useCallback((range?: { startIndex: number; initialMessage?: VoiceMessage }) => {
     stopNarration();
+    // Connect silently during model work. A failed warmup is retried by speak;
+    // it must not interrupt a healthy microphone or delay sending the turn.
+    void subscriptionRef.current?.prepareSpeaker?.().catch(() => {});
     let readingDelay = 0;
     narrationRef.current = createVoiceNarrationQueue({
       startIndex: sentMessageCountRef.current,
-      async speak({ text }, signal) {
-        const spoken = speakableText(text);
-        if (!spoken) return;
+      ...range,
+      async speak({ text, kind }, signal) {
+        const spoken = await speakableText(text, signal);
+        signal.throwIfAborted();
+        if (!spoken) {
+          if (kind === 'answer') setReply(text);
+          return;
+        }
+        narrationProgressRef.current = 0;
+        setSpokenReply(spoken);
+        followTranscriptRef.current = true;
         setReply(text);
         enterStage('speaking');
         listeningRef.current = false;
         const voice = subscriptionRef.current;
+        const onProgress = (progress: number) => {
+          if (!signal.aborted) narrationProgressRef.current = progress;
+        };
+        voice?.setListening(false);
         if (voice) {
           const stop = () => voice.stopSpeaking();
           signal.addEventListener('abort', stop, { once: true });
-          try { await voice.speak(spoken); }
+          try { await voice.speak(spoken, true, onProgress); }
           finally { signal.removeEventListener('abort', stop); }
           return;
         }
-        const response = await speechRequest('/api/speech/synthesize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: spoken }),
-          signal,
+        await playVoicePassages(spoken, {
+          signal, onProgress,
+          async synthesize(text, signal) {
+            const response = await speechRequest('/api/speech/synthesize', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text }), signal,
+            });
+            if (!response.ok) throw new Error(await responseMessage(response, 'That message could not be spoken.'));
+            return response.blob();
+          },
+          async play(blob, signal, onProgress) {
+            signal.throwIfAborted();
+            const stop = () => stopSpeechPlayback();
+            signal.addEventListener('abort', stop, { once: true });
+            try {
+              // Await actual playout, not just the media element starting.
+              await new Promise<void>((resolve, reject) => {
+                void playSpeechBlob(blob, error => error ? reject(error) : resolve(), onProgress).catch(reject);
+              });
+            } finally {
+              signal.removeEventListener('abort', stop);
+            }
+          },
         });
-        if (!response.ok) throw new Error(await responseMessage(response, 'That message could not be spoken.'));
-        const blob = await response.blob();
-        signal.throwIfAborted();
-        // playSpeechBlob resolves when playback starts. The queue must wait
-        // for its completion callback before starting the next message.
-        signal.addEventListener('abort', stopSpeechPlayback, { once: true });
-        try {
-          await new Promise<void>((resolve, reject) => {
-            void playSpeechBlob(blob, (error) => error ? reject(error) : resolve()).catch(reject);
-          });
-        } finally {
-          signal.removeEventListener('abort', stopSpeechPlayback);
-        }
       },
       onError(caught, item) {
         setNote(caught instanceof Error ? caught.message : 'That message could not be spoken.');
         if (item.kind === 'answer') {
-          readingDelay = Math.min(9_000, 1_500 + speakableText(item.text).length * 25);
+          readingDelay = Math.min(9_000, 1_500 + item.text.length * 25);
         }
       },
       onIdle(answered) {
@@ -265,28 +328,71 @@ export default function VoiceConversationOverlay({
     });
   }, [beginTurn, enterStage, stopNarration]);
 
+  /** Spoken input and widget follow-ups use the same turn and narration queue. */
+  const sendText = useCallback((text: string) => {
+    listeningRef.current = false;
+    subscriptionRef.current?.setListening(false);
+    chunksRef.current = [];
+    setNote(null);
+    setHeard(text);
+    setLiveHeard('');
+    setReply('');
+    const questionId = clarificationRef.current?.requestId;
+    if (questionId) setQuestions(current => current.map(question =>
+      question.requestId === questionId ? { ...question, answer: text } : question,
+    ));
+    sentMessageCountRef.current = messagesRef.current.length;
+    sentTurnRef.current = { text, questionId };
+    const continuingIndex = clarificationRef.current
+      ? messagesRef.current.findLastIndex(message => message.role === 'assistant') : -1;
+    startNarration(continuingIndex < 0 ? undefined : {
+      startIndex: continuingIndex,
+      initialMessage: messagesRef.current[continuingIndex],
+    });
+    dispatchedRef.current = false;
+    awaitingRef.current = true;
+    enterStage('thinking');
+    clearWatchdog();
+    const session = sessionRef.current;
+    const sentTurn = sentTurnRef.current;
+    const deliveryFailed = () => {
+      if (session !== sessionRef.current || !awaitingRef.current) return;
+      if (sentTurn !== sentTurnRef.current || dispatchedRef.current) return;
+      awaitingRef.current = false;
+      clearWatchdog();
+      setNote('The chat has not confirmed your answer. Please try again.');
+      beginTurn();
+    };
+    watchdogRef.current = window.setTimeout(deliveryFailed, DISPATCH_WATCHDOG_MS);
+    // Microphone callbacks live for the whole voice session. The host's send
+    // handler can change when a question arrives, so always use the latest one.
+    try { void Promise.resolve(onSendRef.current(text)).catch(deliveryFailed); }
+    catch { deliveryFailed(); }
+  }, [beginTurn, clearWatchdog, enterStage, startNarration]);
+
   /** Transcribe the buffered utterance and hand it to the chat. */
   const finishTurn = useCallback(
     async (session: number) => {
       const capture = captureRef.current;
       const chunks = chunksRef.current;
+      const voice = subscriptionRef.current;
       chunksRef.current = [];
-      if (!capture || chunks.length === 0) return;
+      if (!capture || (!voice && chunks.length === 0)) return;
       enterStage('transcribing');
 
-      const wav = encodePcm16Wav(chunks, capture.context.sampleRate);
       const controller = new AbortController();
       requestAbortRef.current.add(controller);
       try {
-        const form = new FormData();
-        form.set('file', wav, 'voice-turn.wav');
-        const response = subscriptionRef.current
-          ? Response.json({ text: await subscriptionRef.current.finishTranscript() })
-          : await speechRequest('/api/speech/transcribe', {
-          method: 'POST',
-          body: form,
-          signal: controller.signal,
-        });
+        let response: Response;
+        if (voice) {
+          response = Response.json({ text: await voice.finishTranscript() });
+        } else {
+          const form = new FormData();
+          form.set('file', encodePcm16Wav(chunks, capture.context.sampleRate), 'voice-turn.wav');
+          response = await speechRequest('/api/speech/transcribe', {
+            method: 'POST', body: form, signal: controller.signal,
+          });
+        }
         if (session !== sessionRef.current) return;
         if (response.status === 202) {
           setNote('Voicebox is still downloading the transcription model. Say that again in a moment.');
@@ -296,7 +402,7 @@ export default function VoiceConversationOverlay({
         if (!response.ok) {
           const message = await responseMessage(response, 'That could not be transcribed.');
           setNote(message);
-          if ([401, 403, 409, 429, 503].includes(response.status)) {
+          if ([401, 403, 409].includes(response.status)) {
             releaseMicrophone();
             enterStage('unavailable');
             return;
@@ -313,40 +419,109 @@ export default function VoiceConversationOverlay({
           return;
         }
 
-        setNote(null);
-        setHeard(text);
-        setReply('');
-        sentMessageCountRef.current = messagesRef.current.length;
-        startNarration();
-        dispatchedRef.current = false;
-        awaitingRef.current = true;
-        enterStage('thinking');
-        onSend(text);
-        clearWatchdog();
-        watchdogRef.current = window.setTimeout(() => {
-          // Only a turn the chat never picked up is lost. One it is still
-          // thinking about is left alone however long it takes — the ring can
-          // be tapped to stop waiting.
-          if (session !== sessionRef.current || !awaitingRef.current) return;
-          if (dispatchedRef.current || busyRef.current) return;
+        // Closing voice is a local control: do not ask the model to respond or
+        // leave the microphone active while waiting for the host to close.
+        if (isVoiceExitRequest(text)) {
           awaitingRef.current = false;
-          setNote('That did not reach the chat. Try again.');
+          clearWatchdog();
+          stopNarration();
+          releaseMicrophone();
+          onCloseRef.current();
+          return;
+        }
+        recoveryAttemptsRef.current = 0;
+
+        sendText(text);
+      } catch (caught) {
+        if (session !== sessionRef.current || controller.signal.aborted) return;
+        if (subscriptionRef.current) {
+          await recoverSubscriptionRef.current(caught);
+        } else {
+          setNote(speechErrorMessage(caught, 'That could not be transcribed. Please try again.'));
           beginTurn();
-        }, DISPATCH_WATCHDOG_MS);
-      } catch {
-        if (session !== sessionRef.current) return;
-        setNote('That could not be transcribed.');
-        releaseMicrophone();
-        enterStage('unavailable');
+        }
       } finally {
         requestAbortRef.current.delete(controller);
       }
     },
-    [beginTurn, clearWatchdog, enterStage, onSend, releaseMicrophone, startNarration],
+    [beginTurn, clearWatchdog, enterStage, releaseMicrophone, sendText, stopNarration],
   );
 
-  const openMicrophone = useCallback(async (greet = greetOnOpen) => {
+  const openSubscription = useCallback((stream: MediaStream, signal: AbortSignal, session: number) =>
+    connectSubscriptionVoice({
+      microphone: stream, listening: false, signal,
+      onTranscript: text => {
+        if (!signal.aborted && session === sessionRef.current && listeningRef.current) setLiveHeard(text);
+      },
+      onDisconnect: caught => {
+        if (signal.aborted || session !== sessionRef.current) return;
+        subscriptionErrorRef.current = caught;
+        // In-flight transcription/narration handles its own failure. An idle
+        // microphone must also recover, without waiting for another utterance.
+        if (stageRef.current === 'listening' || stageRef.current === 'paused') {
+          void recoverSubscriptionRef.current(caught);
+        }
+      },
+    }), []);
+
+  const recoverSubscription = useCallback(async (caught: unknown) => {
+    if (recoveryControllerRef.current) return;
+    const capture = captureRef.current;
+    if (!capture) return;
     const session = sessionRef.current;
+    const paused = stageRef.current === 'paused';
+    if (recoveryAttemptsRef.current >= 2) {
+      setNote(speechErrorMessage(caught, 'Voice could not reconnect. Please retry voice.'));
+      releaseMicrophone();
+      enterStage('unavailable');
+      return;
+    }
+    recoveryAttemptsRef.current++;
+    const controller = new AbortController();
+    recoveryControllerRef.current = controller;
+    listeningRef.current = false;
+    chunksRef.current = [];
+    clearDeferredWork();
+    requestAbortRef.current.add(controller);
+    setNote('Reconnecting voice…');
+    enterStage('opening');
+    const previous = subscriptionRef.current;
+    try {
+      // Release the old server session before allocating its replacement.
+      await previous?.close();
+      if (session !== sessionRef.current || controller.signal.aborted) return;
+      const voice = await openSubscription(capture.stream, controller.signal, session);
+      if (session !== sessionRef.current || controller.signal.aborted) { await voice.close(); return; }
+      subscriptionRef.current = voice;
+      subscriptionErrorRef.current = null;
+      recoveryControllerRef.current = null;
+      setNote(paused ? null : 'Voice reconnected. Please say that again.');
+      if (paused) enterStage('paused');
+      else beginTurn();
+    } catch (error) {
+      if (session !== sessionRef.current || controller.signal.aborted) return;
+      setNote(speechErrorMessage(error, 'Voice could not reconnect. Please retry voice.'));
+      releaseMicrophone();
+      enterStage('unavailable');
+    } finally {
+      requestAbortRef.current.delete(controller);
+      if (recoveryControllerRef.current === controller) recoveryControllerRef.current = null;
+    }
+  }, [beginTurn, clearDeferredWork, enterStage, openSubscription, releaseMicrophone]);
+  recoverSubscriptionRef.current = recoverSubscription;
+
+  const openMicrophone = useCallback(async (greet = greetOnOpen) => {
+    if (openingSessionRef.current === sessionRef.current && stageRef.current === 'opening') return;
+    const session = ++sessionRef.current;
+    openingSessionRef.current = session;
+    recoveryAttemptsRef.current = 0;
+    subscriptionErrorRef.current = null;
+    const previous = subscriptionRef.current;
+    clearWatchdog();
+    clearDeferredWork();
+    stopNarration();
+    releaseMicrophone();
+    awaitingRef.current = false;
     let serviceReady = false;
     setBlocked(null);
     enterStage('opening');
@@ -365,30 +540,40 @@ export default function VoiceConversationOverlay({
     let openingStream: MediaStream | null = null;
     let openingContext: AudioContext | null = null;
     try {
+      await previous?.close();
+      if (session !== sessionRef.current) return;
       setNote('Preparing speech…');
-      const prepareController = new AbortController();
-      requestAbortRef.current.add(prepareController);
-      try {
-        await prepareLocalSpeech(prepareController.signal);
-        if (session !== sessionRef.current) return;
-        serviceReady = true;
-        setNote(null);
-      } finally {
-        requestAbortRef.current.delete(prepareController);
-      }
-
       const cloudController = new AbortController();
       requestAbortRef.current.add(cloudController);
       const cloud = await subscriptionSelected(cloudController.signal);
+      // The cloud connection validates its own credentials. A separate status
+      // request here delays adoption of the already prepared media session.
+      if (!cloud) await prepareLocalSpeech(cloudController.signal);
+      if (session !== sessionRef.current) return;
+      serviceReady = true;
+      setNote(null);
       const greetingController = new AbortController();
       greetingAbortRef.current = greetingController;
       requestAbortRef.current.add(greetingController);
       const welcome = async (voice?: SubscriptionVoice) => {
-        if (!greet) return;
-        setGreeting(true);
-        serviceReady = false;
-        try { await speakVoiceGreeting(greetingController.signal, voice); serviceReady = true; }
-        finally { if (session === sessionRef.current) setGreeting(false); }
+        if (!greet || session !== sessionRef.current || greetingController.signal.aborted) return;
+        const text = nextVoiceGreeting();
+        setGreeting(text);
+        try {
+          await speakVoiceGreeting(text, greetingController.signal, voice);
+        } catch (caught) {
+          if (session !== sessionRef.current) return;
+          // A greeting uses a separate reader. Its failure or a click to skip
+          // it must not tear down a healthy conversation microphone.
+          if (voice?.isHealthy() === false) throw caught;
+          if (!greetingController.signal.aborted) {
+            setNote(`${speechErrorMessage(caught, 'The greeting could not play.')} You can still speak.`);
+          }
+        } finally {
+          requestAbortRef.current.delete(greetingController);
+          if (greetingAbortRef.current === greetingController) greetingAbortRef.current = null;
+          if (session === sessionRef.current) setGreeting(null);
+        }
       };
       // Voicebox speaks before capture. OpenAI greets in the same duplex session,
       // with its microphone input muted until beginTurn below.
@@ -423,9 +608,9 @@ export default function VoiceConversationOverlay({
         levelRef.current = level;
         if (!listeningRef.current) return;
 
-        const copy = new Float32Array(input.length);
-        copy.set(input);
-        chunksRef.current.push(copy);
+        // Subscription audio is already streaming over WebRTC. Buffer PCM
+        // only for providers that need a file after the utterance finishes.
+        if (!cloud) chunksRef.current.push(new Float32Array(input));
         const frameMs = (input.length / context.sampleRate) * 1_000;
         turnRef.current = advanceVoiceTurn(turnRef.current, level, frameMs);
         const verdict = voiceTurnVerdict(turnRef.current);
@@ -453,7 +638,7 @@ export default function VoiceConversationOverlay({
       captureRef.current = { stream, context, source, processor, sink };
       if (cloud) {
         serviceReady = false;
-        const voice = await connectSubscriptionVoice({ microphone: stream, listening: false, signal: cloudController.signal });
+        const voice = await openSubscription(stream, cloudController.signal, session);
         serviceReady = true;
         if (session !== sessionRef.current) { await voice.close(); return; }
         subscriptionRef.current = voice;
@@ -480,23 +665,49 @@ export default function VoiceConversationOverlay({
         setNote(caught instanceof Error ? caught.message : 'The microphone could not be opened.');
       }
       enterStage('blocked');
+    } finally {
+      if (openingSessionRef.current === session) openingSessionRef.current = null;
     }
-  }, [beginTurn, enterStage, finishTurn, releaseMicrophone, greetOnOpen]);
+  }, [beginTurn, clearDeferredWork, clearWatchdog, enterStage, finishTurn, openSubscription, releaseMicrophone, stopNarration, greetOnOpen]);
 
   /* --- session lifecycle ------------------------------------------------- */
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const resizeVoice = useCallback(async (value: boolean) => {
+    const companion = voiceCompanionBridge();
+    try {
+      setMinimized(companion?.setMinimized ? await companion.setMinimized(value) : value);
+    } catch {
+      setNote('The voice window could not resize. Try again.');
+    }
+  }, []);
+
+  useEffect(() => voiceCompanionBridge()?.onMinimized?.(setMinimized), []);
+
+  useEffect(() => {
+    if (!open || !minimized) return;
+    const root = document.documentElement;
+    root.dataset.voiceMinimized = 'true';
+    if (voiceCompanionBridge()?.setMinimized) root.dataset.voiceMiniWindow = 'true';
+    return () => {
+      delete root.dataset.voiceMinimized;
+      delete root.dataset.voiceMiniWindow;
+    };
+  }, [open, minimized]);
 
   useEffect(() => {
     if (!open) return;
     sessionRef.current += 1;
     const releaseWake = holdClapWake();
     setHeard('');
+    setLiveHeard('');
+    setQuestions([]);
     setReply('');
     setNote(null);
     setShowTranscript(false);
+    setMinimized(false);
+    spokenQuestionRef.current = null;
+    followTranscriptRef.current = true;
     awaitingRef.current = false;
-    setGreeting(false);
+    setGreeting(null);
     void openMicrophone(greetOnOpen);
     return () => {
       sessionRef.current += 1;
@@ -519,36 +730,57 @@ export default function VoiceConversationOverlay({
   // otherwise sit on top of the terracotta as a cream band. The window goes
   // back to the app's theme on close.
   useEffect(() => {
-    if (!open) return;
+    if (!open || minimized) return;
     const root = document.documentElement;
     root.dataset.voiceStage = 'open';
     const tabs = desktopTabsBridge();
-    void tabs?.tabs({ type: 'voice-overlay', open: true });
-    const unsubscribe = tabs?.onTabsState(state => {
-      if (state.selfId !== state.activeId || state.navigationPending) onCloseRef.current();
-    });
     const shell = (window as Window & { breadboardDesktop?: DesktopWindowBridge })
       .breadboardDesktop;
-    void shell?.setTheme?.('voice');
-    return () => {
-      unsubscribe?.();
-      void tabs?.tabs({ type: 'voice-overlay', open: false });
-      delete root.dataset.voiceStage;
-      void shell?.setTheme?.(root.dataset.theme === 'dark' ? 'dark' : 'light');
+    let shellVoice = false;
+    let disposed = false;
+    const paintShell = (active: boolean) => {
+      if (shellVoice === active) return;
+      shellVoice = active;
+      void tabs?.tabs({ type: 'voice-overlay', open: active });
+      if (active) void shell?.setTheme?.('voice');
+      else void shell?.setTheme?.(root.dataset.theme === 'dark' ? 'dark' : 'light');
     };
-  }, [open]);
+    const syncTab = (state: { selfId?: number | null; activeId: number | null; navigationPending?: boolean }) => {
+      if (disposed) return;
+      const active = state.selfId === state.activeId && !state.navigationPending;
+      if (closeOnTabChange) { if (!active) onCloseRef.current(); }
+      else paintShell(active);
+    };
+    if (closeOnTabChange || !tabs) paintShell(true);
+    // A standalone page can first load in a background tab. Wait for its own
+    // activation before changing the window's native controls to voice colors.
+    let receivedTabState = false;
+    const unsubscribe = tabs?.onTabsState(state => { receivedTabState = true; syncTab(state); });
+    if (!closeOnTabChange && tabs) void tabs.getTabsState().then(state => {
+      if (!receivedTabState) syncTab(state);
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+      paintShell(false);
+      delete root.dataset.voiceStage;
+    };
+  }, [open, closeOnTabChange, minimized]);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (minimized && !stageNodeRef.current?.contains(event.target as Node)) return;
+        // A chat image opens its own portalled viewer above voice mode.
+        if (event.defaultPrevented || document.querySelector('.bb-viewer-overlay')) return;
         event.preventDefault();
         onClose();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    if (!minimized) document.body.style.overflow = 'hidden';
     // Keyboard focus follows the screen, so Tab and Enter act on the ring
     // rather than on the composer still mounted behind it.
     const focusFrame = window.requestAnimationFrame(() => ringButtonRef.current?.focus());
@@ -557,15 +789,46 @@ export default function VoiceConversationOverlay({
       window.removeEventListener('keydown', onKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [open, onClose]);
+  }, [open, onClose, minimized]);
 
   /* --- progress narration and the answer --------------------------------- */
 
   useEffect(() => {
+    if (!open || !clarification || !captureRef.current || greeting || stage === 'opening') return;
+    if (spokenQuestionRef.current === clarification.requestId) return;
+    spokenQuestionRef.current = clarification.requestId;
+    const messageIndex = messagesRef.current.findLastIndex(message => message.role === 'assistant');
+    const contentBefore = messagesRef.current[messageIndex]?.content ?? '';
+    setQuestions(current => [...current, {
+      requestId: clarification.requestId,
+      question: clarification.question,
+      messageIndex,
+      contentBefore,
+    }]);
+    awaitingRef.current = false;
+    clearWatchdog();
+    if (resumeListeningRef.current !== null) {
+      window.clearTimeout(resumeListeningRef.current);
+      resumeListeningRef.current = null;
+    }
+    // The run is waiting for input, so its question is a complete spoken turn
+    // even though the host still reports the run as active. Interrupt progress
+    // narration, read the question once, then the queue resumes the microphone.
+    startNarration({ startIndex: 0 });
+    narrationRef.current?.update([{ role: 'assistant', content: clarification.question }], false);
+  }, [clarification, clearWatchdog, greeting, open, stage, startNarration]);
+
+  useEffect(() => {
     if (!open || !awaitingRef.current) return;
-    // The chat is generating, or the turn is already in its log: either way it
-    // arrived, so the dispatch watchdog has nothing left to catch.
-    if (busy || messages.length > sentMessageCountRef.current) {
+    // A question keeps its host busy before the answer arrives. Only a matching
+    // user row acknowledges delivery; ongoing work and unrelated rows do not.
+    const sent = sentTurnRef.current;
+    const received = sent && messages.some((message, index) =>
+      message.role === 'user' && message.content.trim() === sent.text.trim() &&
+      (sent.questionId ? message.clientMessageId === `clarify:${sent.questionId}`
+        : index >= sentMessageCountRef.current),
+    );
+    if (received) {
       if (!dispatchedRef.current) {
         dispatchedRef.current = true;
         clearWatchdog();
@@ -573,6 +836,7 @@ export default function VoiceConversationOverlay({
     }
     const narration = narrationRef.current;
     if (!narration) return;
+    if (!dispatchedRef.current) return;
     // Sealed progress notes can play during generation. The answer is queued
     // only once it settles, behind any progress already being spoken.
     const answered = narration.update(messages, busy);
@@ -628,9 +892,66 @@ export default function VoiceConversationOverlay({
   const underlinePath = useMemo(() => inkUnderlinePath(43), []);
 
   const spokenTurns = useMemo(
-    () => messages.filter((message) => message.content.trim().length > 0).slice(-8),
-    [messages],
+    () => voiceTranscriptMessages(messages, questions).slice(-12),
+    [messages, questions],
   );
+
+  const pendingHeard = liveHeard || (heard && spokenTurns.findLast(message => message.role === 'user')?.content.trim() !== heard ? heard : '');
+  const pendingQuestion = clarification && !questions.some(question => question.requestId === clarification.requestId)
+    ? clarification.question : '';
+  const narrating = stage === 'speaking' && Boolean(reply);
+  const narratedIndex = narrating
+    ? spokenTurns.findLastIndex(message => message.role === 'assistant' && message.content.endsWith(reply.trim()))
+    : -1;
+
+  useEffect(() => {
+    // A settled answer may arrive all at once, or stream ahead of a progress
+    // note being spoken. Playback owns the viewport until narration finishes.
+    if (stageRef.current === 'speaking') return;
+    const transcript = transcriptRef.current;
+    if (transcript && followTranscriptRef.current) transcript.scrollTop = transcript.scrollHeight;
+  }, [spokenTurns, pendingHeard, pendingQuestion, open, stage, minimized]);
+
+  useEffect(() => {
+    if (!open || !narrating || minimized) return;
+    let frame = 0;
+    let firstFrame = true;
+    let readingText: HTMLElement | null = null;
+    let readingPosition: ReturnType<typeof createReadingPosition> | null = null;
+    const observer = new MutationObserver(() => { readingPosition = null; });
+    const spoken = spokenReply;
+    const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const followReading = () => {
+      const viewport = compact ? transcriptRef.current : captionRef.current;
+      const text = narratedTextRef.current;
+      if (viewport && text) {
+        if (text !== readingText) {
+          observer.disconnect();
+          observer.observe(text, { childList: true, characterData: true, subtree: true });
+          readingText = text;
+          readingPosition = null;
+        }
+        readingPosition ??= createReadingPosition(text, spoken);
+        const bounds = text.getBoundingClientRect();
+        const viewportTop = viewport.getBoundingClientRect().top;
+        const start = viewport.scrollTop + bounds.top - viewportTop;
+        const progress = narrationProgressRef.current;
+        const word = progress > 0 ? readingPosition(progress) : null;
+        const target = word ? Math.max(start, viewport.scrollTop + word.top - viewportTop - viewport.clientHeight * 0.45) : start;
+        // Reset immediately for each utterance. Follow media progress smoothly
+        // without React renders or restarting a browser smooth-scroll animation.
+        const next = firstFrame || motionPreference.matches ? target : viewport.scrollTop + (target - viewport.scrollTop) * 0.18;
+        viewport.scrollTop = Math.abs(target - next) < 1 ? target : next;
+        firstFrame = false;
+      }
+      frame = window.requestAnimationFrame(followReading);
+    };
+    frame = window.requestAnimationFrame(followReading);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [compact, narrating, open, spokenReply, minimized]);
 
   if (!open || typeof document === 'undefined') return null;
 
@@ -638,8 +959,10 @@ export default function VoiceConversationOverlay({
   // user turn clears it when that turn is sent, rather than replaying old input
   // as soon as the assistant finishes speaking.
   const showingReply = Boolean(reply);
-  const caption = greeting ? VOICE_GREETING : showingReply ? reply : heard;
-  const captionRole = greeting || showingReply ? 'reply' : 'heard';
+  const latestResponse = spokenTurns.at(-1)?.role === 'assistant' ? spokenTurns.at(-1) : undefined;
+  const captionResources = greeting ? undefined : latestResponse?.uiResources;
+  const caption = greeting ?? (showingReply ? reply : captionResources?.length ? '' : heard);
+  const captionRole = greeting || showingReply || captionResources?.length ? 'reply' : 'heard';
 
   function handleRingClick() {
     if (greeting) {
@@ -673,23 +996,23 @@ export default function VoiceConversationOverlay({
       return;
     }
     if (stage === 'blocked' || stage === 'unavailable') {
-      void openMicrophone();
+      void openMicrophone(false);
     }
   }
 
   const overlay = (
     <div
       ref={stageNodeRef}
-      className={`voice-stage${compact ? ' voice-stage-compact' : ''}`}
+      {...miniDrag}
+      className={`voice-stage${compact ? ' voice-stage-compact' : ''}${minimized ? ' voice-stage-minimized' : ''}`}
       data-stage={stage}
-      role="dialog"
-      aria-modal="true"
+      role={minimized ? 'region' : 'dialog'}
+      aria-modal={minimized ? undefined : true}
       aria-label="Voice conversation"
     >
       <div className="voice-stage-wash" aria-hidden />
 
       <header className="voice-stage-header">
-        {compact && <span className="voice-widget-name">Voice</span>}
         <div className="voice-stage-header-actions">
           {!compact && <button
             type="button"
@@ -699,6 +1022,9 @@ export default function VoiceConversationOverlay({
           >
             {showTranscript ? 'Hide chat' : 'Chat'}
           </button>}
+          <button type="button" className={compact ? 'voice-widget-close' : 'voice-chip'} onClick={() => void resizeVoice(true)} aria-label="Minimize voice assistant" title="Minimize voice assistant">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><path d="M4 8h8" /></svg>
+          </button>
           <button type="button" className={compact ? 'voice-widget-close' : 'voice-chip'} onClick={onClose} aria-label="Close voice mode" title="Close voice mode (Esc)">
             {compact ? <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><path d="m4 4 8 8M12 4l-8 8" /></svg> : <>Close<span className="voice-chip-hint">Esc</span></>}
           </button>
@@ -711,8 +1037,11 @@ export default function VoiceConversationOverlay({
           type="button"
           className="voice-ring-button"
           onClick={handleRingClick}
+          title={greeting ? 'Skip greeting and listen' : undefined}
           aria-label={
-            stage === 'listening'
+            greeting
+              ? 'Skip greeting and listen'
+              : stage === 'listening'
               ? 'Pause listening'
               : stage === 'speaking'
                 ? 'Interrupt and speak'
@@ -763,15 +1092,61 @@ export default function VoiceConversationOverlay({
           </svg>
         </button>
 
-        <p className="voice-stage-state">{greeting ? 'Hello' : stageLabel(stage)}</p>
-        {compact && <p className="voice-widget-hint">{stage === 'listening' ? 'Tap the ring to pause' : stage === 'paused' ? 'Tap the ring to listen' : stage === 'speaking' ? 'Tap the ring to speak' : stage === 'thinking' ? 'Working on your request' : 'Your voice assistant'}</p>}
+        {minimized && <>
+          <span className="voice-mini-status" role="status" title="Drag to move">
+            {greeting ? 'Hello' : stageLabel(stage)}
+          </span>
+          <button type="button" className="voice-mini-expand voice-widget-close"
+            onClick={() => void resizeVoice(false)} aria-label="Expand voice assistant" title="Expand">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+              <path d="M9 3h4v4M13 3 8.5 7.5M7 13H3V9M3 13l4.5-4.5" />
+            </svg>
+          </button>
+        </>}
 
-        {!compact && caption ? (
+        <p className="voice-stage-state">{greeting ? 'Hello' : stageLabel(stage)}</p>
+        {compact && <div
+          ref={transcriptRef}
+          className="voice-widget-transcript"
+          role="log"
+          aria-label="Conversation transcript"
+          aria-live="polite"
+          onScroll={event => {
+            if (stageRef.current === 'speaking') return;
+            const node = event.currentTarget;
+            followTranscriptRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+          }}
+        >
+          {spokenTurns.map((message, index) => <div key={`${message.role}-${index}`} className={`voice-widget-message voice-widget-message-${message.role}`}>
+            {message.role === 'assistant' ? <div ref={index === narratedIndex ? narratedTextRef : undefined}
+              className={index === narratedIndex ? 'voice-narrated-text' : undefined}>
+              <VoiceResponse message={message} onSend={sendText} />
+            </div> : <p>{message.content}</p>}
+          </div>)}
+          {narrating && narratedIndex < 0 && <div className="voice-widget-message voice-widget-message-assistant">
+            <div ref={narratedTextRef} className="voice-narrated-text"><VoiceResponse message={{ role: 'assistant', content: reply }} onSend={sendText} /></div>
+          </div>}
+          {pendingQuestion && !(narrating && pendingQuestion === reply) && <div className="voice-widget-message voice-widget-message-assistant">
+            <p>{pendingQuestion}</p>
+          </div>}
+          {pendingHeard && <div className="voice-widget-message voice-widget-message-user">
+            <p>{pendingHeard}</p>
+          </div>}
+          {greeting && spokenTurns.length === 0 && <div className="voice-widget-message voice-widget-message-assistant">
+            <p>{greeting}</p>
+          </div>}
+        </div>}
+
+        {!compact && (caption || captionResources?.length) ? (
           <div className={`voice-caption voice-caption-${captionRole}`}>
             {/* The text scrolls, the rule does not — otherwise a long answer
                 scrolls underneath it and the rule reads as a strikethrough. */}
-            <div className="voice-caption-text">
-              <p>{caption}</p>
+            <div ref={captionRef} className="voice-caption-text">
+              <div ref={narrating ? narratedTextRef : undefined} className={narrating ? 'voice-narrated-text' : undefined}>
+                {captionRole === 'reply' || captionResources?.length
+                  ? <VoiceResponse message={{ role: 'assistant', content: caption, uiResources: captionResources }} onSend={sendText} />
+                  : <p>{caption}</p>}
+              </div>
             </div>
             <svg className="voice-caption-rule" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden>
               <path d={underlinePath} />
@@ -789,7 +1164,7 @@ export default function VoiceConversationOverlay({
                 <li key={step}>{step}</li>
               ))}
             </ol>
-            <button type="button" className="voice-action" onClick={() => void openMicrophone()}>
+            <button type="button" className="voice-action" onClick={() => void openMicrophone(false)}>
               {blocked.retryLabel ?? 'Try again'}
             </button>
           </div>
@@ -801,7 +1176,7 @@ export default function VoiceConversationOverlay({
           </p>
         ) : null}
         {stage === 'unavailable' && <div className="mt-4 flex flex-wrap justify-center gap-3">
-          <button type="button" className="voice-chip" onClick={() => void openMicrophone()}>Retry voice</button>
+          <button type="button" className="voice-chip" onClick={() => void openMicrophone(false)}>Retry voice</button>
           {onOpenSettings && <button type="button" className="voice-chip" onClick={onOpenSettings}>Voice settings</button>}
         </div>}
       </div>
@@ -812,12 +1187,12 @@ export default function VoiceConversationOverlay({
             <p className="voice-transcript-empty">Nothing said yet.</p>
           ) : (
             spokenTurns.map((message, index) => (
-              <p
+              <div
                 key={`${message.role}-${index}`}
                 className={`voice-transcript-line voice-transcript-${message.role}`}
               >
-                {message.content}
-              </p>
+                {message.role === 'assistant' ? <VoiceResponse message={message} onSend={sendText} /> : <p>{message.content}</p>}
+              </div>
             ))
           )}
         </div>

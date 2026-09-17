@@ -8,19 +8,30 @@ Keeping one dispatcher means credential resolution, error shaping and streaming
 behave identically whether a request is council-mediated or a passthrough.
 """
 
+import inspect
 import json
+import socket
+import time
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
-from flask import Response, jsonify, make_response
+from flask import Response, jsonify, make_response, request
 
 from .. import failover
 from ..http import build_cors_headers
 from ..model_identity import with_resolved_model_identity
 from ..model_telemetry import record_model_attempt
-from . import anthropic, claude_code, openai_compatible, transport
-from .catalog import KIND_ANTHROPIC, KIND_CHATGPT_OAUTH, KIND_OPENAI_COMPATIBLE, ProviderSpec, provider_spec
+from .. import usage_ledger
+from . import anthropic, chatgpt_web, claude_code, openai_compatible, transport
+from .catalog import (
+    KIND_ANTHROPIC,
+    KIND_CHATGPT_OAUTH,
+    KIND_CHATGPT_WEB,
+    KIND_OPENAI_COMPATIBLE,
+    ProviderSpec,
+    provider_spec,
+)
 from .registry import (
     ResolvedModel,
     healthy_fallbacks,
@@ -43,6 +54,51 @@ _MAX_FALLBACK_ATTEMPTS = 3
 _GOOGLE_MODEL_RECHECK_SECONDS = 15
 
 
+def _accepts_client_gone(request_chat: Callable[..., Any]) -> bool:
+    """Only the ChatGPT web client watches the caller's socket.
+
+    The other clients' ``request_chat`` takes no ``client_gone``; passing it
+    anyway raised ``TypeError`` before any upstream call, and because the
+    council declines every tool-carrying request, that turned every
+    non-streaming passthrough to OpenRouter, Anthropic or CLIProxy into an
+    instant HTTP 500 — Deep Research's search call was the first casualty.
+    """
+    try:
+        return "client_gone" in inspect.signature(request_chat).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _client_gone_probe() -> Callable[[], bool] | None:
+    """A poll that says whether the current request's client has hung up.
+
+    Werkzeug's server hands the raw socket to the WSGI environ; a zero-length
+    non-blocking peek returns b"" once the peer has closed. Without a socket
+    (tests, other servers) there is nothing to watch and the turn runs to
+    its own end as before.
+    """
+    try:
+        sock = request.environ.get("werkzeug.socket")
+    except RuntimeError:
+        return None
+    if sock is None:
+        return None
+
+    def gone() -> bool:
+        try:
+            sock.setblocking(False)
+            try:
+                return sock.recv(1, socket.MSG_PEEK) == b""
+            finally:
+                sock.setblocking(True)
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    return gone
+
+
 def _is_quota_error(status_code: int | None, message: str) -> bool:
     try:
         return failover.is_quota_error(status_code, message)
@@ -57,6 +113,8 @@ def _client_for(spec: ProviderSpec):
         return anthropic
     if spec.kind == KIND_OPENAI_COMPATIBLE:
         return openai_compatible
+    if spec.kind == KIND_CHATGPT_WEB:
+        return chatgpt_web
     raise ProviderError(f"{spec.id} cannot serve requests through this path")
 
 
@@ -245,6 +303,11 @@ def _stand_ins(exhausted: str) -> List[ResolvedModel]:
     return selected
 
 
+def stand_ins(exhausted: str) -> List[ResolvedModel]:
+    """The council router orders its subscription fallbacks the same way."""
+    return _stand_ins(exhausted)
+
+
 def _subscription_family(model: ResolvedModel) -> str:
     if model.provider.id != "cliproxy":
         return model.provider.id
@@ -426,6 +489,27 @@ def _attempt(
 ) -> "Response | _Exhausted":
     """One try against one model."""
     spec = resolved.provider
+    started_at = time.time()
+    origin = usage_ledger.request_origin(payload)
+
+    def ledger(outcome: str, *, tokens: Any = None, status_code: int | None = None, error: str | None = None) -> None:
+        usage_ledger.record_usage(
+            kind="chat",
+            endpoint=endpoint,
+            provider=spec.id,
+            model=resolved.upstream_model,
+            requested_model=requested_model,
+            request_id=request_id,
+            account=usage_ledger.provider_account(spec.id, transport.provider_label(spec.id)),
+            origin=origin,
+            tokens=tokens,
+            outcome=outcome,
+            status_code=status_code,
+            error=error,
+            started_at=started_at,
+            fallback=fallback,
+        )
+
     try:
         client = _client_for_model(spec, resolved.upstream_model)
         credentials = credentials_for(spec)
@@ -471,6 +555,8 @@ def _attempt(
         request_kwargs = {"stream": stream}
         if strict_route:
             request_kwargs["allow_preconnect_retry"] = False
+        if not stream and _accepts_client_gone(client.request_chat):
+            request_kwargs["client_gone"] = _client_gone_probe()
         response = client.request_chat(
             credentials,
             payload,
@@ -503,6 +589,7 @@ def _attempt(
                 replay_safe=getattr(exc, "replay_safe", False),
                 error_code=getattr(exc, "code", None),
             )
+            ledger("quota_exhausted", status_code=502, error=str(exc))
             return _Exhausted(message=str(exc), status=502, seconds=None)
         _record_attempt(
             resolved,
@@ -518,6 +605,7 @@ def _attempt(
             replay_safe=getattr(exc, "replay_safe", False),
             error_code=getattr(exc, "code", None),
         )
+        ledger("failed", status_code=502, error=str(exc))
         return _annotate_response(
             _error_response(str(exc), 502),
             resolved,
@@ -541,6 +629,7 @@ def _attempt(
                 status_code=status,
                 error=message,
             )
+            ledger("quota_exhausted", status_code=status, error=message)
             return _Exhausted(message=message, status=status, seconds=seconds)
         _record_attempt(
             resolved,
@@ -552,6 +641,7 @@ def _attempt(
             status_code=status,
             error=message,
         )
+        ledger("failed", status_code=status, error=message)
         return _annotate_response(
             _error_response(message, status),
             resolved,
@@ -572,6 +662,11 @@ def _attempt(
                     include_usage=include_usage,
                 ),
             )
+        elif spec.kind == KIND_CHATGPT_WEB:
+            iterator = transport.guard_stream(
+                spec.id,
+                lambda: chatgpt_web.relay_stream(response),
+            )
         else:
             iterator = transport.guard_stream(
                 spec.id,
@@ -585,6 +680,18 @@ def _attempt(
             outcome="succeeded",
             fallback=fallback,
             status_code=response.status_code,
+        )
+        iterator = usage_ledger.tap_chat_completion_stream(
+            iterator,
+            request_id=request_id,
+            endpoint=endpoint,
+            provider=spec.id,
+            model=resolved.upstream_model,
+            requested_model=requested_model,
+            account=usage_ledger.provider_account(spec.id, transport.provider_label(spec.id)),
+            origin=origin,
+            started_at=started_at,
+            fallback=fallback,
         )
         return _annotate_response(
             _stream_response(iterator, response.status_code),
@@ -653,6 +760,11 @@ def _attempt(
         endpoint=endpoint,
         outcome="succeeded",
         fallback=fallback,
+        status_code=200,
+    )
+    ledger(
+        "succeeded",
+        tokens=body.get("usage") if isinstance(body, dict) else None,
         status_code=200,
     )
     resp = make_response(jsonify(body), 200)

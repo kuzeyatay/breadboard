@@ -17,6 +17,7 @@ export interface ShortcutInput {
 
 export type TabShortcut =
   | { type: "new" }
+  | { type: "new-dashboard" }
   | { type: "close" }
   | { type: "next" }
   | { type: "previous" }
@@ -55,6 +56,7 @@ export function tabShortcutFor(input: ShortcutInput): TabShortcut | null {
   const primary = input.control || input.meta;
   const key = input.key.toLowerCase();
   if (input.alt && !primary && !input.shift) {
+    if (key === "d") return input.isAutoRepeat ? null : { type: "new-dashboard" };
     if (key === "arrowleft") return { type: "back" };
     if (key === "arrowright") return { type: "forward" };
     return null;

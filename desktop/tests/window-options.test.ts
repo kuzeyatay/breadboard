@@ -1,6 +1,10 @@
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import * as os from "node:os";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   BREADBOARD_DARK_TITLE_BAR,
   BREADBOARD_TITLE_BAR,
@@ -10,6 +14,7 @@ import {
   isWindowSurface,
   mainWindowOptions,
   popupBackgroundColor,
+  tabRendererWebPreferences,
   titleBarForSurface,
   titleBarForTheme,
 } from "../src/main/window-options";
@@ -29,6 +34,10 @@ import {
   synchronizeNativeTheme,
 } from "../src/main/window-manager";
 import { loadRecoveryUrlIfAlive } from "../src/main/tab-manager";
+
+// These tests run in Node with fake windows. Give the browser stores their own
+// empty location so constructing a manager never consults Electron's app path.
+const fixtureConfigDir = path.join(os.tmpdir(), `bb-window-options-${randomUUID()}`);
 
 /** A window fake with just enough surface for the recovery paths. */
 function fakeWindow(url: string) {
@@ -54,7 +63,7 @@ function fakeWindow(url: string) {
     stopped,
     loaded,
     files,
-    isDestroyed: () => false,
+    isDestroyed: (): boolean => false,
     destroy: () => {},
     isVisible: () => true,
     show: () => {},
@@ -204,6 +213,7 @@ test("a failed local page reload retries quickly and then settles into a bounded
 
 test("only a deliberate close of the current main window requests application exit", () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set() },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -252,6 +262,7 @@ test("a tab destroyed during reconnect cannot escape as an unhandled rejection",
 
 test("a renderer disposed during a dashboard restart cannot crash the desktop", () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set() },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -269,6 +280,7 @@ test("a renderer disposed during a dashboard restart cannot crash the desktop", 
 test("a failed dashboard navigation reloads the last owned URL", async () => {
   const target = "http://127.0.0.1:3000/dashboard";
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -308,6 +320,7 @@ test("a failed dashboard navigation reloads the last owned URL", async () => {
 test("a navigation that answers nothing is abandoned instead of ending the retry loop", async () => {
   const target = "http://127.0.0.1:3000/dashboard";
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -349,6 +362,7 @@ test("a navigation that answers nothing is abandoned instead of ending the retry
 test("a reconnecting window keeps asking after a load finishes on an error page", async () => {
   const target = "http://127.0.0.1:3000/dashboard";
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     recoveryHtmlPath: "C:\\app\\startup\\recovery.html",
@@ -401,6 +415,7 @@ test("a reconnecting window keeps asking after a load finishes on an error page"
 
 test("the first-paint probe cannot outlast a wedged renderer", async () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set() },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -422,6 +437,7 @@ test("the first-paint probe cannot outlast a wedged renderer", async () => {
 
 test("the dashboard waits behind the welcome screen", async () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set() },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -449,6 +465,7 @@ test("the dashboard waits behind the welcome screen", async () => {
 
 test("the startup screen keeps loading until the dashboard behind it has painted", async () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set() },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -488,6 +505,7 @@ test("the startup screen keeps loading until the dashboard behind it has painted
 
 test("a fresh startup screen asks for the welcome to be dismissed again", async () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set() },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -502,6 +520,85 @@ test("a fresh startup screen asks for the welcome to be dismissed again", async 
   const started = Date.now();
   await manager.waitForStartupContinue();
   assert.ok(Date.now() - started >= 15, "the gate should have waited for the failsafe");
+});
+
+test("inactive tab renderers use Chromium background throttling", () => {
+  const options = tabRendererWebPreferences("C:\\app\\preload.js");
+  assert.equal(options.backgroundThrottling, true);
+  assert.equal(options.contextIsolation, true);
+  assert.equal(options.sandbox, true);
+  assert.equal(options.preload, "C:\\app\\preload.js");
+});
+
+function startupSoundFixture(outcome: Promise<"loaded" | "failed"> = Promise.resolve("loaded")) {
+  const startupHtmlPath = "C:\\app\\startup\\index.html";
+  const manager = new WindowManager({
+    allowed: { origins: new Set() }, startupHtmlPath, preloadPath: "C:\\app\\preload.js",
+    browserExtensionsConfigDir: __dirname,
+  });
+  const window = fakeWindow(pathToFileURL(startupHtmlPath).toString() + "?theme=dark");
+  Object.assign(window.webContents, { id: 7 });
+  const preload = {
+    window: fakeWindow("http://127.0.0.1:3000/"),
+    settled: outcome,
+  };
+  const state = manager as unknown as {
+    mainWindow: typeof window;
+    startupShownAt: number | null;
+    startupContinued: boolean;
+    dashboardPreload: typeof preload | null;
+  };
+  Object.assign(state, { mainWindow: window, startupShownAt: Date.now(), dashboardPreload: preload });
+  return { manager, window, preload, state };
+}
+
+test("only the current startup can claim the chime, once across renderer reloads", async () => {
+  const { manager, window, state } = startupSoundFixture();
+  assert.equal(await manager.claimStartupSound(99), false, "another renderer cannot claim it");
+  assert.deepEqual(await Promise.all([
+    manager.claimStartupSound(7), manager.claimStartupSound(7),
+  ]), [true, false]);
+  // showStartupScreen resets the welcome and replaces its document; it must not
+  // reset the launch's sound allowance along with renderer-local variables.
+  const reloaded = fakeWindow(window.webContents.getURL());
+  Object.assign(reloaded.webContents, { id: 8 });
+  state.mainWindow = reloaded;
+  state.startupContinued = false;
+  assert.equal(await manager.claimStartupSound(8), false);
+});
+
+test("reconnect navigation during dashboard paint cannot receive the startup chime", async () => {
+  let finish!: (outcome: "loaded" | "failed") => void;
+  const { manager, window } = startupSoundFixture(new Promise(resolve => { finish = resolve; }));
+  const pending = manager.claimStartupSound(7);
+  window.webContents.getURL = () => "file:///C:/app/startup/recovery.html?theme=dark";
+  finish("loaded");
+  assert.equal(await pending, false);
+  assert.equal(await manager.claimStartupSound(7), false);
+});
+
+test("failed, absent, discarded, or destroyed dashboard preloads cannot announce startup", async () => {
+  const failed = startupSoundFixture(Promise.resolve("failed"));
+  assert.equal(await failed.manager.claimStartupSound(7), false);
+  const absent = startupSoundFixture();
+  absent.state.dashboardPreload = null;
+  assert.equal(await absent.manager.claimStartupSound(7), false);
+  for (const retire of ["discard", "destroy"] as const) {
+    let finish!: (outcome: "loaded" | "failed") => void;
+    const fixture = startupSoundFixture(new Promise(resolve => { finish = resolve; }));
+    const pending = fixture.manager.claimStartupSound(7);
+    if (retire === "discard") fixture.state.dashboardPreload = null;
+    else fixture.preload.window.isDestroyed = () => true;
+    finish("loaded");
+    assert.equal(await pending, false, retire);
+  }
+});
+
+test("continuing a silent launch retires the chime before any later recovery", async () => {
+  const { manager, state } = startupSoundFixture();
+  manager.markStartupContinued();
+  state.startupContinued = false;
+  assert.equal(await manager.claimStartupSound(7), false);
 });
 
 test("fullscreen shortcuts handle F11 directly with a keyboard fallback", () => {
@@ -555,6 +652,7 @@ test("a popped-out window waits in the loading scene rather than in a flat sheet
   // there is no document in that gap for a route's own loading state to live
   // in — which is how a click used to land on a window painted one flat colour.
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
     startupHtmlPath: "C:\\app\\startup\\index.html",
     preloadPath: "C:\\app\\preload.js",
@@ -587,6 +685,7 @@ test("a popped-out window waits in the loading scene rather than in a flat sheet
 
 test("the loading scene is never somewhere a window can be recovered to", async () => {
   const manager = new WindowManager({
+    browserExtensionsConfigDir: fixtureConfigDir,
     allowed: {
       origins: new Set(["http://127.0.0.1:3000"]),
       localFiles: new Set(["file:///C:/app/startup/loading.html"]),

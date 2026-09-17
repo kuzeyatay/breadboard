@@ -45,7 +45,6 @@ export const RUNTIME_AGENT_GROUPS = [
   { key: "research", label: "Research, reading, and learning" },
   { key: "markets", label: "Markets" },
   { key: "communication", label: "Mail and social accounts" },
-  { key: "fitness", label: "Fitness and training" },
   { key: "work", label: "Documents, deliverables, and long-running work" },
   { key: "design", label: "Physical design and imaging" },
   { key: "video", label: "Video" },
@@ -99,7 +98,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
   },
   "max-research": {
     group: "research",
-    does: "Commissions the other research agents at once — indexed web, open internet, published literature, and a workspace that can run things — then reconciles their findings into one answer and audits it against them before returning it.",
+    does: "Commissions the other research participants — indexed web, open internet, published literature, Feynman PaperRank evidence screening, and a workspace that can run things — then reconciles their findings into one answer and audits it against them before returning it.",
     choose:
       "For a question worth an hour: where sources are likely to disagree, where a repeated figure needs tracing to its origin, or where the web and the literature would answer differently. It runs for tens of minutes, so send anything a single search settles to Deep Research.",
   },
@@ -191,13 +190,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
       "Choose it for a consequential company decision or cross-functional operating question that benefits from several executive disciplines. A narrow factual question or ordinary writing request does not need an executive-team run.",
   },
 
-  "open-gym": {
-    group: "fitness",
-    does: "Uses openGym's 1,324-exercise catalogue to plan and remember workouts, persist preferences and programs, and pair exercise-form answers with the registered animation. When delegated, that guidance and framed animation render directly without exposing the agent's run card.",
-    choose:
-      "Always choose it for a named exercise how-to, a full training program, or a saved-plan continuation: those need its animation catalogue or persistent state, not prose. Do not choose it for pain, injury, rehabilitation, nutrition, or a general fitness fact needing neither capability.",
-  },
-  openwork: {
+ openwork: {
     group: "work",
     does: "Carries out a knowledge-work task inside its own workspace, with its own installed skills, on the OpenCode engine. The message is the entire brief.",
     choose:

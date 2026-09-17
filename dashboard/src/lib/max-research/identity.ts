@@ -5,6 +5,8 @@
 // difference is what sits behind it: Max Research is not a research tool, it is
 // the five of them run against one question and reconciled into one answer.
 
+import { requestKeywords } from "../hermes/request-language.ts";
+
 export const MAX_RESEARCH_COMMAND = "/agents:max-research";
 export const MAX_RESEARCH_AGENT_ID = "max_research";
 export const MAX_RESEARCH_AGENT_NAME = "Max Research";
@@ -35,26 +37,32 @@ export function taskFromMaxResearchCommand(value: string): string | null {
  */
 export function taskFromMaxResearchIntent(value: string): string | null {
   const source = value.trim();
-  if (!/\bmax(?:-|\s+)research\b/i.test(source)) return null;
+  const requestedText = requestKeywords(source);
+  if (!/\bmax(?:-|\s+)research\b/i.test(requestedText)) return null;
 
-  // Asking about the feature is not asking for it. Checked before the
-  // directive forms, because "what is max research" also contains the phrase.
+  // An explicit instruction wins over question punctuation elsewhere in the
+  // request ("do max research ... I can only do two pushups?").
+  const prefix = source.match(
+    /^(?:please\s+)?(?:(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))?(?:do|perform|conduct|run|use|start|launch)?\s*(?:a\s+)?max(?:-|\s+)research\b(?:\s+(?:on|into|about|for|to)\b)?\s*[:;,—-]?\s*/i,
+  );
+  if (prefix && prefix[0].trim()) {
+    const rest = source.slice(prefix[0].length).trim();
+    if (rest.replace(/[.!?]+$/u, "").trim()) return rest;
+  }
+
+  // A question ABOUT the feature is still not a launch instruction. In
+  // particular, "how do I use max research?" must not spend a research run.
   if (
-    /^\s*(?:what|which|who|how|why|when|where|is|are|does|do|can|could|should)\b[^?]*\bmax(?:-|\s+)research\b[^?]*\?\s*$/i.test(
+    /^\s*(?:what|which|who|how|why|when|where|is|are|was|were|did|does|do|can|could|should|would|will|has|have)\b[^,;—?\n]*\bmax(?:-|\s+)research\b[^?]*\??\s*$/i.test(
       source,
     )
   ) {
     return null;
   }
-
-  const prefix = source.match(
-    /^(?:please\s+)?(?:(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))?(?:do|perform|conduct|run|use|start|launch)?\s*(?:a\s+)?max(?:-|\s+)research\b(?:\s+(?:on|into|about|for|to))?\s*[:;,—-]?\s*/i,
-  );
-  if (prefix && prefix[0].trim()) {
-    const rest = source.slice(prefix[0].length).trim();
-    if (rest) return rest;
-  }
-
+  if (
+    /\b(?:do\s+not|don['’]?t|dont|never|avoid|skip|without|no\s+need\s+to)\s+(?:(?:do|perform|conduct|run|use|start|launch)\s+)?(?:a\s+)?max(?:-|\s+)research\s*[.!?]*$/i.test(requestedText) ||
+    /^(?:please\s+)?(?:explain|describe|define|tell\s+me\s+about)\s+(?:the\s+)?max(?:-|\s+)research\s*[.!?]*$/i.test(requestedText)
+  ) return null;
   const suffix = source.match(
     /(?:\s*[,;:—-]\s*|\s+)(?:please\s+)?(?:(?:do|perform|conduct|run|use|start|launch)\s+)?(?:a\s+)?max(?:-|\s+)research(?:\s+(?:on|into|about|for)\s+this)?\s*[.!?]*$/i,
   );
@@ -73,12 +81,12 @@ export interface MaxResearchInvocation {
 }
 
 /**
- * Whether the chat host should launch a visible Max Research run.
+ * Whether the user explicitly selected a Max Research run for this turn.
  *
- * Under Super Agent the model owns the turn and delegates privately through
- * `agent_launch`; starting a visible run here would expose the worker card and
- * create a second answer path. The explicit slash command remains a direct,
- * user-selected launch even when Super Agent is enabled.
+ * A canonical slash command is an explicit user selection and may open the
+ * visible run even in Super Agent mode. Natural language is a direct launch
+ * only outside Super Agent; inside it, the host sends the turn to Super Agent,
+ * which may delegate privately and keep the worker card hidden.
  */
 export function maxResearchInvocation(
   value: string,

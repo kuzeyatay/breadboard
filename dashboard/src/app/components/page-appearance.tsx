@@ -68,6 +68,8 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
   const [saveError, setSaveError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadHintId = useId();
+  const randomLabelId = useId();
+  const randomHintId = useId();
   const uploadRequest = useRef(0);
   const [uploading, setUploading] = useState(false);
   const [draggingImage, setDraggingImage] = useState(false);
@@ -168,6 +170,16 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
     }
   }
 
+  function toggleRandomBackground() {
+    cancelUpload();
+    try {
+      appearance.save({ random: { theme: editingTheme, enabled: !appearance.preference.random?.[editingTheme] } });
+      setSaveError("");
+    } catch {
+      setSaveError("Couldn’t save your choice. Check that browser storage is available.");
+    }
+  }
+
   async function uploadFile(file: File) {
     const request = ++uploadRequest.current;
     setUploading(true);
@@ -226,6 +238,24 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
         ))}
       </div>
       <p className={styles.hint}>Background for {APPEARANCE_PAGES[editingPage]} in {editingTheme} mode.</p>
+      <div className={styles.randomRow}>
+        <div>
+          <label id={randomLabelId} htmlFor={`${randomLabelId}-switch`}>Random</label>
+          <p id={randomHintId}>Shuffle built-in images every 1–24 hours.</p>
+        </div>
+        <button
+          id={`${randomLabelId}-switch`}
+          type="button"
+          role="switch"
+          aria-checked={Boolean(appearance.preference.random?.[editingTheme])}
+          aria-labelledby={randomLabelId}
+          aria-describedby={randomHintId}
+          className={styles.randomSwitch}
+          onClick={toggleRandomBackground}
+        >
+          <span aria-hidden="true" />
+        </button>
+      </div>
       <div
         className={styles.uploadCard}
         data-dragging={draggingImage || undefined}

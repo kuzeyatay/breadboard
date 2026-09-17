@@ -11,8 +11,8 @@
 // supervised service at spawn time. Values only ever travel one way: the API
 // reports whether a key is set, never what it is.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 export const VENDOR_CREDENTIALS = [

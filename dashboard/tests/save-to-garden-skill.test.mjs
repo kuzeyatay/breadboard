@@ -68,7 +68,7 @@ test("direct saving is confined to a signed-in owner adding a new note", () => {
   // about this tool can edit or overwrite existing pages.
   assert.match(
     gardenTools,
-    /token\.surface !== "dashboard_terminal" && token\.surface !== "garden_chat"/,
+    /token\.surface !== "dashboard_terminal" &&\s+token\.surface !== "garden_chat"/,
   );
   assert.match(gardenTools, /token\.userId !== cluster\.user_id/);
   assert.equal(gardenTools.includes("garden_save_note"), true);
@@ -113,9 +113,8 @@ test("the conversation that proposes a note can also review it", () => {
 
   // The Terminal has no proposals tab, so the transcript itself must offer the
   // decision; it is shared with Garden Chat and skipped for public readers.
-  assert.match(panel, /<InlineProposalCards/);
-  assert.match(panel, /conversationId=\{sessionId\}/);
-  assert.match(panel, /surface !== "quartz_ai" \? \(\s*\/\/ Garden proposals/);
+  assert.match(panel, /<InlineProposalCardsProvider[\s\S]*?conversationId=\{surface !== "quartz_ai" \? sessionId : null\}/);
+  assert.match(panel, /<InlineProposalCards ownerMessageId=\{message\.artifactMessageId \?\? message\.id \?\? null\}/);
 
   // Deciding goes through the owner-checked canonical endpoint, never a
   // second write path.

@@ -4,7 +4,7 @@
 //
 // A run here is measured in tens of minutes, so the card's real job is not the
 // answer at the end — it is making a long silence legible while it works. What
-// it shows is the roster: which of the six were commissioned, why each, and
+// it shows is the roster: which participants were commissioned, why each, and
 // where each one currently stands. A run that says nothing for forty minutes is
 // indistinguishable from one that has died, and the difference matters most
 // exactly when the wait is longest.
@@ -20,6 +20,9 @@ import type {
   ExternalAgentTerminalResult,
 } from "@/lib/conversations/external-agent-runs";
 import { externalRunStartedAtMs } from "./external-run-clock";
+import {
+  advanceMaxResearchProgress, MAX_RESEARCH_PROGRESS_EVENTS,
+} from "@/lib/max-research/progress";
 
 type ParticipantState =
   | "planned"
@@ -42,6 +45,7 @@ const LABEL: Record<string, string> = {
   deep_research: "Deep Research",
   agent_reach: "Agent Reach",
   get_doc: "Get Doc",
+  feynman: "Feynman",
   openscience: "OpenScience",
   praxist: "Praxist",
   aris: "ARIS",
@@ -135,22 +139,26 @@ export default function InlineMaxResearchRun({
   }, [stage, participants, status, terminalAtMount]);
 
   const settle = useCallback(
-    (outcome: ExternalAgentOutcome, content: string) => {
+    (outcome: ExternalAgentOutcome, content: string, terminalAtMs?: number) => {
       if (reportedRef.current) return;
       reportedRef.current = true;
-      onTerminalRef.current?.({ outcome, content } as ExternalAgentTerminalResult);
+      onTerminalRef.current?.({ outcome, content, terminalAtMs } as ExternalAgentTerminalResult);
     },
     [],
   );
 
-  // Subscribed, not polled, like every other card here — and it closes on
-  // error rather than reconnecting. A run the manager has already evicted
-  // answers with a 404, and without `onerror` the browser would keep reaching
-  // for it for as long as the transcript stayed on screen.
+  // Rejoin after dashboard/runtime restarts so their durable terminal event
+  // can release the parent message. A transport error alone is not an outcome.
   useEffect(() => {
     if (terminalAtMount) return;
 
-    const applyEvent = (type: string, payload: Record<string, unknown>) => {
+    let disposed = false;
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastSequence = 0;
+    const applyEvent = (type: string, payload: Record<string, unknown>, at?: string) => {
+      setStage((current) => advanceMaxResearchProgress({ stage: current, notes: [] }, type, payload).stage);
+      const terminalAtMs = at && Number.isFinite(Date.parse(at)) ? Date.parse(at) : undefined;
       if (type === "plan.completed" && Array.isArray(payload.participants)) {
         setParticipants(
           (payload.participants as Array<Record<string, unknown>>).map((entry) => ({
@@ -159,7 +167,6 @@ export default function InlineMaxResearchRun({
             state: "planned" as ParticipantState,
           })),
         );
-        setStage("Commissioned");
       }
       if (type === "participant.unavailable") {
         const name = String(payload.participant ?? "");
@@ -173,7 +180,6 @@ export default function InlineMaxResearchRun({
       }
       if (type === "participant.started") {
         const name = String(payload.participant ?? "");
-        setStage("Researching");
         setParticipants((rows) =>
           rows.map((row) =>
             row.participant === name ? { ...row, state: "running" } : row,
@@ -206,52 +212,63 @@ export default function InlineMaxResearchRun({
         setAnswer(result);
         setStatus("completed");
         setStage("Done");
-        settle("completed", result);
+        settle("completed", result, terminalAtMs);
       }
       if (type === "run.failed") {
         const error = String(payload.error ?? "The run failed.");
         setFailure(error);
         setStatus("failed");
-        settle("failed", error);
+        settle("failed", error, terminalAtMs);
       }
       if (type === "run.aborted") {
         setStatus("aborted");
-        setFailure("Stopped.");
-        settle("aborted", "Stopped.");
+        const content = payload.interrupted === true ? "Interrupted" : "Stopped.";
+        setFailure(content);
+        settle("aborted", content, terminalAtMs);
       }
+      if (reportedRef.current) eventSource?.close();
     };
 
-    const eventSource = new EventSource(`/api/max-research/runs/${runId}/events`);
-    const listen = (type: string) =>
-      eventSource.addEventListener(type, (event) => {
-        try {
-          const parsed = JSON.parse((event as MessageEvent<string>).data) as {
-            type?: string;
-            payload?: Record<string, unknown>;
-          };
-          applyEvent(parsed.type ?? type, parsed.payload ?? {});
-        } catch {
-          // A frame that will not parse is skipped; the next one carries the
-          // same state, because every payload here is absolute rather than a
-          // delta.
+    const connect = () => {
+      if (disposed || reportedRef.current) return;
+      eventSource = new EventSource(`/api/max-research/runs/${runId}/events?since=${lastSequence}`);
+      const listen = (type: string) =>
+        eventSource!.addEventListener(type, (event) => {
+          if (disposed || reportedRef.current) return;
+          try {
+            const parsed = JSON.parse((event as MessageEvent<string>).data) as {
+              type?: string;
+              payload?: Record<string, unknown>;
+              sequenceNumber?: number;
+              at?: string;
+            };
+            if (typeof parsed.sequenceNumber === "number") {
+              if (parsed.sequenceNumber <= lastSequence) return;
+              lastSequence = parsed.sequenceNumber;
+            }
+            applyEvent(parsed.type ?? type, parsed.payload ?? {}, parsed.at);
+          } catch {
+            // A frame that will not parse is skipped; the next one carries the
+            // same state, because every payload here is absolute rather than a
+            // delta.
+          }
+        });
+      for (const type of MAX_RESEARCH_PROGRESS_EVENTS) {
+        listen(type);
+      }
+      eventSource.onerror = () => {
+        eventSource?.close();
+        if (!disposed && !reportedRef.current) {
+          reconnectTimer = setTimeout(connect, 3_000);
         }
-      });
-    for (const type of [
-      "plan.completed",
-      "participant.unavailable",
-      "participant.started",
-      "participant.settled",
-      "synthesis.started",
-      "run.completed",
-      "run.failed",
-      "run.aborted",
-    ]) {
-      listen(type);
-    }
-    eventSource.onerror = () => {
-      eventSource.close();
+      };
     };
-    return () => eventSource.close();
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      eventSource?.close();
+    };
   }, [runId, settle, terminalAtMount]);
 
   useEffect(() => {

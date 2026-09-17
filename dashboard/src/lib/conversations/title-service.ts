@@ -103,7 +103,10 @@ export function shouldGenerateConversationTitleForTurn(input: {
   userOrderIndex: number;
   reservationIsNew: boolean;
   preDispatchReserved: boolean;
+  /** Ask Here belongs to a highlighted passage, not the main chat's title. */
+  isInlineQuestion?: boolean;
 }): boolean {
+  if (input.isInlineQuestion) return false;
   if (!input.reservationIsNew && !input.preDispatchReserved) return false;
   return (
     input.userOrderIndex === 0 ||

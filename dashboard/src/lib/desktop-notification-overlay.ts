@@ -1,10 +1,11 @@
 import {
-  chatNotificationHref,
+  chatNotificationUrls,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 
 export interface DesktopNotificationToast {
+  id?: string;
   message: string;
   type: "success" | "error";
   title?: string;
@@ -24,6 +25,7 @@ export function respondToWebsiteNotificationPermission(id: string, permission: N
 }
 
 interface DesktopNotificationBridge {
+  onNotificationOverlayVisibility?: (listener: (visible: boolean) => void) => () => void;
   publishNotificationToast?: (
     notice: DesktopNotificationToast,
   ) => Promise<boolean>;
@@ -35,9 +37,8 @@ interface DesktopNotificationBridge {
     height: number;
   }) => Promise<boolean>;
   tabs?: (command: {
-    type: "open";
-    url: string;
-    background?: boolean;
+    type: "notification-open";
+    urls: string[];
   }) => Promise<boolean>;
 }
 
@@ -63,19 +64,23 @@ export function onDesktopNotificationToast(
   return bridge()?.onNotificationToast?.(listener) ?? null;
 }
 
+export function onDesktopNotificationOverlayVisibility(
+  listener: (visible: boolean) => void,
+): (() => void) | null {
+  return bridge()?.onNotificationOverlayVisibility?.(listener) ?? null;
+}
+
 export function resizeDesktopNotificationOverlay(width: number, height: number): void {
   const resize = bridge()?.resizeNotificationOverlay;
   if (!resize) return;
   void resize({ width, height }).catch(() => undefined);
 }
 
-/** The overlay is not a page tab, so its arrow asks the owning window to open
- * the destination instead of navigating the transparent renderer itself. */
+/** Ask the shell to focus the chat's existing tab, or open it in a new tab. */
 export function openDesktopNotificationTarget(target: ChatNotificationTarget): boolean {
   const tabs = bridge()?.tabs;
   if (!tabs || typeof window === "undefined") return false;
-  const url = new URL(chatNotificationHref(target), window.location.origin).toString();
-  void tabs({ type: "open", url })
+  void tabs({ type: "notification-open", urls: chatNotificationUrls(target) })
     .catch(() => undefined);
   return true;
 }

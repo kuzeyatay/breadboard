@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isPdfAssistantPageContext } from "@/lib/pdf-assistant-scope.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
   apiErrorResponse,
@@ -164,7 +165,7 @@ export async function POST(request: Request) {
       userId,
       title,
       surface,
-      originLabel: surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
+      originLabel: isPdfAssistantPageContext(surface, pageSlug) ? "PDF Assistant" : surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
         ? "Browser"
         : undefined,
       temporary: body.temporary === true,

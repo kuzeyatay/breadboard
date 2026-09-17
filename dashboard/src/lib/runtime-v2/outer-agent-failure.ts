@@ -1,5 +1,22 @@
 import type { RuntimeJobSnapshot } from "../supervisor-control.ts";
 import type { OuterAgentKind } from "./outer-agent-run-store.ts";
+import type { OuterAgentEvent } from "./outer-agent-run.ts";
+
+/** A stopped runtime is terminal even when its last checkpoint was still running. */
+export function outerAgentInterruptionEvent(
+  job: Pick<RuntimeJobSnapshot, "state" | "lastWorkerSequence" | "finishedAt" | "updatedAt">,
+  since = 0,
+): OuterAgentEvent | null {
+  if (job.state !== "interrupted" && job.state !== "uncertain") return null;
+  return {
+    // Checkpoints can batch many public events into a single worker update.
+    // The final interruption must also follow the renderer's public cursor.
+    sequenceNumber: Math.min(Number.MAX_SAFE_INTEGER, Math.max(job.lastWorkerSequence, since) + 1),
+    type: "run.aborted",
+    payload: { interrupted: true, summary: "Interrupted" },
+    at: new Date(job.finishedAt ?? job.updatedAt).toISOString(),
+  };
+}
 
 const SANITIZED_RUNTIME_FAILURE_MESSAGE = "Runtime job execution failed.";
 

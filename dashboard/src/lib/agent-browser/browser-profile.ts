@@ -21,7 +21,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 import Database from "better-sqlite3";
 import {

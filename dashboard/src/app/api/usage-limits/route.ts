@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { requireUserId, RouteError, routeErrorResponse } from '@/lib/server-auth';
 import { readUsageLimits } from '@/lib/usage-limits';
-import { buildUsageRefreshRequest } from '@/lib/usage-refresh';
+import { refreshChatgptUsage } from '@/lib/chatgpt-usage-refresh';
+import { readCodexUsageReport } from '@/lib/chatgpt-codex-usage';
+import { runClaudeAccountJob } from '@/lib/runtime-v2/claude-account-job';
 import {
   antigravityModelId,
   readGoogleUsageLimits,
@@ -42,7 +44,13 @@ export async function GET(request: Request) {
         headers: NO_STORE_HEADERS,
       });
     }
-    return NextResponse.json(readUsageLimits(), { headers: NO_STORE_HEADERS });
+    // OpenAI's own report is per account and knows about the Luna reserve;
+    // the header snapshot is the fallback when ChatMock or OpenAI is away.
+    const { baseURL } = resolveChatmockBaseUrl(request);
+    const report = await readCodexUsageReport(baseURL);
+    return NextResponse.json(report ?? { ...readUsageLimits(), source: 'headers' }, {
+      headers: NO_STORE_HEADERS,
+    });
   } catch (error) {
     if (error instanceof RouteError) return routeErrorResponse(error);
     if (googleModel) {
@@ -65,6 +73,7 @@ export async function GET(request: Request) {
           model: claudeModel,
           limits: [],
           usage_url: CLAUDE_USAGE_PAGE,
+          auth_required: error instanceof Error && /not signed in|sign-in file is invalid/.test(error.message),
           error: error instanceof Error ? error.message : 'Could not load Anthropic usage limits.',
         },
         { status: 502, headers: NO_STORE_HEADERS },
@@ -75,46 +84,34 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const model = new URL(request.url).searchParams.get('model')?.trim() ?? '';
   try {
-    await requireUserId();
-    const before = readUsageLimits();
-    const { baseURL } = resolveChatmockBaseUrl(request);
-
-    const probeResponse = await fetch(`${baseURL}/chat/completions`, {
-      method: 'POST',
-      cache: 'no-store',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY || 'local'}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(buildUsageRefreshRequest()),
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    // ChatMock stores the limit headers before returning this response, even
-    // when the probe itself is rate-limited.
-    await probeResponse.text().catch(() => '');
-    const latest = readUsageLimits();
-    const refreshed = Boolean(
-      latest.captured_at && latest.captured_at !== before.captured_at,
-    );
-
-    if (refreshed) {
-      return NextResponse.json(
-        { ...latest, refreshed: true },
-        { headers: NO_STORE_HEADERS },
-      );
+    const userId = await requireUserId();
+    if (claudeSubscriptionModelId(model)) {
+      const payload = await readClaudeUsageLimits(model, new Date(), {
+        recoverSession: async () => {
+          const result = await runClaudeAccountJob({ userId, operation: 'refresh-usage' });
+          if (!result.ok) throw new Error(result.message);
+        },
+      });
+      return NextResponse.json(payload, { headers: NO_STORE_HEADERS });
     }
-
-    const refreshError = probeResponse.ok
-      ? 'The refresh completed but did not report updated usage limits.'
-      : `Could not refresh usage limits (HTTP ${probeResponse.status}).`;
+    if (antigravityModelId(model)) return GET(request);
+    const { baseURL } = resolveChatmockBaseUrl(request);
+    // A refresh is a fresh read of the report; the completion probe that
+    // shakes headers out of ChatMock is only needed when the report is away.
+    const report = await readCodexUsageReport(baseURL);
+    if (report) {
+      return NextResponse.json({ ...report, refreshed: true }, { headers: NO_STORE_HEADERS });
+    }
+    const result = await refreshChatgptUsage(baseURL, userId);
     return NextResponse.json(
-      { ...latest, refreshed: false, refresh_error: refreshError },
-      { status: 502, headers: NO_STORE_HEADERS },
+      { ...result.payload, source: 'headers' },
+      { status: result.status, headers: NO_STORE_HEADERS },
     );
   } catch (error) {
     if (error instanceof RouteError) return routeErrorResponse(error);
+    if (claudeSubscriptionModelId(model) || antigravityModelId(model)) return GET(request);
     const refreshError =
       error instanceof Error && error.name === 'TimeoutError'
         ? 'The usage refresh timed out.'

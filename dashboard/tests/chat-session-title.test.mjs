@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 
 import {
   CONVERSATION_TITLE_INSTRUCTION,
@@ -111,6 +112,54 @@ test('a later retry repairs New chat after the reserved first turn was interrupt
     }),
     false,
   );
+});
+
+test('Garden Chat gates titling on the canonical transcript, not the request payload', () => {
+  const adapter = readFileSync(
+    new URL('../src/lib/hermes/garden-chat-adapter.ts', import.meta.url),
+    'utf8',
+  );
+  // A highlight question posts only itself as `messages`, so a payload count
+  // renamed a long chat on every inline ask.
+  assert.doesNotMatch(adapter, /isFirstUserTurn/);
+  assert.match(
+    adapter,
+    /shouldGenerateConversationTitleForTurn\(\{\s*currentTitle: conversation\.title,\s*userOrderIndex: reservedUserOrderIndex,/,
+  );
+  assert.match(adapter, /reservedUserOrderIndex = reserved\.userMessage\.order_index;[\s\S]*reservedUserOrderIndex = reserved\.userMessage\.order_index;/);
+  assert.equal(
+    shouldGenerateConversationTitleForTurn({
+      currentTitle: 'Questioning the choice',
+      userOrderIndex: 86,
+      reservationIsNew: true,
+      preDispatchReserved: true,
+    }),
+    false,
+  );
+});
+
+test('Ask Here cannot name or rename the main chat, even on a first turn, retry, or placeholder repair', () => {
+  for (const currentTitle of ['EM 1', 'New chat', 'My Manual Name']) {
+    for (const userOrderIndex of [0, 2, 86]) {
+      for (const reservationIsNew of [false, true]) {
+        assert.equal(shouldGenerateConversationTitleForTurn({
+          currentTitle, userOrderIndex, reservationIsNew, preDispatchReserved: true,
+          isInlineQuestion: true,
+        }), false);
+      }
+    }
+  }
+  assert.equal(shouldGenerateConversationTitleForTurn({
+    currentTitle: 'New chat', userOrderIndex: 2, reservationIsNew: true,
+    preDispatchReserved: false, isInlineQuestion: false,
+  }), true, 'a later main-chat question can still name an unnamed chat');
+});
+
+test('every turn backend tells the shared title policy when a question belongs to Ask Here', () => {
+  for (const file of ['turn-service.ts', 'direct-turn-service.ts']) {
+    const source = readFileSync(new URL(`../src/lib/conversations/${file}`, import.meta.url), 'utf8');
+    assert.match(source, /shouldGenerateConversationTitleForTurn\(\{[^}]*isInlineQuestion: input\.textSelection\?\.mode === "inline"/);
+  }
 });
 
 test('an automatic title updates linked history but never overwrites a manual rename', () => {

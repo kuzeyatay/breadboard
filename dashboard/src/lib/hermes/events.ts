@@ -73,7 +73,7 @@ export type NormalizedAgentEvent =
       payload: { text: string; streamed: boolean };
     }
   | {
-      type: "assistant.completed";
+      type: "assistant.completed" | "assistant.usage";
       sessionId: string;
       messageId?: string;
       timestamp: string;

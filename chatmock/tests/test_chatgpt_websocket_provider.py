@@ -186,6 +186,27 @@ class ChatGptWebsocketProviderTests(unittest.TestCase):
         self.assertEqual(result, "valid answer")
         self.assertEqual(len(websocket.sent), 1)
 
+    def test_council_provider_preserves_system_and_developer_priority(self) -> None:
+        websocket = FakeWebsocket([
+            {"type": "response.output_text.delta", "delta": "An explanation."},
+            {"type": "response.completed", "response": {"id": "resp-scope"}},
+        ])
+        messages = [
+            {"role": "system", "content": "Keep the request's original scope."},
+            {"role": "developer", "content": "Do not promote a one-off format."},
+            {"role": "user", "content": "Explain the circuit."},
+        ]
+        original = json.dumps(messages)
+        with self._transport(websocket):
+            ChatGptUpstreamProvider().call_model(self._call(
+                system="Honor explicit future preferences.", messages=messages,
+            ))
+        items = json.loads(websocket.sent[0])["input"]
+        self.assertEqual([item["role"] for item in items],
+                         ["developer", "developer", "developer", "user"])
+        self.assertEqual(items[0]["content"][0]["text"], "Honor explicit future preferences.")
+        self.assertEqual(json.dumps(messages), original)
+
     def test_quota_observer_failure_preserves_terminal_provider_error(self) -> None:
         websocket = FakeWebsocket(
             [
@@ -298,7 +319,11 @@ class ChatGptWebsocketProviderTests(unittest.TestCase):
         self.assertEqual(clock.now, 1_500)
         self.assertTrue(all(timeout >= 500 for timeout in websocket.recv_timeouts))
         self.assertGreater(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS, 900)
-        self.assertGreater(DEFAULT_WEBSOCKET_TOTAL_TIMEOUT_SECONDS, 900)
+        self.assertGreaterEqual(
+            DEFAULT_WEBSOCKET_TOTAL_TIMEOUT_SECONDS,
+            3_600,
+            "large Learn repair generations must outwait the observed 30-minute boundary",
+        )
 
     def test_zero_output_receive_close_fails_closed_without_replay(self) -> None:
         websocket = FakeWebsocket([RuntimeError("secret close reason")])
@@ -559,7 +584,7 @@ class ChatGptWebsocketProviderTests(unittest.TestCase):
         self.assertEqual(first_payload["model"], second_payload["model"])
         self.assertEqual(first_payload["reasoning"], second_payload["reasoning"])
         exhausted.assert_called_once_with(
-            "selected-account", reason="the upstream account returned HTTP 429"
+            "selected-account", reason="the upstream account returned HTTP 429", seconds=None
         )
         self.assertTrue(limited.closed)
         self.assertTrue(served.closed)
@@ -1043,7 +1068,7 @@ class ChatGptWebsocketProviderTests(unittest.TestCase):
         self.assertEqual(quota.exception.status_code, 429)
         self.assertTrue(quota.exception.replay_safe)
         exhausted.assert_called_once_with(
-            "selected-account", reason="the upstream account returned HTTP 429"
+            "selected-account", reason="the upstream account returned HTTP 429", seconds=None
         )
 
     def test_router_records_structured_transport_metadata(self) -> None:

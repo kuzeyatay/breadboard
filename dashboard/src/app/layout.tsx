@@ -2,16 +2,18 @@ import type { Metadata } from "next";
 import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/google";
 import { Suspense } from "react";
 import AppThemeRuntime from "@/app/components/app-theme-runtime";
+import AnchoredTabNavigationGuard from "@/app/components/anchored-tab-navigation-guard";
 import CurrentLocationAutoRefresh from "@/app/components/current-location-autorefresh";
 import DesktopTitleBar from "@/app/components/desktop-title-bar";
 import { interactionHydrationBootstrapScript } from "@/app/components/interaction-hydration-bridge";
 import InteractionHydrationGate from "@/app/components/interaction-hydration-gate";
 import NavigationProgress from "@/app/components/navigation-progress";
 import NavigationTrail from "@/app/components/navigation-trail";
+import PdfSaveStatus from "@/app/components/pdf-save-status";
 import RecallAutoStart from "@/app/components/recall-autostart";
+import ChatgptWebTabAgent from "@/app/components/chatgpt-web-tab-agent";
 import ClapListenerProvider from "@/app/components/clap-listener-provider";
 import VoiceAssistantBrowserHost from "@/app/components/voice-assistant-browser-host";
-import "./app-theme-transition.css";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 
@@ -80,6 +82,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      data-breadboard-startup="loading"
       className={`${sourceSans.variable} ${schibsted.variable} ${ibmPlexMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
@@ -90,9 +93,12 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <AppThemeRuntime />
+        <AnchoredTabNavigationGuard />
         <CurrentLocationAutoRefresh />
         <RecallAutoStart />
+        <ChatgptWebTabAgent />
         <DesktopTitleBar />
+        <PdfSaveStatus />
         <Suspense fallback={null}>
           <NavigationProgress />
           <NavigationTrail />

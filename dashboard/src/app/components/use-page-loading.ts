@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
+import { useStartupLoading } from "./startup-readiness";
 
 const pendingPages = new Set<symbol>();
 const listeners = new Set<() => void>();
@@ -14,6 +15,7 @@ function subscribe(listener: () => void) {
 
 /** Keep the shared top bar active until this page's work finishes or unmounts. */
 export function usePageLoading(pending: boolean): void {
+  useStartupLoading(pending);
   useEffect(() => {
     if (!pending) return;
     const token = Symbol();

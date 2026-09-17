@@ -139,6 +139,11 @@ export async function startRun(userId: number, body: unknown): Promise<RunSummar
       ownerUserId: userId,
       ...validated.value,
       userContext: [
+        // Keep the commission's shared context ahead of optional memory: the
+        // sidecar caps requester context separately at 2,000 characters.
+        typeof request.researchContext === "string"
+          ? `Shared context for this section of the research question:\n${request.researchContext.slice(0, 1_850)}`
+          : "",
         memory?.text ?? "",
         contextSection(conversationContextFromBody(userId, request)),
       ].filter((section) => section.trim()).join("\n\n"),

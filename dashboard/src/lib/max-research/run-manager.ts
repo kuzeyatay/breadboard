@@ -12,6 +12,7 @@
 // forty minutes is indistinguishable from one that has died.
 
 import { randomUUID } from "node:crypto";
+import { boundedEvidence, previousWaveEvidence } from "./evidence.ts";
 
 import { participantRuntime, type ParticipantResult } from "./participants.ts";
 import {
@@ -75,7 +76,7 @@ function retainedFindings(results: readonly ParticipantResult[]) {
     .filter((result) => result.status === "completed" && result.output.trim())
     .map((result) => ({
       participant: result.participant,
-      output: result.output.trim().slice(0, MAX_RETAINED_FINDING_CHARS),
+      output: boundedEvidence(result.output, MAX_RETAINED_FINDING_CHARS),
       ...(result.reason ? { limitation: result.reason } : {}),
     }));
 }
@@ -260,6 +261,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       participants: wave.map((assignment) => assignment.participant),
     });
 
+    const priorEvidence = previousWaveEvidence(run.results);
     const settled = await Promise.all(
       wave.map(async (assignment) => {
         const state = availability.get(assignment.participant);
@@ -282,7 +284,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
           participant: assignment.participant,
           rationale: assignment.rationale,
         });
-        const result = await runtimeFor(assignment.participant).run(
+        const execute = () => runtimeFor(assignment.participant).run(
           {
             question: assignment.question,
             guidance: assignment.guidance,
@@ -293,19 +295,41 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
             model: input.model,
             reasoningEffort: input.reasoningEffort,
             baseUrl: input.baseUrl,
+            priorEvidence,
             ...(input.conversationContext
               ? { conversationContext: input.conversationContext }
               : {}),
             ...(input.praxistTaskPath ? { praxistTaskPath: input.praxistTaskPath } : {}),
             signal: run.controller.signal,
           },
-        );
+        ).catch((error: unknown): ParticipantResult => ({
+          participant: assignment.participant,
+          status: run.controller.signal.aborted ? "aborted" : "failed",
+          output: "",
+          reason: error instanceof Error ? error.message : "The participant failed.",
+        }));
+        let result = await execute();
+        const admissionDeadline = Date.now() + 5 * 60_000;
+        // A rejected admission started no research. Give sibling jobs time to
+        // release memory rather than permanently losing this participant.
+        while (result.status === "failed" && !result.output &&
+          /Windows could not reserve enough memory to start this agent/.test(result.reason ?? "") &&
+          Date.now() < admissionDeadline && !run.controller.signal.aborted) {
+          emit(run, "participant.retrying", { participant: assignment.participant, reason: result.reason });
+          await new Promise<void>((resolve) => {
+            const done = () => { clearTimeout(timer); run.controller.signal.removeEventListener("abort", done); resolve(); };
+            const timer = setTimeout(done, 15_000);
+            run.controller.signal.addEventListener("abort", done, { once: true });
+          });
+          if (!run.controller.signal.aborted) result = await execute();
+        }
         emit(run, "participant.settled", {
           participant: result.participant,
           status: result.status,
           ...(result.runId ? { runId: result.runId } : {}),
           ...(result.reason ? { reason: result.reason } : {}),
           characters: result.output.length,
+          ...(result.output.trim() ? { output: boundedEvidence(result.output, MAX_RETAINED_FINDING_CHARS) } : {}),
           ...(result.websites?.length ? { websites: result.websites } : {}),
           ...(result.artifacts?.length ? { artifacts: result.artifacts } : {}),
           ...(result.limitations?.length ? { limitations: result.limitations } : {}),

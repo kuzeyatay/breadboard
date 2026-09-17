@@ -31,6 +31,7 @@ function request(overrides = {}) {
       whisper: null,
       noWhisper: true,
       noDedup: false,
+      processTimeoutMs: null,
     },
     ...overrides,
   };
@@ -154,6 +155,59 @@ test("Watch worker keeps report and frames in its private attempt and preserves 
     assert.match(report, /Title:\*\* clip\.mp4/);
     assert.doesNotMatch(JSON.stringify(result), /data:image|base64|frame_0001\.jpg/);
   } finally {
+    cleanup(value);
+  }
+});
+
+test("Watch accepts Windows canonical runtime paths", { skip: process.platform !== "win32" }, async () => {
+  const value = fixture();
+  for (const key of ["BREADBOARD_WATCH_ROOT", "BREADBOARD_WATCH_PYTHON", "FFMPEG_PATH", "FFPROBE_PATH", "YTDLP_PATH"]) {
+    value.env[key] = path.toNamespacedPath(value.env[key]);
+  }
+  try {
+    const result = await executeWatch(value.launch, new AbortController().signal, {}, value.inputPath, { env: value.env });
+    assert.equal(result.ok, true);
+    assert.equal(result.frameCount, 1);
+    const report = fs.readFileSync(path.join(value.dataRoot, result.reportRelativePath), "utf8");
+    assert.match(report, /\[00:00\] hello/);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("Watch accepts ordinary Python frame paths inside a Windows canonical workspace", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const value = fixture();
+  const runner = path.join(value.env.BREADBOARD_WATCH_ROOT, "scripts", "watch.py");
+  fs.writeFileSync(runner, fs.readFileSync(runner, "utf8").replace(
+    'const frames = path.join(out, "frames");',
+    'const frames = path.join(fs.realpathSync.native(out), "frames");',
+  ));
+  value.launch.workspacePath = path.toNamespacedPath(value.launch.workspacePath);
+  value.launch.dataRoot = path.toNamespacedPath(value.launch.dataRoot);
+  try {
+    const result = await executeWatch(value.launch, new AbortController().signal, {}, value.inputPath, { env: value.env });
+    assert.equal(result.ok, true);
+    assert.equal(result.frameCount, 1);
+    assert.match(result.reportRelativePath, /^runtime\/jobs\/job_watch\/attempts\/1\/worker_watch\/workspace\/watch-output\/report\.md$/);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("Watch rejects a runtime reached through a directory junction", { skip: process.platform !== "win32" }, async () => {
+  const value = fixture();
+  const alias = path.join(value.dataRoot, "skill-alias");
+  fs.symlinkSync(value.env.BREADBOARD_WATCH_ROOT, alias, "junction");
+  value.env.BREADBOARD_WATCH_ROOT = path.toNamespacedPath(alias);
+  try {
+    await assert.rejects(
+      executeWatch(value.launch, new AbortController().signal, {}, value.inputPath, { env: value.env }),
+      (error) => error.code === "watch_runtime_unavailable",
+    );
+  } finally {
+    fs.unlinkSync(alias);
     cleanup(value);
   }
 });

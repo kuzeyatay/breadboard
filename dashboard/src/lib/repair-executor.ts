@@ -11,6 +11,7 @@
 // a fake executor; production injects `createOpenAIRepairExecutor(...)`.
 
 import type OpenAI from "openai";
+import { LEARN_FOUNDATION_RULES } from "./learn-pedagogy.ts";
 import { breadSystemPrompt } from "./assistant-identity.ts";
 import { zettelHandlesForUnit, type LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ModelRepairExecutor, RepairCandidate, UnitRepairRequest } from "./garden-finalize.ts";
@@ -44,7 +45,7 @@ function formatContract(contract: LearningUnitContract): string {
     `prerequisiteConcepts: ${contract.prerequisiteConcepts.join(", ") || "(none)"}`,
     `newConcepts: ${contract.newConcepts.join(", ") || "(none)"}`,
     `sourceAnchors: ${contract.sourceAnchors.join(", ") || "(none)"}`,
-    `expectedWordRange: ${contract.expectedWordRange.join("-")}`,
+    `expectedWordRange (advisory estimate only): ${contract.expectedWordRange[0] > 0 ? contract.expectedWordRange.join("-") : "not estimated"}`,
     `zettelNotes: ${JSON.stringify(contract.zettelNotes)}`,
     `semanticConcepts: ${JSON.stringify(contract.semanticConcepts ?? [])}`,
     `knowledgeClaims: ${JSON.stringify(contract.knowledgeClaims ?? [])}`,
@@ -109,6 +110,7 @@ export function buildModelRepairPrompt(
   const system = breadSystemPrompt([
     "You are Breadboard's single-page repair model.",
     "You revise exactly ONE failed learning page so it satisfies its Learning Unit Contract and passes semantic validation.",
+    LEARN_FOUNDATION_RULES,
     "Hard constraints:",
     "- Preserve the canonical file path and the frontmatter schema; keep every existing frontmatter key that is still valid.",
     "- Keep the same learningUnitId. Do not invent unrelated source assignments.",

@@ -10,6 +10,7 @@ intact without ChatMock having to model any of them.
 """
 
 import json
+import os
 from typing import Any, Dict, Iterator, List
 
 import requests
@@ -110,7 +111,53 @@ def _normalized_tools(tools: Any) -> Any:
     return normalized
 
 
-def build_payload(payload: Dict[str, Any], upstream_model: str, *, stream: bool) -> Dict[str, Any]:
+# OpenRouter reserves credit for the whole output allowance before it serves a
+# request, and when a request names no allowance it reserves the model's
+# maximum — 64,000 tokens for Claude Sonnet 4.5, close to a dollar per call at
+# list price. A balance that would comfortably pay for the answer then gets
+# "This request requires more credits, or fewer max_tokens" (HTTP 402), which
+# is how every paid OpenRouter model on this install answered for two weeks.
+# Reasonable answers fit well inside this; a caller that asks for less keeps
+# its own number.
+OPENROUTER_MAX_TOKENS_ENV = "CHATMOCK_OPENROUTER_MAX_TOKENS"
+DEFAULT_OPENROUTER_MAX_TOKENS = 16_384
+_CAPPED_PROVIDERS = frozenset({"openrouter"})
+
+
+def output_token_cap(provider_id: str | None) -> int | None:
+    if provider_id not in _CAPPED_PROVIDERS:
+        return None
+    raw = (os.getenv(OPENROUTER_MAX_TOKENS_ENV) or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_OPENROUTER_MAX_TOKENS
+
+
+def _cap_output_tokens(out: Dict[str, Any], cap: int | None) -> None:
+    if cap is None:
+        return
+    for field in ("max_tokens", "max_completion_tokens"):
+        value = out.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            out.pop(field, None)
+            continue
+        out[field] = min(value, cap)
+    if "max_tokens" not in out and "max_completion_tokens" not in out:
+        out["max_tokens"] = cap
+
+
+def build_payload(
+    payload: Dict[str, Any],
+    upstream_model: str,
+    *,
+    stream: bool,
+    provider_id: str | None = None,
+) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         key: value for key, value in payload.items() if key in _PASSTHROUGH_FIELDS
     }
@@ -120,6 +167,7 @@ def build_payload(payload: Dict[str, Any], upstream_model: str, *, stream: bool)
         out.pop("stream_options", None)
     if "tools" in out:
         out["tools"] = _normalized_tools(out["tools"])
+    _cap_output_tokens(out, output_token_cap(provider_id))
     return out
 
 
@@ -147,7 +195,9 @@ def request_chat(
     return transport.post_with_retry(
         chat_url(credentials),
         headers=build_headers(credentials),
-        payload=build_payload(payload, upstream_model, stream=stream),
+        payload=build_payload(
+            payload, upstream_model, stream=stream, provider_id=credentials.provider_id
+        ),
         stream=stream,
         provider_id=credentials.provider_id,
         allow_preconnect_retry=allow_preconnect_retry,

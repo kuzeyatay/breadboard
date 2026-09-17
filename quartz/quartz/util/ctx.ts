@@ -2,6 +2,7 @@ import { QuartzConfig } from "../cfg"
 import { QuartzPluginData } from "../plugins/vfile"
 import { FileTrieNode } from "./fileTrie"
 import { FilePath, FullSlug } from "./path"
+import type { TreeSpill } from "../processors/treeSpill"
 
 export interface Argv {
   directory: string
@@ -13,6 +14,8 @@ export interface Argv {
   wsPort: number
   remoteDevHost?: string
   concurrency?: number
+  /** Content-relative posix directories to render; empty or absent = whole site. */
+  scope?: string[]
 }
 
 export type BuildTimeTrieData = QuartzPluginData & {
@@ -29,6 +32,8 @@ export interface BuildCtx {
   allFiles: FilePath[]
   trie?: FileTrieNode<BuildTimeTrieData>
   incremental: boolean
+  /** Where a non-watching build parked its rendered trees; see treeSpill.ts. */
+  treeSpill?: TreeSpill
 }
 
 export function trieFromAllFiles(allFiles: QuartzPluginData[]): FileTrieNode<BuildTimeTrieData> {
@@ -47,4 +52,4 @@ export function trieFromAllFiles(allFiles: QuartzPluginData[]): FileTrieNode<Bui
   return trie
 }
 
-export type WorkerSerializableBuildCtx = Omit<BuildCtx, "cfg" | "trie">
+export type WorkerSerializableBuildCtx = Omit<BuildCtx, "cfg" | "trie" | "treeSpill">

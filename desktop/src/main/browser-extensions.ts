@@ -9,7 +9,9 @@ export const BROWSER_EXTENSIONS_STATE_FILE = "browser-extensions.json";
 export const BROWSER_EXTENSIONS_DIRECTORY = "browser-extensions";
 const MAX_BROWSER_EXTENSIONS = 64;
 export const MAX_EXTENSION_ARCHIVE_BYTES = 100 * 1024 * 1024;
-const MAX_EXTENSION_UNPACKED_BYTES = 256 * 1024 * 1024;
+// AdBlock's bundled filter lists expand to over 300 MiB. Allow those packages
+// while retaining a finite extraction budget and the separate download limit.
+export const MAX_EXTENSION_UNPACKED_BYTES = 512 * 1024 * 1024;
 const MAX_EXTENSION_FILES = 20_000;
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/u;
 const CHROME_WEB_STORE_HOST = "chromewebstore.google.com";
@@ -62,6 +64,31 @@ export function writeBrowserExtensionPaths(configDir: string, extensionPaths: st
 
 export function isBrowserExtensionId(value: unknown): value is string {
   return typeof value === "string" && EXTENSION_ID_PATTERN.test(value);
+}
+
+/** Copy a small manifest icon across sessions without exposing local file paths. */
+export function readBrowserExtensionIcon(extensionPath: string, icons: unknown): string | undefined {
+  if (!icons || typeof icons !== "object" || Array.isArray(icons)) return undefined;
+  const candidates = Object.entries(icons)
+    .filter(([size, file]) => Number(size) > 0 && typeof file === "string")
+    .sort(([left], [right]) => {
+      const a = Number(left), b = Number(right);
+      // Prefer a retina-sized icon, then the largest smaller one.
+      return a >= 64 && b >= 64 ? a - b : a >= 64 ? -1 : b >= 64 ? 1 : b - a;
+    });
+  for (const [, file] of candidates) {
+    try {
+      const root = fs.realpathSync(extensionPath);
+      const iconPath = fs.realpathSync(path.resolve(root, file as string));
+      const relative = path.relative(root, iconPath);
+      if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      const mime = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" } as Record<string, string>)[path.extname(iconPath).toLowerCase()];
+      const stat = fs.statSync(iconPath);
+      if (!mime || !stat.isFile() || stat.size === 0 || stat.size > 512 * 1024) continue;
+      return `data:${mime};base64,${fs.readFileSync(iconPath).toString("base64")}`;
+    } catch { /* Missing or unreadable icons use the renderer's puzzle fallback. */ }
+  }
+  return undefined;
 }
 
 /** Read the extension id from a real Chrome Web Store detail page only. */

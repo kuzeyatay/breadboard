@@ -13,8 +13,8 @@ import "server-only";
 
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { promisify } from "node:util";
 
 import { repositoryRoot } from "../runtime-paths.ts";

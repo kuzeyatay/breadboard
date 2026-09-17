@@ -19,6 +19,9 @@ from agent.tool_result_classification import file_mutation_result_landed
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
     {
+        "tool_search",
+        "tool_describe",
+        "attachment_image",
         "read_file",
         "search_files",
         "web_search",
@@ -77,6 +80,7 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    exploration_limit: int = 0
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -95,6 +99,7 @@ class ToolCallGuardrailConfig:
 
         defaults = cls()
         return cls(
+            exploration_limit=max(0, _positive_int(data.get("exploration_limit"), 0)),
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
             exact_failure_warn_after=_positive_int(
@@ -233,6 +238,8 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        self._exploration_count = 0
+        self._discovery_results: dict[str, int] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -242,6 +249,17 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        if self._halt_decision is not None:
+            return ToolGuardrailDecision(action="block", code="turn_finalization_required",
+                message="Tool exploration has stopped. Answer the readable parts using the evidence already available, and ask about any missing or unreadable detail.",
+                tool_name=tool_name, signature=signature)
+        if (self.config.exploration_limit and self._exploration_count >= self.config.exploration_limit
+                and tool_name in {"tool_search", "tool_describe", "web_search", "web_extract"}):
+            decision = ToolGuardrailDecision(action="block", code="exploration_limit",
+                message="Repeated exploration has not produced an answer. Stop searching; answer from the attached material and available results. Ask the user about unreadable symbols instead of guessing them.",
+                tool_name=tool_name, count=self._exploration_count, signature=signature)
+            self._halt_decision = decision
+            return decision
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -292,6 +310,23 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
+        if tool_name in {"tool_search", "tool_describe", "web_search", "web_extract"}:
+            self._exploration_count += 1
+        # Rephrasing a discovery query does not count as progress when it keeps
+        # returning the same tool catalogue. Ignore query text in that identity.
+        if tool_name == "tool_search":
+            parsed = safe_json_loads(result or "")
+            if isinstance(parsed, dict) and isinstance(parsed.get("matches"), list):
+                names = sorted(str(m.get("name", "")) for m in parsed["matches"] if isinstance(m, dict))
+                key = json.dumps(names)
+                count = self._discovery_results.get(key, 0) + 1
+                self._discovery_results[key] = count
+                if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after:
+                    decision = ToolGuardrailDecision(action="halt", code="discovery_no_progress",
+                        message="These searches keep returning the same capabilities. Use the available results or ask the user for the missing detail.",
+                        tool_name=tool_name, count=count, signature=signature)
+                    self._halt_decision = decision
+                    return decision
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
@@ -407,8 +442,8 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
     """Action-oriented guidance for recovering from repeated tool failures."""
     common = (
         f"{tool_name} has failed {count} times this turn. This looks like a loop. "
-        "Do not switch to text-only replies; keep using tools, but diagnose before retrying. "
-        "First inspect the latest error/output and verify your assumptions. "
+        "Inspect the error before retrying. Use a tool only when it can resolve the blocker. "
+        "Otherwise give the supported answer or ask the user for the missing information. "
     )
     if tool_name == "terminal":
         return common + (

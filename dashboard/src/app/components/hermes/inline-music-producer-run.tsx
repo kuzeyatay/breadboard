@@ -5,8 +5,6 @@ import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 import type { ExternalAgentOutcome, ExternalAgentTerminalOutcome } from "@/lib/conversations/external-agent-runs";
-import AgentSettingsDialog from "./agent-settings-dialog";
-import { MUSIC_PRODUCER_AGENT_ID } from "@/lib/music-producer/identity";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import ArtifactViewer from "./artifact-viewer";
 import { dispatchArtifactAiEdit } from "./artifact-ai-edit";
@@ -28,7 +26,6 @@ export default function InlineMusicProducerRun({ runId, task, persistedContent =
   const status = restoredTerminal ? persistedOutcome! : liveStatus;
   const [stage, setStage] = useState("Waiting for resources");
   const [error, setError] = useState("");
-  const [settings, setSettings] = useState(false);
   const [reconnect, setReconnect] = useState(0);
   const [artifact, setArtifact] = useState<PresentedArtifact | null>(null);
   const [versions, setVersions] = useState<number[]>([]), [selectedVersion, setSelectedVersion] = useState<number | null>(null);
@@ -122,10 +119,25 @@ export default function InlineMusicProducerRun({ runId, task, persistedContent =
     if (artifact)
       dispatchArtifactAiEdit({ artifact, prompt: `/agents:music-producer ${instruction} --source ${artifact.id}@${version}` });
   };
-  return <div className="bb-agent-run-card">
-    <div className="bb-agent-run-header"><span className="bb-agent-run-title">Music Producer</span><span className="bb-agent-run-label min-w-0 max-w-full truncate" title={task.split("\n")[0]}>{task.split("\n")[0]}</span></div>
+  if (status === "failed" || status === "aborted") {
+    const response = content || (status === "aborted" ? "Response stopped." : "Music generation failed.");
+    return <>
+      <AssistantResponseMeta active={false} failed={status === "failed"} agentName="Music Producer"
+        label={status === "aborted" ? "Stopped" : undefined} showTokenUsage={false} />
+      <ChatMarkdown content={response} />
+      <AssistantMessageActions content={response} onRetry={onRetry} />
+    </>;
+  }
+  return <>
+    <AssistantResponseMeta
+      active={status === "running"}
+      agentName="Music Producer"
+      showTokenUsage={false}
+    />
+    <div className="bb-agent-run-card">
+    <div className="bb-agent-run-header"><span className="bb-agent-run-title" style={{ justifySelf: "start" }}>Music Producer</span></div>
     <div className="space-y-4 px-5 py-4">
-      <AssistantResponseMeta active={status === "running"} failed={status === "failed"} agentName="Music Producer" label={status === "running" ? stage : status} />
+      <div className="text-sm text-[var(--ink-muted)]">{status === "running" ? stage : status}</div>
       {status === "running" ? <div className="flex flex-wrap items-center justify-between gap-3"><span className="bb-agent-run-label">One draft · request values override saved defaults</span><button className="bb-agent-run-action" onClick={async () => {
         try {
           const response = await fetch(`/api/music-producer/runs/${encodeURIComponent(runId)}/abort`, { method: "POST" });
@@ -145,10 +157,9 @@ export default function InlineMusicProducerRun({ runId, task, persistedContent =
       </div> : null}
       {content ? <div className="bb-agent-run-text"><ChatMarkdown content={content} /></div> : null}
       {error && status === "running" ? <div role="alert" className="bb-agent-run-row flex flex-wrap items-center gap-3 p-3">{error}<button className="bb-agent-run-action" onClick={() => { setError(""); setReconnect(value => value + 1); }}>Reconnect</button></div> : null}
-      <div className="flex flex-wrap gap-2"><button className="bb-agent-run-action" onClick={() => setSettings(true)}>Settings</button>{status !== "running" && onRetry ? <button className="bb-agent-run-action" onClick={onRetry}>Retry as a new run</button> : null}</div>
       {status !== "running" ? <AssistantMessageActions content={content} onRetry={onRetry} /> : null}
-      {settings ? <AgentSettingsDialog agentId={MUSIC_PRODUCER_AGENT_ID} onClose={() => setSettings(false)} /> : null}
       {viewer && artifact ? <ArtifactViewer artifact={{ ...artifact, version }} onClose={() => setViewer(false)} /> : null}
     </div>
-  </div>;
+  </div>
+  </>;
 }

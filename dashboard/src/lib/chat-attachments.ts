@@ -48,6 +48,7 @@ import {
   MAX_STORED_FILE_ATTACHMENT_BYTES,
   STORED_FILE_ATTACHMENT_ACCEPT,
   STORED_FILE_FILENAME_HEADER,
+  storedBinaryFilePromptText,
   storedFileAttachmentFormat,
   storedFileIsText,
   type StoredFileAttachmentFormat,
@@ -70,6 +71,8 @@ export const TERMINAL_ATTACHMENT_ACCEPT =
   `${CHAT_ATTACHMENT_ACCEPT},${VIDEO_ATTACHMENT_ACCEPT}`;
 
 interface ChatAttachmentScope {
+  /** Automatic reader context, retained for the model but hidden in the chat. */
+  context?: 'pdf';
   /** The artifact row that placed this file in the current composer, if any. */
   sourceArtifactId?: string;
 }
@@ -178,7 +181,7 @@ export type ChatAttachment = ChatAttachmentScope & (
  * `sizeBytes` is the size of the file the user actually picked, recorded so the
  * Uploads list can report it for files whose contents were never retained.
  */
-export type ChatMessageAttachment =
+export type ChatMessageAttachment = Pick<ChatAttachmentScope, 'context'> & (
   | {
       type: 'file';
       name: string;
@@ -220,7 +223,28 @@ export type ChatMessageAttachment =
       sizeBytes?: number;
       summary?: DocumentAttachmentSummary;
       figures?: string[];
-    };
+    });
+
+/** Keep automatic reader evidence out of previews and filename fallbacks. */
+export function visibleChatMessageAttachments(
+  attachments: readonly ChatMessageAttachment[] = [],
+  attachmentNames: readonly string[] = [],
+): { attachments: ChatMessageAttachment[]; attachmentNames: string[] } {
+  // Older PDF turns predate the explicit marker. Their context bundle always
+  // begins with this generated text file followed by the reader's PDF.
+  const legacyPdfContext = attachments[0]?.name === 'PDF reading context.txt' &&
+    attachments[0].context === undefined &&
+    attachments[1]?.type === 'document' && attachments[1].format === 'pdf';
+  const hidden = attachments.filter((attachment, index) =>
+    attachment.context === 'pdf' || (legacyPdfContext &&
+      (index < 2 || (index === 2 && attachment.type === 'image' &&
+        attachment.name.startsWith('Current PDF view')))));
+  const hiddenNames = new Set(hidden.map((attachment) => attachment.name));
+  return {
+    attachments: attachments.filter((attachment) => !hidden.includes(attachment)),
+    attachmentNames: attachmentNames.filter((name) => !hiddenNames.has(name)),
+  };
+}
 
 /**
  * Runtime-safe text for a message whose useful content is entirely in its
@@ -401,7 +425,10 @@ export function chatMessageAttachments(
       return product ? [{ type: 'product' as const, name, product }] : [];
     }
     const sizeBytes = safeAttachmentSize(attachment.sizeBytes);
-    const size = sizeBytes === undefined ? {} : { sizeBytes };
+    const size = {
+      ...(sizeBytes === undefined ? {} : { sizeBytes }),
+      ...(attachment.context === 'pdf' ? { context: 'pdf' as const } : {}),
+    };
     if (attachment.type === 'image' && CHAT_IMAGE_DATA_URL.test(attachment.dataUrl)) {
       return [{ type: 'image' as const, name, dataUrl: attachment.dataUrl, ...size }];
     }
@@ -519,11 +546,12 @@ export function reusableChatAttachments(
   attachments: readonly ChatMessageAttachment[] | undefined,
 ): ChatAttachment[] {
   return (attachments ?? []).flatMap<ChatAttachment>((attachment) => {
+    const context = attachment.context === 'pdf' ? { context: 'pdf' as const } : {};
     if (attachment.type === 'product') {
       return [{ type: 'product' as const, name: attachment.name, product: attachment.product }];
     }
     if (attachment.type === 'image' && CHAT_IMAGE_DATA_URL.test(attachment.dataUrl)) {
-      return [{ type: 'image' as const, name: attachment.name, dataUrl: attachment.dataUrl }];
+      return [{ type: 'image' as const, name: attachment.name, dataUrl: attachment.dataUrl, ...context }];
     }
     if (attachment.type === 'video') {
       return [
@@ -564,6 +592,7 @@ export function reusableChatAttachments(
       return [
         {
           type: 'document' as const,
+          ...context,
           name: attachment.name,
           blobId: attachment.blobId,
           format: attachment.format,
@@ -582,6 +611,7 @@ export function reusableChatAttachments(
     ) {
       return [{
         type: 'text' as const,
+        ...context,
         name: attachment.name,
         blobId: attachment.blobId,
         format: attachment.format,
@@ -591,6 +621,28 @@ export function reusableChatAttachments(
     }
     return [];
   });
+}
+
+/**
+ * The files a regenerated turn cannot take with it.
+ *
+ * Older messages kept only the name of a file the registry had no format for,
+ * so `reusableChatAttachments` returns nothing for it and the retry would go
+ * out with the file silently gone. The names are for telling the person, not
+ * for putting on the retried message: a chip for a file the model never saw
+ * would be the same lie the retry used to tell.
+ */
+export function unreusableChatAttachmentNames(
+  attachments: readonly ChatMessageAttachment[] | undefined,
+  attachmentNames: readonly string[] | undefined,
+): string[] {
+  const visible = visibleChatMessageAttachments(attachments ?? [], attachmentNames ?? []);
+  const reusable = new Set(reusableChatAttachments(visible.attachments).map((a) => a.name));
+  const names = new Set<string>();
+  for (const name of [...visible.attachmentNames, ...visible.attachments.map((a) => a.name)]) {
+    if (name.trim() && !reusable.has(name)) names.add(name);
+  }
+  return [...names];
 }
 
 export function normalizeChatMessageAttachments(
@@ -603,7 +655,10 @@ export function normalizeChatMessageAttachments(
     const name = safeAttachmentName(record.name);
     if (!name) return [];
     const sizeBytes = safeAttachmentSize(record.sizeBytes);
-    const size = sizeBytes === undefined ? {} : { sizeBytes };
+    const size = {
+      ...(sizeBytes === undefined ? {} : { sizeBytes }),
+      ...(record.context === 'pdf' ? { context: 'pdf' as const } : {}),
+    };
     if (record.type === 'product') {
       const product = normalizeProductAttachment(record.product);
       return product ? [{ type: 'product' as const, name, product }] : [];
@@ -882,6 +937,29 @@ export async function attachStoredFile(
 }
 
 /**
+ * A file the registry has no name for, read by the extraction route and then
+ * kept whole as `bin` so a regenerated turn can read it again.
+ *
+ * Storing it is best effort. When the server declines — an older build that
+ * still refuses unknown extensions, or a file over the cap — the attachment
+ * goes inline exactly as it did before, which loses the retry but never the
+ * message.
+ */
+async function storeExtractedFile(
+  file: File,
+  text: string,
+): Promise<Extract<ChatAttachment, { type: 'text' }>> {
+  const inline = { type: 'text' as const, text, name: file.name, sizeBytes: file.size };
+  if (file.size > MAX_STORED_FILE_ATTACHMENT_BYTES) return inline;
+  try {
+    const stored = await attachStoredFile(file, 'bin');
+    return { ...stored, text };
+  } catch {
+    return inline;
+  }
+}
+
+/**
  * Stores a 3D file and returns the pointer the message will carry.
  *
  * The bytes go up whole rather than through `/api/extract-text`, which would
@@ -999,12 +1077,13 @@ interface DocumentUploadResponse {
  * one. The bytes now stay, and the reading that comes back is structural rather
  * than flattened.
  *
- * A PDF is stored the same way but read by the older route, which already
- * renders pages and can transcribe a scan with a vision model.
+ * PDFs also return a saved reading, with automatic OCR for scanned pages.
  */
 export async function attachDocumentFile(
   file: File,
   format: DocumentAttachmentFormat,
+  signal?: AbortSignal,
+  handwriting = false,
 ): Promise<ChatAttachment> {
   if (file.size > MAX_DOCUMENT_ATTACHMENT_BYTES) {
     throw new Error(
@@ -1013,8 +1092,10 @@ export async function attachDocumentFile(
   }
   const response = await fetch('/api/chat-attachments/documents', {
     method: 'POST',
+    signal,
     headers: {
       [DOCUMENT_FILENAME_HEADER]: encodeURIComponent(file.name),
+      'X-Document-Handwriting': String(handwriting),
       'Content-Type': 'application/octet-stream',
     },
     body: file,
@@ -1215,9 +1296,8 @@ export async function extractChatAttachments(
       const documentFormat = documentAttachmentFormat(file.name);
       if (documentFormat) {
         options.onStatus?.(`Reading ${file.name}…`);
-        const stored = await attachDocumentFile(file, documentFormat);
-        // A PDF is stored here but read by the extraction route, which handles
-        // scans a structural reader cannot.
+        const stored = await attachDocumentFile(file, documentFormat, undefined, options.isHandwriting?.(file) ?? false);
+        // Keep compatibility with older servers that only stored the original.
         if (stored.type === 'document' && !stored.text) {
           const extracted = await extractDocumentText(file, options.isHandwriting?.(file) ?? false);
           if (extracted.warning) warnings.push(`${file.name}: ${extracted.warning}`);
@@ -1236,6 +1316,11 @@ export async function extractChatAttachments(
       const storedFileFormat = storedFileAttachmentFormat(file.name);
       if (storedFileFormat) {
         const stored = await attachStoredFile(file, storedFileFormat);
+        if (storedFileFormat === 'bin') {
+          stored.text = storedBinaryFilePromptText(file.name);
+          attachments.push(stored);
+          continue;
+        }
         if (storedFileIsText(storedFileFormat)) {
           stored.text = await file.text();
           attachments.push(stored);
@@ -1279,7 +1364,12 @@ export async function extractChatAttachments(
           sizeBytes: file.size,
         });
       } else if (typeof data.text === 'string') {
-        attachments.push({ type: 'text', text: data.text, name: file.name, sizeBytes: file.size });
+        // Keep the original too. The words go to the model now, but the
+        // transcript keeps only a pointer, and a regenerated turn needs that
+        // pointer to find the file again. A server that cannot store it
+        // (older, or the file is over the cap) leaves the inline attachment
+        // as it was, which is how every such file was sent before.
+        attachments.push(await storeExtractedFile(file, data.text));
       } else {
         throw new Error('The document did not contain readable content');
       }

@@ -13,10 +13,14 @@ const ENV_KEYS = [
   'FIRECRAWL_KEY',
   'FIRECRAWL_BASE_URL',
   'DEEP_RESEARCH_SEARCH_PROVIDER',
+  'DEEP_RESEARCH_DDGS_PYTHON',
 ];
 const original = Object.fromEntries(
   ENV_KEYS.map(key => [key, process.env[key]]),
 );
+// The direct backend finds the runtime's bundled `ddgs` interpreter on its
+// own; these tests stub `fetch` and must reach the scrape, not a subprocess.
+const NO_DDGS = { DEEP_RESEARCH_DDGS_PYTHON: 'none' };
 
 function setEnv(values: Record<string, string | undefined>) {
   for (const key of ENV_KEYS) {
@@ -83,7 +87,11 @@ describe('search backend selection', () => {
 describe('ChatMock web search', () => {
   const realFetch = globalThis.fetch;
 
-  function stubResponse(content: string, usage?: Record<string, number>) {
+  function stubResponse(
+    content: string,
+    usage?: Record<string, number>,
+    headers: Record<string, string> = {},
+  ) {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
@@ -92,7 +100,7 @@ describe('ChatMock web search', () => {
         }),
         {
           status: 200,
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', ...headers },
         },
       )) as typeof fetch;
   }
@@ -120,8 +128,26 @@ describe('ChatMock web search', () => {
     ]);
   });
 
+  it('does not trust citations from a route that has no web tool', async () => {
+    // `default` was exhausted and ChatMock failed over to OpenRouter; that
+    // model ignored `web_search` and, asked to cite, invented nature.com URLs
+    // that passed the citation check. The provider header names the route.
+    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1', ...NO_DDGS });
+    stubResponse(
+      'The study found X ([nature.com](https://www.nature.com/articles/s42003-024-00551-9)).',
+      { prompt_tokens: 50, completion_tokens: 20, total_tokens: 70 },
+      { 'x-chatmock-provider': 'openrouter', 'x-chatmock-failover': 'true' },
+    );
+
+    assert.deepEqual(await searchWeb('brain.fm study', 5), {
+      contents: [],
+      urls: [],
+      usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70 },
+    });
+  });
+
   it('discards an answer that cites nothing, so memory cannot become a learning', async () => {
-    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1' });
+    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1', ...NO_DDGS });
     stubResponse(
       'Shore power is widely deployed and very cheap. Everyone agrees.',
     );
@@ -133,7 +159,7 @@ describe('ChatMock web search', () => {
   });
 
   it('reports gateway token usage even when the synthesis is discarded', async () => {
-    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1' });
+    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1', ...NO_DDGS });
     stubResponse('Uncited output.', {
       prompt_tokens: 120,
       completion_tokens: 30,
@@ -148,7 +174,7 @@ describe('ChatMock web search', () => {
   });
 
   it('surfaces a failing gateway instead of silently returning no results', async () => {
-    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1' });
+    setEnv({ CHATMOCK_BASE_URL: 'http://127.0.0.1:8765/v1', ...NO_DDGS });
     globalThis.fetch = (async () =>
       new Response('upstream exploded', { status: 502 })) as typeof fetch;
 

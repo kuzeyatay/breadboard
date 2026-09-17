@@ -43,7 +43,7 @@ const assistantSource = read("src", "app", "garden", "garden-assistant.tsx");
 
 const ROUTE_STATE_KEY = "__breadboardLearnGenerateModelRouteTestState";
 
-async function loadGenerateRoute() {
+async function loadGenerateRoute(action = "generate") {
   const entryPoint = path.join(
     dashboardRoot,
     "src",
@@ -52,7 +52,7 @@ async function loadGenerateRoute() {
     "gardens",
     "[gardenId]",
     "learn",
-    "generate",
+    action,
     "route.ts",
   );
   const result = await esbuild.build({
@@ -168,11 +168,11 @@ function freshState(selectedModel = "model-planned") {
   return state;
 }
 
-async function post(body) {
+async function post(body, route = generateRoute) {
   const previous = process.env.QUARTZ_CONTENT_PATH;
   process.env.QUARTZ_CONTENT_PATH = "C:\\trusted\\quartz\\content";
   try {
-    return await generateRoute.POST(
+    return await route.POST(
       new Request("http://local/learn/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -261,7 +261,7 @@ describe("confirmed Learning Map model binding", () => {
     }
   });
 
-  test("status and both UI callers use the confirmed map owner's model", () => {
+  test("status and the Learn workspace use the confirmed map owner's model", () => {
     assert.match(learnSource, /confirmedLearningMapModel\?: string/);
     assert.match(
       learnStatusProjectionSource,
@@ -285,11 +285,8 @@ describe("confirmed Learning Map model binding", () => {
       workspaceHandler,
       /postLearnAction\("generate",\s*\{\s*confirmedLearningMapId: learnState\.confirmedLearningMapId,\s*expectedModel,/s,
     );
-    assert.match(assistantSource, /confirmedLearningMapModel\?: string/);
-    assert.match(
-      assistantSource,
-      /endpoint === 'generate'[\s\S]*?confirmedLearningMapId: learnState\.confirmedLearningMapId,[\s\S]*?expectedModel: confirmedLearningMapModel/,
-    );
+    assert.doesNotMatch(assistantSource, /postLearnAction/);
+    assert.match(workspaceSource, /model: \(endpoint === "confirm" \|\| endpoint === "generate"\)[\s\S]*?\? body.expectedModel : learnModel/);
   });
 
   test("worker, executor, and core generation all reject model drift before job creation", () => {
@@ -381,4 +378,30 @@ describe("confirmed Learning Map model binding", () => {
     );
     assert.match(routeSource, /isLearnRouteConflict\(error\)[\s\S]*?status: 409/);
   });
+});
+
+
+test("Learn run overrides reach every worker and survive profile changes through confirmation", async () => {
+  const routes = await Promise.all(['plan', 'regenerate', 'rebuild', 'confirm'].map(loadGenerateRoute));
+  const cases = [
+    [routes[0], {includedSourceIds:['source-a'], syllabusSourceId:null}],
+    [routes[1], {mode:'repair'}],
+    [routes[2], {mode:'full_rebuild', forceFullRebuild:true}],
+    [routes[3], {learningMapId:'map-proposed', generate:true, expectedModel:'cliproxy/claude-opus-5'}],
+    [generateRoute, {confirmedLearningMapId:'map-confirmed', expectedModel:'cliproxy/claude-opus-5'}],
+  ];
+  for (const [route, body] of cases) {
+    const state = freshState('gpt-6-astra');
+    const response = await post({...body, model:'cliproxy/claude-opus-5'}, route);
+    assert.equal(response.status, 202, await response.text());
+    assert.equal(state.operationCalls.length, 1);
+    assert.equal(state.operationCalls[0].request.model, 'cliproxy/claude-opus-5');
+    assert.equal(state.selectedModel, 'gpt-6-astra');
+    const invalid = freshState('gpt-6-astra');
+    assert.equal((await post({...body, model:'chat'}, route)).status, 400);
+    assert.deepEqual(invalid.operationCalls, []);
+  }
+  const mismatch = freshState('gpt-6-astra');
+  assert.equal((await post({model:'gpt-6-astra', expectedModel:'cliproxy/claude-opus-5', confirmedLearningMapId:'map-confirmed'})).status, 409);
+  assert.deepEqual(mismatch.operationCalls, []);
 });

@@ -90,6 +90,12 @@ async function pollOnce(): Promise<void> {
     void gateway.sendTyping(message.chatId);
     serialize(message.chatId, () => handleMessage(message));
   }
+  const owner = (await store()).settings().ownerUserId;
+  if (owner !== null) {
+    const { queueMessagingNotifications } = await import("../messaging-notifications/instance.ts");
+    queueMessagingNotifications(owner, "telegram", (chatId, text) =>
+      gateway.sendMessage(chatId, `🌱 Breadboard\n\n${text}`));
+  }
 }
 
 /** Start the process-wide drain loop. Safe to call repeatedly (dev hot reloads). */
@@ -147,6 +153,12 @@ export async function startTelegramGateway(): Promise<TelegramGatewaySnapshot> {
   if (!token) throw new TelegramError(400, "Add a bot token before connecting.");
 
   const settings = await store();
+  // Environment-provided bots may never have passed through the link form.
+  // Persist their identity so notification preferences bind to the actual bot.
+  if (!settings.settings().botId || tokenIsFromEnvironment()) {
+    const identity = await getMe(token);
+    settings.recordBot({ id: identity.id, username: identity.username, name: identity.name });
+  }
   const gateway = getTelegramGateway();
   await gateway.start({
     token,

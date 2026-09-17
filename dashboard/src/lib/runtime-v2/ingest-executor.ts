@@ -10,6 +10,7 @@ import AdmZip from "adm-zip";
 import { PDFParse } from "pdf-parse";
 import type OpenAI from "openai";
 import { withCouncil } from "@/lib/council";
+import { mlxText } from "@/lib/document-structure/mlx";
 import {
   cleanGeneratedText,
   extractDocumentKnowledge,
@@ -55,10 +56,15 @@ import {
 } from "@/lib/vlm-ocr/parse";
 import {
   createOcrTextCompanionPdf,
+  embedOcrTextLayer,
+  hasUsableTextLayer,
   type OcrTextLayerPage,
+  type OcrTextLine,
 } from "@/lib/pdf-text-layer";
 import type { FigureSaver } from "@/lib/vlm-ocr/figures";
 import type { VlmOcrTask } from "@/lib/vlm-ocr/prompts";
+import { probeVlmOcrServer } from "@/lib/vlm-ocr/server";
+import { spotPageTextLines } from "@/lib/vlm-ocr/spotting";
 import { toBreadboardMarkdown } from "@/lib/vlm-ocr/quartz-safe";
 import type { IngestUploadFile } from "@/lib/ingest-upload";
 
@@ -1613,6 +1619,28 @@ function attachPdfScreenshotAssets({
   });
 }
 
+function mergeVlmFigureEmbeds(
+  pages: DocumentPage[],
+  vlmPages: Array<{ pageNumber: number; text: string }>,
+): DocumentPage[] {
+  const embedsByPage = new Map<number, string[]>();
+  for (const page of vlmPages) {
+    const embeds = page.text.match(/!\[[^\]]*\]\([^\n)]+\)/g) ?? [];
+    if (embeds.length > 0) embedsByPage.set(page.pageNumber, embeds);
+  }
+  if (embedsByPage.size === 0) return pages;
+
+  return pages.map((page) => {
+    const pageNumber = pageNumberFromLabel(page.label);
+    const embeds = pageNumber ? embedsByPage.get(pageNumber) : undefined;
+    if (!embeds?.length) return page;
+    return {
+      ...page,
+      text: `${page.text.trim()}\n\n### Figures\n\n${embeds.join("\n\n")}`.trim(),
+    };
+  });
+}
+
 function markdownSnapshots(pages: DocumentPage[]): string {
   return pages
     .filter((page) => page.imagePath)
@@ -2010,31 +2038,207 @@ async function transcribePdfPages(
   };
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof UploadAbortedError ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
 /**
- * Keep the uploaded PDF byte-for-byte authoritative. The OCR transcript is
- * already retained in the source note and generated learning pages; rewriting
- * the source asset with an invisible text layer would silently change the file
- * the user uploaded and makes hash-based recovery/auditing impossible.
+ * Ask the VLM where each text line sits on the given pages. Pages are
+ * re-rendered in the same bounded subprocess batches as the parse, and a page
+ * whose spotting fails simply has no boxes: the text layer then spreads that
+ * page's words evenly instead of failing the upload.
+ *
+ * Returns nothing at all when the OCR server is not up. The handwriting path
+ * reaches here without ever having started it, and spotting is not worth a
+ * model download on its own.
  */
-async function preserveOriginalSourcePdf({
+async function spotOcrTextLines({
+  sourceFilePath,
+  pageNumbers,
+  signal,
+  emit,
+}: {
+  sourceFilePath: string;
+  pageNumbers: number[];
+  signal?: AbortSignal;
+  emit: (step: string) => void;
+}): Promise<{ lines: Map<number, OcrTextLine[]>; failedPages: number }> {
+  const lines = new Map<number, OcrTextLine[]>();
+  const wanted = new Set(pageNumbers);
+  if (wanted.size === 0) return { lines, failedPages: 0 };
+
+  const config = getVlmOcrConfig();
+  if (!config.enabled) return { lines, failedPages: 0 };
+  const probe = await probeVlmOcrServer(config);
+  if (!probe.ok) return { lines, failedPages: 0 };
+
+  const first = Math.min(...wanted);
+  const last = Math.max(...wanted);
+  let done = 0;
+  let failedPages = 0;
+  for (
+    let batchFirst = first;
+    batchFirst <= last;
+    batchFirst += PDF_VLM_RENDER_BATCH_PAGES
+  ) {
+    throwIfRequestAborted(signal);
+    const batchLast = Math.min(
+      batchFirst + PDF_VLM_RENDER_BATCH_PAGES - 1,
+      last,
+    );
+    let hasWanted = false;
+    for (let page = batchFirst; page <= batchLast; page += 1) {
+      if (wanted.has(page)) hasWanted = true;
+    }
+    if (!hasWanted) continue;
+    try {
+      const rendered = await renderPdfBatchInSubprocess({
+        sourceFilePath,
+        first: batchFirst,
+        last: batchLast,
+        desiredWidth: config.pageImageWidth,
+        signal,
+      });
+      for (const page of rendered) {
+        if (!wanted.has(page.pageNumber)) continue;
+        throwIfRequestAborted(signal);
+        done += 1;
+        emit(`Locating OCR text on pages (${done}/${wanted.size})…`);
+        try {
+          const spotted = await spotPageTextLines({
+            config,
+            dataUrl: page.dataUrl,
+            signal,
+          });
+          if (spotted.length > 0) lines.set(page.pageNumber, spotted);
+          else failedPages += 1;
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          failedPages += 1;
+        }
+      }
+    } finally {
+      collectReleasedPdfBatchMemory();
+    }
+  }
+  return { lines, failedPages };
+}
+
+/**
+ * Write a searchable twin of the uploaded PDF beside it. The upload itself
+ * stays byte-for-byte as it arrived — Learn hashes it and anchors against it —
+ * so the OCR text layer goes into `<name>-searchable.pdf`, which is the file
+ * the PDF viewer opens. Each page's words sit over their print when the VLM
+ * could spot them; otherwise they are spread evenly down the page.
+ */
+async function writeSearchablePdfAsset({
   pages,
+  buffer,
+  sourceFilePath,
+  contentPath,
+  clusterSlug,
+  baseName,
+  createdFilePaths,
+  knowledgeWriteTransaction,
   signal,
   emit,
 }: {
   pages: OcrTextLayerPage[];
+  buffer: Buffer;
+  sourceFilePath: string;
+  contentPath: string;
+  clusterSlug: string;
+  baseName: string;
+  createdFilePaths?: string[];
+  knowledgeWriteTransaction?: KnowledgeWriteTransaction;
   signal?: AbortSignal;
   emit: (step: string) => void;
-}): Promise<string> {
-  if (
-    !pages.some(
-      (page) => Number.isInteger(page.pageNumber) && page.text.trim().length > 0,
-    )
-  ) {
-    return "";
-  }
+}): Promise<{ relativePath?: string; warning: string }> {
+  let usable = pages.filter(
+    (page) => Number.isInteger(page.pageNumber) && page.text.trim().length > 0,
+  );
+  if (usable.length === 0) return { warning: "" };
   throwIfRequestAborted(signal);
-  emit("Preserving the original source PDF; OCR text is retained in the notes…");
-  return "";
+
+  // A page that already carries real text (born-digital, or a scan someone
+  // ran through ocrmypdf) needs no layer: a second one would make extractors
+  // read every word twice, and spotting it would be a wasted inference. Only
+  // the pages that are bare scans get a layer; a PDF with none gets no twin.
+  try {
+    const embedded = new Map<number, string>();
+    for (const page of (await getPdfTextPages(buffer)).pages) {
+      const pageNumber = pageNumberFromLabel(page.label);
+      if (pageNumber !== undefined) embedded.set(pageNumber, page.text);
+    }
+    usable = usable.filter(
+      (page) => !hasUsableTextLayer(embedded.get(page.pageNumber)),
+    );
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    // Unreadable text streams read as "no text": every page gets a layer.
+  }
+  if (usable.length === 0) return { warning: "" };
+  throwIfRequestAborted(signal);
+
+  let spotted = { lines: new Map<number, OcrTextLine[]>(), failedPages: 0 };
+  try {
+    spotted = await spotOcrTextLines({
+      sourceFilePath,
+      pageNumbers: usable.map((page) => page.pageNumber),
+      signal,
+      emit,
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    // Boxes are an improvement, not a requirement: the layer is still written.
+  }
+
+  throwIfRequestAborted(signal);
+  emit("Writing the searchable PDF…");
+  let layered: Awaited<ReturnType<typeof embedOcrTextLayer>>;
+  try {
+    layered = await embedOcrTextLayer({
+      pdf: buffer,
+      pages: usable.map((page) => ({
+        ...page,
+        lines: spotted.lines.get(page.pageNumber),
+      })),
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return {
+      warning: `The searchable PDF could not be written: ${errorMessage(error, "text layer failed")}. The original PDF was kept.`,
+    };
+  }
+  if (layered.pagesWritten === 0) {
+    return { warning: "" };
+  }
+
+  const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
+  ensureTrackedIngestionDirectory(assetDir, knowledgeWriteTransaction);
+  const filePath = uniqueAssetPath(
+    assetDir,
+    slugify(`${baseName}-searchable`),
+    "pdf",
+  );
+  writeTrackedIngestionAsset(
+    filePath,
+    Buffer.from(layered.bytes),
+    knowledgeWriteTransaction,
+  );
+  createdFilePaths?.push(filePath);
+
+  const unpositioned = layered.pagesWritten - layered.positionedPages;
+  return {
+    relativePath: `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`,
+    warning:
+      unpositioned > 0
+        ? `The OCR text layer on ${unpositioned} of ${layered.pagesWritten} page${layered.pagesWritten === 1 ? "" : "s"} is searchable but not aligned to the print${spotted.lines.size === 0 ? " (the OCR model server was not available to locate lines)" : ""}.`
+        : "",
+  };
 }
 
 /**
@@ -2258,6 +2462,8 @@ export async function runIngest({
   let screenshotWarning = "";
   let visionError = "";
   let sourcePdfPath: string | undefined;
+  // OCR text-layer twin of the upload; the viewer opens it in place of the original.
+  let searchablePdfPath: string | undefined;
   let skipKnowledgeExtraction = false;
   // Pictures pulled out of the document: figures the VLM cropped off a page, or
   // images anydoc lifted out of a document package.
@@ -2477,16 +2683,22 @@ export async function runIngest({
           skipKnowledgeExtraction = true;
         }
 
-        screenshotWarning = joinWarnings(
-          screenshotWarning,
-          await preserveOriginalSourcePdf({
-            pages: vlm.pages
-              .filter((page) => !page.failed)
-              .map((page) => ({ pageNumber: page.pageNumber, text: page.text })),
-            signal: request.signal,
-            emit,
-          }),
-        );
+        const searchable = await writeSearchablePdfAsset({
+          pages: vlm.pages
+            .filter((page) => !page.failed)
+            .map((page) => ({ pageNumber: page.pageNumber, text: page.text })),
+          buffer,
+          sourceFilePath: sourcePdf.filePath,
+          contentPath,
+          clusterSlug: normalizedClusterSlug,
+          baseName: nameWithoutExt,
+          createdFilePaths,
+          knowledgeWriteTransaction,
+          signal: request.signal,
+          emit,
+        });
+        searchablePdfPath = searchable.relativePath;
+        screenshotWarning = joinWarnings(screenshotWarning, searchable.warning);
 
         throwIfRequestAborted(request.signal);
         pages = attachPdfScreenshotAssets({
@@ -2642,18 +2854,27 @@ export async function runIngest({
                 ? `${screenshotWarning} ${transcription.warning}`
                 : transcription.warning;
             }
+            const searchable = await writeSearchablePdfAsset({
+              pages: transcription.pages
+                .map((page, index) => ({
+                  pageNumber: pageNumberFromLabel(page.label) ?? index + 1,
+                  text: page.text,
+                }))
+                .filter((page) => !page.text.startsWith("[OCR failed for ")),
+              buffer,
+              sourceFilePath: sourcePdf.filePath,
+              contentPath,
+              clusterSlug: normalizedClusterSlug,
+              baseName: nameWithoutExt,
+              createdFilePaths,
+              knowledgeWriteTransaction,
+              signal: request.signal,
+              emit,
+            });
+            searchablePdfPath = searchable.relativePath;
             screenshotWarning = joinWarnings(
               screenshotWarning,
-              await preserveOriginalSourcePdf({
-                pages: transcription.pages
-                  .map((page, index) => ({
-                    pageNumber: pageNumberFromLabel(page.label) ?? index + 1,
-                    text: page.text,
-                  }))
-                  .filter((page) => !page.text.startsWith("[OCR failed for ")),
-                signal: request.signal,
-                emit,
-              }),
+              searchable.warning,
             );
             throwIfRequestAborted(request.signal);
             const snapshotPages = screenshots.slice(
@@ -2674,6 +2895,54 @@ export async function runIngest({
               screenshotWarning = screenshotWarning
                 ? `${screenshotWarning} ${limitWarning}`
                 : limitWarning;
+            }
+
+            // Handwriting OCR uses the chat model for faithful transcription.
+            // Run the existing bounded VLM parser as a visual second pass so
+            // figures are detected, cropped, and embedded without retaining
+            // every rendered page image in memory. Keep OCR text primary and
+            // merge only the figure embeds returned by the VLM.
+            screenshots = [];
+            collectReleasedPdfBatchMemory();
+            try {
+              emit("Extracting figures with the VLM…");
+              const figureVlmConfig = getVlmOcrConfig();
+              const figureVlmCheckpoint = pdfVlmCheckpointLocation({
+                contentPath,
+                clusterSlug: normalizedClusterSlug,
+                filename: `${filename}-figures`,
+                buffer,
+                config: figureVlmConfig,
+                task: vlmTask,
+              });
+              completedVlmCheckpointPath = figureVlmCheckpoint.filePath;
+              const figureVlm = await parsePdfPagesWithVlm({
+                buffer,
+                sourceFilePath: sourcePdf.filePath,
+                config: figureVlmConfig,
+                task: vlmTask,
+                signal: request.signal,
+                onProgress: emit,
+                saveFigure: vlmFigureSaver({
+                  contentPath,
+                  clusterSlug: normalizedClusterSlug,
+                  baseName: nameWithoutExt,
+                  createdFilePaths,
+                  knowledgeWriteTransaction,
+                }),
+                checkpoint: figureVlmCheckpoint,
+              });
+              figureCount = figureVlm.vlm.figureCount;
+              pages = mergeVlmFigureEmbeds(pages, figureVlm.vlm.pages);
+              screenshotWarning = joinWarnings(
+                screenshotWarning,
+                figureVlm.vlm.warnings.join(" "),
+              );
+            } catch (error) {
+              screenshotWarning = joinWarnings(
+                screenshotWarning,
+                `Figure extraction could not complete: ${errorMessage(error, "VLM figure extraction failed")}`,
+              );
             }
           }
         } else {
@@ -2803,6 +3072,11 @@ export async function runIngest({
     plainText = extractZipText(buffer);
     markdownText = plainText;
     pages = [{ label: "Archive Contents", text: plainText }];
+  } else if (ext === "mlx") {
+    const buffer = await fileBytes();
+    markdownText = mlxText(buffer);
+    plainText = markdownText;
+    pages = [{ label: "MATLAB Live Script", text: plainText }];
   } else {
     plainText = await fileText();
     markdownText = plainText;
@@ -2957,6 +3231,7 @@ export async function runIngest({
       // Written for a clean document too: no key at all would be ambiguous
       // between "scanned and clean" and "uploaded before this stage existed".
       ...(safetyReport ? safetyFrontmatter(safetyReport) : {}),
+      ...(searchablePdfPath ? { searchable_pdf: searchablePdfPath } : {}),
     },
     abortSignal: request.signal,
     createdFilePaths: createdMarkdownPaths,

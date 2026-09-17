@@ -375,7 +375,7 @@ test("a delegated God's Eye stays visible as a quiet frame on both surfaces", ()
     );
     assert.match(
       contents,
-      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
       `${name} drops the God's Eye row when the synthesis turn arrives`,
     );
   }

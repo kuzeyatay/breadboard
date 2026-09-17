@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
-import { isAssistantTextPreview } from "@/lib/assistant-thinking";
+import { assistantThinkingUpdates, isAssistantTextPreview } from "@/lib/assistant-thinking";
 import {
   assistantLiveActivityReady,
   assistantResponseElapsedMs,
@@ -19,7 +20,7 @@ interface Props {
   activities: ActivityItem[];
   /** Assistant-authored, user-visible updates emitted before the final answer. */
   progressNotes?: string[];
-  /** Retained for callers with saved reasoning; the dropdown shows progress updates. */
+  /** Provider thinking text, shown alongside response-owned progress updates. */
   reasoning?: string;
   /** Used to suppress answer previews persisted as reasoning by older runtimes. */
   answerContent?: string;
@@ -43,6 +44,7 @@ interface Props {
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   /** Overrides Thinking for terminal states such as an interrupted turn. */
   stateLabel?: string;
+  restoredActivityLabel?: string;
   /** Replaces the default Thought label after a successful special outcome. */
   completedLabel?: string;
   stateFailed?: boolean;
@@ -52,6 +54,7 @@ interface Props {
 export default function ActivityPanel({
   activities,
   progressNotes,
+  reasoning,
   answerContent = "",
   connection,
   pendingPermission,
@@ -64,6 +67,7 @@ export default function ActivityPanel({
   carriedDurationMs,
   onPermissionDecision,
   stateLabel,
+  restoredActivityLabel,
   completedLabel,
   stateFailed = false,
   stateAction,
@@ -81,8 +85,11 @@ export default function ActivityPanel({
       item.kind === "artifact" &&
       (item.status === "running" || item.status === "failed"),
   );
-  const effectiveFailed = stateFailed || artifactState?.status === "failed";
-  const responseActive = (active || artifactState?.status === "running") && !effectiveFailed;
+  // A failed artifact can be repaired while the response continues. Only an
+  // explicit response failure may stop a live chat. Natural rewriting belongs
+  // to the finished answer's action row and never extends its thinking time.
+  const responseActive = (active || artifactState?.status === "running") && !stateFailed;
+  const effectiveFailed = stateFailed || (!responseActive && artifactState?.status === "failed");
   const liveActivity = activities.findLast((item) => item.status === "running");
   const completedActivityLabel = activities.findLast(
     (item) => item.status === "completed" && item.completedLabel,
@@ -114,19 +121,18 @@ export default function ActivityPanel({
   const showLiveActivity =
     responseActive && assistantLiveActivityReady(elapsedMs);
   const liveLabel =
-    stateLabel ??
-    artifactState?.label ??
     (pendingPermission
       ? "Waiting for permission"
       : pendingClarification
         ? "Waiting for your answer"
-        : liveActivity?.label ?? "Thinking");
+        : stateLabel ?? (artifactState?.status === "running" ? artifactState.label : undefined) ??
+          liveActivity?.label ?? restoredActivityLabel ?? "Thinking");
   // Every turn opens with the same stable Thinking beat. Tool, orchestration,
   // answer-writing, and artifact labels can take over only after five seconds.
   // A settled default returns to Thinking so AssistantResponseMeta renders the
   // permanent, past-tense Thought label.
   const effectiveLabel = responseActive
-    ? showLiveActivity
+    ? pendingPermission || pendingClarification || showLiveActivity
       ? liveLabel
       : "Thinking"
     : stateLabel ??
@@ -145,7 +151,14 @@ export default function ActivityPanel({
       }, []),
     [progressNotes, answerContent],
   );
-  const hasProgressNotes = visibleProgressNotes.length > 0;
+  const thinkingUpdates = useMemo(
+    () => [
+      ...visibleProgressNotes,
+      ...assistantThinkingUpdates(reasoning, answerContent, visibleProgressNotes),
+    ],
+    [reasoning, answerContent, visibleProgressNotes],
+  );
+  const hasProgressNotes = thinkingUpdates.length > 0;
   const canDisclose = hasProgressNotes;
   const showMeta = responseActive || hasProgressNotes || answerContent.trim() || effectiveFailed || stateAction ||
     effectiveLabel !== "Thinking" || (elapsedMs !== null && elapsedMs > 0) ||
@@ -182,18 +195,18 @@ export default function ActivityPanel({
           className="relative ml-1 mt-1 pb-1"
           data-response-progress
         >
-          {visibleProgressNotes.length > 1 ? (
+          {thinkingUpdates.length > 1 ? (
             <span
               aria-hidden="true"
               className="absolute bottom-3 left-[3px] top-3 w-px bg-[var(--line)]"
             />
           ) : null}
           <ol className="space-y-3" aria-label="Thinking updates">
-            {visibleProgressNotes.map((note, index) => {
-              const latest = index === visibleProgressNotes.length - 1;
+            {thinkingUpdates.map((note, index) => {
+              const latest = index === thinkingUpdates.length - 1;
               return (
                 <li
-                  key={`${index}-${note}`}
+                  key={index}
                   className="relative grid min-w-0 grid-cols-[8px_minmax(0,1fr)] gap-3"
                 >
                   <span
@@ -202,9 +215,9 @@ export default function ActivityPanel({
                       responseActive && latest ? "motion-safe:animate-pulse" : ""
                     }`}
                   />
-                  <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ink-muted)]">
-                    {note}
-                  </p>
+                  <div className="min-w-0 break-words text-sm font-normal leading-6 text-[var(--ink-muted)] [&_p]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap [&_code]:[overflow-wrap:anywhere] [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_a]:underline [&>*+*]:mt-2">
+                    <ReactMarkdown skipHtml>{note}</ReactMarkdown>
+                  </div>
                 </li>
               );
             })}

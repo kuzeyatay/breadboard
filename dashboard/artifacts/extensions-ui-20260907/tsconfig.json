@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["../../next-env.d.ts", "../../src/app/browser/browser-extensions-popover.tsx", "../../src/app/browser/browser-extensions-button.tsx"]
+}

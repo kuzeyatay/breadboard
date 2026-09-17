@@ -1,4 +1,6 @@
 import { DEFAULT_HIGHLIGHT_COLOR, HighlightColor, isHighlightColor } from "./highlightPalette"
+import { openTextHighlights } from "../../../../dashboard/src/lib/text-highlight-client"
+import { generatedVisualDashboardBaseUrl } from "./generatedVisualHost"
 
 interface StoredHighlight {
   id: string
@@ -11,6 +13,7 @@ interface StoredHighlight {
   prefix: string
   suffix: string
   createdAt: number
+  note?: string
 }
 
 interface StoredInlineAnswer {
@@ -49,6 +52,7 @@ const CONTEXT = 48
 // intentionally much wider than the relocation context above, which only has
 // to find a mark after an edit.
 const QUESTION_CONTEXT = 4_000
+const MAX_NOTE_LENGTH = 4_000
 
 // Widgets, media, and rendered math own their DOM: wrapping their text in a
 // <mark> would fight their layout, so they are invisible to the highlighter and
@@ -78,39 +82,36 @@ const storageKey = () => STORAGE_PREFIX + (document.body.dataset.slug ?? window.
 const answerStorageKey = () =>
   ANSWER_STORAGE_PREFIX + (document.body.dataset.slug ?? window.location.pathname)
 
-function readStored(): StoredHighlight[] {
-  try {
-    const raw = localStorage.getItem(storageKey())
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (entry: StoredHighlight) =>
-        entry &&
-        typeof entry.id === "string" &&
-        typeof entry.text === "string" &&
-        entry.text.length > 0 &&
-        isHighlightColor(entry.color),
-    )
-  } catch {
-    return []
-  }
+function normalizeNote(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const note = value.trim().slice(0, MAX_NOTE_LENGTH)
+  return note || undefined
 }
 
-function writeStored(list: StoredHighlight[]) {
-  try {
-    if (list.length === 0) localStorage.removeItem(storageKey())
-    else localStorage.setItem(storageKey(), JSON.stringify(list))
-  } catch {
-    // A full or blocked store only costs this page's highlights, never the page.
-  }
+function normalizeStored(parsed: unknown): StoredHighlight[] {
+  if (!Array.isArray(parsed)) return []
+  return parsed.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return []
+    const entry = value as StoredHighlight
+    if (
+      typeof entry.id !== "string" ||
+      typeof entry.text !== "string" ||
+      !Number.isInteger(entry.start) || entry.start < 0 ||
+      !Number.isInteger(entry.end) || entry.end <= entry.start ||
+      typeof entry.prefix !== "string" || typeof entry.suffix !== "string" ||
+      entry.text.length === 0 ||
+      !isHighlightColor(entry.color)
+    ) return []
+    const note = normalizeNote(entry.note)
+    const normalized = { ...entry }
+    if (note) normalized.note = note
+    else delete normalized.note
+    return [normalized]
+  })
 }
 
-function readInlineAnswers(): StoredInlineAnswer[] {
+function normalizeInlineAnswers(parsed: unknown): StoredInlineAnswer[] {
   try {
-    const raw = localStorage.getItem(answerStorageKey())
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
     return parsed.filter(
       (entry: StoredInlineAnswer) =>
@@ -123,15 +124,6 @@ function readInlineAnswers(): StoredInlineAnswer[] {
     )
   } catch {
     return []
-  }
-}
-
-function writeInlineAnswers(list: StoredInlineAnswer[]) {
-  try {
-    if (list.length === 0) localStorage.removeItem(answerStorageKey())
-    else localStorage.setItem(answerStorageKey(), JSON.stringify(list.slice(-100)))
-  } catch {
-    // Answers remain available for this page load when storage is unavailable.
   }
 }
 
@@ -250,7 +242,10 @@ function clipHighlight(
 ): StoredHighlight {
   const next = makeHighlight(text, start, end, highlight.color)
   next.createdAt = highlight.createdAt
-  if (keepId) next.id = highlight.id
+  if (keepId) {
+    next.id = highlight.id
+    if (highlight.note) next.note = highlight.note
+  }
   return next
 }
 
@@ -274,7 +269,7 @@ function addSpan(
   for (let pass = 0; pass < 8; pass += 1) {
     let widened = false
     for (const highlight of list) {
-      if (highlight.color !== color) continue
+      if (highlight.color !== color || !resolveHighlight(text, highlight)) continue
       if (highlight.end < start || highlight.start > end) continue
       if (highlight.start < start) {
         start = highlight.start
@@ -288,9 +283,15 @@ function addSpan(
     if (!widened) break
   }
 
+  const carriedNote = list.find((highlight) => {
+    if (!highlight.note) return false
+    const resolved = resolveHighlight(text, highlight)
+    return Boolean(resolved && resolved.start >= start && resolved.end <= end)
+  })?.note
+
   const kept: StoredHighlight[] = []
   for (const highlight of list) {
-    if (highlight.end <= start || highlight.start >= end) {
+    if (!resolveHighlight(text, highlight) || highlight.end <= start || highlight.start >= end) {
       kept.push(highlight)
       continue
     }
@@ -306,7 +307,9 @@ function addSpan(
     }
   }
 
-  kept.push(makeHighlight(text, start, end, color))
+  const added = makeHighlight(text, start, end, color)
+  if (carriedNote) added.note = carriedNote
+  kept.push(added)
   return sortHighlights(kept)
 }
 
@@ -314,7 +317,7 @@ function addSpan(
 function subtractSpan(list: StoredHighlight[], text: string, span: Span): StoredHighlight[] {
   const kept: StoredHighlight[] = []
   for (const highlight of list) {
-    if (highlight.end <= span.start || highlight.start >= span.end) {
+    if (!resolveHighlight(text, highlight) || highlight.end <= span.start || highlight.start >= span.end) {
       kept.push(highlight)
       continue
     }
@@ -401,6 +404,10 @@ function paint(map: TextMap, list: StoredHighlight[]) {
       mark.className = "bb-hl"
       mark.dataset.hlId = piece.highlight.id
       mark.dataset.hlColor = piece.highlight.color
+      if (piece.highlight.note) {
+        mark.dataset.hlNote = "true"
+        mark.title = piece.highlight.note
+      }
       range.surroundContents(mark)
     } catch {
       // A piece that will not wrap (an unbalanced range) is simply not painted.
@@ -409,19 +416,20 @@ function paint(map: TextMap, list: StoredHighlight[]) {
 }
 
 /** Repaints the page from storage, healing anchors that moved. */
-function render(root: HTMLElement): StoredHighlight[] {
+function render(root: HTMLElement, stored: StoredHighlight[]): StoredHighlight[] {
   clearMarks(root)
   const map = buildTextMap(root)
 
-  let changed = false
   const resolved: StoredHighlight[] = []
-  for (const highlight of readStored()) {
+  const unresolved: StoredHighlight[] = []
+  for (const highlight of stored) {
     const span = resolveHighlight(map.text, highlight)
     if (!span) {
-      changed = true
+      // Loading, regeneration, or a temporary edit can hide the quote. Reading
+      // a page must never delete the user's saved annotation.
+      unresolved.push(highlight)
       continue
     }
-    if (span.start !== highlight.start || span.end !== highlight.end) changed = true
     resolved.push({
       ...highlight,
       start: span.start,
@@ -437,7 +445,6 @@ function render(root: HTMLElement): StoredHighlight[] {
   for (const highlight of sortHighlights(resolved)) {
     const previous = disjoint[disjoint.length - 1]
     if (previous && highlight.start < previous.end) {
-      changed = true
       if (highlight.end <= previous.end) continue
       disjoint.push(clipHighlight(highlight, map.text, previous.end, highlight.end, true))
       continue
@@ -445,9 +452,8 @@ function render(root: HTMLElement): StoredHighlight[] {
     disjoint.push(highlight)
   }
 
-  if (changed) writeStored(disjoint)
   paint(map, disjoint)
-  return disjoint
+  return [...resolved, ...unresolved]
 }
 
 document.addEventListener("nav", () => {
@@ -467,10 +473,52 @@ document.addEventListener("nav", () => {
     ),
   )
   const eraseButton = container.querySelector<HTMLElement>('[data-highlight-action="erase"]')!
+  let noteButton = container.querySelector<HTMLButtonElement>('[data-highlight-action="note"]')
+  if (!noteButton) {
+    noteButton = document.createElement("button")
+    noteButton.type = "button"
+    noteButton.className = "bb-highlight-ask bb-highlight-note"
+    noteButton.dataset.highlightAction = "note"
+    noteButton.innerHTML = "<span>Add note</span>"
+    menu.insertBefore(noteButton, askButtons[0] ?? null)
+  }
+  const noteButtonLabel = noteButton.querySelector<HTMLElement>("span")!
+  let noteEditor = container.querySelector<HTMLElement>(".bb-highlight-note-editor")
+  if (!noteEditor) {
+    noteEditor = document.createElement("div")
+    noteEditor.className = "bb-highlight-note-editor"
+    noteEditor.hidden = true
+    noteEditor.setAttribute("role", "group")
+    noteEditor.setAttribute("aria-label", "Highlight note editor")
+    noteEditor.innerHTML = `
+      <textarea class="bb-highlight-note-input" rows="3" maxlength="4000" placeholder="Write a note about this highlight…" aria-label="Note about highlighted text"></textarea>
+      <div class="bb-highlight-note-actions">
+        <button type="button" data-highlight-action="remove-note" class="bb-highlight-note-remove" hidden>Remove note</button>
+        <button type="button" data-highlight-action="cancel-note">Cancel</button>
+        <button type="button" data-highlight-action="save-note" class="bb-highlight-note-save">Save note</button>
+      </div>`
+    container.appendChild(noteEditor)
+  }
+  const noteInput = container.querySelector<HTMLTextAreaElement>(".bb-highlight-note-input")!
+  const noteRemove = container.querySelector<HTMLButtonElement>('[data-highlight-action="remove-note"]')!
+  const noteSave = container.querySelector<HTMLButtonElement>('[data-highlight-action="save-note"]')!
 
-  let highlights = render(root)
-  let inlineAnswers = readInlineAnswers()
+  // Capture both keys at mount: late network replies must never save into the
+  // slug of the next page after Quartz SPA navigation.
+  const dashboard = generatedVisualDashboardBaseUrl(
+    window.location.href, document.referrer, window.location.ancestorOrigins?.[0],
+  )
+  const endpoint = `${dashboard}/api/text-highlights`
+  const highlightStore = openTextHighlights(storageKey(), endpoint)
+  const answerStore = openTextHighlights(answerStorageKey(), endpoint)
+  const writeStored = (list: StoredHighlight[]) => highlightStore.update(list)
+  const writeInlineAnswers = (list: StoredInlineAnswer[]) => answerStore.update(list)
+  let highlights = render(root, normalizeStored(highlightStore.getSnapshot()))
+  let inlineAnswers = normalizeInlineAnswers(answerStore.getSnapshot())
   let openAnswerHighlightId: string | null = null
+  let answerHostOrigin: string | null = null
+  let noteTarget: { text: string; span: Span; highlightId?: string } | null = null
+  let menuAnchor: DOMRect | null = null
   const autoOpenedAnswerRequests = new Set<string>()
   // Escape means "leave me alone with this selection": without it the next
   // keyup would put the menu straight back.
@@ -484,7 +532,14 @@ document.addEventListener("nav", () => {
     button.hidden = window.parent === window && !hasPageAssistant
   }
 
+  const closeNoteEditor = () => {
+    noteEditor.hidden = true
+    noteTarget = null
+    noteInput.value = ""
+  }
+
   const hide = () => {
+    closeNoteEditor()
     container.hidden = true
   }
 
@@ -512,6 +567,9 @@ document.addEventListener("nav", () => {
             <path stroke-linecap="round" stroke-linejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14"></path>
           </svg>
           <span class="bb-highlight-answer-stop-icon" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="bb-highlight-answer-tool" data-answer-action="close" aria-label="Close answer" title="Close answer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" d="m6 6 12 12M18 6 6 18"></path></svg>
         </button>
       </div>
     </header>
@@ -552,6 +610,9 @@ document.addEventListener("nav", () => {
   const closeAnswer = () => {
     openAnswerHighlightId = null
     answerPopover.hidden = true
+    if (answerHostOrigin) window.parent.postMessage(
+      { type: "second-brain:assistant-inline-popover", open: false }, answerHostOrigin,
+    )
   }
 
   const placeAnswer = (rect: DOMRect) => {
@@ -562,13 +623,13 @@ document.addEventListener("nav", () => {
     const gap = 14
     let left = rect.left - 24
     left = Math.max(16, Math.min(left, window.innerWidth - width - 16))
-    const height = Math.min(answerPopover.offsetHeight, window.innerHeight - 32)
+    answerPopover.style.maxHeight = `${Math.max(0, window.innerHeight - 32)}px`
+    const height = answerPopover.offsetHeight
     let top = rect.bottom + gap
     if (top + height > window.innerHeight - 16) top = rect.top - height - gap
     top = Math.max(16, top)
     answerPopover.style.left = `${left + window.scrollX}px`
     answerPopover.style.top = `${top + window.scrollY}px`
-    answerPopover.style.maxHeight = `${Math.max(220, window.innerHeight - 32)}px`
     answerPopover.style.visibility = ""
   }
 
@@ -581,6 +642,15 @@ document.addEventListener("nav", () => {
     }
     if (open) openAnswerHighlightId = highlightId
     if (openAnswerHighlightId !== highlightId) return
+    if (answerHostOrigin) {
+      answerPopover.hidden = true
+      window.parent.postMessage({
+        type: "second-brain:assistant-inline-popover", open: true,
+        ...answer, anchor: rect.toJSON(),
+        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+      }, answerHostOrigin)
+      return
+    }
     answerQuestion.textContent = answer.question
     answerBody.textContent = answer.answer
     const pending = answer.state === "pending" || answer.state === "streaming"
@@ -589,13 +659,15 @@ document.addEventListener("nav", () => {
     answerRun.title = pending ? "Stop" : "Retry"
     answerRun.dataset.pending = pending ? "true" : "false"
     answerRun.disabled = false
+    answerRun.removeAttribute("aria-busy")
     answerStatus.textContent = pending
-      ? "Thinking"
+      ? (answer.answer ? "Answering…" : "Thinking…")
       : answer.state === "error"
         ? "Answer incomplete"
         : answer.responseDurationMs !== undefined
-          ? `Thought (${(answer.responseDurationMs / 1000).toFixed(1)}s · ↓ tokens unavailable)`
-          : "Thought (↓ tokens unavailable)"
+          ? `Thought for ${(answer.responseDurationMs / 1000).toFixed(1)}s`
+          : ""
+    answerStatus.hidden = !answerStatus.textContent
     answerBody.hidden = !answer.answer
     placeAnswer(rect)
   }
@@ -603,10 +675,11 @@ document.addEventListener("nav", () => {
   syncAnswerMarks()
 
   const place = (rect: DOMRect) => {
+    menuAnchor = rect
     container.hidden = false
     container.style.visibility = "hidden"
-    const width = menu.offsetWidth
-    const height = menu.offsetHeight
+    const width = container.offsetWidth
+    const height = container.offsetHeight
     const gap = 10
 
     let left = rect.left + rect.width / 2 - width / 2
@@ -638,8 +711,11 @@ document.addEventListener("nav", () => {
       return
     }
 
-    const overlapping = highlights.some((h) => h.start < span.end && h.end > span.start)
+    const overlapping = highlights.find((h) => h.start < span.end && h.end > span.start)
     eraseButton.hidden = !overlapping
+    noteButtonLabel.textContent = overlapping?.note ? "Edit note" : "Add note"
+    noteButton.setAttribute("aria-label", overlapping?.note ? "Edit note" : "Add note")
+    noteButton.title = overlapping?.note ? "Edit note" : "Add a note to this highlight"
     place(rect)
   }
 
@@ -650,7 +726,7 @@ document.addEventListener("nav", () => {
   }
 
   const finish = () => {
-    highlights = render(root)
+    highlights = render(root, highlights)
     syncAnswerMarks()
     window.getSelection()?.removeAllRanges()
     hide()
@@ -659,14 +735,78 @@ document.addEventListener("nav", () => {
   const applyColor = (color: HighlightColor) => {
     const current = currentSpan()
     if (!current) return
+    const existing = highlights.find((highlight) => {
+      const span = resolveHighlight(current.map.text, highlight)
+      return span?.start === current.span.start && span.end === current.span.end
+    })
     highlights = addSpan(highlights, current.map.text, current.span, color)
+    if (existing?.note) {
+      const recolored = highlights.find(
+        (highlight) => highlight.start <= current.span.start && highlight.end >= current.span.end,
+      )
+      if (recolored) recolored.note = existing.note
+    }
+    writeStored(highlights)
+    finish()
+  }
+
+  const openNoteEditor = () => {
+    const current = currentSpan()
+    if (!current) return
+    const highlight = highlights.find((candidate) => {
+      const span = resolveHighlight(current.map.text, candidate)
+      return Boolean(span && span.start < current.span.end && span.end > current.span.start)
+    })
+    noteTarget = {
+      text: current.map.text,
+      span: current.span,
+      ...(highlight ? { highlightId: highlight.id } : {}),
+    }
+    noteInput.value = highlight?.note ?? ""
+    noteRemove.hidden = !highlight?.note
+    noteSave.disabled = !noteInput.value.trim()
+    noteEditor.hidden = false
+    const rect = window.getSelection()?.rangeCount
+      ? window.getSelection()!.getRangeAt(0).getBoundingClientRect()
+      : menuAnchor
+    if (rect) place(rect)
+    window.setTimeout(() => noteInput.focus(), 0)
+  }
+
+  const saveNote = () => {
+    const target = noteTarget
+    const note = normalizeNote(noteInput.value)
+    if (!target || !note) return
+    let highlight = target.highlightId
+      ? highlights.find((candidate) => candidate.id === target.highlightId)
+      : undefined
+    if (!highlight) {
+      highlights = addSpan(highlights, target.text, target.span, "blue")
+      highlight = highlights.find(
+        (candidate) => candidate.start <= target.span.start && candidate.end >= target.span.end,
+      )
+    }
+    if (!highlight) return
+    highlight.note = note
+    writeStored(highlights)
+    finish()
+  }
+
+  const removeNote = () => {
+    if (!noteTarget?.highlightId) return
+    highlights = highlights.map((highlight) => {
+      if (highlight.id !== noteTarget?.highlightId) return highlight
+      const withoutNote = { ...highlight }
+      delete withoutNote.note
+      return withoutNote
+    })
     writeStored(highlights)
     finish()
   }
 
   const askSelection = (
     mode: "chat" | "inline",
-    supplied?: { map: TextMap; span: Span; highlightId?: string },
+    supplied?: { map: TextMap; span: Span; highlightId?: string; question?: string },
   ) => {
     const current = supplied ?? currentSpan()
     if (!current) return
@@ -675,7 +815,9 @@ document.addEventListener("nav", () => {
 
     // Asking is also a highlighting action. Keep the selected passage visibly
     // anchored while focus moves into Assistant's composer.
-    highlights = addSpan(highlights, current.map.text, current.span, DEFAULT_HIGHLIGHT_COLOR)
+    if (!supplied?.highlightId) {
+      highlights = addSpan(highlights, current.map.text, current.span, DEFAULT_HIGHLIGHT_COLOR)
+    }
     const painted =
       (supplied?.highlightId
         ? highlights.find((highlight) => highlight.id === supplied.highlightId)
@@ -702,6 +844,7 @@ document.addEventListener("nav", () => {
           text,
           prefix,
           suffix,
+          ...(supplied?.question ? { question: supplied.question } : {}),
           pageSlug: document.body.dataset.slug ?? window.location.pathname,
         },
         "*",
@@ -724,7 +867,10 @@ document.addEventListener("nav", () => {
   }
 
   // Keep the selection alive while the menu is clicked.
-  const onMenuMouseDown = (event: Event) => event.preventDefault()
+  const onMenuMouseDown = (event: Event) => {
+    if ((event.target as HTMLElement).closest("textarea")) return
+    event.preventDefault()
+  }
   container.addEventListener("mousedown", onMenuMouseDown)
 
   const onMenuClick = (event: MouseEvent) => {
@@ -750,9 +896,30 @@ document.addEventListener("nav", () => {
       case "erase":
         eraseSelection()
         break
+      case "note":
+        openNoteEditor()
+        break
+      case "save-note":
+        saveNote()
+        break
+      case "remove-note":
+        removeNote()
+        break
+      case "cancel-note":
+        hide()
+        break
     }
   }
   container.addEventListener("click", onMenuClick)
+  const onNoteInput = () => { noteSave.disabled = !noteInput.value.trim() }
+  const onNoteKeyDown = (event: KeyboardEvent) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault()
+      saveNote()
+    }
+  }
+  noteInput.addEventListener("input", onNoteInput)
+  noteInput.addEventListener("keydown", onNoteKeyDown)
 
   const onPointerUp = (event: PointerEvent) => {
     if (dismissed || container.contains(event.target as Node)) return
@@ -785,7 +952,7 @@ document.addEventListener("nav", () => {
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key !== "Escape") return
-    if (!answerPopover.hidden) {
+    if (openAnswerHighlightId) {
       closeAnswer()
       return
     }
@@ -798,6 +965,7 @@ document.addEventListener("nav", () => {
   const onSelectionChange = () => {
     // Any change of selection is a fresh intent, so a past Escape stops counting.
     dismissed = false
+    if (!noteEditor.hidden) return
     const selection = window.getSelection()
     if (!selection || selection.isCollapsed) hide()
   }
@@ -853,28 +1021,30 @@ document.addEventListener("nav", () => {
   }
   window.addEventListener("message", onInlineAnswer)
 
-  const onAnswerClick = (event: MouseEvent) => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>("button[data-answer-action]")
-    if (!target) return
+  const answerAction = (action: string, question?: string) => {
+    if (action === "close") {
+      closeAnswer()
+      return
+    }
     const highlightId = openAnswerHighlightId
     if (!highlightId) return
-    if (target.dataset.answerAction === "delete") {
+    if (action === "delete") {
       highlights = highlights.filter((highlight) => highlight.id !== highlightId)
       inlineAnswers = inlineAnswers.filter((answer) => answer.highlightId !== highlightId)
       writeStored(highlights)
       writeInlineAnswers(inlineAnswers)
       closeAnswer()
-      highlights = render(root)
+      highlights = render(root, highlights)
       syncAnswerMarks()
       return
     }
-    if (target.dataset.answerAction === "stop") {
+    if (action === "stop") {
       const answer = answerForHighlight(highlightId)
       if (!answer) return
-      target.setAttribute("aria-label", "Stopping this answer")
-      target.setAttribute("aria-busy", "true")
-      target.setAttribute("title", "Stopping…")
-      ;(target as HTMLButtonElement).disabled = true
+      answerRun.setAttribute("aria-label", "Stopping this answer")
+      answerRun.setAttribute("aria-busy", "true")
+      answerRun.setAttribute("title", "Stopping…")
+      answerRun.disabled = true
       answerStatus.textContent = "Stopping…"
       if (window.parent !== window) {
         window.parent.postMessage(
@@ -889,17 +1059,42 @@ document.addEventListener("nav", () => {
       }
       return
     }
-    if (target.dataset.answerAction === "retry") {
+    if (action === "retry") {
       const highlight = highlights.find((candidate) => candidate.id === highlightId)
       if (!highlight) return
       const map = buildTextMap(root)
       const span = resolveHighlight(map.text, highlight)
       if (!span) return
       closeAnswer()
-      askSelection("inline", { map, span, highlightId })
+      askSelection("inline", { map, span, highlightId, question: question ?? answerForHighlight(highlightId)?.question })
     }
   }
+  const onAnswerClick = (event: MouseEvent) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>("button[data-answer-action]")
+    if (target?.dataset.answerAction) answerAction(target.dataset.answerAction)
+  }
   answerPopover.addEventListener("click", onAnswerClick)
+  const onResize = () => {
+    if (openAnswerHighlightId) renderAnswer(openAnswerHighlightId)
+  }
+  window.addEventListener("resize", onResize)
+  const onAnswerHost = (event: MessageEvent) => {
+    if (window.parent === window || event.source !== window.parent) return
+    if (event.data?.type === "second-brain:assistant-inline-popover-host") {
+      answerHostOrigin = event.origin
+      onResize()
+    }
+    if (event.data?.type !== "second-brain:assistant-inline-popover-action" || event.origin !== answerHostOrigin) return
+    const answer = openAnswerHighlightId ? answerForHighlight(openAnswerHighlightId) : undefined
+    if (!answer || event.data.requestId !== answer.requestId || event.data.highlightId !== answer.highlightId) return
+    answerAction(event.data.action, typeof event.data.question === "string" ? event.data.question.slice(0, 8_000) : undefined)
+  }
+  const onAnswerScroll = () => { if (answerHostOrigin) onResize() }
+  window.addEventListener("message", onAnswerHost)
+  window.addEventListener("scroll", onAnswerScroll, true)
+  if (window.parent !== window) window.parent.postMessage(
+    { type: "second-brain:assistant-inline-popover-ready" }, "*",
+  )
 
   // Clicking a highlight selects it whole, so the menu can recolour or lift it.
   const onArticleClick = (event: MouseEvent) => {
@@ -933,16 +1128,73 @@ document.addEventListener("nav", () => {
   }
   root.addEventListener("click", onArticleClick)
 
+  const saveStatus = document.createElement("div")
+  saveStatus.setAttribute("role", "status")
+  saveStatus.className = "bb-highlight-save-status"
+  saveStatus.hidden = true
+  const saveMessage = document.createElement("span")
+  const retrySave = document.createElement("button")
+  retrySave.type = "button"
+  retrySave.textContent = "Retry saving"
+  const onRetrySave = () => { void highlightStore.flush(); void answerStore.flush() }
+  retrySave.addEventListener("click", onRetrySave)
+  saveStatus.append(saveMessage, retrySave)
+  document.body.appendChild(saveStatus)
+  const saveErrors = new Map<string, string>()
+  const showSaveError = (key: string, error: string | null) => {
+    if (error) saveErrors.set(key, error)
+    else saveErrors.delete(key)
+    saveMessage.textContent = [...saveErrors.values()][0] ?? ""
+    saveStatus.hidden = saveErrors.size === 0
+  }
+  let lastHighlightSnapshot = JSON.stringify(highlightStore.getSnapshot())
+  const unsubscribeHighlights = highlightStore.subscribe((entries, error) => {
+    const snapshot = JSON.stringify(entries)
+    if (snapshot !== lastHighlightSnapshot) {
+      lastHighlightSnapshot = snapshot
+      highlights = render(root, normalizeStored(entries))
+      syncAnswerMarks()
+    }
+    showSaveError("highlights", error)
+  })
+  const unsubscribeAnswers = answerStore.subscribe((entries, error) => {
+    inlineAnswers = normalizeInlineAnswers(entries)
+    syncAnswerMarks()
+    if (openAnswerHighlightId) renderAnswer(openAnswerHighlightId)
+    showSaveError("answers", error)
+  })
+  // A lesson may finish rendering after navigation. Retry anchors when its text
+  // changes, without observing the <mark> wrappers created by our own repaint.
+  const observer = new MutationObserver(() => {
+    observer.disconnect()
+    highlights = render(root, highlights)
+    syncAnswerMarks()
+    observe()
+  })
+  const observe = () => observer.observe(root, { childList: true, characterData: true, subtree: true })
+  observe()
+
   window.addCleanup(() => {
+    closeAnswer()
+    observer.disconnect()
+    unsubscribeHighlights()
+    unsubscribeAnswers()
+    retrySave.removeEventListener("click", onRetrySave)
+    saveStatus.remove()
     container.removeEventListener("mousedown", onMenuMouseDown)
     container.removeEventListener("click", onMenuClick)
+    noteInput.removeEventListener("input", onNoteInput)
+    noteInput.removeEventListener("keydown", onNoteKeyDown)
     document.removeEventListener("pointerup", onPointerUp)
     document.removeEventListener("pointerdown", onPointerDown)
     document.removeEventListener("keyup", onKeyUp)
     document.removeEventListener("keydown", onKeyDown)
     document.removeEventListener("selectionchange", onSelectionChange)
     window.removeEventListener("message", onInlineAnswer)
+    window.removeEventListener("message", onAnswerHost)
+    window.removeEventListener("scroll", onAnswerScroll, true)
     answerPopover.removeEventListener("click", onAnswerClick)
+    window.removeEventListener("resize", onResize)
     answerPopover.remove()
     root.removeEventListener("click", onArticleClick)
     delete container.dataset.bound

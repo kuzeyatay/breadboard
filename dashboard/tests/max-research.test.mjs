@@ -122,7 +122,7 @@ test("a question that can be run earns the workspace", () => {
   assert.ok(plan.assignments.some((a) => a.participant === "openscience"));
 });
 
-test("every question commissions all six", () => {
+test("every question commissions the full research roster", () => {
   // The roster used to be filtered: Get Doc only for questions that read as
   // academic, OpenScience only for ones that read as empirical. That saved a
   // little time and cost the answer whatever those two would have found, and it
@@ -138,7 +138,7 @@ test("every question commissions all six", () => {
     const chosen = planMaxResearch({ question }).assignments.map((a) => a.participant);
     assert.deepEqual(
       [...chosen].sort(),
-      ["agent_reach", "aris", "deep_research", "get_doc", "openscience", "praxist"],
+      ["agent_reach", "aris", "deep_research", "feynman", "get_doc", "openscience", "praxist"],
       question,
     );
   }
@@ -167,14 +167,14 @@ test("retrieval runs together, and what reads it waits", () => {
   assert.ok(waves.length >= 2);
 });
 
-test("availability cannot shrink the six-agent plan", () => {
+test("availability cannot shrink the research plan", () => {
   const plan = planMaxResearch({
     question: "what percentage of startups survive five years",
   });
   const chosen = plan.assignments.map((a) => a.participant);
   assert.deepEqual(
     [...chosen].sort(),
-    ["agent_reach", "aris", "deep_research", "get_doc", "openscience", "praxist"],
+    ["agent_reach", "aris", "deep_research", "feynman", "get_doc", "openscience", "praxist"],
   );
 });
 
@@ -582,7 +582,7 @@ test("a participant that cannot start remains visible and is not invoked", async
   });
   assert.equal(summary.status, "completed");
   assert.ok(summary.participants.includes("get_doc"));
-  assert.equal(summary.participants.length, 6);
+  assert.equal(summary.participants.length, planMaxResearch({ question: summary.question }).assignments.length);
   assert.ok(
     summary.results.some(
       (result) =>
@@ -590,7 +590,7 @@ test("a participant that cannot start remains visible and is not invoked", async
     ),
   );
   const planEvent = events.find((event) => event.type === "plan.completed");
-  assert.equal(planEvent.payload.participants.length, 6);
+  assert.equal(planEvent.payload.participants.length, summary.participants.length);
   assert.ok(
     events.some(
       (event) =>
@@ -771,7 +771,7 @@ test("a search query is the question, never the question plus instructions", () 
   assert.equal(maxResearchLiteratureQuery(getDoc.question), getDoc.question);
   const body = source("src/lib/max-research/participants.ts");
   assert.match(body, /query: maxResearchLiteratureQuery\(brief\.question\),/);
-  assert.match(body, /conversationContext: \[context\.conversationContext, brief\.guidance\]/);
+  assert.match(body, /conversationContext: \[context\.conversationContext, brief\.question, brief\.guidance\]/);
 });
 
 test("participants that take a task still get the whole brief", () => {
@@ -851,7 +851,7 @@ test("a participant cut off at the budget keeps what it had reached", () => {
   // paid for the time and carried none of it into the answer. It is reported
   // with the reason, so nothing reads it as a finished pass.
   const body = source("src/lib/max-research/participants.ts");
-  assert.match(body, /status: partial \? "completed" : "failed"/);
+  assert.match(body, /status: "failed",\s+output: partial/);
   assert.match(body, /Cut off at the time this orchestration allows/);
   assert.match(body, /rather than a finished pass/);
 });
@@ -935,10 +935,13 @@ test("the audit checks the two things live runs actually got wrong", () => {
   const joined = REVIEW_CHECKS.join(" ");
   assert.match(joined, /appears nowhere in the answer/);
   assert.match(joined, /carries no citation, or names no publisher/);
-  // And it may not research or soften — only account.
+  // Repair usefulness and arithmetic without inventing empirical evidence.
   const body = source("src/lib/max-research/review.ts");
   assert.match(body, /do not invent a source for it/);
-  assert.match(body, /It does not mean adding claims, hedging a conclusion/);
+  assert.match(body, /Do not invent sources or empirical findings/);
+  assert.match(joined, /requested deliverable/);
+  assert.match(joined, /reproduce the arithmetic/);
+  assert.match(joined, /starting capacity/);
 });
 
 test("a closed source is named at the end so the reader is told", () => {

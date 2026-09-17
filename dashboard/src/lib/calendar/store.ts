@@ -56,6 +56,12 @@ import {
 } from "./wallclock.ts";
 
 type Db = DatabaseType.Database;
+type ReminderPreferencesPatch = Pick<CalendarEventPatch, "notificationsEnabled" | "leadReminderEnabled">;
+
+function isReminderPreferencesOnly(patch: CalendarEventPatch): boolean {
+  const keys = Object.keys(patch);
+  return keys.length > 0 && keys.every(key => key === "notificationsEnabled" || key === "leadReminderEnabled");
+}
 
 export const MAX_CALENDARS_PER_USER = 24;
 export const MAX_EVENTS_PER_USER = 10_000;
@@ -99,6 +105,8 @@ interface CalendarCollectionRow {
   caldav_url: string | null;
   caldav_username: string | null;
   caldav_ctag: string | null;
+  google_account_id: string | null;
+  google_calendar_id: string | null;
   created_at: string;
 }
 
@@ -110,6 +118,8 @@ interface CalendarEventRow {
   description: string | null;
   location: string | null;
   all_day: number;
+  notifications_enabled: number;
+  lead_reminder_enabled: number;
   starts_at: string;
   ends_at: string;
   recurrence: string;
@@ -150,6 +160,8 @@ function presentCollection(row: CalendarCollectionRow): CalendarCollection {
     syncError: row.sync_error,
     caldavUrl: row.caldav_url,
     caldavUsername: row.caldav_username,
+    googleAccountId: row.google_account_id,
+    googleCalendarId: row.google_calendar_id,
     createdAt: row.created_at,
   };
 }
@@ -174,6 +186,8 @@ function presentEvent(row: CalendarEventRow, attendees: Attendee[] = []): Calend
     description: row.description,
     location: row.location,
     allDay: row.all_day !== 0,
+    notificationsEnabled: row.notifications_enabled !== 0,
+    leadReminderEnabled: row.lead_reminder_enabled !== 0,
     startsAt: row.starts_at,
     endsAt: row.ends_at,
     recurrence: {
@@ -449,6 +463,26 @@ export class CalendarStore {
     return this.getCalendar(userId, calendarId);
   }
 
+  /** Find or create a Google mirror without changing the user's visibility choice. */
+  ensureGoogleCalendar(
+    userId: number,
+    accountId: string,
+    remoteId: string,
+    input: CalendarCollectionInput,
+  ): CalendarCollection {
+    return this.db.transaction(() => {
+      const existing = this.listCalendars(userId).find(
+        (calendar) => calendar.googleAccountId === accountId && calendar.googleCalendarId === remoteId,
+      );
+      if (existing) return existing;
+      this.listCalendarsEnsuringDefault(userId);
+      const calendar = this.createCalendar(userId, { ...input, readOnly: true });
+      this.db.prepare(`UPDATE calendar_collections SET google_account_id = ?, google_calendar_id = ?
+        WHERE id = ? AND user_id = ?`).run(accountId, remoteId, calendar.id, userId);
+      return this.getCalendar(userId, calendar.id);
+    })();
+  }
+
   /** Record the outcome of a subscription refresh. */
   markCalendarSynced(
     userId: number,
@@ -566,8 +600,37 @@ export class CalendarStore {
     return this.getEvent(userId, eventId);
   }
 
+  private writeReminderPreferences(
+    userId: number,
+    eventId: number,
+    patch: ReminderPreferencesPatch,
+    includeOverrides = false,
+  ): void {
+    for (const value of [patch.notificationsEnabled, patch.leadReminderEnabled]) {
+      if (value !== undefined && typeof value !== "boolean") {
+        throw new CalendarError(400, "Notification settings must be on or off.");
+      }
+    }
+    // Keep the event's content timestamp and CalDAV dirty flag unchanged.
+    this.db.prepare(
+      `UPDATE calendar_events
+          SET notifications_enabled = COALESCE(?, notifications_enabled),
+              lead_reminder_enabled = COALESCE(?, lead_reminder_enabled)
+        WHERE user_id = ? AND (id = ? OR (? = 1 AND parent_event_id = ?))`,
+    ).run(
+      patch.notificationsEnabled === undefined ? null : Number(patch.notificationsEnabled),
+      patch.leadReminderEnabled === undefined ? null : Number(patch.leadReminderEnabled),
+      userId, eventId, includeOverrides ? 1 : 0, eventId,
+    );
+  }
+
   updateEvent(userId: number, eventId: number, patch: CalendarEventPatch): CalendarEvent {
     const row = this.eventRow(userId, eventId);
+    // Personal notification preferences are also editable on subscriptions.
+    if (isReminderPreferencesOnly(patch)) {
+      this.writeReminderPreferences(userId, eventId, patch);
+      return this.getEvent(userId, eventId);
+    }
     const current = presentEvent(row, this.attendeesFor([row.id]).get(row.id) ?? []);
     this.requireWritableCalendar(userId, current.calendarId);
 
@@ -579,7 +642,7 @@ export class CalendarStore {
             SET calendar_id = ?, title = ?, description = ?, location = ?,
                 all_day = ?, starts_at = ?, ends_at = ?, recurrence = ?,
                 recurrence_interval = ?, recurrence_until = ?, recurrence_count = ?,
-                organizer_email = ?, organizer_name = ?,
+                organizer_email = ?, organizer_name = ?, lead_reminder_enabled = ?, notifications_enabled = ?,
                 updated_at = datetime('now')
           WHERE id = ? AND user_id = ?`,
       )
@@ -597,6 +660,8 @@ export class CalendarStore {
         fields.recurrence.count,
         fields.organizerEmail,
         fields.organizerName,
+        fields.leadReminderEnabled ? 1 : 0,
+        fields.notificationsEnabled ? 1 : 0,
         eventId,
         userId,
       );
@@ -629,8 +694,8 @@ export class CalendarStore {
            user_id, calendar_id, title, description, location, all_day,
            starts_at, ends_at, recurrence, recurrence_interval,
            recurrence_until, recurrence_count, parent_event_id, recurrence_id,
-           excluded_dates, uid, organizer_email, organizer_name
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           excluded_dates, uid, organizer_email, organizer_name, lead_reminder_enabled, notifications_enabled
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         userId,
@@ -651,6 +716,8 @@ export class CalendarStore {
         fields.uid,
         fields.organizerEmail,
         fields.organizerName,
+        fields.leadReminderEnabled ? 1 : 0,
+        fields.notificationsEnabled ? 1 : 0,
       );
 
     const eventId = Number(result.lastInsertRowid);
@@ -693,6 +760,14 @@ export class CalendarStore {
 
     const allDay =
       input.allDay === undefined ? (current?.allDay ?? false) : input.allDay === true;
+    if (input.leadReminderEnabled !== undefined && typeof input.leadReminderEnabled !== "boolean") {
+      throw new CalendarError(400, "The reminder setting must be on or off.");
+    }
+    const leadReminderEnabled = input.leadReminderEnabled ?? current?.leadReminderEnabled ?? true;
+    if (input.notificationsEnabled !== undefined && typeof input.notificationsEnabled !== "boolean") {
+      throw new CalendarError(400, "The notification setting must be on or off.");
+    }
+    const notificationsEnabled = input.notificationsEnabled ?? current?.notificationsEnabled ?? true;
 
     let startsAt =
       input.startsAt === undefined && current
@@ -744,6 +819,8 @@ export class CalendarStore {
       description,
       location,
       allDay,
+      notificationsEnabled,
+      leadReminderEnabled,
       startsAt,
       endsAt,
       recurrence: safeRecurrence,
@@ -830,11 +907,17 @@ export class CalendarStore {
    */
   updateEventScoped(userId: number, request: ScopedEventUpdate): CalendarEvent {
     const row = this.eventRow(userId, request.eventId);
-    this.requireWritableCalendar(userId, row.calendar_id);
-
     const master = this.masterRow(userId, request.eventId);
     const masterEvent = presentEvent(master);
     const isSeries = masterEvent.recurrence.frequency !== "none";
+
+    if (request.scope === "series" && isReminderPreferencesOnly(request.patch)) {
+      this.writeReminderPreferences(
+        userId, isSeries ? master.id : row.id, request.patch, isSeries,
+      );
+      return this.getEvent(userId, isSeries ? master.id : row.id);
+    }
+    this.requireWritableCalendar(userId, row.calendar_id);
 
     // A one-off event has nothing to scope.
     if (!isSeries) return this.updateEvent(userId, row.id, request.patch);
@@ -847,6 +930,9 @@ export class CalendarStore {
     if (request.scope === "series") {
       const before = { ...masterEvent };
       const updated = this.updateEvent(userId, master.id, request.patch);
+      if (request.patch.notificationsEnabled !== undefined || request.patch.leadReminderEnabled !== undefined) {
+        this.writeReminderPreferences(userId, master.id, request.patch, true);
+      }
 
       const retimed =
         updated.startsAt !== before.startsAt ||
@@ -877,6 +963,8 @@ export class CalendarStore {
         description: masterEvent.description,
         location: masterEvent.location,
         allDay: masterEvent.allDay,
+        notificationsEnabled: masterEvent.notificationsEnabled,
+        leadReminderEnabled: masterEvent.leadReminderEnabled,
         startsAt: recurrenceId,
         endsAt: addMinutes(recurrenceId, duration),
         organizerEmail: masterEvent.organizerEmail,
@@ -927,6 +1015,8 @@ export class CalendarStore {
       description: masterEvent.description,
       location: masterEvent.location,
       allDay: masterEvent.allDay,
+      notificationsEnabled: masterEvent.notificationsEnabled,
+      leadReminderEnabled: masterEvent.leadReminderEnabled,
       startsAt: recurrenceId,
       endsAt: addMinutes(recurrenceId, duration),
       organizerEmail: masterEvent.organizerEmail,
@@ -1244,6 +1334,8 @@ export class CalendarStore {
           description: event.description,
           location: event.location,
           allDay: event.allDay,
+          notificationsEnabled: event.notificationsEnabled,
+          leadReminderEnabled: event.leadReminderEnabled,
           start: instance.start,
           end: instance.end,
           recurring,
@@ -1269,6 +1361,8 @@ export class CalendarStore {
         description: event.description,
         location: event.location,
         allDay: event.allDay,
+        notificationsEnabled: event.notificationsEnabled,
+        leadReminderEnabled: event.leadReminderEnabled,
         start: event.startsAt,
         end: event.endsAt,
         recurring: true,
@@ -1321,13 +1415,13 @@ export class CalendarStore {
     userId: number,
     calendarId: number,
     events: readonly IngestEventInput[],
-    options: { replace?: boolean } = {},
+    options: { replace?: boolean; replaceRange?: { from: string; to: string } } = {},
   ): { created: number; updated: number; removed: number } {
     this.getCalendar(userId, calendarId);
 
     const existing = this.db
       .prepare(
-        `SELECT id, uid, parent_event_id, recurrence_id
+        `SELECT id, uid, parent_event_id, recurrence_id, starts_at, ends_at
            FROM calendar_events WHERE user_id = ? AND calendar_id = ?`,
       )
       .all(userId, calendarId) as {
@@ -1335,6 +1429,8 @@ export class CalendarStore {
       uid: string | null;
       parent_event_id: number | null;
       recurrence_id: string | null;
+      starts_at: string;
+      ends_at: string;
     }[];
 
     const masterByUid = new Map(
@@ -1398,7 +1494,16 @@ export class CalendarStore {
         return existingId;
       }
 
-      const fields = this.normalizeEventFields(userId, { ...input, calendarId }, null);
+      const fields = this.normalizeEventFields(userId, {
+        ...input,
+        calendarId,
+        notificationsEnabled: input.notificationsEnabled ?? (parentEventId
+          ? this.getEvent(userId, parentEventId).notificationsEnabled
+          : true),
+        leadReminderEnabled: input.leadReminderEnabled ?? (parentEventId
+          ? this.getEvent(userId, parentEventId).leadReminderEnabled
+          : true),
+      }, null);
       const id = this.insertEventRow(userId, {
         ...fields,
         uid,
@@ -1444,8 +1549,11 @@ export class CalendarStore {
     apply();
 
     let removed = 0;
-    if (options.replace) {
-      const stale = existing.filter((row) => !seen.has(row.id)).map((row) => row.id);
+    if (options.replace || options.replaceRange) {
+      const range = options.replaceRange;
+      const stale = existing.filter((row) => !seen.has(row.id) &&
+        (!range || (row.starts_at <= range.to && row.ends_at >= range.from)),
+      ).map((row) => row.id);
       if (stale.length > 0) {
         const placeholders = stale.map(() => "?").join(",");
         this.db

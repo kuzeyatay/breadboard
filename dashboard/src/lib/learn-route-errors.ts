@@ -1,3 +1,5 @@
+import { NO_MODEL_SENTINEL, NO_DEFAULT_MODEL_MESSAGE, normalizeAssistantModelId } from "./ai-models.ts";
+
 export interface LearnRouteConflict extends Error {
   requiresReplan?: boolean;
 }
@@ -12,6 +14,19 @@ export class InvalidLearnRouteBodyError extends Error {
     super(message);
     this.name = "InvalidLearnRouteBodyError";
   }
+}
+
+/** A Learn selection belongs to this request; it never updates the profile. */
+export function resolveLearnRequestModel(body: Record<string, unknown>, defaultModel: string): string {
+  if (normalizeAssistantModelId(body.model === undefined ? defaultModel : body.model)?.toLowerCase() === NO_MODEL_SENTINEL) {
+    throw new InvalidLearnRouteBodyError(NO_DEFAULT_MODEL_MESSAGE);
+  }
+  if (body.model === undefined) return defaultModel;
+  const model = normalizeAssistantModelId(body.model);
+  if (!model || ["default", "chat", "auto"].includes(model.toLowerCase())) {
+    throw new InvalidLearnRouteBodyError("Choose a valid model for this Learn run.");
+  }
+  return model;
 }
 
 /**

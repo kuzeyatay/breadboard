@@ -13,9 +13,9 @@
  * nobody has published a rate for is counted and named, never priced at zero.
  */
 
-import fs from "node:fs";
+import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 import { priceUsd } from "./model-pricing.ts";
 
@@ -102,7 +102,7 @@ function positive(value: unknown): number {
 export function readCompressionSavings(): CompressionSavings {
   let raw: RawSummary;
   try {
-    raw = JSON.parse(fs.readFileSync(compressionSavingsFile(), "utf8")) as RawSummary;
+    raw = JSON.parse(externalRuntimeReadUtf8(compressionSavingsFile())) as RawSummary;
   } catch {
     return EMPTY_COMPRESSION_SAVINGS;
   }

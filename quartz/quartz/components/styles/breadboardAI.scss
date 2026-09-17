@@ -1,4 +1,7 @@
 .breadboard-ai {
+  &[hidden], [hidden] {
+    display: none !important;
+  }
   --bb-ai-bg: #0b0f14;
   --bb-ai-fg: #e5e7eb;
   --bb-ai-border: #1f2937;
@@ -112,6 +115,19 @@
     }
   }
 
+  .breadboard-ai-temporary-banner {
+    padding: 0.45rem 0.85rem;
+    border-bottom: 1px solid rgba(16, 185, 129, 0.35);
+    background: rgba(6, 78, 59, 0.32);
+    color: #6ee7b7;
+    font-size: 0.7rem;
+    font-weight: 600;
+
+    &[hidden] {
+      display: none;
+    }
+  }
+
   .breadboard-ai-history {
     border-bottom: 1px solid var(--bb-ai-border);
     padding: 0.55rem 0.85rem;
@@ -191,12 +207,75 @@
     }
   }
 
+  .breadboard-ai-model-change {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    margin: 1rem 0;
+    color: var(--bb-ai-muted);
+    font-size: 0.75rem;
+
+    svg {
+      flex: 1;
+      min-width: 0;
+      height: 8px;
+      color: var(--bb-ai-accent);
+    }
+    span {
+      flex-shrink: 0;
+      max-width: 75%;
+      overflow-wrap: anywhere;
+      text-align: center;
+    }
+  }
+
   .breadboard-ai-transcript {
     position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  // The same bare corner glyph as Terminal: it belongs to the blank chat, not
+  // to the panel toolbar, and disappears once the first message is sent.
+  .breadboard-ai-temporary {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.75rem;
+    z-index: 2;
+    display: grid;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: var(--bb-ai-muted);
+    cursor: pointer;
+
+    &[hidden] {
+      display: none;
+    }
+    &:hover {
+      color: var(--bb-ai-fg);
+    }
+    &[aria-pressed="true"] {
+      color: #6ee7b7;
+    }
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+    svg {
+      width: 1.625rem;
+      height: 1.625rem;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
   }
 
   // One tick per message the reader sent, in the order they sent them. It rests
@@ -409,6 +488,12 @@
         color: #93c5fd;
       }
     }
+  }
+
+  &[data-temporary-chat="true"] .breadboard-ai-user {
+    border: 1px dashed #6ee7b7;
+    background: rgba(6, 78, 59, 0.28);
+    box-shadow: none;
   }
 
   .breadboard-ai-error {

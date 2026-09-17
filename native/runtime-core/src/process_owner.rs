@@ -823,9 +823,6 @@ impl TrustedProcessEnvironment {
                 breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterShorts => {
                     "outer-shorts-worker"
                 }
-                breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::OuterOpenGym => {
-                    "outer-open-gym-worker"
-                }
                 breadboard_runtime_protocol::TrustedWorkerEnvironmentSource::AgentReachSetup => {
                     "agent-reach-setup-worker"
                 }
@@ -1062,6 +1059,7 @@ const fn supervisor_service_environment_profile_argument(
         TrustedServiceEnvironmentProfile::PostizCoordinator => "postiz-coordinator",
         TrustedServiceEnvironmentProfile::InboxZeroStack => "inbox-zero-stack",
         TrustedServiceEnvironmentProfile::SpotifyPlayback => "spotify-playback",
+        TrustedServiceEnvironmentProfile::BambuPrinter => "bambu-printer",
         TrustedServiceEnvironmentProfile::Cliproxy => "cliproxy",
         TrustedServiceEnvironmentProfile::Quartz => "quartz",
         TrustedServiceEnvironmentProfile::UiTars => "ui-tars",
@@ -1769,6 +1767,28 @@ fn supervisor_failure_diagnostic(failure: &ProcessSupervisorFailure) -> String {
     diagnostic
 }
 
+/// A control-pipe write can only fail this way once the pinned supervisor
+/// has closed its stdin, which it holds for its whole lifetime. Windows
+/// reports a reader that has gone away as `ERROR_NO_DATA` or
+/// `ERROR_PIPE_NOT_CONNECTED` rather than only `ERROR_BROKEN_PIPE`.
+fn is_closed_control_pipe(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        const ERROR_NO_DATA: i32 = 232;
+        const ERROR_PIPE_NOT_CONNECTED: i32 = 233;
+        if matches!(
+            error.raw_os_error(),
+            Some(ERROR_NO_DATA) | Some(ERROR_PIPE_NOT_CONNECTED)
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
 fn is_worker_stdout_loss_event(kind: &str, stream: Option<&str>, worker: bool) -> bool {
     worker && stream == Some("stdout") && matches!(kind, "stream-truncated" | "stream-pressure")
 }
@@ -2300,15 +2320,36 @@ impl RunningProcessOwner {
                 "stop was requested after the terminal event",
             ));
         }
+        // A worker protocol fault raised at the record boundary is reported
+        // ahead of the supervisor's own exit record, which is already parked
+        // in `pending_terminal`. The tree is gone and that receipt is the next
+        // event the reader returns: there is nothing left to stop, and the
+        // supervisor's control pipe is closed, so writing to it can only
+        // fail. The stop is satisfied; surfacing the write failure instead
+        // turned every such worker exit into a fatal owner error.
+        if self.pending_terminal.is_some() {
+            self.stop_requested = true;
+            return Ok(());
+        }
         let record = if force {
             &b"{\"type\":\"stop\",\"force\":true}\n"[..]
         } else {
             &b"{\"type\":\"stop\",\"force\":false}\n"[..]
         };
-        self.control
+        match self
+            .control
             .write_all(record)
             .and_then(|_| self.control.flush())
-            .map_err(ProcessOwnerError::Control)?;
+        {
+            Ok(()) => {}
+            // The supervisor holds the read end of its control pipe for its
+            // whole lifetime, so a closed pipe means it has already exited and
+            // its terminal record is on the way (or EOF, which the
+            // supervision-lost path confirms). Either receipt supersedes a
+            // stop, so the request has nothing left to do.
+            Err(error) if is_closed_control_pipe(&error) => {}
+            Err(error) => return Err(ProcessOwnerError::Control(error)),
+        }
         self.stop_requested = true;
         Ok(())
     }
@@ -2562,8 +2603,21 @@ impl RunningProcessOwner {
                 } else {
                     None
                 };
+                let worker_fault_diagnostic = worker_fault
+                    .map(|fault| format!("fault={fault:?} data={data}"));
                 self.private_diagnostics.record(encoded_bytes, value);
                 if let Some(fault) = worker_fault {
+                    // The public failure remains intentionally generic, but retain
+                    // the single offending stdout fragment in the worker's private,
+                    // bounded and redacted diagnostic log. Without this evidence an
+                    // intermittent fenced-stream failure is indistinguishable from
+                    // output loss, a partial record, or an identity/sequence fault,
+                    // and a retry can only repeat the same opaque crash.
+                    if let Some(diagnostic) = worker_fault_diagnostic.as_deref() {
+                        let _ = self
+                            .launch
+                            .persist_worker_diagnostic("stdout-protocol-fault", diagnostic);
+                    }
                     self.worker_protocol_fault = Some(fault);
                     return Ok(ProcessOwnerEvent::WorkerProtocolFault(fault));
                 }
@@ -5392,6 +5446,26 @@ mod tests {
             Some(WorkerProtocolFault::InvalidRecord)
         );
         assert!(receipt.into_completion_authority().is_err());
+    }
+
+    #[test]
+    fn a_closed_control_pipe_is_recognized_on_every_platform_spelling() {
+        assert!(is_closed_control_pipe(&io::Error::from(
+            io::ErrorKind::BrokenPipe
+        )));
+        assert!(!is_closed_control_pipe(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_closed_control_pipe(&io::Error::from(
+            io::ErrorKind::TimedOut
+        )));
+        #[cfg(windows)]
+        {
+            assert!(is_closed_control_pipe(&io::Error::from_raw_os_error(232)));
+            assert!(is_closed_control_pipe(&io::Error::from_raw_os_error(233)));
+            assert!(is_closed_control_pipe(&io::Error::from_raw_os_error(109)));
+            assert!(!is_closed_control_pipe(&io::Error::from_raw_os_error(5)));
+        }
     }
 
     #[test]

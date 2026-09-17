@@ -42,10 +42,10 @@ export async function POST(
         ? body.expectedVersionId.trim()
         : undefined;
 
-    // This route is also the authoritative server-side preference update. The
-    // browser hook mirrors it independently for chat, but a network race must
-    // not make this explicit Learn action observe the old value.
-    setHermesUserSettings(userId, { humanizerAuto: enabled });
+    // Persist only Learn's preference; the Intelligence menu owns chat rewrites.
+    setHermesUserSettings(userId, {
+      composerSwitches: { learnHumanizerAuto: enabled },
+    });
     const execution = await executeLearnOperationForRoute(
       {
         operation: "humanizer",

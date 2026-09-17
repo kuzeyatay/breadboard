@@ -69,17 +69,18 @@
 
 /* Learn source images are cropped screenshots whose pixel dimensions should
  * not dictate their reading size. The transformer groups each image with its
- * caption so the pair can remain compact and, when the reading column has
- * enough room, sit beside the prose that explains it. */
+ * caption so the pair remains in the reading flow. Only explicitly aligned
+ * figures wrap prose; adjacent compact diagrams can share a row. */
 .center {
   container-name: quartz-reading-column;
   container-type: inline-size;
 }
 
 .breadboard-source-visual {
+  float: none;
   clear: both;
   width: fit-content;
-  max-width: min(100%, 32rem);
+  max-width: min(100%, 48rem);
   margin: 1.4rem auto;
 
   > img {
@@ -103,17 +104,52 @@
   }
 }
 
-article.popover-hint:has(> .breadboard-source-visual)::after {
+.breadboard-source-visual-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 1.5rem;
+  clear: both;
+  margin: 1.4rem 0;
+
+  > .breadboard-source-visual {
+    float: none;
+    clear: none;
+    min-width: 0;
+    max-width: min(100%, 30rem);
+    margin: 0 auto;
+  }
+}
+
+article.popover-hint:has(> :is(.breadboard-source-visual, .breadboard-source-visual-row))::after {
   display: block;
   clear: both;
   content: "";
 }
 
 @container quartz-reading-column (min-width: 48rem) {
-  .breadboard-source-visual {
-    float: right;
-    clear: right;
+  .breadboard-source-visual-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    > .breadboard-source-visual {
+      grid-row: 1;
+    }
+  }
+
+  article.popover-hint > .breadboard-source-visual:is([data-layout="left"], [data-layout="right"]) {
+    // Nearby compact figures share a grid row; single figures clear earlier
+    // floats so prose is never squeezed between unrelated images.
+    clear: both;
     max-width: min(42%, 30rem);
+  }
+
+  article.popover-hint > .breadboard-source-visual[data-layout="left"] {
+    float: left;
+    margin: 0.35rem 1.5rem 1.25rem 0;
+  }
+
+  article.popover-hint > .breadboard-source-visual[data-layout="right"] {
+    float: right;
     margin: 0.35rem 0 1.25rem 1.5rem;
   }
 
@@ -134,6 +170,9 @@ article.popover-hint:has(> .breadboard-source-visual)::after {
       ol,
       .table-container,
       .katex-display,
+      .math-display,
+      mjx-container[display="true"],
+      p:has(.katex-display, .math-display, mjx-container[display="true"]),
       .breadboard-generated-visual-card,
       .penecho-board,
       .bb-video
@@ -274,14 +313,14 @@ button.desktop-explorer {
 }
 
 .search > .search-container > .search-space > *,
-.popover > .popover-inner,
-.folder-pdf-panel {
+.popover > .popover-inner {
   border-color: var(--neu-q-border);
   background: var(--neu-q-surface);
   box-shadow: var(--neu-q-floating-shadow);
 }
 
-.markdown-editor-panel {
+.markdown-editor-panel,
+.folder-pdf-panel {
   border-color: var(--neu-q-border);
   background: var(--neu-q-surface);
   box-shadow: none;

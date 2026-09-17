@@ -179,6 +179,11 @@ function write(
   const metadata = parseMetadata(row.metadata);
   metadata.contentVersions = state.versions;
   metadata.activeContentVersion = state.activeIndex;
+  if (state.versions[state.activeIndex].origin === "humanizer") {
+    const notes = Array.isArray(metadata.progressNotes) ? metadata.progressNotes : [];
+    const completed = "Rewritten naturally. Original answer saved as a previous version.";
+    if (!notes.includes(completed)) metadata.progressNotes = [...notes, completed];
+  }
   database
     .prepare(
       `UPDATE conversation_messages
@@ -186,6 +191,18 @@ function write(
        WHERE id = ?`,
     )
     .run(state.versions[state.activeIndex].content, JSON.stringify(metadata), row.id);
+  // Garden transcripts still read the legacy projection. Updating only the
+  // canonical row made a successful rewrite disappear when that chat reloaded.
+  const legacyMetadata = { ...metadata };
+  if (state.derived) delete legacyMetadata.verification;
+  database.prepare(`
+    UPDATE chat_messages SET content = ?, tool_calls = ?
+    WHERE canonical_message_id = ? AND role = 'assistant'
+  `).run(state.versions[state.activeIndex].content, JSON.stringify(legacyMetadata), row.id);
+  database.prepare(`
+    UPDATE chat_sessions SET updated_at = datetime('now')
+    WHERE id IN (SELECT session_id FROM chat_messages WHERE canonical_message_id = ?)
+  `).run(row.id);
   return state;
 }
 

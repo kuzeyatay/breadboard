@@ -334,5 +334,173 @@ class UpstreamRetryTests(unittest.TestCase):
         self.assertNotIn("automatic retries", message)
 
 
+    def test_exhausted_routes_name_credit_and_quota_refusals(self) -> None:
+        # The concept-extraction run that failed the Feynman Vol. II ingestion:
+        # the requested OpenRouter stealth model 429'd, the Codex fallback hit
+        # its weekly window, and the OpenRouter fallback answered 402 because
+        # the account could afford ~1k tokens. Only the last error reached the
+        # diagnostics, and it matched none of the wording branches.
+        run = CouncilRun(
+            id="crun_exhausted",
+            user_prompt="test",
+            messages=[],
+            council_mode="direct_council",
+            diagnostics={
+                "error": (
+                    "This request requires more credits, or fewer max_tokens. "
+                    "You requested up to 64000 tokens, but can only afford 1185."
+                ),
+            },
+        )
+        run.record_model_attempts(
+            [
+                {
+                    "resolvedModel": "openrouter/stealth/union-alpha",
+                    "provider": "openrouter",
+                    "outcome": "quota_exhausted",
+                    "statusCode": 429,
+                    "error": "Provider returned error",
+                },
+                {
+                    "resolvedModel": "gpt-5.6-sol",
+                    "provider": "chatgpt",
+                    "outcome": "quota_exhausted",
+                    "fallback": True,
+                    "statusCode": 429,
+                },
+                {
+                    "resolvedModel": "openrouter/anthropic/claude-sonnet-4.5",
+                    "provider": "openrouter",
+                    "outcome": "failed",
+                    "fallback": True,
+                    "statusCode": 402,
+                    "error": "This request requires more credits, or fewer max_tokens.",
+                },
+            ]
+        )
+
+        message = _empty_final_answer_message(run)
+
+        self.assertIn("out of quota or credits", message)
+        self.assertIn("openrouter/stealth/union-alpha has reached its usage limit (HTTP 429)", message)
+        self.assertIn("gpt-5.6-sol has reached its usage limit (HTTP 429)", message)
+        self.assertIn(
+            "openrouter/anthropic/claude-sonnet-4.5 needs more provider credits (HTTP 402)",
+            message,
+        )
+        self.assertNotIn("all candidate models failed", message)
+        self.assertNotIn("64000", message)
+
+    def test_mixed_route_failures_keep_generic_wording(self) -> None:
+        run = CouncilRun(
+            id="crun_mixed",
+            user_prompt="test",
+            messages=[],
+            council_mode="direct_council",
+            diagnostics={"error": "chatgpt upstream returned an unexpected payload"},
+        )
+        run.record_model_attempts(
+            [
+                {"resolvedModel": "a", "outcome": "quota_exhausted", "statusCode": 429},
+                {"resolvedModel": "b", "outcome": "failed", "statusCode": 500},
+            ]
+        )
+
+        message = _empty_final_answer_message(run)
+
+        self.assertIn("all candidate models failed", message)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuotaDetailTests(unittest.TestCase):
+    """A 429's reset time decides how long the account rests, not a default."""
+
+    def test_body_reset_seconds_are_carried_into_the_cooldown(self) -> None:
+        from chatmock.upstream import _quota_detail
+
+        limited = FakeResponse(
+            429,
+            {
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "resets_in_seconds": 382846,
+                }
+            },
+        )
+        # A reset days away can only be the weekly window. Saying so is what
+        # stops a reader from checking the (nearly empty) five-hour meter.
+        self.assertEqual(
+            _quota_detail(limited),
+            ("The weekly Codex usage limit has been reached", 382846),
+        )
+
+    def test_a_short_reset_without_headers_keeps_the_backend_wording(self) -> None:
+        from chatmock.upstream import _quota_detail
+
+        limited = FakeResponse(
+            429,
+            {"error": {"message": "The usage limit has been reached", "resets_in_seconds": 1200}},
+        )
+        # Twenty minutes out could be either window; do not guess.
+        self.assertEqual(_quota_detail(limited), ("The usage limit has been reached", 1200))
+
+    def test_headers_name_the_five_hour_window(self) -> None:
+        from chatmock.upstream import _quota_detail
+
+        limited = FakeResponse(429, {"error": {"message": "The usage limit has been reached"}})
+        limited.headers = {
+            "x-codex-primary-used-percent": "100",
+            "x-codex-primary-window-minutes": "300",
+            "x-codex-primary-reset-after-seconds": "1200",
+            "x-codex-secondary-used-percent": "40",
+            "x-codex-secondary-window-minutes": "10080",
+            "x-codex-secondary-reset-after-seconds": "382846",
+        }
+        self.assertEqual(
+            _quota_detail(limited),
+            ("The 5-hour Codex usage limit has been reached", 1200),
+        )
+
+    def test_headers_name_the_spent_window_when_the_body_does_not(self) -> None:
+        from chatmock.upstream import _quota_detail
+
+        limited = FakeResponse(429, {"error": {"message": "Too many requests"}})
+        limited.headers = {
+            "x-codex-primary-used-percent": "100",
+            "x-codex-primary-window-minutes": "10080",
+            "x-codex-primary-reset-after-seconds": "382846",
+            "x-codex-secondary-used-percent": "0",
+            "x-codex-secondary-window-minutes": "0",
+            "x-codex-secondary-reset-after-seconds": "0",
+        }
+        self.assertEqual(
+            _quota_detail(limited),
+            ("The weekly Codex usage limit has been reached", 382846),
+        )
+
+    def test_a_bare_429_falls_back_to_the_default_rest(self) -> None:
+        from chatmock.upstream import _quota_detail
+
+        message, seconds = _quota_detail(FakeResponse(429, {}))
+        self.assertEqual(message, "the plan's usage window is spent")
+        self.assertIsNone(seconds)
+
+    def test_websocket_error_event_is_read_the_same_way(self) -> None:
+        from chatmock.providers.chatgpt_upstream import _event_quota_detail
+
+        event = {
+            "type": "error",
+            "error": {
+                "status_code": 429,
+                "message": "The usage limit has been reached",
+                "resets_in_seconds": "3600",
+            },
+        }
+        self.assertEqual(_event_quota_detail(event), ("The usage limit has been reached", 3600))
+        self.assertEqual(
+            _event_quota_detail(None), ("the upstream account returned HTTP 429", None)
+        )

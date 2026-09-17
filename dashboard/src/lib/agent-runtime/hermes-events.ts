@@ -281,6 +281,10 @@ export function normalizeHermesEvent(
       }];
     }
 
+    case "usage.update":
+      return [{ type: "assistant.usage", sessionId: publicSessionId,
+        ...(messageId ? { messageId } : {}), timestamp, payload: { usage: payload.usage } }];
+
     case "status.update": {
       const raw = asString(payload.text)?.trim();
       if (!raw) return [];
@@ -611,6 +615,11 @@ export function normalizeHermesEvent(
         status === "failed" && rawText ? providerErrorResponse(rawText) : rawText,
       );
       const events: NormalizedAgentEvent[] = [];
+      if (status === "failed") {
+        events.push({ type: "error", sessionId: publicSessionId, timestamp,
+          payload: { code: asString(payload.failure_reason) ?? "hermes_turn_failed",
+            message: fullText || "The agent was interrupted before it could finish. Retry this response to continue with the saved attachments.", recoverable: true } });
+      }
       // Settle anything the streaming filter was still holding, so the
       // accumulated text can be compared against the completion on equal terms.
       const held = state.emDash.flush();

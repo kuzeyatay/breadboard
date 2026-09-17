@@ -1,7 +1,10 @@
 import db from "@/lib/db";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
-import { scanClusterKnowledge } from "@/lib/knowledge";
+import {
+  GARDEN_SUMMARY_FRESHNESS_MS,
+  scanClusterKnowledge,
+} from "@/lib/knowledge";
 import {
   folderLabel,
   folderPathExists,
@@ -86,7 +89,12 @@ function readClusterStats(
   try {
     return {
       row,
-      stats: scanClusterKnowledge(baseContentPath, row.slug).stats,
+      // Dashboard reads only need the summary figures printed on the library
+      // page. Validating the graph costs one stat per note, so a garden
+      // checked moments ago is reused rather than re-walked (DATA-01).
+      stats: scanClusterKnowledge(baseContentPath, row.slug, {
+        maxStaleMs: GARDEN_SUMMARY_FRESHNESS_MS,
+      }).stats,
     };
   } catch {
     return {

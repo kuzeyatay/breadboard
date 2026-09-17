@@ -1274,6 +1274,100 @@ class StrictCouncilReceiptStore:
             self._replace(path, failed)
             return failed
 
+    def fail_orphaned_started_receipts(self) -> list[str]:
+        """Settle receipts a previous process left in-flight.
+
+        Every Council call runs inside this process, so once it has restarted
+        no `started` receipt can still belong to a live provider call. Left
+        alone, such a receipt blocks every later Learn job that shares its
+        lineage: the client reads `request_started`, outwaits the provider
+        lifetime, fails, and the next resume reads `request_started` again
+        (telecom-1, 2026-09-17: one orphan from a ChatMock restart failed two
+        generations in a row). Each orphan becomes a redispatchable
+        `council_no_final_answer` failure whose attempt proves one direct call
+        produced no answer, exactly what the client expects after a crash.
+        Returns the settled request ids.
+        """
+
+        settled: list[str] = []
+        with self._lock:
+            try:
+                entries = sorted(self.base_dir.iterdir())
+            except FileNotFoundError:
+                return settled
+            for path in entries:
+                if path.suffix != ".json" or path.name.endswith(".redispatch.json"):
+                    continue
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(current, dict) or current.get("state") != "started":
+                    continue
+                request_id = current.get("requestId")
+                request_hash = current.get("requestHash")
+                if not valid_request_id(request_id) or not valid_request_hash(request_hash):
+                    continue
+                dispatch = _validated_dispatch_fields(current)
+                if dispatch is None:
+                    continue
+                dispatch_count, _, attempts = dispatch
+                if current.get("dispatchMode") not in _COUNCIL_MODES:
+                    continue
+                now = _now_iso()
+                started_at = current.get("updatedAt") or current.get("createdAt") or now
+                run_id = f"crun_orphan_{uuid.uuid4().hex}"
+                model = "unknown"
+                usage = {key: 0 for key in _USAGE_KEYS}
+                usage["callCount"] = 1
+                accounting = {
+                    "councilRunId": run_id,
+                    "councilMode": current.get("dispatchMode"),
+                    "requestedModel": model,
+                    "resolvedModel": model,
+                    "usage": usage,
+                    "usageEstimated": True,
+                    "finalAnswer": "",
+                    "responseHash": hashlib.sha256(b"").hexdigest(),
+                    "createdAt": started_at,
+                    "updatedAt": now,
+                    "modelRouting": [
+                        {
+                            "schemaVersion": 1,
+                            "at": now,
+                            "requestId": run_id,
+                            "endpoint": "council",
+                            "requestedModel": model,
+                            "resolvedModel": model,
+                            "upstreamModel": model,
+                            "provider": "orphaned_process_restart",
+                            "outcome": "failed",
+                            "fallback": False,
+                        }
+                    ],
+                }
+                try:
+                    self._verified_claim_for_receipt(request_id, request_hash, current, dispatch_count)
+                    failure = _attempt_from_accounting(
+                        accounting,
+                        generation=dispatch_count,
+                        outcome="failed_no_final_answer",
+                        failure_code=REDISPATCHABLE_FAILURE_CODE,
+                    )
+                    failed = {
+                        **current,
+                        "state": "failed",
+                        "updatedAt": now,
+                        "failureCode": REDISPATCHABLE_FAILURE_CODE,
+                        "attempts": [*attempts, failure],
+                    }
+                    _validated_dispatch_fields(failed)
+                    self._replace(path, failed)
+                except (CouncilReceiptConflict, CouncilReceiptCorrupt):
+                    continue
+                settled.append(request_id)
+        return settled
+
     def promptless_metadata(
         self,
         request_id: str,
@@ -1312,6 +1406,12 @@ class StrictCouncilReceiptStore:
                 "redispatchCount": redispatch_count,
                 "redispatchAllowed": allowed,
                 "attempts": attempts,
+                # The receipt timestamp is the durable start boundary for the
+                # currently claimed generation. Recovery clients need it to
+                # outwait a process-crash orphan without guessing from an older
+                # application checkpoint or issuing a duplicate provider call.
+                "createdAt": current["createdAt"],
+                "updatedAt": current["updatedAt"],
             }
             if current.get("state") == "failed" and isinstance(
                 current.get("failureCode"), str
@@ -1340,6 +1440,9 @@ def default_receipt_store() -> StrictCouncilReceiptStore:
         store = _stores.get(key)
         if store is None:
             store = StrictCouncilReceiptStore(path)
+            # First access after a process start: nothing this process has not
+            # dispatched can still be in flight.
+            store.fail_orphaned_started_receipts()
             _stores[key] = store
         return store
 

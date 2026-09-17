@@ -556,6 +556,63 @@ function citedSourceAnchorsForUnit(
   };
 }
 
+/** The marker a lesson writer places where its interactive visual belongs. */
+export function interactiveVisualWriterAnchor(unitId: string): string {
+  return `learning-unit:${unitId}:interactive-visual`;
+}
+
+/** Used only when the writer did not place its marker exactly once. */
+export function interactiveVisualFallbackAnchor(unitId: string): string {
+  return `learning-unit:${unitId}:after-introduction`;
+}
+
+const WRITER_VISUAL_MARKER_RE = /[ \t]*<!-- learning-unit:[A-Za-z0-9_.-]+:interactive-visual -->[ \t]*/g;
+
+/** Removes writer placement markers from a page that will carry no visual. */
+export function stripInteractiveVisualWriterMarkers(markdown: string): string {
+  return markdown.replace(WRITER_VISUAL_MARKER_RE, "").replace(/\n{3,}/g, "\n\n");
+}
+
+/**
+ * Decide where a unit's interactive visual is inserted. The lesson writer marks
+ * the paragraph where the visualized idea is taught, the same way it places a
+ * source figure beside its interpretation; that marker wins when it appears
+ * exactly once on its own line. Otherwise every writer marker is removed and the
+ * visual falls back to just after the introduction.
+ */
+export function placeInteractiveVisualAnchor(
+  markdown: string,
+  unitId: string,
+): { markdown: string; insertionAnchor: string; placedByWriter: boolean } {
+  const writerAnchor = interactiveVisualWriterAnchor(unitId);
+  const writerMarker = `<!-- ${writerAnchor} -->`;
+  const fallbackAnchor = interactiveVisualFallbackAnchor(unitId);
+  const fallbackMarker = `<!-- ${fallbackAnchor} -->`;
+  const occurrences = markdown.split(writerMarker).length - 1;
+  const standaloneLines = markdown.split("\n").filter((line) => line.trim() === writerMarker).length;
+  if (occurrences === 1 && standaloneLines === 1) {
+    const withoutOtherMarkers = markdown
+      .split("\n")
+      .filter((line) => line.trim() !== fallbackMarker)
+      .map((line) => (line.trim() === writerMarker ? `\n${writerMarker}\n` : line))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n");
+    return { markdown: withoutOtherMarkers.trim() + "\n", insertionAnchor: writerAnchor, placedByWriter: true };
+  }
+  let next = stripInteractiveVisualWriterMarkers(markdown);
+  if (!next.includes(fallbackMarker)) {
+    const blocks = next.trim().split(/\n{2,}/);
+    const introductionIndex = blocks.findIndex((block) => {
+      const trimmed = block.trim();
+      return Boolean(trimmed) && !trimmed.startsWith("#") && !trimmed.startsWith("![") && !trimmed.startsWith("<!--");
+    });
+    const insertionIndex = introductionIndex >= 0 ? introductionIndex + 1 : Math.min(1, blocks.length);
+    blocks.splice(insertionIndex, 0, fallbackMarker);
+    next = blocks.join("\n\n");
+  }
+  return { markdown: next, insertionAnchor: fallbackAnchor, placedByWriter: false };
+}
+
 function subsectionTarget(map: ProposedLearningMap, unitId: string, fallbackTitle: string) {
   for (let sectionIndex = 0; sectionIndex < map.sections.length; sectionIndex += 1) {
     const section = map.sections[sectionIndex];

@@ -15,6 +15,11 @@
 // model as `garden_X` (e.g. export `search` → tool `garden_search`).
 
 import { tool } from "@opencode-ai/plugin"
+const excerptArgs = {
+  query: tool.schema.string().describe("Locate a relevant passage in the page body").optional(),
+  offset: tool.schema.number().int().min(0).describe("Body character offset; use nextOffset to continue").optional(),
+  limit: tool.schema.number().int().min(1).max(12000).optional(),
+}
 async function callBreadboard(sessionID: string, toolName: string, args: Record<string, unknown>) {
   const dashboardUrl = process.env.BREADBOARD_INTERNAL_URL || "http://127.0.0.1:3000"
   const serviceSecret = process.env.HERMES_TOOL_SECRET || process.env.HERMES_PASSWORD || "breadboard-local-dev"
@@ -83,9 +88,10 @@ export const get_page = tool({
   args: {
     gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The page slug or relative path"),
+    ...excerptArgs,
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_page", { gardenId: args.gardenId, slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_page", args)
   },
 })
 
@@ -105,9 +111,10 @@ export const get_source_excerpt = tool({
   args: {
     gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The source page slug"),
+    ...excerptArgs,
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_source_excerpt", { gardenId: args.gardenId, slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_source_excerpt", args)
   },
 })
 
@@ -191,10 +198,14 @@ export const save_note = tool({
 
 export const list_files = tool({
   description:
-    "List this Garden's structure: every folder and which folder each note currently sits in. Call this before moving anything so both the note slug and the destination folder are known to exist.",
-  args: { gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional() },
+    "List a bounded page of Garden files. Filter by query or folder and continue with nextOffset. Call before moving notes to find their exact paths.",
+  args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
+    query: tool.schema.string().optional(), folder: tool.schema.string().optional(),
+    offset: tool.schema.number().int().min(0).optional(), limit: tool.schema.number().int().min(1).max(100).optional(),
+  },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_list_files", { gardenId: args.gardenId })
+    return callBreadboard(ctx.sessionID, "garden_list_files", args)
   },
 })
 

@@ -7278,6 +7278,121 @@ def test_session_redirect_leaves_build_window_queue_to_host():
     assert not session.get("queued_prompt")
 
 
+@pytest.mark.parametrize("during_tools", [False, True])
+def test_session_redirect_images_reach_core_without_touching_prompt_tray(monkeypatch, tmp_path, during_tools):
+    import base64
+    from run_agent import AIAgent
+    from tools import vision_tools
+
+    agent = object.__new__(AIAgent)
+    agent._supports_active_turn_redirect = True
+    agent._executing_tools = during_tools
+    agent._interrupt_requested = False
+    agent._model_request_active = threading.Event()
+    agent._model_request_active.set()
+    session = _session(running=True, agent=agent)
+    session["active_client_turn_id"] = "original-turn"
+    session["attached_images"] = ["next-prompt.png"]
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    seen_paths = []
+    image_bytes = b"\x89PNG\r\n\x1a\ncorrection pixels"
+
+    async def analyze(image_url, user_prompt):
+        assert Path(image_url).read_bytes() == image_bytes
+        seen_paths.append(image_url)
+        return json.dumps({"success": True, "analysis": "The image shows a lab results table."})
+
+    monkeypatch.setattr(vision_tools, "vision_analyze_tool", analyze)
+    server._sessions["sid"] = session
+    try:
+        response = server.handle_request({
+            "id": "image-correction", "method": "session.redirect",
+            "params": {
+                "session_id": "sid", "text": "Use this image",
+                "expected_turn_id": "original-turn", "queue_if_unavailable": False,
+                "images": [{"filename": "scan.png", "content_base64": base64.b64encode(image_bytes).decode()}],
+            },
+        })
+    finally:
+        server._sessions.pop("sid", None)
+    assert response.get("result", {}).get("status") == "redirected", response
+    content = agent._drain_pending_steer() if during_tools else agent._drain_pending_redirect()
+    assert "lab results table" in content
+    assert "Use this image" in content
+    assert seen_paths[0] in content
+    assert Path(seen_paths[0]).read_bytes() == image_bytes
+    assert session["attached_images"] == ["next-prompt.png"]
+    assert not session.get("queued_prompt")
+
+
+@pytest.mark.parametrize("outcome", ["rejected", "successor", "error"])
+def test_session_redirect_images_clean_up_when_delivery_does_not_land(monkeypatch, tmp_path, outcome):
+    calls = []
+
+    def redirect(text):
+        calls.append(text)
+        if outcome == "error":
+            raise RuntimeError("Delivery failed")
+        return False
+
+    agent = types.SimpleNamespace(_supports_active_turn_redirect=True, redirect=redirect)
+    session = _session(running=True, agent=agent)
+    session["active_client_turn_id"] = "original-turn"
+    session["attached_images"] = ["next-prompt.png"]
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    def enrich(text, paths):
+        assert Path(paths[0]).read_bytes() == b"test"
+        if outcome == "successor":
+            session["active_client_turn_id"] = "next-turn"
+        return text + "\nImage description"
+
+    monkeypatch.setattr(server, "_enrich_with_attached_images", enrich)
+    server._sessions["sid"] = session
+    try:
+        response = server.handle_request({
+            "id": "image-correction", "method": "session.redirect",
+            "params": {
+                "session_id": "sid", "text": "Use this image",
+                "expected_turn_id": "original-turn", "queue_if_unavailable": False,
+                "images": [{"filename": "scan.png", "content_base64": "dGVzdA=="}],
+            },
+        })
+    finally:
+        server._sessions.pop("sid", None)
+    if outcome == "error":
+        assert response["error"]["code"] == 5000
+    else:
+        assert response["result"]["status"] == "rejected"
+    assert len(calls) == (0 if outcome == "successor" else 1)
+    assert session["attached_images"] == ["next-prompt.png"]
+    assert list((tmp_path / "images").iterdir()) == []
+
+
+def test_session_redirect_invalid_image_does_not_deliver_partial_correction(monkeypatch, tmp_path):
+    calls = []
+    agent = types.SimpleNamespace(_supports_active_turn_redirect=True, redirect=lambda text: calls.append(text) or True)
+    session = _session(running=True, agent=agent)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["sid"] = session
+    try:
+        response = server.handle_request({
+            "id": "invalid-image", "method": "session.redirect",
+            "params": {
+                "session_id": "sid", "text": "Inspect both",
+                "images": [
+                    {"filename": "first.png", "content_base64": "dGVzdA=="},
+                    {"filename": "second.png", "content_base64": "invalid!"},
+                ],
+            },
+        })
+    finally:
+        server._sessions.pop("sid", None)
+    assert response["error"]["code"] == 4017
+    assert calls == []
+    assert not (tmp_path / "images").exists()
+
+
 def test_session_redirect_cannot_reach_a_successor_turn():
     calls = []
     agent = types.SimpleNamespace(

@@ -541,6 +541,69 @@ export function stripMarkdownFrontmatter(value: string): string {
   return value.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim();
 }
 
+/** Index of the character that closes the JSON value opened at `start`, or -1. */
+function balancedJsonEnd(text: string, start: number): number {
+  let depth = 0,
+    quoted = false,
+    escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Parse a model answer that must be one JSON object. Throws a SyntaxError when
+ * it is not.
+ *
+ * Accepted beyond plain JSON: a ```json fence, a surplus closing brace after a
+ * complete object (a bounded transport defect), and a sentence of prose before
+ * the object - the ChatGPT web chat models open JSON answers that way even when
+ * told not to (seen 2026-09-15 on visual authoring and on a contract repair).
+ * The first object that runs to the end of the answer is the response; braces
+ * inside the prose (`{plan, package}`) close long before the end and are
+ * skipped. Still refused: a second object, trailing prose, and an object that
+ * does not parse - never a smaller object nested inside a broken one.
+ */
+export function parseJsonObjectResponse(content: string): Record<string, any> {
+  const text = content.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+  if (text.startsWith("{")) {
+    const end = balancedJsonEnd(text, 0);
+    if (end >= 0 && /^[}\s]*$/.test(text.slice(end + 1))) {
+      return JSON.parse(text.slice(0, end + 1));
+    }
+    return JSON.parse(text);
+  }
+  for (let start = text.indexOf("{"); start > 0; start = text.indexOf("{", start + 1)) {
+    const end = balancedJsonEnd(text, start);
+    if (end < 0) continue;
+    if (/^\s*$/.test(text.slice(end + 1))) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    // A complete object with more text after it is a response followed by
+    // another response or by trailing prose: refuse rather than skip ahead.
+    let complete = false;
+    try {
+      const value = JSON.parse(text.slice(start, end + 1));
+      complete = Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    } catch {
+      complete = false;
+    }
+    if (complete) break;
+  }
+  return JSON.parse(text);
+}
+
 export function parseJsonCandidate<T = unknown>(value: string): T | null {
   const stripped = stripMarkdownFence(value);
   try {
@@ -552,11 +615,73 @@ export function parseJsonCandidate<T = unknown>(value: string): T | null {
       try {
         return JSON.parse(stripped.slice(firstBrace, lastBrace + 1)) as T;
       } catch {
-        return null;
+        // Slicing to the last brace keeps a surplus closing brace the web chat
+        // model sometimes appends ("...}}}]}" for "...}}]}"; live 2026-09-16 on
+        // a visual-necessity repair). The balanced-object parser drops it.
+        try {
+          return parseJsonObjectResponse(stripped) as T;
+        } catch {
+          return null;
+        }
       }
     }
     return null;
   }
+}
+
+/**
+ * Drops closing brackets that cannot close anything at their position: a `}`
+ * while the innermost open container is an array, a `]` while it is an object,
+ * or either with nothing open. Strings are skipped, escapes respected. Such a
+ * character is never valid JSON, so removing it is the smallest repair; any
+ * other syntax error is left for the strict parser to reject.
+ */
+export function dropMismatchedJsonClosers(text: string): string {
+  const stack: Array<"{" | "["> = [];
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{" || ch === "[") {
+      stack.push(ch);
+    } else if (ch === "}" || ch === "]") {
+      const top = stack[stack.length - 1];
+      if ((ch === "}" && top === "{") || (ch === "]" && top === "[")) stack.pop();
+      else continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Best-effort recovery of one JSON value from a chat model's answer: strict
+ * JSON first, then the fence/prose-tolerant candidate parser, then the same
+ * after removing mismatched closers (the web chat model wrote `}]} }},{` for
+ * `}]}},{` on three consecutive executability reviews, live 2026-09-16).
+ * Returns null when nothing parses; callers keep the exact raw text for their
+ * ledgers and validate the recovered shape as they would a strict answer.
+ */
+export function recoverJsonValue<T = unknown>(raw: string): T | null {
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    // fall through to the tolerant parsers
+  }
+  const candidate = parseJsonCandidate<T>(raw);
+  if (candidate !== null) return candidate;
+  const repaired = dropMismatchedJsonClosers(stripMarkdownFence(raw));
+  if (repaired === stripMarkdownFence(raw)) return null;
+  return parseJsonCandidate<T>(repaired);
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +760,31 @@ export const AI_ISM_PATTERNS: RegExp[] = [
   /\bin conclusion\b/i,
   /\bat the end of the day\b/i,
   /\bwhen it comes to\b/i,
+  // Contrastive-negation openers: teaching by saying what a thing is not.
+  /\b(?:is|are|was|were)(?:n't| not) (?:about|simply|merely|really|solely|primarily) \b/i,
+  /\b(?:isn't|aren't|wasn't) (?:just|about|merely|only) \b/i,
+  // "far from the charge" is distance; only the rhetorical form is slop.
+  /\bfar from (?:being|just|merely|simply)\b/i,
+  /\bnot (?:merely|simply) (?:a|an|the)\b/i,
+  /\brather than (?:being |simply |merely )?(?:a|an|the) \w+, /i,
+  // Hedging and ceremony words that carry no meaning in a lesson.
+  /\bmerely\b/i,
+  /\bserves? as\b/i,
+  /\bdelve(?:s|d)? (?:into|deeper)\b/i,
+  /\bcrucial(?:ly)?\b/i,
+  /\bplays? an? (?:crucial|key|vital|pivotal|central) role\b/i,
+  /\b(?:simply|put) (?:put|simply),/i,
+  /\bat its (?:core|heart)\b/i,
+  /\bin essence\b/i,
+  /\bthe beauty of\b/i,
+  /\ba testament to\b/i,
+  /\blet(?:'s| us) (?:dive|delve|unpack|explore)\b/i,
+  /\bit(?:'s| is) tempting to (?:think|assume|believe)\b/i,
+  /\breadily apparent\b/i,
+  /\bit (?:should|must) be (?:noted|emphasized|stressed) that\b/i,
+  /\bin the realm of\b/i,
+  /\bseamless(?:ly)?\b/i,
+  /\bunlock(?:s|ing)? (?:the|a|new)\b/i,
 ];
 
 /** Fingerprints of the deterministic emergency draft. That draft exists only
@@ -651,6 +801,25 @@ export const FALLBACK_FINGERPRINTS: RegExp[] = [
   /This section is part of the confirmed Breadboard learning map/i,
   /The confirmed learning map did not provide enough local detail/i,
 ];
+
+/** A web chat model's own voice leaking into a lesson: a first-person note
+ * about how it read the pasted request ("I'm using the pasted run contract
+ * directly...") or ChatGPT's document wrapper line `:::writing{...}`. Neither
+ * is learner prose, so a page carrying one goes back to the model. */
+export const CHAT_ASSISTANT_LEAK_PATTERNS: RegExp[] = [
+  /^[ \t]*I(?:['’]ll| will|['’]m| am)\s+(?:going to\s+)?(?:treat|treating|use|using|produce|producing|write|writing|return|returning|keep|keeping|follow|following)\b[^\n]*\b(?:pasted|supplied|provided|dossier|contract|request|task specification|prompt|lesson-generation)\b[^\n]*$/gim,
+  /^[ \t]*:::writing\{[^\n]*$/gim,
+];
+
+/** Lines of chat-assistant commentary or document wrappers in a page body. */
+export function chatAssistantLeakMatches(markdown: string): string[] {
+  const body = stripMarkdownFrontmatter(markdown).replace(/```[\s\S]*?```/g, " ");
+  const found = new Set<string>();
+  for (const pattern of CHAT_ASSISTANT_LEAK_PATTERNS) {
+    for (const match of body.matchAll(pattern)) found.add(match[0].trim().slice(0, 240));
+  }
+  return [...found];
+}
 
 /** Source-commentary phrasing that must never carry the teaching voice of a
  * learner page. Tolerated only inside compact provenance captions (the italic
@@ -915,13 +1084,19 @@ export function hasEmptyBulletScaffold(markdown: string): boolean {
 }
 
 /** Count AI-style discourse patterns in prose. */
-export function countAiisms(markdown: string): number {
-  let count = 0;
+/** Every AI-ism hit, as the phrase itself, so a repair can be pointed at the
+ * exact words instead of a count. */
+export function aiismMatches(markdown: string): string[] {
+  const hits: string[] = [];
   for (const pattern of AI_ISM_PATTERNS) {
     const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
-    count += (markdown.match(global) ?? []).length;
+    for (const match of markdown.matchAll(global)) hits.push(match[0].replace(/\s+/g, " ").trim());
   }
-  return count;
+  return hits;
+}
+
+export function countAiisms(markdown: string): number {
+  return aiismMatches(markdown).length;
 }
 
 /** Deterministically delete the always-safe AI-ism openers (never rewrites
@@ -955,6 +1130,8 @@ export interface QualityProblem {
   /** The exact offending snippets, when the gate can point at them. Handed to
    * the repair call so it fixes the real lines instead of guessing. */
   evidence?: string[];
+  /** The term, concept, or result the problem is about, when it has one. */
+  subject?: string;
 }
 
 /** Serialize a quality failure for an AI repair request without discarding the
@@ -966,8 +1143,41 @@ export function formatQualityProblemForRepair(problem: QualityProblem): string {
     : summary;
 }
 
-/** Minimum words a learner subsection should contain. */
-export const MIN_LESSON_WORDS = 700;
+/** Minimum explanatory prose for a lesson; there is no maximum word count. */
+/** Raised from 700 (2026-09-16) and again to 1400: lessons stopped at the
+ * planner's estimate and read as a seven-minute summary; the writer prompt
+ * carries no target and says depth, not length, decides when to stop. */
+export const MIN_LESSON_WORDS = 1400;
+
+/** A lesson may break into beats, but a beat per paragraph is the listicle the
+ * original no-headings rule was written against. */
+/** A subsection is one continuous lesson: no heading of any level inside
+ * the body (2026-09-16, reader feedback on telecom-1 M2: "one subsection
+ * should be continuous with no blocks or divisions"). */
+export const MAX_LESSON_BEAT_HEADINGS = 0;
+
+/** Heading lines inside the body, ignoring the page's own H1/H2 title and
+ * anything inside a fenced code block. */
+export function bodyBeatHeadings(body: string): string[] {
+  const headings: string[] = [];
+  let inFence = false;
+  for (const line of body.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const match = /^(#{3,6})\s+(\S.*)$/.exec(line);
+    if (match) headings.push(match[2].trim());
+  }
+  return headings;
+}
+
+/** Pictographic characters in learner prose. Matched by Unicode property so no
+ * emoji literal has to live in this source file. */
+export function emojiMatches(body: string): string[] {
+  return [...body.matchAll(/\p{Extended_Pictographic}/gu)].map((match) => match[0]);
+}
 
 /**
  * Local quality critic run before a lesson page is written. Every problem here
@@ -1013,6 +1223,15 @@ export function assessLessonQuality(
   if (hasFallbackFingerprint(body)) {
     problems.push({ code: "fallback-fingerprint", message: "contains fallback-template prose", hard: true });
   }
+  const chatLeaks = chatAssistantLeakMatches(body);
+  if (chatLeaks.length > 0) {
+    problems.push({
+      code: "chat-assistant-commentary",
+      message: "contains the chat model's own commentary or document wrapper lines instead of lesson prose",
+      hard: true,
+      evidence: chatLeaks,
+    });
+  }
   const commentary = sourceCommentaryMatches(body);
   if (commentary.length > 0) {
     problems.push({
@@ -1039,6 +1258,7 @@ export function assessLessonQuality(
     problems.push({ code: "no-qa", message: "missing a Question./Answer. pair", hard: true });
   }
   if (words < 120) {
+    // Reject near-empty stubs separately from lessons below the prose minimum.
     problems.push({ code: "empty", message: `only ${words} words of prose`, hard: true });
   }
   for (const url of options.assignedVisualUrls ?? []) {
@@ -1049,13 +1269,39 @@ export function assessLessonQuality(
   if (words >= 120 && words < minWords) {
     problems.push({ code: "short", message: `${words} words (< ${minWords})`, hard: true });
   }
-  const aiisms = countAiisms(body);
-  if (aiisms > 2) {
-    problems.push({ code: "aiisms", message: `${aiisms} AI-style phrases`, hard: true });
+  const aiisms = aiismMatches(body);
+  if (aiisms.length > 2) {
+    problems.push({
+      code: "aiisms",
+      message: `${aiisms.length} AI-style phrases (filler, ceremony, or contrastive-negation framing); state directly what the thing is or does`,
+      hard: true,
+      evidence: [...new Set(aiisms)],
+    });
   }
   const hasExample = /\b(for example|for instance|imagine|consider|suppose|think of|picture|analogy|worked example)\b/i.test(body);
   if (!hasExample) {
     problems.push({ code: "no-example", message: "no concrete example / analogy cue", hard: true });
+  }
+  // Counted, not just requested: prompt guidance alone once produced 35
+  // headings across 40 pages. A heading inside the body splits the subsection
+  // into titled blocks, which the reader experience forbids.
+  const beatHeadings = bodyBeatHeadings(body);
+  if (beatHeadings.length > MAX_LESSON_BEAT_HEADINGS) {
+    problems.push({
+      code: "internal-heading",
+      message: `${beatHeadings.length} heading line(s) inside the body; a subsection is one continuous lesson with the page title as its only heading — remove them and join the prose`,
+      hard: true,
+      evidence: beatHeadings,
+    });
+  }
+  const emoji = emojiMatches(body);
+  if (emoji.length > 0) {
+    problems.push({
+      code: "emoji",
+      message: "learner prose contains emoji; emphasis uses bold terms and callouts only",
+      hard: true,
+      evidence: [...new Set(emoji)],
+    });
   }
 
   const hardFail = problems.some((problem) => problem.hard);
@@ -1098,6 +1344,21 @@ const TAG_ROOT_FIXES: Record<string, string> = {
 /** Pull clean concept-handle tag seeds from the final lesson body. */
 export function extractTagSeeds(body: string): string[] {
   return semanticConceptTagsFromText(body, 8, body);
+}
+
+/**
+ * A title that lists three or more topics ("Work, Potential, Energy, and
+ * Current") is a table of contents standing where one teaching step should
+ * be. It is the visible symptom of a unit that skims several ideas, so the
+ * planner is sent back to split it rather than the title being trimmed.
+ */
+export function topicListTitleProblem(title: string): string | null {
+  const clean = title.trim().replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+  const parts = clean.split(/\s*,\s*/).filter(Boolean);
+  if (parts.length < 3) return null;
+  // A sentence-shaped title can carry commas without being a list.
+  if (/^(?:how|why|what|when|where|from|choosing|comparing|measuring|reading)\b/i.test(clean)) return null;
+  return `title lists ${parts.length} topics instead of naming one teaching step: "${clean}"; split it into the units it hides, each with its own learning question`;
 }
 
 /** Rewrites a planned section/subsection title that frames itself as paper
@@ -1412,16 +1673,49 @@ type SourceVisualCoverageRecord = {
 const DECLARED_SOURCE_VISUAL_CAPTION_RE =
   /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[*_]{0,2})?(Fig(?:ure)?\.?|Table)\s+(\d+)[a-z]?\s*(?=[:.\-–—])/gim;
 
-function declaredSourceVisualCaptionCounts(body: string): { figures: number; tables: number } {
+function declaredSourceVisualCaptionCounts(
+  body: string,
+  allowedPageNumbers?: ReadonlySet<number>,
+): { figures: number; tables: number } {
   const figures = new Set<string>();
   const tables = new Set<string>();
-  for (const match of body.matchAll(DECLARED_SOURCE_VISUAL_CAPTION_RE)) {
-    const kind = (match[1] ?? "").toLowerCase();
-    const number = match[2] ?? "";
-    if (!number) continue;
-    (kind.startsWith("table") ? tables : figures).add(number);
+  const countCaptions = (pageBody: string) => {
+    for (const match of pageBody.matchAll(DECLARED_SOURCE_VISUAL_CAPTION_RE)) {
+      const kind = (match[1] ?? "").toLowerCase();
+      const number = match[2] ?? "";
+      if (!number) continue;
+      (kind.startsWith("table") ? tables : figures).add(number);
+    }
+  };
+
+  if (!allowedPageNumbers) {
+    countCaptions(body);
+    return { figures: figures.size, tables: tables.size };
+  }
+
+  // PDF ingestion keeps a small eager page-snapshot set while the OCR/Markdown
+  // body may contain the complete document. Only compare declarations from
+  // pages that were actually supplied to the detector; otherwise a long book
+  // is incorrectly reported as having an incomplete visual registry after a
+  // valid partial scan.
+  const pageBlockRe = /(?:^|\n)## Page\s+(\d+)\s*([\s\S]*?)(?=(?:^|\n)## Page\s+\d+\b|$)/g;
+  for (const match of body.matchAll(pageBlockRe)) {
+    const pageNumber = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isSafeInteger(pageNumber) && allowedPageNumbers.has(pageNumber)) {
+      countCaptions(match[2] ?? "");
+    }
   }
   return { figures: figures.size, tables: tables.size };
+}
+
+function sourcePageNumbersFromImageUrls(sourceImages: readonly string[]): Set<number> {
+  const pageNumbers = new Set<number>();
+  for (const imageUrl of sourceImages) {
+    const match = imageUrl.match(/-page-(\d{1,5})(?:-\d+)?\.(?:png|jpe?g|webp)$/i);
+    const pageNumber = Number.parseInt(match?.[1] ?? "", 10);
+    if (Number.isSafeInteger(pageNumber) && pageNumber > 0) pageNumbers.add(pageNumber);
+  }
+  return pageNumbers;
 }
 
 /**
@@ -1433,10 +1727,22 @@ function declaredSourceVisualCaptionCounts(body: string): { figures: number; tab
 export function sourceVisualInventoryCoverageProblems(
   sources: ReadonlyArray<{ slug: string; body?: string; sourceImages?: string[] }>,
   visuals: readonly SourceVisualCoverageRecord[],
+  scannedPageImageUrlsBySource?: ReadonlyMap<string, readonly string[]>,
 ): string[] {
   const problems: string[] = [];
   for (const source of sources) {
     if (!sourceAppearsVisualRich(source)) continue;
+    const scannedPageImageUrls = scannedPageImageUrlsBySource?.get(source.slug);
+    const scannedPageNumbers = scannedPageImageUrls
+      ? sourcePageNumbersFromImageUrls(scannedPageImageUrls)
+      : undefined;
+    const scopedToScannedPages = Boolean(scannedPageImageUrls);
+    const declared = declaredSourceVisualCaptionCounts(source.body ?? "", scannedPageNumbers);
+    // With page-scoped validation, no declaration on the supplied pages means
+    // there is no deterministic completeness claim to enforce for this scan.
+    // The full OCR body can legitimately mention visuals that live on pages
+    // not included in the eager snapshot set.
+    if (scopedToScannedPages && declared.figures === 0 && declared.tables === 0) continue;
     const registered = visuals.filter(
       (visual) => visual.sourceId === source.slug && visual.type !== "full_page_fallback",
     );
@@ -1444,7 +1750,6 @@ export function sourceVisualInventoryCoverageProblems(
       problems.push(`visual-rich source "${source.slug}" produced no registered figures, tables, graphs, diagrams, or formulas`);
       continue;
     }
-    const declared = declaredSourceVisualCaptionCounts(source.body ?? "");
     const registeredFigures = registered.filter((visual) =>
       visual.type === "figure" || visual.type === "graph" || visual.type === "diagram"
     ).length;
@@ -1763,11 +2068,108 @@ export function publicLearningVersionId(id: string): string {
   return id.replace(/^textbook_/i, "learning_");
 }
 
+/** How a page is told to open. Two per-page rules — "open with the simplest
+ * concrete situation" and "the first paragraph must connect to prior ideas" —
+ * jointly specify a single template, and no per-page rule can see that every
+ * other page is using it too. Assigning the move from the unit's own shape
+ * varies the openings deterministically, without a second model pass and
+ * without asking a writer that sees one page at a time to "be varied". */
+export type OpeningMove =
+  | "cold_open"
+  | "continuation"
+  | "problem_first"
+  | "contrast"
+  | "concrete_instance";
+
+export const OPENING_MOVE_BRIEFS: Readonly<Record<OpeningMove, string>> = {
+  cold_open:
+    "Open cold on a concrete situation, object, or observation. Do not refer back to earlier pages at all; this page starts something the learner has no running thread for.",
+  continuation:
+    "Open by picking up the specific idea the previous page established, then turn to what it does not yet handle. Name the idea itself rather than announcing that the learner already knows it.",
+  problem_first:
+    "Open with the difficulty, question, or failure this page resolves, stated concretely enough to feel like a real obstacle, before naming any method that addresses it.",
+  contrast:
+    "Open on a case where the approach established so far gives an incomplete, awkward, or wrong answer, and let that gap create the need for what follows.",
+  concrete_instance:
+    "Open on one specific instance — particular numbers, a particular geometry, a particular arrangement — and generalize only after the instance is worked or understood.",
+};
+
+/** Pick an opening move from the unit's own properties, then break runs so no
+ * two consecutive pages open the same way. Derived from the unit rather than
+ * rotated blindly: a page that genuinely starts a section opens cold, and a
+ * worked example genuinely does start from an instance. `previousMove` is the
+ * move assigned to the page immediately before this one, if any. */
+export function assignedOpeningMove(input: {
+  role?: LearningUnitRole;
+  isFirstInSection: boolean;
+  isFirstOverall: boolean;
+  prerequisiteConcepts?: string[];
+  previousMove?: OpeningMove;
+}): OpeningMove {
+  const natural = ((): OpeningMove => {
+    if (input.isFirstOverall) return "cold_open";
+    if (input.isFirstInSection) return "problem_first";
+    if ((input.prerequisiteConcepts ?? []).length === 0) return "cold_open";
+    switch (input.role) {
+      case "worked_example":
+      case "formula":
+      case "metric":
+        return "concrete_instance";
+      case "limitation":
+      case "comparison":
+        return "contrast";
+      case "motivation":
+      case "application":
+        return "problem_first";
+      default:
+        return "continuation";
+    }
+  })();
+  if (natural !== input.previousMove) return natural;
+  // A run of same-shaped units would otherwise reproduce the monoculture this
+  // exists to break. Step to the next move in a fixed order so the choice stays
+  // deterministic and reproducible across rebuilds.
+  const order: OpeningMove[] = [
+    "continuation",
+    "problem_first",
+    "contrast",
+    "concrete_instance",
+    "cold_open",
+  ];
+  const next = order[(order.indexOf(natural) + 1) % order.length];
+  return next === input.previousMove ? order[0] : next;
+}
+
+/** The Topic Overview tells learners that each subsection is organized around a
+ * learning question and asks them to answer it in words before working through
+ * the equations. The question is model-authored in the Learning Unit Contract,
+ * so render it where that instruction can actually be followed: directly under
+ * the page heading, before any explanation has given it away. Returns the body
+ * unchanged when there is no question or when one is already present. */
+export function withLearningQuestionPrompt(
+  body: string,
+  learningQuestion: string | undefined,
+): string {
+  const question = (learningQuestion ?? "").trim();
+  if (!question) return body;
+  const lines = body.split("\n");
+  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+\S/.test(line));
+  if (headingIndex < 0) return body;
+  // Re-running finalization or a repair must not stack a second prompt.
+  if (lines.some((line) => line.startsWith("> **Before you read.**"))) return body;
+  const prompt = `> **Before you read.** ${question}`;
+  const rest = lines.slice(headingIndex + 1);
+  const restStart = rest.findIndex((line) => line.trim().length > 0);
+  const tail = restStart < 0 ? [] : rest.slice(restStart);
+  return [...lines.slice(0, headingIndex + 1), "", prompt, "", ...tail].join("\n");
+}
+
 export function buildLearningPageFrontmatter({
   gardenId,
   sectionNumber,
   subsectionNumber,
   title,
+  learningQuestion,
   sourceAnchors,
   tags,
   primaryConcepts,
@@ -1793,6 +2195,9 @@ export function buildLearningPageFrontmatter({
   sectionNumber: number;
   subsectionNumber: number;
   title: string;
+  /** Model-authored question this page answers, surfaced to the learner and
+   * kept in frontmatter so review tooling can check the page against it. */
+  learningQuestion?: string;
   sourceAnchors: string[];
   /** Registry-backed public concept tags shown to learners (1-5, kebab-case).
    * This is the only tag field written to learner pages. */
@@ -1834,6 +2239,7 @@ export function buildLearningPageFrontmatter({
     gardenId,
     sectionNumber,
     subsectionNumber: `${sectionNumber}.${subsectionNumber}`,
+    learningQuestion: learningQuestion?.trim() || undefined,
     sourceAnchors,
     primaryConcepts:
       primaryConcepts && primaryConcepts.length > 0 ? primaryConcepts : undefined,

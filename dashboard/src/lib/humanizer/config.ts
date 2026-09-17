@@ -39,8 +39,8 @@ export const HUMANIZER_DEFAULT_REVISION = "c74c28e03d3e306c8717d9f85cc18edb7d493
 /** Bound request cost and keep a single rewrite from monopolizing the service. */
 export const HUMANIZER_MAX_TEXT_CHARS = 60_000;
 
-/** A cold CPU rewrite of a long answer is minutes; a warm CUDA one is seconds. */
-export const HUMANIZER_DEFAULT_TIMEOUT_MS = 120_000;
+/** First use may install the checkpoint before loading and rewriting. */
+export const HUMANIZER_DEFAULT_TIMEOUT_MS = 600_000;
 
 export type HumanizerMode = "local" | "disabled";
 export type HumanizerDevice = "auto" | "cuda" | "cpu";

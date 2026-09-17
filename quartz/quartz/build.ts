@@ -5,7 +5,7 @@ import { PerfTimer } from "./util/perf"
 import { rm } from "fs/promises"
 import { GlobbyFilterFunction, isGitIgnored } from "globby"
 import { styleText } from "util"
-import { parseMarkdown } from "./processors/parse"
+import { parseMarkdown, registerAliasSlugs } from "./processors/parse"
 import { filterContent } from "./processors/filter"
 import { emitContent } from "./processors/emit"
 import cfg from "../quartz.config"
@@ -22,6 +22,7 @@ import { getStaticResourcesFromPlugins } from "./plugins"
 import { randomIdNonSecure } from "./util/random"
 import { ChangeEvent } from "./plugins/types"
 import { minimatch } from "minimatch"
+import { isScopedBuild, normalizeBuildScope, pathWithinScope } from "./util/scope"
 
 type ContentMap = Map<
   FilePath,
@@ -73,19 +74,43 @@ async function buildQuartz(argv: Argv, mut: Mutex, clientRefresh: () => void) {
 
   perf.addEvent("glob")
   const allFiles = await glob("**/*.*", argv.directory, cfg.configuration.ignorePatterns)
-  const markdownPaths = allFiles.filter((fp) => fp.endsWith(".md")).sort()
+  const scope = normalizeBuildScope(argv.scope)
+  argv.scope = [...scope]
+  if (isScopedBuild(scope) && argv.watch) {
+    throw new Error("A scoped build cannot watch for changes; drop --scope or --watch.")
+  }
+  // Every file stays visible to link resolution; only the scoped subset is
+  // rendered. The publisher overlays the rest from the previous publication.
+  const markdownPaths = allFiles
+    .filter((fp) => fp.endsWith(".md") && pathWithinScope(fp, scope))
+    .sort()
   console.log(
-    `Found ${markdownPaths.length} input files from \`${argv.directory}\` in ${perf.timeSince("glob")}`,
+    `Found ${markdownPaths.length} input files from \`${argv.directory}\`` +
+      (isScopedBuild(scope) ? ` (scoped to ${scope.join(", ")})` : "") +
+      ` in ${perf.timeSince("glob")}`,
   )
 
   const filePaths = markdownPaths.map((fp) => joinSegments(argv.directory, fp) as FilePath)
   ctx.allFiles = allFiles
   ctx.allSlugs = allFiles.map((fp) => slugifyFilePath(fp as FilePath))
+  // Every alias and permalink must be known before any link is resolved:
+  // files are rendered as soon as they are parsed (and, in a scoped build,
+  // files outside the scope are never parsed at all).
+  await registerAliasSlugs(
+    ctx,
+    allFiles
+      .filter((fp) => fp.endsWith(".md"))
+      .map((fp) => joinSegments(argv.directory, fp) as FilePath),
+  )
 
   const parsedFiles = await parseMarkdown(ctx, filePaths)
   const filteredContent = filterContent(ctx, parsedFiles)
 
-  await emitContent(ctx, filteredContent)
+  try {
+    await emitContent(ctx, filteredContent)
+  } finally {
+    ctx.treeSpill?.dispose()
+  }
   console.log(
     styleText("green", `Done processing ${markdownPaths.length} files in ${perf.timeSince()}`),
   )

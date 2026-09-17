@@ -34,12 +34,14 @@ export async function POST(request: Request) {
       !session ||
       session.user_id === null ||
       session.conversation_id === null ||
-      session.surface !== "dashboard_terminal" ||
+      (session.surface !== "dashboard_terminal" && session.surface !== "garden_chat") ||
+      verified.token.surface !== session.surface ||
+      verified.token.userId !== session.user_id ||
       runtimeExternalSessionId(session) !==
         verified.token.hermesSessionId ||
       verified.token.conversationId !== session.conversation_id
     ) {
-      throw new ApiError(403, "terminal_surface_denied", "Only an authenticated dedicated Terminal session may execute commands.");
+      throw new ApiError(403, "terminal_surface_denied", "Only an authenticated Terminal or Garden chat may execute commands.");
     }
     const conversation = getConversationById(session.conversation_id);
     if (!conversation || conversation.user_id !== session.user_id) {
@@ -57,7 +59,7 @@ export async function POST(request: Request) {
     const run = getActiveRuntimeRun(session.id);
     if (!run) throw new ApiError(409, "terminal_run_required", "A current Terminal run is required.");
     // The task planner selects a useful initial tool set; it is not an
-    // entitlement boundary for this dedicated, authenticated Terminal. A model
+    // entitlement boundary for an authenticated Terminal or Garden chat. A model
     // may discover that it needs a command only after the turn has started. The
     // exact command policy below is the authority boundary: safe reads run,
     // other valid commands raise a 428 permission request (which YOLO answers),

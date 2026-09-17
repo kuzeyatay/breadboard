@@ -150,11 +150,12 @@ export function scheduledChatConfirmationText(
 
 /** The exact phone text emitted when a messaging-origin reminder comes due. */
 export function scheduledReminderText(prompt: string): string {
-  const clean = prompt.replace(/\s+/g, " ").trim();
+  const [headline, ...details] = prompt.trim().split(/\r?\n/);
+  const clean = headline.replace(/\s+/g, " ").trim();
   const message = clean
     ? `${clean.charAt(0).toLocaleUpperCase()}${clean.slice(1)}`
     : "Your reminder is due";
-  return `Reminder: ${message}${/[.!?]$/u.test(message) ? "" : "."}`;
+  return [`Reminder: ${message}${/[.!?]$/u.test(message) ? "" : "."}`, ...details].join("\n");
 }
 
 export function scheduleTargetLabel(

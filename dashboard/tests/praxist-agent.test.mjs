@@ -117,7 +117,8 @@ test("Praxist routes, card, persistence, cancellation, and Max Research are wire
   assert.match(persistence, /praxistRun/u);
   assert.match(source("src/lib/conversations/external-agent-cancel.ts"), /praxist\/run-manager/u);
   assert.match(maxPlan, /participant: "praxist"/u);
-  assert.match(maxParticipants, /PRAXIST_MAX_RESEARCH_TASK_PATH/u);
+  assert.match(maxParticipants, /prepareResearchTask/u);
+  assert.match(source("src/lib/max-research/runtime-run-manager.ts"), /configuredMaxResearchTaskPath/u);
   assert.match(source("scripts/runtime-v2-praxist-worker.mjs"), /runRuntimeV2OuterAgentWorker\("praxist"\)/u);
   for (const route of [
     "src/app/api/praxist/runs/route.ts",

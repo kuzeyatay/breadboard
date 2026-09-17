@@ -20,7 +20,10 @@ import {
   type RuntimeJobSnapshot,
   type RuntimeJobSubmission,
 } from "../supervisor-control.ts";
-import { VideoTranscriptionError } from "../scriberr/errors.ts";
+import {
+  VideoTranscriptionError,
+  type VideoTranscriptionErrorCode,
+} from "../scriberr/errors.ts";
 import type { VideoTranscriptionHealth } from "../scriberr/health.ts";
 import type { VideoTranscriptionJobStore } from "../scriberr/job-store.ts";
 import type {
@@ -142,6 +145,47 @@ function mapControlError(error: unknown): VideoTranscriptionError {
     httpStatus: 503,
     cause: error,
   });
+}
+
+/**
+ * A Runtime job can end before any worker starts (a Scriberr service-dependency
+ * admission denial settles in the same tick as the submit). Runtime sanitizes
+ * its terminal message, and a memory denial rendered as "job interrupted"
+ * points people at a server restart that never happened. The headroom
+ * evidence is closed runtime output, so it is safe to show and act on.
+ */
+function terminalFailureForSnapshot(
+  snapshot: RuntimeJobSnapshot,
+): { errorCode: VideoTranscriptionErrorCode; errorMessage: string } | null {
+  if (!TERMINAL.has(snapshot.state) || snapshot.state === "succeeded") return null;
+  if (snapshot.state === "cancelled") {
+    return {
+      errorCode: "cancelled",
+      errorMessage: new VideoTranscriptionError("cancelled").userMessage,
+    };
+  }
+  if (snapshot.state === "resource_exhausted") {
+    const evidence = snapshot.resourceExhaustion;
+    const headroom = evidence
+      ? `Windows could not reserve enough memory to start Scriberr ` +
+        `(${formatHeadroom(evidence.requiredHeadroomMb)} required, ` +
+        `${formatHeadroom(evidence.availableHeadroomMb)} available).`
+      : "Breadboard could not reserve enough memory to start Scriberr.";
+    return {
+      errorCode: "BREADBOARD_RESOURCE_EXHAUSTED",
+      errorMessage:
+        `${headroom} Close memory-heavy apps or increase the Windows paging file, then retry.`,
+    };
+  }
+  return {
+    errorCode: "job_interrupted",
+    errorMessage: new VideoTranscriptionError("job_interrupted").userMessage,
+  };
+}
+
+function formatHeadroom(megabytes: number): string {
+  const gigabytes = megabytes / 1024;
+  return `${gigabytes.toFixed(gigabytes >= 10 ? 0 : 1)} GB`;
 }
 
 function assertConfigured(control: ScriberrRuntimeControl, env: NodeJS.ProcessEnv): void {
@@ -271,10 +315,18 @@ export async function startScriberrRuntimeJob(input: {
     env: input.env,
     control: input.control,
   });
-  return input.store.updateJob(job.id, {
+  const bound = input.store.updateJob(job.id, {
     runtimeJobId: snapshot.jobId,
     runtimeIdempotencyKey: key,
   });
+  const failure = terminalFailureForSnapshot(snapshot);
+  if (!failure || !bound) return bound;
+  if (["completed", "failed", "cancelled"].includes(bound.status)) return bound;
+  return input.store.transition(
+    job.id,
+    failure.errorCode === "cancelled" ? "cancelled" : "failed",
+    failure,
+  );
 }
 
 export async function cancelScriberrRuntimeJob(input: {
@@ -395,17 +447,13 @@ export async function reconcileScriberrRuntimeJobs(input: {
     if (!TERMINAL.has(snapshot.state)) return;
     const current = input.store.getJob(job.id);
     if (!current || ["completed", "failed", "cancelled"].includes(current.status)) return;
-    if (snapshot.state === "cancelled") {
-      input.store.transition(job.id, "cancelled", {
-        errorCode: "cancelled",
-        errorMessage: new VideoTranscriptionError("cancelled").userMessage,
-      });
-    } else if (snapshot.state !== "succeeded") {
-      input.store.transition(job.id, "failed", {
-        errorCode: "job_interrupted",
-        errorMessage: new VideoTranscriptionError("job_interrupted").userMessage,
-      });
-    }
+    const failure = terminalFailureForSnapshot(snapshot);
+    if (!failure) return;
+    input.store.transition(
+      job.id,
+      failure.errorCode === "cancelled" ? "cancelled" : "failed",
+      failure,
+    );
   }));
 }
 

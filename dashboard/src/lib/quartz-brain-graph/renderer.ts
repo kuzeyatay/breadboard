@@ -207,9 +207,9 @@ export async function createThoughtTopologyRenderer(
   const rootStyle = getComputedStyle(document.documentElement);
   const darkMode = document.documentElement.dataset.theme === "dark";
   const labelInk = rootStyle.getPropertyValue("--ink-heading").trim() ||
-    (darkMode ? "#e2e7de" : "#0f1a16");
+    (darkMode ? "#e9ede5" : "#0f1a16");
   const labelHalo = rootStyle.getPropertyValue("--paper-bg").trim() ||
-    (darkMode ? "#0b0c0a" : "#e6f0e6");
+    (darkMode ? "#0f1210" : "#e6f0e6");
   const edgePalette = darkMode
     ? {
         canonical: 0x9aa9a0,

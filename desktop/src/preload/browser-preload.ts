@@ -1,6 +1,32 @@
 // This sandboxed preload is deliberately independent of the product preload.
-// Its four operations can only request permission, display, or close a notice.
+// Its bridge can only request permission, display, or close a notice.
 import { contextBridge, ipcRenderer, webFrame } from "electron";
+
+/** Electron allows script popups without Chromium's usual activation check.
+ * Keep window.open synchronous (including OAuth's returned Window/opener), but
+ * require a gesture when a script creates a new browsing context. */
+function installScriptPopupPolicy() {
+  const nativeOpen = window.open;
+  const activation = navigator.userActivation;
+  const namedWindows = new Map<string, Window>();
+  window.open = function open(url?: string | URL, target?: string, features?: string) {
+    const name = target === undefined ? "_blank" : String(target);
+    const special = name.toLowerCase();
+    const existing = namedWindows.get(name);
+    const named = name !== "" && !["_blank", "_self", "_top", "_parent"].includes(special);
+    const reusesContext = ["_self", "_top", "_parent"].includes(special) || (named && (
+      name === window.name || (existing && !existing.closed) ||
+      Array.from(document.querySelectorAll("iframe[name], frame[name]")).some(frame => frame.getAttribute("name") === name)
+    ));
+    if (!reusesContext && !activation.isActive) return null;
+    const opened = nativeOpen.call(window, url, target, features);
+    if (opened && named) namedWindows.set(name, opened);
+    return opened;
+  };
+}
+
+// Install before page scripts run, without synthesizing a user gesture.
+void webFrame.executeJavaScript(`(${installScriptPopupPolicy.toString()})()`);
 
 const notificationChannel = "breadboard:web-notification";
 let cachedPermission: NotificationPermission = ipcRenderer.sendSync(`${notificationChannel}:permission`);

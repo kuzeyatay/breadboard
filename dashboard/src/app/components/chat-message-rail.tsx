@@ -13,8 +13,10 @@
  */
 
 import {
+  memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -106,6 +108,41 @@ export function nearestRailTick(
   }
   return active;
 }
+
+const RailTick = memo(function RailTick({
+  rowIndex, label, index, count, isActive, jumpTo, showLabel,
+}: {
+  rowIndex: number;
+  label: string;
+  index: number;
+  count: number;
+  isActive: boolean;
+  jumpTo: (rowIndex: number) => void;
+  showLabel: (index: number, tick: HTMLElement) => void;
+}) {
+  // Labels may be pasted documents. Scrolling and hovering must not normalize
+  // every original prompt again just to change two ticks' highlighting.
+  const summary = useMemo(() => summarise(label), [label]);
+  return (
+    <button
+      type="button"
+      onClick={() => jumpTo(rowIndex)}
+      onPointerEnter={(event) => showLabel(index, event.currentTarget)}
+      onFocus={(event) => showLabel(index, event.currentTarget)}
+      aria-label={`Go to message ${index + 1} of ${count}: ${summary}`}
+      aria-current={isActive ? "true" : undefined}
+      className="group flex h-3.5 w-8 shrink-0 items-center justify-end"
+    >
+      <span
+        className={`bb-chat-rail-tick block h-px rounded-full ${
+          isActive
+            ? "w-6 bg-[var(--ink)] opacity-100"
+            : "w-4 bg-[var(--ink-muted)] opacity-50 group-hover:w-6 group-hover:opacity-90 group-focus-visible:w-6 group-focus-visible:opacity-90"
+        }`}
+      />
+    </button>
+  );
+});
 
 /**
  * A truthful temporary choice while the virtual list has not exposed any row
@@ -205,9 +242,19 @@ export default function ChatMessageRail({
     const list = scroller.querySelector("[data-chat-virtual-list]");
     const listOffset = list ? offsetOf(list) : 0;
 
+    // The DOM holds only a small window. Index it once instead of asking the
+    // selector engine to search that same subtree for every question on every
+    // scroll frame (almost all of those searches used to find nothing).
+    const mountedStarts = new Map<number, number>();
+    if (list) {
+      for (const row of list.querySelectorAll(":scope > [data-index]")) {
+        mountedStarts.set(Number(row.getAttribute("data-index")), offsetOf(row));
+      }
+    }
+
     const starts = items.map((item) => {
-      const row = list?.querySelector(`:scope > [data-index="${item.rowIndex}"]`);
-      if (row) return offsetOf(row);
+      const mounted = mountedStarts.get(item.rowIndex);
+      if (mounted !== undefined) return mounted;
       const estimated = bridge.getRowStart(item.rowIndex);
       return estimated === null ? null : estimated + listOffset;
     });
@@ -275,17 +322,30 @@ export default function ChatMessageRail({
       typeof window.ResizeObserver === "function"
         ? new window.ResizeObserver(scheduleMeasure)
         : null;
+    const observed = new Set<Element>();
     const observeCurrentGeometry = () => {
-      resizeObserver?.observe(scroller);
+      const current = new Set<Element>([scroller]);
       const list = scroller.querySelector("[data-chat-virtual-list]");
       if (list) {
-        resizeObserver?.observe(list);
+        current.add(list);
         for (const row of list.querySelectorAll(":scope > [data-index]")) {
-          resizeObserver?.observe(row);
+          current.add(row);
         }
       }
       const tail = scroller.querySelector(".bb-chat-scroll-tail");
-      if (tail) resizeObserver?.observe(tail);
+      if (tail) current.add(tail);
+      // Unmounted virtual rows must leave the observer too; otherwise reading
+      // through a long chat keeps its old detached message trees subscribed.
+      for (const element of observed) {
+        if (current.has(element)) continue;
+        resizeObserver?.unobserve(element);
+        observed.delete(element);
+      }
+      for (const element of current) {
+        if (observed.has(element)) continue;
+        resizeObserver?.observe(element);
+        observed.add(element);
+      }
     };
 
     observeCurrentGeometry();
@@ -421,29 +481,18 @@ export default function ChatMessageRail({
         }}
         className="bb-chat-rail-track pointer-events-auto flex max-h-[min(60vh,20rem)] flex-col items-end overflow-y-auto py-1 pl-4 pr-1.5"
       >
-        {items.map((item, index) => {
-          const isActive = index === active;
-          return (
-            <button
-              key={item.rowIndex}
-              type="button"
-              onClick={() => jumpTo(item.rowIndex)}
-              onPointerEnter={(event) => showLabel(index, event.currentTarget)}
-              onFocus={(event) => showLabel(index, event.currentTarget)}
-              aria-label={`Go to message ${index + 1} of ${items.length}: ${summarise(item.label)}`}
-              aria-current={isActive ? "true" : undefined}
-              className="group flex h-3.5 w-8 shrink-0 items-center justify-end"
-            >
-              <span
-                className={`bb-chat-rail-tick block h-px rounded-full ${
-                  isActive
-                    ? "w-6 bg-[var(--ink)] opacity-100"
-                    : "w-4 bg-[var(--ink-muted)] opacity-50 group-hover:w-6 group-hover:opacity-90 group-focus-visible:w-6 group-focus-visible:opacity-90"
-                }`}
-              />
-            </button>
-          );
-        })}
+        {items.map((item, index) => (
+          <RailTick
+            key={item.rowIndex}
+            rowIndex={item.rowIndex}
+            label={item.label}
+            index={index}
+            count={items.length}
+            isActive={index === active}
+            jumpTo={jumpTo}
+            showLabel={showLabel}
+          />
+        ))}
       </div>
     </div>
   );

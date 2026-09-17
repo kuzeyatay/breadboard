@@ -1,11 +1,12 @@
 // Who does what, decided before anything starts.
 //
-// The six research agents are not interchangeable, which is why Max Research
+// The research participants are not interchangeable, which is why Max Research
 // commissions all of them. Each reaches a different part of the record:
 //
 //   Deep Research  the indexed web, multi-round, and returns it cited
 //   Agent Reach    the open internet — threads, posts, videos, repositories
 //   Get Doc        the academic record, and saves the free full texts
+//   Feynman        ranked public literature, with evidence and reproducibility screening
 //   OpenScience    a full research loop in its own workspace, including code
 //   Praxist        a configured measurable R&D task, run across generations
 //   ARIS           methodology rather than retrieval: the local harness's own
@@ -23,6 +24,7 @@ export type MaxResearchParticipant =
   | "deep_research"
   | "agent_reach"
   | "get_doc"
+  | "feynman"
   | "openscience"
   | "praxist"
   | "aris";
@@ -74,6 +76,7 @@ export const RETRIEVAL_PARTICIPANTS: readonly MaxResearchParticipant[] = [
   "deep_research",
   "agent_reach",
   "get_doc",
+  "feynman",
   "openscience",
   "praxist",
 ];
@@ -125,10 +128,12 @@ function guidanceFor(participant: MaxResearchParticipant): string {
       return "Read the open internet rather than the indexed summary of it: discussion threads, practitioner posts, video transcripts, repositories and issue trackers. Report only what you actually found and where you found it — quote or paraphrase what people said, and name the thread, post or repository. Do not describe your plan, your approach, or which tools you intend to use; none of that is a finding. If you reached nothing, say plainly that you reached nothing and which places you tried.";
     case "get_doc":
       return "Prefer the paper that first established a finding over anything that cites it, and note where a widely repeated figure has no primary source behind it.";
+    case "feynman":
+      return "Find and rank public literature with Feynman PaperRank; preserve source abstracts, citation provenance, method and reproducibility caveats. Scores prioritize reading and do not verify scientific claims.";
     case "openscience":
       return "Where the question can be settled or narrowed by doing rather than reading — a calculation, a reproduction, a small experiment against real data — do that in your workspace and report what you actually observed, separately from what you read.";
     case "praxist":
-      return "Run the operator-configured measurable Praxist task project. Report its accepted findings and experiment conditions as empirical evidence; do not imply that the project tested this question when its declared task does not bear on it.";
+      return "Run the declared measurable Praxist task project and report its accepted findings, receipts and limitations. Separate computational checks from experiments and source verification. Do not imply that a task tested outcomes beyond its declared scope.";
     case "aris":
       return "";
   }
@@ -142,19 +147,21 @@ function rationaleFor(participant: MaxResearchParticipant): string {
       return "The open internet: threads, posts, videos, repositories.";
     case "get_doc":
       return "The primary literature, with free full texts saved.";
+    case "feynman":
+      return "Ranks public papers and inspects evidence with Feynman; no API keys needed.";
     case "openscience":
       return "Settles by doing: code, data and experiments in its own workspace.";
     case "praxist":
-      return "Runs the configured multi-agent, multi-generation R&D task and returns its accepted experimental findings.";
+      return "Runs a measurable task for this question and returns its accepted findings and calculation or experiment receipts.";
     case "aris":
-      return "The local research harness's methodology, shaping the plan and the reconciliation.";
+      return "Reviews the collected evidence with the cloned ARIS methodology and returns concrete corrections.";
   }
 }
 
 /**
- * Divide one question among the six.
+ * Divide one question among the research participants.
  *
- * Every question gets all six. Availability is an execution outcome, not a
+ * Every question gets the full roster. Availability is an execution outcome, not a
  * planning filter: a missing service remains visible in the roster and in the
  * final coverage statement instead of making a partial run look complete.
  */
@@ -172,7 +179,7 @@ export function planMaxResearch(input: {
   const empirical = EMPIRICAL_SUBJECT.test(question);
   const discourse = DISCOURSE_SUBJECT.test(question);
 
-  // All six, every time. Choosing between them was the wrong instinct: this is
+  // The full roster, every time. Choosing between them was the wrong instinct: this is
   // the agent someone reaches for when they have decided the question is worth
   // an hour, and the only thing narrowing the roster buys is a slightly shorter
   // run in exchange for a hole in the answer nobody can see. The classifier was
@@ -193,6 +200,7 @@ export function planMaxResearch(input: {
     { participant: "deep_research", wave: 0, required: false },
     { participant: "agent_reach", wave: 0, required: false },
     { participant: "get_doc", wave: 0, required: false },
+    { participant: "feynman", wave: 0, required: false },
     // Wave 1 works on what wave 0 found, so it waits.
     { participant: "openscience", wave: 1, required: false },
     { participant: "praxist", wave: 1, required: false },

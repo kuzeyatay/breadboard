@@ -8,7 +8,7 @@ export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   "audio-analyzer": Object.freeze(["check", "download", "install"]),
   "bolt-slides": Object.freeze(["install-dependencies"]),
   "career-ops": Object.freeze(["install", "browsers", "scaffold"]),
-  "claude-code": Object.freeze(["status", "logout"]),
+  "claude-code": Object.freeze(["status", "logout", "refresh-usage"]),
   acestep: Object.freeze(["install"]),
   comfyui: Object.freeze(["install"]),
   "deep-tutor": Object.freeze(["install", "reinstall", "remove"]),
@@ -82,8 +82,11 @@ function directPath(candidate, kind, label) {
     fail(`${label} is unavailable.`, 404, "setup_source_unavailable");
   }
   const canonical = fs.realpathSync.native(resolved);
+  // Rust canonicalize adds the Windows extended-length namespace, while Node's
+  // realpath may omit it. Compare in the same namespace so a real directory is
+  // accepted without relaxing the check for redirected parents or junctions.
   const same = process.platform === "win32"
-    ? canonical.toLowerCase() === resolved.toLowerCase()
+    ? path.toNamespacedPath(canonical).toLowerCase() === path.toNamespacedPath(resolved).toLowerCase()
     : canonical === resolved;
   if (!same) fail(`${label} must be a direct path.`, 400, "setup_path_indirect");
   return canonical;
@@ -304,6 +307,7 @@ function claudeAccountEnvironment(env) {
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH",
   ];
   const result = {};
   for (const name of allowed) {
@@ -351,6 +355,38 @@ async function claudeAccountOperation(action, context) {
       };
     }
     return { ok: false, message, detail: "" };
+  }
+  if (action === "refresh-usage") {
+    // Let the official CLI renew OAuth and start the session. Safe mode keeps
+    // OAuth available while omitting project instructions, hooks and plugins;
+    // bare mode disables OAuth. This is one tiny call with no tools or history.
+    const result = await runManagedSetupCommand(command, [
+      "--print", "--model", "haiku", "--safe-mode",
+      "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+      "--max-turns", "1", "--max-budget-usd", "0.01",
+      "--system-prompt", "Reply OK.", "--output-format", "json", "Reply OK.",
+    ], {
+      cwd: context.dataRoot,
+      env: {
+        ...claudeAccountEnvironment(context.env),
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: "8",
+        MAX_THINKING_TOKENS: "0",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      },
+      signal: context.signal,
+      timeoutMs: CLAUDE_ACCOUNT_TIMEOUT_MS,
+      spawnImpl: context.spawnImpl,
+      platform: context.platform,
+    });
+    let payload;
+    try { payload = JSON.parse(result.stdout); } catch { /* Return a bounded failure. */ }
+    const ok = result.code === 0 && payload?.type === "result" && payload.is_error === false
+      && payload.subtype === "success";
+    return {
+      ok,
+      message: ok ? "Claude’s usage session is ready." : "Claude’s usage session could not be refreshed.",
+      detail: "",
+    };
   }
   const result = await runManagedSetupCommand(
     command,
@@ -3018,6 +3054,17 @@ function readPinnedPackageVersion(root, relativeManifest, label) {
   return version;
 }
 
+export function managedNpmLauncher(nodeExecutable = process.execPath) {
+  const entry = path.join(path.dirname(nodeExecutable), "node_modules", "npm", "bin", "npm-cli.js");
+  if (fs.statSync(entry, { throwIfNoEntry: false })?.isFile()) {
+    return {
+      command: directPath(nodeExecutable, "isFile", "The managed Node runtime"),
+      baseArgs: [directPath(entry, "isFile", "The managed npm entrypoint")],
+    };
+  }
+  return { command: process.platform === "win32" ? "npm.cmd" : "npm", baseArgs: [] };
+}
+
 async function installManagedNpmTool({
   context,
   packageName,
@@ -3026,19 +3073,41 @@ async function installManagedNpmTool({
   entrySegments,
   label,
   childEnvironment = {},
+  reuseExisting = false,
+  npmLauncher,
 }) {
   const destination = path.join(context.dataRoot, destinationName);
   if (!pathWithin(context.dataRoot, destination)) fail(`${label} install root escaped Runtime data.`);
+  const verifyExisting = async () => {
+    const directory = fs.lstatSync(destination, { throwIfNoEntry: false });
+    if (!directory?.isDirectory() || directory.isSymbolicLink()) return false;
+    directPath(destination, "isDirectory", `${label} install`);
+    const entry = path.join(destination, ...entrySegments);
+    const metadata = fs.lstatSync(entry, { throwIfNoEntry: false });
+    if (!metadata?.isFile() || metadata.isSymbolicLink()) return false;
+    const probe = await runManagedSetupCommand(process.execPath, [entry, "--version"], {
+      cwd: destination,
+      env: { ...inheritedToolEnvironment(context.env), ...childEnvironment },
+      signal: context.signal,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+      spawnImpl: context.spawnImpl,
+      platform: context.platform,
+    });
+    return probe.code === 0;
+  };
+  const ready = () => ({ ok: true, message: `${label} is ready.`, detail: "" });
+  if (reuseExisting && await verifyExisting()) return ready();
   const staging = path.join(
     context.dataRoot,
     `.${destinationName}-stage-${crypto.randomUUID()}`,
   );
   fs.mkdirSync(staging);
   try {
-    const npm = context.platform === "win32" ? "npm.cmd" : "npm";
+    const npm = npmLauncher ?? { command: context.platform === "win32" ? "npm.cmd" : "npm", baseArgs: [] };
     const installed = await runManagedSetupCommand(
-      npm,
+      npm.command,
       [
+        ...npm.baseArgs,
         "install",
         `${packageName}@${version}`,
         "--prefix",
@@ -3081,7 +3150,19 @@ async function installManagedNpmTool({
         detail: commandTail(verified),
       };
     }
-    replaceDirectDirectory(staging, destination, `${label} install`);
+    context.signal.throwIfAborted();
+    if (reuseExisting) {
+      // Two first runs can finish installing at once. Publish atomically and
+      // reuse the winner without replacing files its renderer may be reading.
+      try {
+        fs.renameSync(staging, destination);
+      } catch (error) {
+        if (await verifyExisting()) return ready();
+        throw error;
+      }
+    } else {
+      replaceDirectDirectory(staging, destination, `${label} install`);
+    }
     return { ok: true, message: `${label} ${version} is installed.`, detail: "" };
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
@@ -3108,10 +3189,53 @@ async function hyperframesSetup(context) {
     destinationName: "hyperframes-cli",
     entrySegments: ["node_modules", "hyperframes", "bin", "hyperframes.mjs"],
     label: "HyperFrames CLI",
-    childEnvironment: { HYPERFRAMES_NO_TELEMETRY: "1" },
+    reuseExisting: true,
+    npmLauncher: managedNpmLauncher(),
+    childEnvironment: {
+      ELECTRON_RUN_AS_NODE: "1",
+      HYPERFRAMES_NO_TELEMETRY: "1",
+      HYPERFRAMES_NO_UPDATE_CHECK: "1",
+      HYPERFRAMES_SKIP_SKILLS: "1",
+      DO_NOT_TRACK: "1",
+    },
   });
-  if (result.ok) result.message = `Installed the HyperFrames CLI (${version}).`;
   return result;
+}
+
+/** Resolve once in durable tool storage, then pin the browser in each private run home. */
+export async function prepareHyperframesBrowser(launcher, options) {
+  const dataRoot = directPath(options.dataRoot, "isDirectory", "The Runtime data root");
+  const browserHome = path.join(dataRoot, "hyperframes-browser");
+  fs.mkdirSync(browserHome, { recursive: true });
+  directPath(browserHome, "isDirectory", "HyperFrames browser home");
+  const env = {
+    ...inheritedToolEnvironment(options.env),
+    HOME: browserHome,
+    USERPROFILE: browserHome,
+    ELECTRON_RUN_AS_NODE: "1",
+    HYPERFRAMES_NO_TELEMETRY: "1",
+    HYPERFRAMES_NO_UPDATE_CHECK: "1",
+    HYPERFRAMES_SKIP_SKILLS: "1",
+    DO_NOT_TRACK: "1",
+  };
+  const run = (args) => runManagedSetupCommand(launcher.command, [...launcher.baseArgs, "browser", ...args], {
+    cwd: browserHome,
+    env,
+    signal: options.signal,
+    timeoutMs: 5 * 60_000,
+    spawnImpl: options.spawnImpl ?? spawn,
+    platform: options.platform ?? process.platform,
+  });
+  const ensured = await run(["ensure"]);
+  if (ensured.code !== 0) {
+    throw new Error(`HyperFrames could not prepare its rendering browser. ${commandTail(ensured)}`);
+  }
+  const resolved = await run(["path"]);
+  options.signal.throwIfAborted();
+  if (resolved.code !== 0) throw new Error("HyperFrames could not resolve its rendering browser.");
+  const browser = resolved.stdout.trim();
+  if (!path.isAbsolute(browser)) throw new Error("HyperFrames returned an invalid browser path.");
+  return directPath(browser, "isFile", "The HyperFrames rendering browser");
 }
 
 async function ensureOpenscienceWorkspace(context) {

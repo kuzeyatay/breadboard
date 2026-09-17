@@ -4,7 +4,6 @@ import { redirect } from "next/navigation";
 
 import { authOptions } from "@/lib/auth-options";
 import db from "@/lib/db";
-import { browserProfileState } from "@/lib/agent-browser/service.ts";
 import {
   getNavbarFlowers,
   getNavbarShortcuts,
@@ -16,6 +15,7 @@ import { caldavVaultConfigured } from "@/lib/calendar/caldav-credentials.ts";
 import { googleImageGenerationCredentialsStatus } from "@/lib/hermes/google-image-generation-credentials.ts";
 import ProfileClient from "./profile-client";
 import { readClapAction } from "@/lib/profile/clap-action-store.ts";
+import { thoughtTopologyAutoUpdateEnabled } from "@/lib/thought-topology/preferences.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +55,7 @@ export default async function ProfilePage({
   const contacts = getContactStore();
   const calendars = getCalendarStore()
     .listCalendars(userId)
-    .filter((calendar) => calendar.sourceUrl || calendar.caldavUrl);
+    .filter((calendar) => calendar.sourceUrl || calendar.caldavUrl || calendar.googleCalendarId);
   const requested = await searchParams;
   const rawTab = Array.isArray(requested.tab) ? requested.tab[0] : requested.tab;
   // `brain` remains a backwards-compatible deep link; the user-facing surface
@@ -73,12 +73,12 @@ export default async function ProfilePage({
   return (
     <ProfileClient
       stats={stats}
+      initialThoughtTopologyAutoUpdate={thoughtTopologyAutoUpdateEnabled(userId)}
       initialClapAction={readClapAction(db, userId)}
       initialSnapAction={readClapAction(db, userId, 'snap')}
       clapActionUserId={String(userId)}
       initialShortcuts={getNavbarShortcuts(userId)}
       initialNavbarFlowers={getNavbarFlowers(userId)}
-      browserProfile={await browserProfileState()}
       contacts={contacts.listContacts(userId, { limit: 200 })}
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}

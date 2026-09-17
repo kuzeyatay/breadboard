@@ -62,6 +62,18 @@ export function cloneMessages<T extends BranchableMessage>(messages: T[]): T[] {
   });
 }
 
+/** Recover the anchor omitted by older Garden retry clients from saved identities. */
+export function restoreBranchAnchor<T extends BranchableMessage>(
+  messages: T[], group: ConversationBranchGroup<T>,
+): T[] {
+  const anchors = group.variants.flatMap(variant => variant.filter((message, index) =>
+    message.role === "user" && messageBranchId(message, index) === group.id));
+  return messages.map(message => message.role === "user" && anchors.some(saved =>
+    (message.clientMessageId && message.clientMessageId === saved.clientMessageId) ||
+    (message.id && message.id === saved.id))
+    ? { ...message, branchGroupId: group.id } : message);
+}
+
 export function previousUserMessageIndex(
   messages: BranchableMessage[],
   assistantMessageIndex: number,

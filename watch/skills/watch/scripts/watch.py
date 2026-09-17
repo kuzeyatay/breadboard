@@ -93,6 +93,7 @@ def main() -> int:
     transcript_text: str | None = None
     transcript_source: str | None = None
     video_path: str | None = None
+    media_unavailable = False
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
@@ -118,15 +119,23 @@ def main() -> int:
                 else "[watch] downloading video via yt-dlp…",
                 file=sys.stderr,
             )
-            dl = download(
-                args.source,
-                work / "download",
-                audio_only=audio_only,
-            )
+            try:
+                dl = download(
+                    args.source,
+                    work / "download",
+                    audio_only=audio_only,
+                )
+            except (SystemExit, OSError) as exc:
+                if not transcript_segments:
+                    raise
+                # Captions are already useful evidence. A blocked optional
+                # media download must not discard them or imply we saw frames.
+                media_unavailable = True
+                print(f"[watch] media download failed; keeping captions: {exc}", file=sys.stderr)
         else:
             print("[watch] using local file…", file=sys.stderr)
             dl = download(args.source, work / "download")
-        video_path = dl["video_path"]
+        video_path = dl.get("video_path")
 
     meta = get_metadata(video_path) if video_path else {
         "duration_seconds": float((dl.get("info") or {}).get("duration") or 0),
@@ -286,7 +295,11 @@ def main() -> int:
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
     detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
+    if media_unavailable:
+        print("- **Frames:** unavailable (media download failed; caption evidence only)")
+        print("- **Visual coverage:** Visual content and requested frames were not inspected. "
+              "Use the captions for spoken content only.")
+    elif detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
         fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
@@ -323,7 +336,7 @@ def main() -> int:
             "This may use a large number of image tokens."
         )
 
-    if not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
+    if video_path and not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
         mins = int(full_duration // 60)
         print()
         print(

@@ -28,11 +28,22 @@ from ..model_registry import (
 from .catalog import (
     CHATGPT_PROVIDER_ID,
     KIND_CHATGPT_OAUTH,
+    KIND_CHATGPT_WEB,
     ProviderSpec,
     iter_provider_specs,
     provider_spec,
 )
 from . import store
+from .types import ProviderError
+
+
+class NoDefaultModelError(ProviderError):
+    def __init__(self) -> None:
+        super().__init__(
+            "No default model is selected. Choose a model for this task or set a default model in your profile.",
+            status_code=400,
+            code="default_model_required",
+        )
 
 
 @dataclass(frozen=True)
@@ -73,11 +84,17 @@ def resolve_model(model: Any, *, _expanded: bool = False) -> ResolvedModel:
     """
     raw = model.strip() if isinstance(model, str) else ""
 
+    if raw.lower() == store.NO_MODEL_SENTINEL:
+        raise NoDefaultModelError()
+
     if store.is_default_sentinel(raw):
         if _expanded:
             # A default that points at another sentinel would loop; stop here.
             return _chatgpt_resolution(DEFAULT_MODEL)
-        return resolve_model(store.get_default_model(DEFAULT_MODEL), _expanded=True)
+        background = store.get_default_model(DEFAULT_MODEL)
+        if store.is_chat_sentinel(raw):
+            return resolve_model(store.get_chat_model(background), _expanded=True)
+        return resolve_model(background, _expanded=True)
 
     spec, remainder = _split_provider_prefix(raw)
     if spec is None:
@@ -120,17 +137,40 @@ def is_unavailable(model: str) -> bool:
     return provider_health.is_unhealthy(resolve_model(model).provider.id)
 
 
+def drives_a_browser(model: str) -> bool:
+    """Whether serving this model means typing into the person's own browser.
+
+    A browser-driven provider is one page holding one conversation at a time,
+    answered at the speed a person reads. It is a model someone asks for on
+    purpose, never one to quietly hand background work to: measured
+    2026-09-14, a single stand-in call for an exhausted default took the page
+    for two and a half minutes, and the chat the person was sitting in front
+    of was refused three times while it did.
+    """
+    try:
+        return resolve_model(model).provider.kind == KIND_CHATGPT_WEB
+    except Exception:  # noqa: BLE001 - an unresolvable id is not a browser one
+        return False
+
+
 def healthy_fallbacks(exclude: str) -> List[str]:
     """Models that could stand in for an unusable one, best first.
 
-    ChatGPT leads when it is not itself the excluded one: it is the configured
-    default for every subsystem, so returning to it is the least surprising
-    outcome. Subscription models follow, since they cost nothing extra.
+    The built-in ChatGPT model (``DEFAULT_MODEL``) is the *last* layer, never
+    the first. It used to lead on the reasoning that the configured default is
+    the least surprising place to land — but it is the build's default, not
+    the person's, and a paid weekly window. Leading with it meant every
+    rate-limit flap on a free or subscription model (134 Gemini 429s in seven
+    minutes; a burst of OpenRouter stealth 429s on 2026-09-16) spent that
+    window on the person's behalf, and once it was spent, an exhausted
+    ChatGPT account was still the first thing every fallback tried. The other
+    configured external models stand in first; ChatGPT answers only when none
+    of them can. A browser-driven model is never offered at all - see
+    ``drives_a_browser``.
     """
-    candidates: List[str] = []
+    candidates: List[str] = list(external_model_ids())
     if exclude != DEFAULT_MODEL:
         candidates.append(DEFAULT_MODEL)
-    candidates.extend(external_model_ids())
 
     seen = {exclude}
     out: List[str] = []
@@ -138,6 +178,8 @@ def healthy_fallbacks(exclude: str) -> List[str]:
         if candidate in seen or is_unavailable(candidate):
             continue
         seen.add(candidate)
+        if drives_a_browser(candidate):
+            continue
         out.append(candidate)
     return out
 
@@ -153,6 +195,8 @@ def default_model() -> str:
     its own.
     """
     preferred = preferred_model()
+    if preferred == store.NO_MODEL_SENTINEL:
+        return preferred
     if not is_unavailable(preferred):
         return preferred
 
@@ -161,6 +205,19 @@ def default_model() -> str:
     # Nothing is available: keep the user's choice so the error names the model
     # they actually picked.
     return preferred
+
+
+def chat_model() -> str:
+    """The model the `chat` sentinel resolves to right now: the composer's
+    pick, or the background model while nothing has been picked for chat."""
+    chosen = store.get_chat_model(preferred_model())
+    if chosen == store.NO_MODEL_SENTINEL:
+        return chosen
+    if not is_unavailable(chosen):
+        return chosen
+    for candidate in healthy_fallbacks(chosen):
+        return candidate
+    return chosen
 
 
 def active_failover() -> Dict[str, Any] | None:
@@ -174,6 +231,8 @@ def active_failover() -> Dict[str, Any] | None:
     from .. import failover, provider_health
 
     preferred = preferred_model()
+    if preferred == store.NO_MODEL_SENTINEL:
+        return None
     cooldown = failover.cooldown_for(preferred)
     outage = provider_health.outage_for(resolve_model(preferred).provider.id)
     if cooldown is None and outage is None:
@@ -238,7 +297,7 @@ def external_model_ids() -> List[str]:
     person pinned, and whatever the provider itself reports it serves right now
     (see ``discovery``), so a model released after this build still appears.
     """
-    from . import discovery
+    from . import chatgpt_web, discovery
 
     ids: List[str] = []
     for spec in iter_provider_specs():
@@ -248,7 +307,12 @@ def external_model_ids() -> List[str]:
             continue
         record = store.provider_record(spec.id)
         configured = list(spec.suggested_models) + list(record.models)
-        for model in configured + discovery.discovered_models_for(spec, configured):
+        if spec.kind == KIND_CHATGPT_WEB:
+            # The signed-in page reported these; there is no endpoint to ask.
+            listed = chatgpt_web.cached_model_ids() + configured
+        else:
+            listed = configured + discovery.discovered_models_for(spec, configured)
+        for model in listed:
             candidate = f"{spec.id}/{model}"
             if candidate not in ids:
                 ids.append(candidate)

@@ -8,6 +8,7 @@ import crypto from "crypto";
 import type DatabaseType from "better-sqlite3";
 
 import type {
+  VideoTranscriptionAnalysis,
   VideoTranscriptionInputKind,
   VideoTranscriptionJob,
   VideoTranscriptionStatus,
@@ -74,6 +75,16 @@ export function ensureVideoTranscriptionSchema(db: Db): void {
       "ALTER TABLE video_transcription_jobs ADD COLUMN runtime_generation INTEGER NOT NULL DEFAULT 0",
     );
   }
+  if (!names.has("analysis")) {
+    db.exec(
+      "ALTER TABLE video_transcription_jobs ADD COLUMN analysis TEXT NOT NULL DEFAULT 'transcript'",
+    );
+  }
+  if (!names.has("retain_media")) {
+    db.exec(
+      "ALTER TABLE video_transcription_jobs ADD COLUMN retain_media INTEGER NOT NULL DEFAULT 1",
+    );
+  }
 }
 
 interface JobRow {
@@ -93,6 +104,8 @@ interface JobRow {
   video_metadata_json: string | null;
   media_temp_path: string | null;
   media_sha256: string | null;
+  analysis: string | null;
+  retain_media: number | null;
   scriberr_job_id: string | null;
   transcript_json: string | null;
   output_relative_path: string | null;
@@ -146,6 +159,8 @@ function rowToJob(row: JobRow): VideoTranscriptionJob {
     videoMetadata: parseMetadata(row.video_metadata_json),
     mediaTempPath: row.media_temp_path,
     mediaSha256: row.media_sha256,
+    analysis: row.analysis === "watch" ? "watch" : "transcript",
+    retainMedia: row.retain_media !== 0,
     scriberrJobId: row.scriberr_job_id,
     transcriptJson: row.transcript_json,
     outputRelativePath: row.output_relative_path,
@@ -177,6 +192,8 @@ export interface CreateVideoTranscriptionJobInput {
   videoMetadata?: YouTubeMediaMetadata | null;
   mediaTempPath?: string | null;
   mediaSha256?: string | null;
+  analysis?: VideoTranscriptionAnalysis;
+  retainMedia?: boolean;
 }
 
 export interface VideoTranscriptionJobPatch {
@@ -255,8 +272,9 @@ export class VideoTranscriptionJobStore {
           id, cluster_id, garden_slug, user_id, input_kind, status,
           original_filename, original_url, canonical_url, youtube_video_id,
           source_title, video_metadata_json, media_temp_path, media_sha256,
+          analysis, retain_media,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -272,6 +290,8 @@ export class VideoTranscriptionJobStore {
         input.videoMetadata ? JSON.stringify(input.videoMetadata) : null,
         input.mediaTempPath ?? null,
         input.mediaSha256 ?? null,
+        input.analysis ?? "transcript",
+        input.retainMedia === false ? 0 : 1,
         now,
         now,
       );

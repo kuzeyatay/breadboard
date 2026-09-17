@@ -32,17 +32,22 @@ test("desktop tests isolate physical-screen and native-focus fixtures", () => {
   });
   assert.equal(run.status, 0, run.stderr);
   const result = JSON.parse(run.stdout);
-  assert.deepEqual(result.serial, ["tab-manager.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-picture-in-picture-integration.test.js"]);
+  assert.deepEqual(result.serial, ["tab-manager.test.js", "browser-address-suggestions-integration.test.js", "browser-context-menu-integration.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-menu-integration.test.js", "browser-picture-in-picture-integration.test.js", "google-pip-extension-integration.test.js", "voice-screen-context-integration.test.js"]);
   assert.deepEqual(result.partition, {
     parallel: ["alpha.test.js", "zeta.test.js"],
-    screen: ["tab-manager.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-picture-in-picture-integration.test.js"],
+    screen: ["tab-manager.test.js", "browser-address-suggestions-integration.test.js", "browser-context-menu-integration.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-menu-integration.test.js", "browser-picture-in-picture-integration.test.js", "google-pip-extension-integration.test.js", "voice-screen-context-integration.test.js"],
   });
   assert.deepEqual(result.lanes.map((lane: { files: string[] }) => lane.files), [
     ["alpha.test.js", "zeta.test.js"],
     ["tab-manager.test.js"],
+    ["browser-address-suggestions-integration.test.js"],
+    ["browser-context-menu-integration.test.js"],
     ["browser-downloads-popover-integration.test.js"],
     ["browser-fullscreen-integration.test.js"],
+    ["browser-menu-integration.test.js"],
     ["browser-picture-in-picture-integration.test.js"],
+    ["google-pip-extension-integration.test.js"],
+    ["voice-screen-context-integration.test.js"],
   ]);
   assert.deepEqual(result.args, [
     "--test",

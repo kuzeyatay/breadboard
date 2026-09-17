@@ -119,6 +119,15 @@ function preparedFixture(directory) {
   const files=['acestep-v15-turbo','vae','Qwen3-Embedding-0.6B'].map(name=>{const relative=`source/checkpoints/${name}/fixture.safetensors`;const target=path.join(directory,relative);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'fixture');return{path:relative,size:7};});
   fs.writeFileSync(path.join(directory,'models-ready.json'),JSON.stringify({sourceRevision:ACESTEP_REVISION,modelRevision:ACESTEP_MODEL_REVISION,model:'acestep-v15-turbo',files,hardware:{cuda:false}}));
 }
+test("missing local models fail before planning or acquiring a provider and explain how to recover",async t=>{
+  const fake=await fakeAceStep();t.after(()=>fake.close());const f=fixture(fake.connection);
+  launchStore.updateMusicLaunch(1,f.input.launchId,{request_json:null,provider_json:JSON.stringify({...fake.connection,managed:true,directory:f.input.workspace})});
+  let leases=0;
+  const result=await executeMusicWorker(f.input,{...deps,acquireServiceLease:async()=>{leases++;throw Error('unexpected lease');}});
+  assert.equal(result.status,'failed');assert.equal(leases,0);assert.equal(fake.requests.length,0);
+  assert.equal(f.events.some(event=>event.payload.message==='Planning one music draft'),false);
+  assert.match(launchStore.musicLaunch(1,f.input.launchId).summary,/Music Producer settings.*external ACE-Step provider/);
+});
 test("managed cancellation retains the receipt and releases its lease; reset requires an owned stopped provider",async t=>{
   const fake=await fakeAceStep({running:true});t.after(()=>fake.close());const f=fixture(fake.connection),directory=path.join(f.input.workspace,'managed');preparedFixture(directory);
   const config={...fake.connection,managed:true,directory};launchStore.updateMusicLaunch(1,f.input.launchId,{provider_json:JSON.stringify(config)});

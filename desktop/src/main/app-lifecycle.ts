@@ -13,6 +13,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
+import { isOpenLocalPathRequest, openLocalPath } from "./local-path-opener";
+import { restoreBrowserSession, flushBrowserSession } from "./browser-session-persistence";
 import {
   ensureMutableDirectories,
   resolvePaths,
@@ -51,6 +53,7 @@ import {
   revokeThemeLocationFor,
   type AllowedOrigins,
 } from "./security";
+import { installPdfViewerRedirect } from "./pdf-viewer-redirect";
 import {
   IPC_CHANNELS,
   isBrowserBookmarkOwnerKey,
@@ -58,6 +61,7 @@ import {
   isBrowserRecentSearches,
   isBrowserHistoryCommand,
   isBrowserDownloadCommand,
+  isChatgptWebTabRequest,
   isTabsCommand,
 } from "../shared/ipc-contract";
 import {
@@ -71,6 +75,11 @@ import {
 } from "./window-options";
 import { installGpuDiagnostics } from "./gpu-diagnostics";
 import {
+  configureGpuPreferences,
+  describeGpuSwitches,
+  installGpuCrashRecorder,
+} from "./gpu-preferences";
+import {
   claimDevInstance,
   duplicateStackWarning,
   releaseDevInstance,
@@ -80,6 +89,7 @@ import { openMicrophoneSettings } from "./microphone-settings";
 import {
   isWindowThemeSchedule,
   readLastWindowTheme,
+  readLaunchThemeState,
   writeLastWindowTheme,
 } from "./theme-state";
 import {
@@ -284,6 +294,8 @@ export class AppLifecycle {
   private voiceCompanion: VoiceCompanion | null = null;
   /** Random loopback-only CDP port reserved for visible browser-agent tabs. */
   private browserAgentDebuggingPort: number | null = null;
+  /** Decided pre-ready, logged once the log exists. */
+  private gpuPreferences: ReturnType<typeof configureGpuPreferences> | null = null;
   private breadboardUse: BreadboardUseBridge | null = null;
   /** Set only after this process successfully claims a Hot dev checkout. */
   private devInstanceLockRepoRoot: string | null = null;
@@ -334,6 +346,12 @@ export class AppLifecycle {
       app.commandLine,
       app.getPath("userData"),
     );
+    // Chromium reads its GPU switches once, at startup. There is no log yet to
+    // write the decision into, so keep it for the baseline written below.
+    this.gpuPreferences = configureGpuPreferences(
+      app.commandLine,
+      app.getPath("userData"),
+    );
     app.on("second-instance", () => {
       const window = this.windows?.window;
       if (window) {
@@ -367,6 +385,17 @@ export class AppLifecycle {
         runtimeProductText(redactSecrets(line, this.persistentConfig)),
     });
     const supervisorLog = this.logs.forService("desktop");
+    // Renderer exits and Node warnings otherwise only reach the terminal,
+    // leaving an unexplained clean shutdown in the persistent log.
+    app.on("render-process-gone", (_event, contents, details) => {
+      try {
+        supervisorLog.write(`[desktop] renderer gone: contents=${contents.id} reason=${details.reason} exitCode=${details.exitCode}`);
+      } catch { /* Diagnostics must not interrupt recovery. */ }
+    });
+    process.on("warning", warning => {
+      try { supervisorLog.write(`[desktop] warning: ${warning.stack ?? warning.message}`); }
+      catch { /* Diagnostics must not interrupt recovery. */ }
+    });
     supervisorLog.write(
       `[desktop] starting; mode=${this.paths.mode}${this.paths.qaMode ? `; qa-profile=${this.qaServiceProfile}` : ""}; config=${JSON.stringify(redactedPersistentConfigSummary(this.persistentConfig))}`,
     );
@@ -423,6 +452,28 @@ export class AppLifecycle {
       }
     }
 
+    if (this.gpuPreferences) {
+      supervisorLog.write(
+        `[desktop] gpu switches: ${describeGpuSwitches(this.gpuPreferences.applied)}` +
+          (this.gpuPreferences.softwareGl
+            ? " (software GL: the GPU process crashed repeatedly on recent launches)"
+            : ""),
+      );
+    }
+
+    // A GPU crash is what strands the compositor and takes WebGL down with it.
+    // Record it so the next launch can route around the driver.
+    installGpuCrashRecorder(
+      {
+        onGpuProcessCrash: (listener) =>
+          void app.on("child-process-gone", (_event, details) => {
+            if (details.type === "GPU" && details.reason !== "clean-exit") listener();
+          }),
+      },
+      app.getPath("userData"),
+      (line) => supervisorLog.write(line),
+    );
+
     installGpuDiagnostics(
       {
         onChildProcessGone: (listener) =>
@@ -461,6 +512,15 @@ export class AppLifecycle {
       pathToFileURL(computerUseOverlayHtmlPath).toString(),
     ]);
     installGlobalSecurity(this.allowedOrigins);
+    // A raw PDF address on the dashboard must open Breadboard's viewer, never
+    // Chromium's plugin. Product pages load in the default session.
+    installPdfViewerRedirect(session.defaultSession, {
+      dashboardOrigin: () =>
+        this.runtimeDashboardUrl ? new URL(this.runtimeDashboardUrl).origin : null,
+      log: (line) => supervisorLog.write(line),
+    });
+
+    await restoreBrowserSession(session.fromPartition(BROWSER_SESSION_PARTITION), line => supervisorLog.write(line));
 
     this.browserDownloads = new BrowserDownloads(this.paths.configDir, shell, (line) => supervisorLog.write(line));
     this.browserDownloads.attach(session.fromPartition(BROWSER_SESSION_PARTITION));
@@ -740,6 +800,7 @@ export class AppLifecycle {
         .forService("desktop")
         .write(`[desktop] Runtime startup failed: ${reason}`);
       this.failRuntimeStartup(reason);
+      this.scheduleRuntimeRootRetry();
     }
   }
 
@@ -1095,6 +1156,11 @@ export class AppLifecycle {
       }
       return true;
     });
+    ipcMain.handle(IPC_CHANNELS.getThemeState, (event) => {
+      const window = this.windowForSender(event.sender);
+      if (!window || window.isDestroyed()) return null;
+      return readLaunchThemeState(this.paths.configDir);
+    });
     ipcMain.handle(
       IPC_CHANNELS.setTheme,
       (event, surface: unknown, schedule: unknown) => {
@@ -1149,6 +1215,10 @@ export class AppLifecycle {
     ipcMain.handle(IPC_CHANNELS.getStartupSound, () =>
       readStartupSoundEnabled(this.paths.configDir),
     );
+    ipcMain.handle(IPC_CHANNELS.claimStartupSound, (event) => {
+      if (event.senderFrame !== event.sender.mainFrame) return false;
+      return this.windows.claimStartupSound(event.sender.id);
+    });
     ipcMain.handle(IPC_CHANNELS.setStartupSound, (_event, enabled: unknown) => {
       if (typeof enabled !== "boolean") return false;
       try {
@@ -1206,12 +1276,43 @@ export class AppLifecycle {
         const url = event.sender.getURL();
         if (!this.runtimeDashboardUrl || new URL(url).origin !== new URL(this.runtimeDashboardUrl).origin) return false;
         this.startVoiceCompanion();
-        return this.voiceCompanion?.launch().catch(() => false) ?? false;
+        return this.voiceCompanion?.launch(command.conversationKey).catch(() => false) ?? false;
       }
       if (command.type === 'voice-overlay' && event.senderFrame !== event.sender.mainFrame) return false;
       return this.windows.tabs.handleCommand(event.sender, command);
     });
     ipcMain.handle(IPC_CHANNELS.getBrowserNavigation, () => this.windows.tabs.isEnabled);
+    ipcMain.handle(IPC_CHANNELS.getBrowserSignIns, (event) => {
+      if (event.senderFrame !== event.sender.mainFrame || !this.windowForSender(event.sender) ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url)) {
+        throw new Error("Browser sign-ins are only available in Breadboard.");
+      }
+      return this.windows.tabs.browserSignIns();
+    });
+    ipcMain.handle(IPC_CHANNELS.openBrowserSignIn, (event, url: unknown) => {
+      if (event.senderFrame !== event.sender.mainFrame || !this.windowForSender(event.sender) ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url)) return false;
+      return this.windows.tabs.openBrowserSignIn(event.sender, url);
+    });
+    ipcMain.handle(IPC_CHANNELS.chatgptWebTab, (event, request: unknown) => {
+      // A Breadboard page relaying ChatMock: only the product origin, only a
+      // main frame, and only a well-formed request reach the tab manager.
+      if (event.senderFrame !== event.sender.mainFrame || !this.windowForSender(event.sender) ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url)) {
+        return { ok: false, error: "only a Breadboard page may ask for the ChatGPT tab" };
+      }
+      if (!isChatgptWebTabRequest(request)) return { ok: false, error: "invalid request" };
+      return this.windows.tabs.openChatgptWebTab({
+        foreground: request.foreground,
+        reset: request.reset === true,
+        cdpPort: this.browserAgentDebuggingPort,
+      });
+    });
+    ipcMain.handle(IPC_CHANNELS.resetBrowserSignIns, (event) => {
+      if (event.senderFrame !== event.sender.mainFrame || !this.windowForSender(event.sender) ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url)) return false;
+      return this.windows.tabs.resetBrowserSignIns();
+    });
     ipcMain.handle(IPC_CHANNELS.setBrowserNavigation, (_event, enabled: unknown) => {
       if (typeof enabled !== "boolean") return false;
       try {
@@ -1336,10 +1437,26 @@ export class AppLifecycle {
       }
       return this.clickyLauncher().openProject();
     });
+    ipcMain.handle(IPC_CHANNELS.openLocalPath, async (event, request: unknown) => {
+      if (!this.windowForSender(event.sender) || !event.senderFrame ||
+          !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url) ||
+          !isOpenLocalPathRequest(request)) {
+        return { ok: false, code: "invalid_path", error: "Invalid open request." };
+      }
+      const result = await openLocalPath(request, {
+        openPath: (target) => shell.openPath(target),
+        showItemInFolder: (target) => shell.showItemInFolder(target),
+      });
+      this.logs
+        .forService("desktop")
+        .write(`[desktop] open local path ${result.ok ? result.opened : `refused: ${result.code}`}`);
+      return result;
+    });
   }
 
   private startVoiceCompanion() {
-    this.voiceCompanion ??= new VoiceCompanion({ dashboardUrl: () => this.runtimeDashboardUrl, allowed: this.allowedOrigins });
+    this.voiceCompanion ??= new VoiceCompanion({ dashboardUrl: () => this.runtimeDashboardUrl, allowed: this.allowedOrigins,
+      contextTargets: window => this.windows.tabs.voiceContextTargets(window) });
     this.windows.tabs.onVoiceNotification = notice => this.voiceCompanion?.notify(notice);
     void this.voiceCompanion.start().catch(error => this.logs.forService('desktop').write(`[voice] ${String(error)}`));
   }
@@ -1521,6 +1638,7 @@ export class AppLifecycle {
       event.preventDefault();
       if (this.quitting) return;
       this.quitting = true;
+      this.logs?.forService("desktop").write(`[desktop] quit requested: ${new Error().stack}`);
       this.clearScheduledRuntimeRootRetry();
       this.clearRuntimeRootStabilityTimer();
       void this.shutdownRuntime().then(() => {
@@ -1601,6 +1719,11 @@ export class AppLifecycle {
         );
       this.runtime?.terminateNow();
     } finally {
+      try {
+        await flushBrowserSession(session.fromPartition(BROWSER_SESSION_PARTITION));
+      } catch {
+        this.logs?.forService("desktop").write("[browser] Browser session data could not be saved before shutdown.");
+      }
       this.logs?.closeAll();
     }
   }

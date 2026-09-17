@@ -53,12 +53,15 @@ test('browser tool requires an owned, active Terminal session and uses only its 
     };
     assert.equal((await call({ action: 'click' })).status, 400);
     assert.equal((await call({ action: 'scroll', direction: 'sideways' })).status, 400);
+    assert.equal((await call({ action: 'screenshot', surface: 'desktop' })).status, 400);
     const result = await call({ action: 'read', port: 42000, token: 'e'.repeat(64), tabId: 999 });
     assert.equal(result.status, 200);
     assert.equal((await result.json()).data.title, 'Linked page');
     assert.equal(state.calls.length, 1);
     assert.equal(state.calls[0][0], 'http://127.0.0.1:41000/browser-terminal');
     assert.equal(state.calls[0][1].headers.Authorization, `Bearer ${'d'.repeat(64)}`);
+    assert.equal((await call({ action: 'screenshot', surface: 'app' })).status, 200);
+    assert.deepEqual(JSON.parse(state.calls.at(-1)[1].body), { action: 'screenshot', surface: 'app' });
     // A Garden chat opened inside the Terminal retains its original surface.
     state.session.surface = 'garden_chat'; state.token = token('garden_chat');
     assert.equal((await call()).status, 200);

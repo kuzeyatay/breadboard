@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowUpRight, CalendarDays, ChevronUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import OverflowMarquee from "@/app/components/overflow-marquee";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 import type { CalendarCollection, CalendarOccurrence } from "@/lib/calendar/types";
 import { formatShortDate, formatTimeRange, monthAbbreviation } from "@/lib/calendar/format";
 import { addDays, dateOf, nowStamp, startOfDay, todayDate } from "@/lib/calendar/wallclock";
@@ -20,13 +21,14 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
   const [now, setNow] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [retry, setRetry] = useState(0);
+  useStartupLoading(status === "loading");
 
   useEffect(() => {
     let disposed = false;
     let request: AbortController | null = null;
 
-    async function refresh() {
-      if (document.visibilityState === "hidden") return;
+    async function refresh(initial = false) {
+      if (!initial && document.visibilityState === "hidden") return;
       request?.abort();
       const controller = new AbortController();
       request = controller;
@@ -60,7 +62,7 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
       }
     }
 
-    void refresh();
+    void refresh(true);
     const timer = window.setInterval(() => void refresh(), 60_000);
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);

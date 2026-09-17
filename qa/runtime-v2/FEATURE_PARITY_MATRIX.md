@@ -8,7 +8,7 @@ The normal `npm run qa:runtime-v2:parity` command intentionally fails until real
 
 ## Inventory counts
 
-Total capabilities: **496**
+Total capabilities: **495**
 
 | Category | Count |
 |---|---:|
@@ -29,11 +29,11 @@ Total capabilities: **496**
 | recovery | 10 |
 | registry | 9 |
 | repository | 2 |
-| runtime-agent | 37 |
+| runtime-agent | 36 |
 | tool-family | 40 |
 | workflow | 24 |
 
-Agency catalog: **264 loaded**, **1 diagnostics**. First-party skills: **26 SKILL.md**. Installed reviewed skills: **3**. Next route source catalog: **525 routes**.
+Agency catalog: **264 loaded**, **1 diagnostics**. First-party skills: **26 SKILL.md**. Installed reviewed skills: **3**. Next route source catalog: **519 routes**.
 
 ## Required interpretation
 
@@ -461,7 +461,6 @@ Agency catalog: **264 loaded**, **1 diagnostics**. First-party skills: **26 SKIL
 | `runtime-agent:max-research` | Max Research | runtime-agent | Agents tab and /agents:max-research | /agents:max-research | /api/max-research/runs -> authenticated durable Runtime submit -> admission-held ChatMock, Deep Research, and OpenScience services -> outer-max-research-node -> fixed nested Agent Reach and Get Doc jobs -> fenced replay at /api/max-research/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |
 | `runtime-agent:meeting-notes` | Meeting Notes | runtime-agent | Agents tab and /agents:meeting-notes | /agents:meeting-notes | /api/meeting-notes/runs -> authenticated one-blob Runtime submit -> outer-meeting-notes-node -> request-derived Scriberr, Voicebox, or ChatMock lease -> fenced replay at /api/meeting-notes/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |
 | `runtime-agent:money-printer` | MoneyPrinter | runtime-agent | Agents tab and /agents:money-printer | /agents:money-printer | /api/money-printer/runs -> authenticated durable Runtime submit -> outer-money-printer-node -> sealed MoneyPrinter service lease and loopback RPC -> fenced replay at /api/money-printer/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |
-| `runtime-agent:open-gym` | openGym | runtime-agent | Agents tab and /agents:open-gym | /agents:open-gym | /api/open-gym/runs -> authenticated durable Runtime submit -> registered open-gym disposable worker -> fenced replay at /api/open-gym/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |
 | `runtime-agent:opencode` | OpenCode | runtime-agent | Agents tab and /agents:opencode | /agents:opencode | /api/opencode/runs -> authenticated durable Runtime submit -> registered opencode disposable worker -> fenced replay at /api/opencode/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |
 | `runtime-agent:openmontage` | OpenMontage | runtime-agent | Agents tab and /agents:openmontage | /agents:openmontage | /api/openmontage/runs -> authenticated durable Runtime submit -> registered openmontage disposable worker -> fenced replay at /api/openmontage/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |
 | `runtime-agent:openplanter` | OpenPlanter | runtime-agent | Agents tab and /agents:openplanter | /agents:openplanter | /api/openplanter/runs -> authenticated durable Runtime submit -> registered openplanter disposable worker -> fenced replay at /api/openplanter/runs/[runId]/events | SOURCE_PRESENT | NOT RUN | NOT RUN |

@@ -18,9 +18,15 @@ export type VideoTranscriptionStatus =
   | "formatting_markdown"
   | "writing_source"
   | "indexing_source"
+  | "analyzing_visuals"
   | "completed"
   | "failed"
   | "cancelled";
+
+/** What the job produces beyond the transcript. `watch` adds what the video
+ * shows: sampled frames saved as source page images plus a frame-grounded
+ * analysis, the way the /watch skill reads a video. */
+export type VideoTranscriptionAnalysis = "transcript" | "watch";
 
 export const VIDEO_TRANSCRIPTION_TERMINAL_STATUSES: ReadonlySet<VideoTranscriptionStatus> =
   new Set(["completed", "failed", "cancelled"]);
@@ -145,6 +151,12 @@ export interface VideoTranscriptionJob {
   /** Server-only absolute path of the uploaded media inside the temp root. */
   mediaTempPath: string | null;
   mediaSha256: string | null;
+  analysis: VideoTranscriptionAnalysis;
+  /** False: the media file is never kept once the source is written (uploads
+   * are deleted after ingestion; YouTube media is never downloaded by
+   * Breadboard for transcript-only jobs, and the watch runtime's copy is
+   * discarded with its work directory). */
+  retainMedia: boolean;
   scriberrJobId: string | null;
   /** Normalized transcript checkpoint (JSON) so indexing retries never re-transcribe. */
   transcriptJson: string | null;
@@ -178,6 +190,8 @@ export interface PublicVideoTranscriptionJob {
   youtubeVideoId: string | null;
   sourceTitle: string | null;
   videoMetadata: YouTubeMediaMetadata | null;
+  analysis: VideoTranscriptionAnalysis;
+  retainMedia: boolean;
   outputRelativePath: string | null;
   sourceSlug: string | null;
   errorCode: string | null;
@@ -203,6 +217,8 @@ export function publicVideoTranscriptionJob(
     youtubeVideoId: job.youtubeVideoId,
     sourceTitle: job.sourceTitle,
     videoMetadata: job.videoMetadata,
+    analysis: job.analysis,
+    retainMedia: job.retainMedia,
     outputRelativePath: job.outputRelativePath,
     sourceSlug: job.sourceSlug,
     errorCode: job.errorCode,

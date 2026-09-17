@@ -25,9 +25,10 @@ const emitThemeChangeEvent = (theme: "light" | "dark") => {
 }
 
 const applyTheme = (theme: "light" | "dark") => {
+  const changed = document.documentElement.getAttribute("saved-theme") !== theme
   document.documentElement.setAttribute("saved-theme", theme)
   localStorage.setItem("theme", theme)
-  emitThemeChangeEvent(theme)
+  if (changed) emitThemeChangeEvent(theme)
 }
 
 window.addEventListener("message", (event) => {

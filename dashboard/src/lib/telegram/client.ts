@@ -7,6 +7,8 @@
 
 import { telegramApiBase, telegramTimings } from "./config.ts";
 import { applyOutboundGuardrails } from "../guardrails/service.ts";
+import { openAsBlob } from "node:fs";
+import path from "node:path";
 
 export class TelegramApiError extends Error {
   /** HTTP status, or 0 when the request never got an answer. */
@@ -110,6 +112,49 @@ export async function getMe(token: string, signal?: AbortSignal): Promise<Telegr
     username: me.username ?? "",
     name: me.first_name ?? me.username ?? "Telegram bot",
   };
+}
+
+/** Fetch bytes without ever exposing a token-bearing download URL in errors. */
+export async function downloadTelegramFile(token: string, fileId: string): Promise<{
+  body: ReadableStream<Uint8Array>;
+  dispose: () => void;
+}> {
+  let file: { file_path?: string };
+  try {
+    file = await callTelegram(token, "getFile", { file_id: fileId }, telegramTimings().requestTimeoutMs);
+  } catch (cause) {
+    if (cause instanceof TelegramApiError && /too big|too large/i.test(cause.message)) {
+      throw new Error("Telegram's hosted Bot API cannot download this file (20 MB limit). Send a smaller file or use a local Bot API server.");
+    }
+    throw new Error("Telegram could not retrieve the attachment. Please send it again.");
+  }
+  const filePath = file?.file_path;
+  if (typeof filePath !== "string" || !filePath) throw new Error("Telegram did not provide the attachment file.");
+  const base = telegramApiBase();
+  // --local Bot API servers return absolute files on the same host.
+  if (path.isAbsolute(filePath) && ["localhost", "127.0.0.1", "[::1]"].includes(new URL(base).hostname)) {
+    try {
+      const blob = await openAsBlob(filePath);
+      return { body: blob.stream(), dispose: () => undefined };
+    } catch { throw new Error("The local Telegram attachment is no longer available."); }
+  }
+  const parts = filePath.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..") || /[\\:?#\x00-\x1f]/.test(filePath)) {
+    throw new Error("Telegram returned an invalid attachment path.");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5 * 60_000);
+  const dispose = () => { clearTimeout(timer); controller.abort(); };
+  try {
+    const response = await fetch(`${base}/file/bot${token}/${parts.map(encodeURIComponent).join("/")}`, {
+      signal: controller.signal, cache: "no-store", redirect: "error",
+    });
+    if (!response.ok || !response.body) throw new Error("download failed");
+    return { body: response.body, dispose };
+  } catch {
+    dispose();
+    throw new Error("Telegram could not download the attachment. Please send it again.");
+  }
 }
 
 /**

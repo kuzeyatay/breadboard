@@ -1,13 +1,23 @@
+import { prepareExplanationTurn } from "./explanation-review-context.ts";
+import { explanationTurnPrompt } from "./explanation-turn.ts";
+import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
+import { selectedGardenDocumentContext } from "./garden-reader.ts";
+import { agentPreferencesContext } from "../agent-preferences/store.ts";
+import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
 // Compatibility adapter for the existing garden workspace chat UI.
 // It preserves that UI's SSE contract while replacing its model transport with
 // an authorized, garden-scoped Hermes session.
 
 import path from "node:path";
 import db from "../db.ts";
+import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
+import { mergeExplanationUsage } from "./explanation-review.ts";
+import { reviewRuntimeExplanation } from "./explanation-review-runtime.ts";
 import { requireUserId } from "../server-auth.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { resolveHermesEngine } from "./model-selection.ts";
+import { selectedModelForUser } from "../selected-model.ts";
 import {
   authorizeGardenAccess,
   authorizeRuntimeSession,
@@ -23,6 +33,7 @@ import {
   revokeCapabilityDecision,
 } from "./runtime-store.ts";
 import { ApiError } from "./route-core.ts";
+import type { NormalizedAgentEvent } from "./events.ts";
 import { resolveCommandMessage } from "./commands.ts";
 import {
   assessVerification,
@@ -51,7 +62,11 @@ import {
 } from "./autonomy.ts";
 import { connectedAppRegistryForTurn } from "./unified-tool-registry.ts";
 import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
-import { openableSkills } from "./super-agent.ts";
+import {
+  loadSuperAgentInventory,
+  openableSkills,
+  renderSuperAgentDirective,
+} from "./super-agent.ts";
 import {
   renderSkillShortlistDirective,
   shortlistSkillsForTurn,
@@ -66,6 +81,7 @@ import {
   parseRuntimeRunDispatch,
   touchRuntimeRunHeartbeat,
 } from "./run-store.ts";
+import { publishProducedFilesForTurn } from "./produced-artifacts-turn.ts";
 import { hermesMessageId } from "./message-id.ts";
 import { RUN_HEARTBEAT_INTERVAL_MS } from "./run-liveness.ts";
 import {
@@ -79,8 +95,13 @@ import {
   reserveConversationTurn,
   updateConversation,
 } from "../conversations/store.ts";
-import { generateAndApplyConversationTitle } from "../conversations/title-service.ts";
+import {
+  generateAndApplyConversationTitle,
+  shouldGenerateConversationTitleForTurn,
+} from "../conversations/title-service.ts";
 import { composeMemoryContext } from "../conversations/memory.ts";
+import { deliverCompletedResearch, completedResearchEventStream } from "../conversations/deliver-completed-research.ts";
+import { deliverCompletedHyperframes } from "../conversations/deliver-completed-hyperframes.ts";
 import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
 import { gardenInstructions } from "../garden-settings.ts";
 import { readThoughtTopology } from "../thought-topology/storage.ts";
@@ -107,7 +128,7 @@ import { prepareDocumentContext } from "../document-skills/turn.ts";
 import { selectedGardenMediaSources } from "../garden-media-sources.ts";
 import { parseChatAttachments } from "../chat-attachments-request.ts";
 import {
-  resolveDocumentAttachments,
+  hydrateDocumentAttachments,
   stageEditableDocumentAttachments,
 } from "../document-attachments-server.ts";
 import { retrieveDocumentAttachments } from "../colpali/retrieval.ts";
@@ -163,7 +184,8 @@ import {
   resolveSmallTalkReply,
   smallTalkEventStream,
 } from "../chat-small-talk.ts";
-import { quartzAssistantSelectionPromptContext } from "../quartz-assistant-selection.ts";
+import { normalizeQuartzAssistantSelection, quartzAssistantSelectionPromptContext, quartzAssistantSelectionQuestionPrompt } from "../quartz-assistant-selection.ts";
+import { uiResourcesForUserRequest } from "../generative-ui/request-policy.ts";
 import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
@@ -186,6 +208,7 @@ type GardenChatPayload = {
   activeMarkdown?: unknown;
   selectedText?: unknown;
   selectedTextContext?: unknown;
+  textSelection?: unknown;
   attachments?: unknown;
   adhdMode?: unknown;
   superAgent?: unknown;
@@ -245,21 +268,28 @@ export async function openGardenAgentChat(
       ? payload.clientMessageId.trim()
       : "";
   let reservedClientMessageId: string;
+  let reservedUserOrderIndex: number;
+  const textSelection = normalizeChatTextSelectionReference(payload.textSelection);
   if (suppliedClientMessageId) {
     const reserved = reserveConversationTurn({
       conversation,
       clientMessageId: suppliedClientMessageId,
       surface: "garden_chat",
       content: text,
-      metadata: { gardenPreDispatch: true },
+      metadata: { gardenPreDispatch: true,
+        ...(textSelection ? { textSelection } : {}),
+        ...(payload.internalAgentContinuation === true ? { internalAgentContinuation: true } : {}) },
     });
     reservedClientMessageId = reserved.userMessage.client_message_id;
+    reservedUserOrderIndex = reserved.userMessage.order_index;
   } else {
-    reservedClientMessageId = reserveLegacyGardenAssistantTurn({
+    const reserved = reserveLegacyGardenAssistantTurn({
       conversation,
       chatSessionId,
       content: text,
-    }).clientMessageId;
+    });
+    reservedClientMessageId = reserved.clientMessageId;
+    reservedUserOrderIndex = reserved.userMessage.order_index;
   }
   const touchPreDispatch = () =>
     annotateConversationTurn({
@@ -276,6 +306,19 @@ export async function openGardenAgentChat(
     ) {
       throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
     }
+    const hyperframesDelivery = await deliverCompletedHyperframes({
+      userId, conversationId: conversation.id, clientMessageId: reservedClientMessageId,
+      continuationText: text, internalAgentContinuation: payload.internalAgentContinuation === true,
+    });
+    if (hyperframesDelivery) return completedResearchEventStream(hyperframesDelivery);
+    const researchDelivery = deliverCompletedResearch({
+      conversationId: conversation.id,
+      clientMessageId: reservedClientMessageId,
+      continuationText: text,
+      internalAgentContinuation: payload.internalAgentContinuation === true,
+    });
+    if (researchDelivery) return completedResearchEventStream(researchDelivery);
+
     // Attachments reach this surface in the request body but used to stop here:
     // the payload was parsed for messages only, so a file picked in the Garden
     // composer never reached the runtime at all.
@@ -284,9 +327,10 @@ export async function openGardenAgentChat(
     // still arrives whole.
     const attachments = await retrieveDocumentAttachments(
       userId,
-      resolveDocumentAttachments(
+      await hydrateDocumentAttachments(
         userId,
         parseChatAttachments(payload.attachments),
+        signal,
       ),
       text,
       process.env,
@@ -296,6 +340,9 @@ export async function openGardenAgentChat(
       payload.selectedDocumentSlugs,
     );
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
+    const selectedDocumentEvidence = contentPath
+      ? await selectedGardenDocumentContext(contentPath, clusterSlug, selectedSlugs, text)
+      : "";
     const selectedMedia = contentPath
       ? selectedGardenMediaSources({
           contentPath,
@@ -304,15 +351,22 @@ export async function openGardenAgentChat(
         })
       : { audio: [], video: [] };
     // Garden Chat's own copy of the first-turn titling in
-    // conversations/turn-service.ts. This surface persists its transcript through
-    // the legacy chat-session route rather than reserveConversationTurn, so the
-    // canonical pipeline's `order_index === 0` test is not available here; the
-    // payload carrying exactly one user message is the same first turn. Awaiting
-    // matches the Terminal, where the title lands before the run is dispatched.
+    // conversations/turn-service.ts, gated on the canonical transcript rather
+    // than the request payload: a highlight question posts only itself as
+    // `messages`, so counting payload rows re-titled a long chat on every
+    // inline ask (and again on each retry). Awaiting matches the Terminal,
+    // where the title lands before the run is dispatched.
     // applyGeneratedConversationTitle writes chat_sessions too, so the Garden
     // sidebar reads the same title, and its compare-and-swap on the observed
     // title means a manual rename racing this call still wins.
-    if (isFirstUserTurn(messages)) {
+    if (shouldGenerateConversationTitleForTurn({
+      currentTitle: conversation.title,
+      userOrderIndex: reservedUserOrderIndex,
+      reservationIsNew: true,
+      preDispatchReserved: true,
+      isInlineQuestion: textSelection?.mode === "inline" ||
+        normalizeQuartzAssistantSelection(payload.selectedTextContext)?.mode === "inline",
+    })) {
       conversation =
         (await generateAndApplyConversationTitle({
           conversation,
@@ -343,8 +397,9 @@ export async function openGardenAgentChat(
       return smallTalkEventStream(smallTalkReply);
     }
 
-    const engine = resolveHermesEngine(payload.model, payload.reasoningEffort);
-    const existing = getRuntimeSessionByChatSession(chatSessionId);
+    const engine = resolveHermesEngine(payload.model, payload.reasoningEffort, selectedModelForUser(userId));
+    const inlineTurnId = textSelection?.mode === "inline" ? reservedClientMessageId : undefined;
+    const existing = inlineTurnId ? null : getRuntimeSessionByChatSession(chatSessionId);
     const session = existing
       ? authorizeRuntimeSession(userId, existing.id)
       : await resolveConversationRuntime({
@@ -352,10 +407,11 @@ export async function openGardenAgentChat(
           surface: "garden_chat",
           activeGardenSlug: clusterSlug,
           activePageSlug: page?.slug ?? null,
+          inlineTurnId,
         });
     // The shared planner records the requested outcome, while the broker's
-    // surface ceiling keeps Garden Chat on curated Garden, artifact, and selected
-    // MCP tools. Filesystem grants can never turn this surface into a Terminal.
+    // Garden Chat uses curated tools and the audited command executor. Built-in
+    // filesystem tools remain disabled; commands use exact-command approval.
     const priorRequests = messages
       .filter((message) => message.role === "user")
       .map((message) => message.content)
@@ -365,6 +421,7 @@ export async function openGardenAgentChat(
     const yoloMode = payload.yoloMode === true;
     let prepared = prepareTurn({
       request: text,
+      internalAgentContinuation: payload.internalAgentContinuation === true,
       priorRequests,
       surface: "garden_chat",
       userId,
@@ -441,6 +498,7 @@ export async function openGardenAgentChat(
           }
           const regranted = prepareTurn({
             request: text,
+            internalAgentContinuation: payload.internalAgentContinuation === true,
             priorRequests,
             surface: "garden_chat",
             userId,
@@ -539,6 +597,7 @@ export async function openGardenAgentChat(
     // reviewed workflow by intent, before generic image-to-mesh reconstruction.
     const textToCadSelection = textToCadCommandText({
       text: watchSelection.text,
+      internalContinuation: payload.internalAgentContinuation === true,
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
@@ -701,12 +760,36 @@ export async function openGardenAgentChat(
         ...new Set([...decision.allowedTools, "agent_launch"]),
       ];
     }
+    // Match the canonical turn service: the switch supplies both the brokered
+    // tools and the catalogue/instructions needed to choose a runtime agent.
+    const superAgentInventory = superAgent
+      ? await loadSuperAgentInventory({
+          userId,
+          surface: "garden_chat",
+          request: resolved.userText || text,
+        })
+      : null;
+    if (superAgentInventory) {
+      decision.selectedConditionalSkills = [
+        ...new Set([
+          ...decision.selectedConditionalSkills,
+          ...superAgentInventory.skillSlugs,
+        ]),
+      ];
+      decision.selectedConnections = [
+        ...new Set([
+          ...decision.selectedConnections,
+          ...superAgentInventory.connections,
+        ]),
+      ];
+    }
     // The same offer the Terminal turn service makes when its chain selects
     // nothing: the installed skills whose descriptions match this request,
-    // behind `skill_open`, selected but not injected. Garden Chat has no Super
-    // agent, so this is the only way a skill without a router reaches a turn
-    // here short of the user typing its slash command.
+    // behind `skill_open`, selected but not injected. Super Agent already has
+    // the full catalogue, and a worker continuation is a result, not a request.
     const skillShortlist =
+      !superAgent &&
+      payload.internalAgentContinuation !== true &&
       decision.selectedConditionalSkills.length === 0
         ? shortlistSkillsForTurn({
             request: resolved.userText || text,
@@ -747,6 +830,7 @@ export async function openGardenAgentChat(
       directory: session.activeDirectory,
       userId,
       mode: decision.mode,
+      allowAllConnectionTools: superAgent,
     });
     // The repository this Garden is connected to, read from the checkout for
     // this turn: a description of what it is and how it is laid out, plus its
@@ -799,6 +883,8 @@ export async function openGardenAgentChat(
         modelId: engine.model.modelID,
         reasoningEffort: engine.variant,
         reasoningEffortAdjusted: engine.adjusted,
+        superAgent,
+        yoloMode,
         commands: resolved.invocations,
         automaticWatch,
         automaticTextToCad,
@@ -909,23 +995,39 @@ export async function openGardenAgentChat(
             sources: selectedMedia.video,
           })
         : [];
+    const explanationSelection = normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? normalizeQuartzAssistantSelection(payload.selectedText);
+    const explanationContext = payload.internalAgentContinuation === true ? undefined : await prepareExplanationTurn({
+      runtimeSessionId: session.row.id,
+      request: resolved.userText || text,
+      messages: memory.recentMessages,
+      selectionContext: quartzAssistantSelectionPromptContext(explanationSelection ?? payload.selectedText),
+      selectedText: explanationSelection?.text,
+      sourcePassages: selectedDocumentEvidence,
+      constraints: JSON.stringify({ knownFacts: memory.workingState.knownFacts, decisions: memory.workingState.decisions,
+        historicalInstructions: memory.workingState.historicalInstructions, openQuestions: memory.workingState.openQuestions }),
+    });
+    const explanationFocus = explanationContext?.repair === true && decision.mode === "knowledge";
     const runSystem = composeHermesSystemPrompt({
       surface: "garden_chat",
       decision,
       userText: resolved.userText || text,
+      explanationFocus,
       // Only the attachments that still travel verbatim: a distilled document
       // reaches the model as an index, which has no values to check.
       suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
       conversationPublicId: conversation.public_id,
       adhdMode: payload.adhdMode === true,
       additional: [
+        agentPreferencesContext(userId),
+        superAgentInventory ? renderSuperAgentDirective(superAgentInventory) : "",
         // The garden's own standing instructions, set from the workspace header's
         // settings dialog. Placed ahead of the rest of the turn's context so it
         // reads as a preference the assistant carries into the work, not as a
         // late correction bolted onto the end of the prompt.
         gardenInstructionsContext(session.row.cluster_id),
         gardenTopologyContext(clusterSlug, page),
-        composeMemoryContext(memory),
+        composeMemoryContext(memory, { explanationFocus, recentContextSupplied: Boolean(explanationContext) }),
+        explanationContext ? explanationTurnPrompt(explanationContext) : "",
         // Directly after memory, so the repository reads as something the
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",
@@ -933,6 +1035,7 @@ export async function openGardenAgentChat(
         // Empty unless this turn was offered a shortlist above.
         renderSkillShortlistDirective(skillShortlist),
         documents.context,
+        selectedDocumentEvidence,
         renderWatchVideoContext(preparedGardenVideos),
         editableDocuments.context,
         decision.selectedConditionalSkills.includes(IMAGE_TO_3D_SKILL)
@@ -967,9 +1070,22 @@ export async function openGardenAgentChat(
     // Garden Chat's copy of the capability ledger the Terminal keeps. Same rule:
     // only selections the resolver kept are recorded, so an automatic pick the
     // availability fallback dropped never appears in this turn's provenance.
-    // Super agent does not reach this surface, so there is no inventory here.
     const capabilitySelection = turnCapabilitySelection({
       invocations: resolved.invocations,
+      superAgent,
+      ...(superAgentInventory
+        ? {
+            inventory: {
+              skills: superAgentInventory.skillSlugs.length,
+              connections: superAgentInventory.connections.length,
+              workflows: superAgentInventory.workflows.length,
+            },
+            workflows: superAgentInventory.workflows,
+            skillNames: new Map(
+              superAgentInventory.skills.map((skill) => [skill.slug, skill.name]),
+            ),
+          }
+        : {}),
       automaticSkills: [
         ...(automaticWatch
           ? [
@@ -1033,9 +1149,11 @@ export async function openGardenAgentChat(
             ),
           })
         : [];
-    const runtimeText =
+    const runtimeText = quartzAssistantSelectionQuestionPrompt(
       resolved.text ||
-      "Acknowledge the persona selection briefly and ask how you can help.";
+      "Acknowledge the persona selection briefly and ask how you can help.",
+      normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? payload.selectedText,
+    );
     let run: ReturnType<typeof beginRuntimeRun>;
     try {
       // Document retrieval, command resolution, and skill preparation can take
@@ -1052,12 +1170,13 @@ export async function openGardenAgentChat(
         dispatch: {
           conversationPublicId: conversation.public_id,
           clientMessageId: reservedClientMessageId,
-          runtimeText,
+          runtimeText: hermesPromptText(runtimeText, documents.inlineAttachments),
           model: engine.model,
           modelIdentity: { modelID: engine.selectedModelID },
           variant: engine.variant,
           tools: runTools,
           system: runSystem,
+          explanationContext,
           capabilities: capabilitySelection,
           ...(carriedDelegations.length
             ? { delegatedAgents: carriedDelegations }
@@ -1081,7 +1200,7 @@ export async function openGardenAgentChat(
       prepared,
       run.id,
       reservedClientMessageId,
-      { messageId: runtimeMessageId, instruction: runtimeText },
+      { messageId: runtimeMessageId, instruction: hermesPromptText(runtimeText, documents.inlineAttachments) },
       webGroundingVerdict.required,
       (target) =>
         runtime.startRun({
@@ -1102,6 +1221,7 @@ export async function openGardenAgentChat(
           variant: engine.variant,
           system: runSystem,
           messageId: runtimeMessageId,
+          yoloMode,
         }),
       // Hermes keeps live sessions in memory, so the first Garden turn after a
       // Hermes restart addresses a session id the gateway no longer knows and
@@ -1117,6 +1237,7 @@ export async function openGardenAgentChat(
           activeGardenSlug: clusterSlug,
           activePageSlug: page?.slug ?? null,
           forceRecreate: true,
+          inlineTurnId,
         });
         await runtime.applyCapabilityDecision({
           externalSessionId: replacement.externalSessionId,
@@ -1163,10 +1284,6 @@ function parseMessages(value: unknown): ChatMessage[] {
  * The transcript the composer just sent holds one user message and nothing
  * before it: this send is the chat's first turn, the one that names it.
  */
-function isFirstUserTurn(messages: ChatMessage[]): boolean {
-  return messages.filter((message) => message.role === "user").length === 1;
-}
-
 function parseActivePage(
   value: unknown,
 ): { slug: string; title?: string } | null {
@@ -1479,6 +1596,21 @@ function legacyGardenEventStream(
         RUN_HEARTBEAT_INTERVAL_MS,
       );
       heartbeat.unref?.();
+      // The runtime generator is iterated by hand below, so a `break` or
+      // `return` out of the loop leaves it suspended at its last yield. Its
+      // cleanup (releasing the Hermes service lease, closing the event
+      // subscription) only runs when someone calls `return()` on it. Every
+      // leaked lease counts against Hermes's concurrency cap, and once the cap
+      // is full every new session fails with "agent runtime is unavailable".
+      // `streamSession` is exposed as an AsyncIterable at the runtime boundary;
+      // after calling its async-iterator factory we hold the iterator itself,
+      // so `next`/`return` are addressable. Typed at the protocol boundary
+      // rather than by indexing the iterable's return type, which resolves to
+      // AsyncIterable in the dashboard build and has no `.next`.
+      type RuntimeEvents = AsyncIterator<NormalizedAgentEvent>;
+      let opened:
+        | { events: RuntimeEvents; firstEvent: Promise<IteratorResult<NormalizedAgentEvent>> }
+        | undefined;
       try {
         // Open the event stream, then submit the prompt on the same session.
         // The stream is subscribed first so no early delta is missed; the
@@ -1525,7 +1657,6 @@ function legacyGardenEventStream(
           }
           return { events, firstEvent };
         };
-        let opened: Awaited<ReturnType<typeof openTurn>>;
         try {
           opened = await openTurn(session);
         } catch (firstError) {
@@ -1584,7 +1715,7 @@ function legacyGardenEventStream(
               text: sealed,
             });
           }
-          if (event.type === "assistant.completed") {
+          if (event.type === "assistant.completed" || event.type === "assistant.usage") {
             const usage = normalizeChatTokenUsage(event.payload.usage);
             if (usage) {
               tokenUsage = usage;
@@ -1608,6 +1739,12 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "tool.completed") {
+            // The runtime prompt can include selected page text. Only the
+            // original user instruction may request a navigation widget.
+            event.payload.uiResources = uiResourcesForUserRequest(
+              event.payload.uiResources,
+              getRuntimeRun(runId)?.instruction ?? "",
+            );
             associateArtifactToolCall(
               runId,
               event.payload.toolName,
@@ -1687,6 +1824,11 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "clarify.requested") {
+            recordQuestionNotification(db, {
+              runtimeSessionId: session.row.id,
+              runId,
+              ...event.payload,
+            });
             emit({ type: "clarify", ...event.payload });
             recordAuditEvent({
               eventType: "clarify.requested",
@@ -1700,6 +1842,7 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "clarify.expired") {
+            resolveQuestionNotification(db, session.row.id, event.payload.requestId);
             emit({
               type: "clarify_expired",
               requestId: event.payload.requestId,
@@ -1748,6 +1891,18 @@ function legacyGardenEventStream(
             // Text is provisional until Hermes reaches idle because any
             // earlier segment may still become tool-call narration. Reveal the
             // stable answer once, after that decision.
+            const explanation = await reviewRuntimeExplanation({
+              runId, answer: assistantText, evidence,
+              onStage: (stage) => {
+                const detail = `\n\n${stage === "repair" ? "Repairing an explanation gap." : stage === "plan" ? "Identifying the necessary mechanisms." : "Checking explanation coverage."}`;
+                reasoning += detail;
+                emit({ type: "thinking", text: detail });
+              },
+            });
+            if (!explanation) return; // A stop during review owns the terminal state.
+            assistantText = explanation.answer;
+            tokenUsage = mergeExplanationUsage(tokenUsage, explanation.usage);
+            if (tokenUsage) emit({ type: "usage", usage: tokenUsage });
             emit({ type: "replace", text: assistantText });
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,
@@ -1762,6 +1917,10 @@ function legacyGardenEventStream(
                 toolCalls,
               }),
             });
+            verification.explanationReview = explanation.report;
+            // Whatever this turn left on disk becomes a card now, before the
+            // stream closes and before the capability decision is revoked.
+            await publishProducedFilesForTurn({ session, runId, clientMessageId });
             emitArtifactEvents();
             // Last chance before the stream closes: an unemitted launch would be
             // a run the agent believes it started and nobody ever will.
@@ -1871,6 +2030,10 @@ function legacyGardenEventStream(
         });
       } finally {
         clearInterval(heartbeat);
+        // Close the runtime generator whichever way the loop ended. A
+        // finished generator makes this a no-op; a suspended one runs its
+        // cleanup and hands the service lease back.
+        await opened?.events.return?.(undefined).catch(() => undefined);
         sink.emit(encoder.encode("data: [DONE]\n\n"));
         sink.close();
       }

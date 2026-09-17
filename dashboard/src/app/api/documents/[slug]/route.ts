@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
-import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { externalRuntimeFilesystem as fs, externalRuntimePortableRealpath } from "@/lib/external-runtime-filesystem";
 import db from "@/lib/db";
 import {
   normalizeTopicTags,
@@ -8,7 +8,7 @@ import {
   walkClusterMarkdown,
 } from "@/lib/knowledge";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
-import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
+import { acquireGardenMutationLease, assertGardenMutationWritePaths } from "@/lib/garden-mutation-lease";
 import {
   requireOwnedClusterFromSlug,
   requireReadableClusterFromSlug,
@@ -524,7 +524,9 @@ export async function PATCH(
   const gardenDir = path.resolve(context.contentPath, context.clusterSlug);
   let lease: ReturnType<typeof acquireGardenMutationLease>;
   try {
-    lease = acquireGardenMutationLease(gardenDir, "update-document");
+    lease = acquireGardenMutationLease(gardenDir, "update-document", {
+      paths: [path.relative(externalRuntimePortableRealpath(gardenDir), externalRuntimePortableRealpath(context.filePath))],
+    });
   } catch (error) {
     return routeErrorResponse(error);
   }
@@ -597,11 +599,12 @@ export async function PATCH(
     }
 
     fs.writeFileSync(context.filePath, content, "utf-8");
-    refreshClusterIndex(context.contentPath, context.clusterSlug);
-    await publishQuartzAfterMutation(
+    refreshClusterIndex(context.contentPath, context.clusterSlug, { migrateSources: false });
+    lease.release();
+    void publishQuartzAfterMutation(
       `update document ${context.clusterSlug}/${context.slug}`,
       { userId: context.userId, gardenSlug: context.clusterSlug },
-    );
+    ).catch(error => console.error("[garden] Document saved; publication failed:", error));
 
     return json({ success: true, slug: context.slug, title, flagColor, tags });
   } finally {
@@ -618,6 +621,14 @@ export async function GET(
 
   const content = fs.readFileSync(context.filePath, "utf-8");
   const { body } = splitFrontmatter(content);
+  const reader = new URL(request.url).searchParams.get("render") === "1"
+    ? await (await import("@/lib/generated/quartz-reader.mjs")).renderQuartzDocument({
+        content,
+        relativePath: path.relative(externalRuntimePortableRealpath(context.contentPath), externalRuntimePortableRealpath(context.filePath)).replace(/\\/g, "/"),
+        contentRoot: externalRuntimePortableRealpath(context.contentPath).replace(/\\/g, "/"),
+        allFiles: walkClusterMarkdown(context.contentPath).map(page => page.relPath),
+      })
+    : undefined;
   return json({
     success: true,
     slug: context.slug,
@@ -626,6 +637,7 @@ export async function GET(
     title: frontmatterTitle(content),
     tags: frontmatterArrayValue(parseFrontmatter(content), "semanticHints"),
     body,
+    reader,
   });
 }
 
@@ -641,7 +653,13 @@ export async function DELETE(
 
   let lease: ReturnType<typeof acquireGardenMutationLease>;
   try {
-    lease = acquireGardenMutationLease(clusterDir, "delete-document");
+    const beforeDelete = parseFrontmatter(fs.readFileSync(context.filePath, "utf-8"));
+    lease = acquireGardenMutationLease(clusterDir, "delete-document", {
+      // Source deletion can cascade into managed documents and assets.
+      paths: frontmatterStringValue(beforeDelete, "knowledge_type") === "source-document"
+        ? undefined
+        : [path.relative(externalRuntimePortableRealpath(clusterDir), externalRuntimePortableRealpath(context.filePath))],
+    });
   } catch (error) {
     return routeErrorResponse(error);
   }
@@ -676,6 +694,10 @@ export async function DELETE(
     }
 
     try {
+      assertGardenMutationWritePaths(lease, clusterDir, [
+        ...deletePlan.slugs.map(slug => entryBySlug.get(slug)?.relPath ?? ""),
+        ...(isSourceDocument ? ["sources"] : []),
+      ]);
       for (const slug of deletePlan.slugs) {
         const found = entryBySlug.get(slug);
         if (!found || !fs.existsSync(found.filePath)) continue;
@@ -721,11 +743,12 @@ export async function DELETE(
       return json({ error: "Failed to delete document" }, { status: 500 });
     }
 
-    refreshClusterIndex(context.contentPath, context.clusterSlug);
-    await publishQuartzAfterMutation(
+    refreshClusterIndex(context.contentPath, context.clusterSlug, { migrateSources: false });
+    lease.release();
+    void publishQuartzAfterMutation(
       `delete document ${context.clusterSlug}/${context.slug}`,
       { userId: context.userId, gardenSlug: context.clusterSlug },
-    );
+    ).catch(error => console.error("[garden] Document deleted; publication failed:", error));
     return json({ success: true, slug: context.slug, deletedSlugs });
   } finally {
     lease.release();

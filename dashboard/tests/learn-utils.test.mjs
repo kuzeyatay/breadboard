@@ -92,6 +92,28 @@ describe("learn utilities", () => {
     assert.equal(countAiisms("A spike is a discrete event whose timing carries information."), 0);
   });
 
+  test("filler, ceremony, and contrastive-negation openers count as AI-isms and are reported verbatim", async () => {
+    const { aiismMatches, assessLessonQuality } = await import("../src/lib/learn-utils.ts");
+    const slop = [
+      "Electric potential is not about energy; it is about position.",
+      "Far from being a side effect, the field merely encodes the force.",
+      "Three features of this force are readily apparent upon measurement.",
+      "The permittivity serves as a measure of the medium and plays a crucial role.",
+      "Simply put, let's dive into the mechanism.",
+    ].join(" ");
+    const hits = aiismMatches(slop);
+    for (const expected of ["is not about", "Far from being", "merely", "readily apparent", "serves as", "plays a crucial role", "Simply put,", "let's dive"]) {
+      assert.ok(hits.some((hit) => hit.toLowerCase().includes(expected.toLowerCase())), `${expected} in ${JSON.stringify(hits)}`);
+    }
+    // Ordinary technical prose with the same words used plainly is untouched.
+    assert.equal(countAiisms("If you measure the force you see three things. The field at a point is the force a unit charge would feel there. Doubling the distance cuts the force to a quarter."), 0);
+    const problem = assessLessonQuality(`${slop} ${"word ".repeat(800)} **Question.** q\n\n<details>\n<summary>Answer</summary>\n\n**Answer.** for example a.\n\n</details>`)
+      .problems.find((entry) => entry.code === "aiisms");
+    assert.ok(problem?.hard);
+    assert.ok(problem.evidence.includes("merely"));
+    assert.match(problem.message, /contrastive-negation/);
+  });
+
   test("sanitizes generated lesson titles", () => {
     assert.equal(
       sanitizeLearnerTitle("1.1 From Conventional Neural Networks to SNNs Overview"),
@@ -505,6 +527,10 @@ describe("learn route and council wiring", () => {
       ),
       "utf8",
     );
+    const learnSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn.ts"),
+      "utf8",
+    );
     const confirmationDialogSource = fs.readFileSync(
       path.join(
         repoRoot,
@@ -528,8 +554,19 @@ describe("learn route and council wiring", () => {
       /!learnState\?\.hasSources && status !== "failed" && !hasLearnData/,
     );
     assert.match(clearRouteSource, /requireOwnedClusterFromSlug/);
+    assert.match(
+      clearRouteSource,
+      /const \{ userId, cluster \} = await requireOwnedClusterFromSlug\(gardenId\)/,
+    );
     assert.match(clearRouteSource, /body\.confirmClearLearnData !== true/);
-    assert.match(clearRouteSource, /clearAllLearnData/);
+    assert.match(
+      clearRouteSource,
+      /clearAllLearnData\(\{[\s\S]*?userId,[\s\S]*?gardenId: cluster\.slug/,
+    );
+    assert.match(
+      learnSource,
+      /export async function clearAllLearnData\(\{\s*userId,[\s\S]*?publishQuartzAfterMutation\(`cleared Learn data in \$\{gardenId\}`,[\s\S]*?\{\s*userId,/,
+    );
     assert.match(clearRouteSource, /LearnClearConflictError/);
     assert.match(clearRouteSource, /LearnPipelineConflictError/);
     assert.match(clearRouteSource, /status: 409/);

@@ -7,10 +7,12 @@ import {
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
 import { spotifyPlaybackEngineStatus } from "@/lib/spotify/playback-engine.ts";
+import { controlSpotifyPlaybackRuntime } from "@/lib/spotify/runtime-service.ts";
 import {
-  searchSpotifyTracks,
+  searchSpotifyCatalog,
   spotifyAddTrackToPlaylist,
   spotifyApiRequest,
+  spotifyArtistProfile,
   spotifyConnectionStatus,
   spotifyCreateManagedPlaylist,
   spotifyCurrentPlaybackState,
@@ -33,9 +35,12 @@ const ACTIONS = new Set([
   "resume",
   "previous",
   "next",
+  "seek",
   "transfer",
   "play-track",
   "play-playlist",
+  "play-artist",
+  "play-album",
   "save-track",
   "remove-saved-track",
   "add-to-playlist",
@@ -46,14 +51,22 @@ const ACTIONS = new Set([
 ]);
 const SPOTIFY_TRACK_URI = /^spotify:track:[A-Za-z0-9]{10,64}$/;
 const SPOTIFY_PLAYLIST_URI = /^spotify:playlist:[A-Za-z0-9]{10,64}$/;
+const SPOTIFY_ARTIST_URI = /^spotify:artist:[A-Za-z0-9]{10,64}$/;
+const SPOTIFY_ALBUM_URI = /^spotify:album:[A-Za-z0-9]{10,64}$/;
+const TRANSPORT_ACTIONS = new Set(["pause", "resume", "next", "previous", "seek"]);
+const preparedQueues = new Map<string, { expiresAt: number; uris: string[]; ready: Promise<void> }>();
 
-async function stateAfterChange(userId: number, expectedUri?: string) {
-  for (let attempt = 0; attempt < (expectedUri ? 5 : 1); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    const playback = await spotifyCurrentPlaybackState(userId).catch(() => null);
-    if (!expectedUri || playback?.track.uri === expectedUri) return playback;
-  }
-  return spotifyCurrentPlaybackState(userId).catch(() => null);
+function prepareQueue(userId: number, trackId: string) {
+  const key = `${userId}:${trackId}`;
+  const cached = preparedQueues.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached;
+  const entry = { expiresAt: Date.now() + 5 * 60_000, uris: [] as string[], ready: Promise.resolve() };
+  preparedQueues.set(key, entry);
+  while (preparedQueues.size > 64) preparedQueues.delete(preparedQueues.keys().next().value!);
+  entry.ready = spotifyRecommendedTracks(userId, trackId, 10)
+    .then(tracks => { entry.uris = tracks.map(track => track.uri); })
+    .catch(() => { entry.expiresAt = Date.now() + 60_000; });
+  return entry;
 }
 
 export async function GET(request: Request) {
@@ -62,16 +75,30 @@ export async function GET(request: Request) {
     const userId = await requireUserId();
     const url = new URL(request.url);
     const view = url.searchParams.get("view");
+    if (view === "prepare-track") {
+      const trackId = url.searchParams.get("id") ?? "";
+      if (!/^[A-Za-z0-9]{10,64}$/u.test(trackId)) {
+        throw new ApiError(400, "invalid_spotify_track", "The Spotify track is invalid.");
+      }
+      await prepareQueue(userId, trackId).ready;
+      return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    }
     if (view === "search") {
       const query = url.searchParams.get("q") ?? "";
       return NextResponse.json(
-        { tracks: await searchSpotifyTracks(userId, query, 10) },
+        await searchSpotifyCatalog(userId, query, 10),
         { headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } },
       );
     }
     if (view === "playlists") {
       return NextResponse.json(
         { playlists: await spotifyUserPlaylists(userId, 24) },
+        { headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } },
+      );
+    }
+    if (view === "artist") {
+      return NextResponse.json(
+        await spotifyArtistProfile(userId, url.searchParams.get("id") ?? ""),
         { headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } },
       );
     }
@@ -95,15 +122,19 @@ export async function GET(request: Request) {
         history: spotifyListeningHistory.read(userId),
       });
     }
+    let playbackError: string | undefined;
     const [engine, playback] = await Promise.all([
       spotifyPlaybackEngineStatus(userId),
-      spotifyCurrentPlaybackState(userId).catch(() => null),
+      spotifyCurrentPlaybackState(userId).catch((error: unknown) => {
+        playbackError = error instanceof ApiError ? error.message : "Spotify playback status is unavailable.";
+        return null;
+      }),
     ]);
     const savedTrack = playback
       ? await spotifyLibraryContains(userId, playback.track.id).catch(() => false)
       : false;
     return NextResponse.json(
-      { ...connection, engine, playback, savedTrack, history: spotifyListeningHistory.read(userId) },
+      { ...connection, engine, playback, savedTrack, history: spotifyListeningHistory.read(userId), ...(playbackError ? { playbackError } : {}) },
       { headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } },
     );
   } catch (error) {
@@ -128,8 +159,8 @@ export async function POST(request: Request) {
     }
     const allowedKeys = action === "play-track"
       ? new Set(["action", "trackUri", "queueUris", "autoplay"])
-      : action === "play-playlist"
-        ? new Set(["action", "playlistUri"])
+      : action === "play-playlist" || action === "play-artist" || action === "play-album"
+        ? new Set(["action", action === "play-artist" ? "artistUri" : action === "play-album" ? "albumUri" : "playlistUri"])
         : action === "save-track" || action === "remove-saved-track"
           ? new Set(["action", "trackUri"])
           : action === "add-to-playlist" || action === "remove-from-playlist"
@@ -140,9 +171,17 @@ export async function POST(request: Request) {
                 ? new Set(["action", "playlistId", "name"])
                 : action === "delete-playlist"
                   ? new Set(["action", "playlistId"])
-                  : new Set(["action"]);
-    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+                  : action === "seek"
+                    ? new Set(["action", "positionMs"])
+                    : new Set(["action"]);
+    if (TRANSPORT_ACTIONS.has(action)) allowedKeys.add("local");
+    if (Object.keys(body).some((key) => !allowedKeys.has(key)) || ("local" in body && typeof body.local !== "boolean")) {
       throw new ApiError(400, "invalid_spotify_dock_action", "That music control is not supported.");
+    }
+    if (action === "seek" && (
+      typeof body.positionMs !== "number" || !Number.isFinite(body.positionMs) || body.positionMs < 0
+    )) {
+      throw new ApiError(400, "invalid_spotify_position", "The playback position is invalid.");
     }
     if (!spotifyConnectionStatus(userId).connected) {
       throw new ApiError(
@@ -153,6 +192,8 @@ export async function POST(request: Request) {
     }
     const trackUri = typeof body.trackUri === "string" ? body.trackUri : "";
     const playlistUri = typeof body.playlistUri === "string" ? body.playlistUri : "";
+    const artistUri = typeof body.artistUri === "string" ? body.artistUri : "";
+    const albumUri = typeof body.albumUri === "string" ? body.albumUri : "";
     const playlistId = typeof body.playlistId === "string" ? body.playlistId : "";
     const name = typeof body.name === "string" ? body.name : "";
     if (
@@ -171,6 +212,12 @@ export async function POST(request: Request) {
     }
     if (action === "play-playlist" && !SPOTIFY_PLAYLIST_URI.test(playlistUri)) {
       throw new ApiError(400, "invalid_spotify_playlist", "The Spotify playlist is invalid.");
+    }
+    if (action === "play-artist" && !SPOTIFY_ARTIST_URI.test(artistUri)) {
+      throw new ApiError(400, "invalid_spotify_artist", "The Spotify artist is invalid.");
+    }
+    if (action === "play-album" && !SPOTIFY_ALBUM_URI.test(albumUri)) {
+      throw new ApiError(400, "invalid_spotify_album", "The Spotify album is invalid.");
     }
     if (
       (action === "add-to-playlist" || action === "remove-from-playlist") &&
@@ -229,12 +276,34 @@ export async function POST(request: Request) {
     }
 
     const engine = await spotifyPlaybackEngineStatus(userId);
+    if (body.local === true && engine.ready && engine.deviceId && TRANSPORT_ACTIONS.has(action)) {
+      const local = await controlSpotifyPlaybackRuntime({
+        userId, deviceId: engine.deviceId,
+        action: action as "pause" | "resume" | "next" | "previous" | "seek",
+        ...(action === "seek" ? { positionMs: body.positionMs as number } : {}),
+      });
+      if (local.handled) {
+        return NextResponse.json({ ok: true, engine, localPlayback: local, refreshPlayback: action === "next" || action === "previous" });
+      }
+    }
     // Transport controls stay on the active Spotify device, including a
     // phone, and do not need Breadboard's own playback engine to be ready.
-    if (action === "pause" || action === "previous" || action === "next") {
+    if (action === "pause" || action === "previous" || action === "next" || action === "seek") {
       const current = await spotifyCurrentPlaybackState(userId).catch(() => null);
       if (!current) {
         throw new ApiError(409, "spotify_playback_required", "Start a track in Spotify first.");
+      }
+      if (action === "seek") {
+        const positionMs = Math.min(Math.round(body.positionMs as number), Math.max(0, current.track.durationMs - 1));
+        await spotifyApiRequest({
+          userId,
+          method: "PUT",
+          endpoint: "/v1/me/player/seek",
+          query: { position_ms: positionMs, ...(current.deviceId ? { device_id: current.deviceId } : {}) },
+        });
+        // Spotify accepts the seek before its playback read endpoint catches up.
+        // Anchor the UI at the accepted position; the next poll reconciles it.
+        return NextResponse.json({ ok: true, engine, playback: { ...current, positionMs } });
       }
       await spotifyApiRequest({
         userId,
@@ -245,7 +314,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         engine,
-        playback: await stateAfterChange(userId),
+        ...(action === "pause" ? { playback: { ...current, isPlaying: false } } : { refreshPlayback: true }),
         history: spotifyListeningHistory.read(userId),
       });
     }
@@ -258,13 +327,11 @@ export async function POST(request: Request) {
     }
 
     if (action === "play-track") {
-      // Search results are not a listening queue. Seed Spotify's recommendation
-      // engine from the selected result, then fall back to Spotify autoplay if
-      // recommendations are unavailable for this account or app quota mode.
+      // Hover/focus prepares recommendations outside the audio-start path.
+      // Cold clicks start immediately and use Spotify autoplay as the fallback.
+      const prepared = preparedQueues.get(`${userId}:${trackUri.slice("spotify:track:".length)}`);
       const submittedQueue = body.autoplay === true
-        ? await spotifyRecommendedTracks(userId, trackUri.slice("spotify:track:".length), 10)
-          .then((tracks) => tracks.map((track) => track.uri))
-          .catch(() => [])
+        ? prepared && prepared.expiresAt > Date.now() ? prepared.uris : []
         : Array.isArray(body.queueUris) ? body.queueUris : [];
       const queueUris = [trackUri, ...submittedQueue]
         .filter((uri): uri is string => typeof uri === "string" && SPOTIFY_TRACK_URI.test(uri))
@@ -280,22 +347,22 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         engine,
-        playback: await stateAfterChange(userId, trackUri),
+        refreshPlayback: true,
         history: spotifyListeningHistory.read(userId),
       });
     }
-    if (action === "play-playlist") {
+    if (action === "play-playlist" || action === "play-artist" || action === "play-album") {
       await spotifyApiRequest({
         userId,
         method: "PUT",
         endpoint: "/v1/me/player/play",
         query: { device_id: engine.deviceId },
-        body: { context_uri: playlistUri },
+        body: { context_uri: action === "play-artist" ? artistUri : action === "play-album" ? albumUri : playlistUri },
       });
       return NextResponse.json({
         ok: true,
         engine,
-        playback: await stateAfterChange(userId),
+        refreshPlayback: true,
         history: spotifyListeningHistory.read(userId),
       });
     }
@@ -322,7 +389,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       engine,
-      playback: await stateAfterChange(userId),
+      ...(current ? { playback: { ...current, isPlaying: true, deviceId: engine.deviceId, deviceName: "Breadboard" } } : {}),
+      refreshPlayback: true,
       history: spotifyListeningHistory.read(userId),
     });
   } catch (error) {

@@ -11,6 +11,10 @@ export function parseBrowserTerminalAccess(value: unknown): BrowserTerminalAcces
 
 export async function currentBrowserTerminalAccess(): Promise<BrowserTerminalAccess | undefined> {
   if (typeof window === "undefined") return undefined;
+  const voice = (window as Window & { voiceCompanion?: {
+    getScreenContextAccess?: () => Promise<BrowserTerminalAccess | null>;
+  } }).voiceCompanion;
+  if (voice?.getScreenContextAccess) return parseBrowserTerminalAccess(await voice.getScreenContextAccess());
   const desktop = (window as Window & { breadboardDesktop?: {
     getBrowserTerminalAccess?: () => Promise<BrowserTerminalAccess | null>;
   } }).breadboardDesktop;

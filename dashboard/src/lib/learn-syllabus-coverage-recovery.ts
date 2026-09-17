@@ -15,7 +15,7 @@ import type { ModelSourcePageAnchorRecord } from "./model-source-anchor-ledger.t
 
 export const SYLLABUS_COVERAGE_RECOVERY_SCHEMA_VERSION = 1 as const;
 export const SYLLABUS_COVERAGE_PAGE_SELECTOR_PROMPT_VERSION =
-  "syllabus-coverage-page-selector-v1" as const;
+  "syllabus-coverage-page-selector-v3" as const;
 export const SYLLABUS_COVERAGE_RECOVERY_REVIEW_PROMPT_VERSION =
   "syllabus-coverage-independent-review-v1" as const;
 export const SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTOR_CANDIDATES = 1 as const;
@@ -203,6 +203,66 @@ interface RecoveryCatalogEntry {
   navigationTextSha256: string;
 }
 
+// The selector only needs a bounded navigation preview and an exact way to
+// identify the source/page pair. Repeating the long source ids and anchor ids
+// in every object made a legitimate multi-book catalog exceed the transport
+// cap before the model could select anything. Keep the canonical entries in
+// memory for validation, but send compact source-indexed tuples over the model
+// boundary. The alias is resolved back to the canonical anchor before any
+// evidence is hydrated or persisted.
+type RecoveryCatalogTransportEntry = readonly [
+  alias: string,
+  sourceIndex: number,
+  pageNumber: number,
+  excerpt: string,
+];
+
+interface RecoveryCatalogTransport {
+  sourceIds: string[];
+  pageCatalog: RecoveryCatalogTransportEntry[];
+}
+
+function recoveryCatalogTransport(
+  catalog: readonly RecoveryCatalogEntry[],
+): RecoveryCatalogTransport {
+  const sourceIds = [...new Set(catalog.map((entry) => entry.sourceId))];
+  const sourceIndexes = new Map(sourceIds.map((sourceId, index) => [sourceId, index]));
+  const catalogAtExcerptLimit = (excerptLimit: number): RecoveryCatalogTransport => ({
+    sourceIds,
+    pageCatalog: catalog.map((entry, index) => [
+      `p${index}`,
+      sourceIndexes.get(entry.sourceId)!,
+      entry.pageNumber,
+      entry.excerpt.slice(0, excerptLimit),
+    ]),
+  });
+  const chars = (candidate: RecoveryCatalogTransport): number =>
+    JSON.stringify(candidate).length;
+  let transport = catalogAtExcerptLimit(40);
+  if (chars(transport) <= SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
+    return transport;
+  }
+  transport = catalogAtExcerptLimit(0);
+  if (chars(transport) > SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
+    throw new Error(
+      `Syllabus coverage recovery page catalog exceeds the ${SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS}-character cap.`,
+    );
+  }
+  let lower = 1;
+  let upper = 39;
+  while (lower <= upper) {
+    const candidateLimit = Math.floor((lower + upper) / 2);
+    const candidate = catalogAtExcerptLimit(candidateLimit);
+    if (chars(candidate) <= SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS) {
+      transport = candidate;
+      lower = candidateLimit + 1;
+    } else {
+      upper = candidateLimit - 1;
+    }
+  }
+  return transport;
+}
+
 function recoveryCatalog(input: {
   sources: readonly SyllabusCoverageRecoverySource[];
   anchors: readonly ModelSourcePageAnchorRecord[];
@@ -300,12 +360,12 @@ function recoveryCatalog(input: {
 
 export const SYLLABUS_COVERAGE_PAGE_SELECTOR_PROMPT = `You select exact canonical source pages for an independent syllabus-coverage rereview.
 Return ONLY JSON with exactly this shape:
-{"selectedPages":[{"anchorId":"exact supplied page anchor id","sourceId":"exact supplied source id","pageNumber":1,"selectionReason":"why this complete page can resolve an evidence gap"}],"selectionReason":"why this bounded set is sufficient"}
+{"selectedPages":[{"anchorId":"exact supplied compact page alias","selectionReason":"why this complete page can resolve an evidence gap"}],"selectionReason":"why this bounded set is sufficient"}
 Hard rules:
-- Selection is semantic and model-authored. Choose only exact page identities from pageCatalog; code will never match a syllabus locator, title, author, or topic to a page for you.
+- Selection is semantic and model-authored. Choose only exact aliases from pageCatalog; code will never match a syllabus locator, title, author, or topic to a page for you.
 - Select at least one and no more than the supplied maximumSelectedPages. Do not repeat a page.
 - Prefer the smallest set that can test both cited-work identity and unit-level support. Bibliographic/front-matter pages may establish exact title/author/edition/publisher or locator identity, but cannot alone establish unit teachability; pair them with substantive teaching pages where needed.
-- sourceId and pageNumber must exactly match the chosen anchorId record. Do not invent, repair, expand, or renumber identities.
+- Return only the chosen compact alias and your reason. The alias already binds the canonical source and page number; do not repeat, invent, expand, or renumber either identity.
 - The next reviewer receives each selected page in full. Do not quote or rewrite page content in this response.`;
 
 export const SYLLABUS_COVERAGE_RECOVERY_REVIEW_PROMPT = `You independently re-author the complete syllabus material-resolution and unit-coverage decision from canonical source evidence.
@@ -324,7 +384,7 @@ function selectorRequest(input: {
   sourceArtifactInventoryHash: string;
   syllabusPlan: SyllabusPlan;
   initialDecision: ModelAuthoredSyllabusCoverageDecision;
-  catalog: readonly RecoveryCatalogEntry[];
+  catalog: RecoveryCatalogTransport;
 }): SyllabusCoverageRecoveryProviderRequest {
   const user = JSON.stringify({
     protocolVersion: SYLLABUS_COVERAGE_PAGE_SELECTOR_PROMPT_VERSION,
@@ -332,7 +392,11 @@ function selectorRequest(input: {
     sourceArtifactInventoryHash: input.sourceArtifactInventoryHash,
     syllabusPlan: input.syllabusPlan,
     initialCoverageDecision: input.initialDecision,
-    pageCatalog: input.catalog,
+    sourceIds: input.catalog.sourceIds,
+    // Each tuple is [compact anchor alias, source index, page number,
+    // bounded navigation excerpt]. The source index resolves through
+    // sourceIds above; canonical anchor ids remain internal validation data.
+    pageCatalog: input.catalog.pageCatalog,
     caps: {
       maximumSelectedPages: SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTED_PAGES,
       maximumSelectedChars: SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTED_CHARS,
@@ -355,6 +419,7 @@ function selectorRequest(input: {
 function pageSelectionProblems(
   value: unknown,
   catalog: readonly RecoveryCatalogEntry[],
+  transport: RecoveryCatalogTransport,
 ): string[] {
   const problems: string[] = [];
   const root = record(value);
@@ -375,13 +440,16 @@ function pageSelectionProblems(
       `page-selection selectedPages exceeds the ${SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTED_PAGES}-page cap`,
     );
   }
-  const byId = new Map(catalog.map((entry) => [entry.anchorId, entry]));
+  const byId = new Map(transport.pageCatalog.map((entry, index) => [
+    entry[0],
+    catalog[index],
+  ]));
   const seen = new Set<string>();
   root.selectedPages.forEach((raw, index) => {
     const at = `page-selection selectedPages[${index}]`;
     const selection = record(raw);
-    if (!selection || !exactKeys(selection, ["anchorId", "sourceId", "pageNumber", "selectionReason"])) {
-      problems.push(`${at} must contain exactly anchorId, sourceId, pageNumber, and selectionReason`);
+    if (!selection || !exactKeys(selection, ["anchorId", "selectionReason"])) {
+      problems.push(`${at} must contain exactly anchorId and selectionReason`);
       return;
     }
     if (!nonEmptyExactString(selection.anchorId)) {
@@ -395,11 +463,9 @@ function pageSelectionProblems(
       problems.push(`${at}.anchorId is not in the canonical page catalog`);
       return;
     }
-    if (selection.sourceId !== expected.sourceId) {
-      problems.push(`${at}.sourceId does not match anchorId "${selection.anchorId}"`);
-    }
-    if (selection.pageNumber !== expected.pageNumber) {
-      problems.push(`${at}.pageNumber does not match anchorId "${selection.anchorId}"`);
+    if (!expected) {
+      problems.push(`${at}.anchorId does not resolve to a valid canonical source page`);
+      return;
     }
     if (!nonEmptyExactString(selection.selectionReason)) {
       problems.push(`${at}.selectionReason must be a non-empty exact string`);
@@ -408,9 +474,26 @@ function pageSelectionProblems(
   return unique(problems);
 }
 
-function projectedSelections(value: unknown): SyllabusCoverageRecoverySelection[] {
-  const root = value as { selectedPages: SyllabusCoverageRecoverySelection[] };
-  return root.selectedPages.map((selection) => ({ ...selection }));
+function canonicalSelections(
+  value: unknown,
+  catalog: readonly RecoveryCatalogEntry[],
+): SyllabusCoverageRecoverySelection[] {
+  const root = value as {
+    selectedPages: Array<{ anchorId: string; selectionReason: string }>;
+  };
+  return root.selectedPages.map((selection) => {
+    const aliasIndex = Number.parseInt(selection.anchorId.slice(1), 10);
+    const canonical = catalog[aliasIndex];
+    if (!canonical) {
+      throw new Error("Syllabus coverage recovery selected an unknown compact page alias.");
+    }
+    return {
+      anchorId: canonical.anchorId,
+      sourceId: canonical.sourceId,
+      pageNumber: canonical.pageNumber,
+      selectionReason: selection.selectionReason,
+    };
+  });
 }
 
 function reviewRequest(input: {
@@ -506,6 +589,20 @@ function coverageWithoutReceipt(coverage: SyllabusCoverage): Omit<SyllabusCovera
   return rest;
 }
 
+/** Coverage persisted before `assignedMaterials` existed still projects the
+ * same semantic decision; compare it without the field it could not have. */
+function comparableToPersistedCoverage(
+  projected: SyllabusCoverage,
+  persisted: SyllabusCoverage,
+): Omit<SyllabusCoverage, "evidenceRecovery"> {
+  const persistedHasMaterials = persisted.units.some((unit) => unit.assignedMaterials !== undefined);
+  if (persistedHasMaterials) return projected;
+  return {
+    ...projected,
+    units: projected.units.map(({ assignedMaterials: _dropped, ...unit }) => unit),
+  };
+}
+
 export function syllabusCoverageHasTeachableUnits(
   coverage: Pick<SyllabusCoverage, "units"> | null | undefined,
 ): boolean {
@@ -560,18 +657,23 @@ export async function runSyllabusCoverageEvidenceRecovery(input: {
 
   const bindings = sourceBindings(input.sources);
   const catalog = recoveryCatalog({ sources: input.sources, anchors: input.anchors });
+  const transportCatalog = recoveryCatalogTransport(catalog);
   input.checkpoint?.();
   const selectionRequest = selectorRequest({
     sourceSetHash: input.sourceSetHash,
     sourceArtifactInventoryHash: input.sourceArtifactInventoryHash,
     syllabusPlan: input.syllabusPlan,
     initialDecision: input.initialCoverageDecision as ModelAuthoredSyllabusCoverageDecision,
-    catalog,
+    catalog: transportCatalog,
   });
   const selectionResult = await input.provider(selectionRequest);
   input.checkpoint?.();
   const selectionParsed = parseJsonCandidate(selectionResult.rawResponse);
-  const selectionProblems = pageSelectionProblems(selectionParsed, catalog);
+  const selectionProblems = pageSelectionProblems(
+    selectionParsed,
+    catalog,
+    transportCatalog,
+  );
   const selectionAttempt = attemptRecord({
     request: selectionRequest,
     result: selectionResult,
@@ -583,7 +685,7 @@ export async function runSyllabusCoverageEvidenceRecovery(input: {
       `Syllabus coverage page selection failed its single bounded model candidate: ${selectionProblems.join("; ")}`,
     );
   }
-  const selections = projectedSelections(selectionParsed);
+  const selections = canonicalSelections(selectionParsed, catalog);
   const rawPages = hydrateSelectedCanonicalSourceRawPages({
     sources: input.sources.map((source) => ({ sourceId: source.sourceId, body: source.body })),
     selections,
@@ -812,18 +914,23 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
       problems.push("syllabus coverage evidence-recovery selector model does not match the receipt model");
     }
     if (initialDecision) {
+      const transportCatalog = recoveryCatalogTransport(catalog);
       const expectedRequest = selectorRequest({
         sourceSetHash: receipt.sourceSetHash,
         sourceArtifactInventoryHash: receipt.sourceArtifactInventoryHash,
         syllabusPlan: receipt.syllabusPlan,
         initialDecision: initialDecision as ModelAuthoredSyllabusCoverageDecision,
-        catalog,
+        catalog: transportCatalog,
       });
       if (requestSha256(expectedRequest) !== selectorAttempt.requestSha256) {
         problems.push("syllabus coverage evidence-recovery selector request hash does not match");
       }
       const parsedSelection = parseJsonCandidate(selectorAttempt.rawResponse);
-      const expectedSelectionProblems = pageSelectionProblems(parsedSelection, catalog);
+      const expectedSelectionProblems = pageSelectionProblems(
+        parsedSelection,
+        catalog,
+        transportCatalog,
+      );
       if (canonicalJson(expectedSelectionProblems) !== canonicalJson(selectorAttempt.validationProblems)) {
         problems.push("syllabus coverage evidence-recovery selector diagnostics do not match exact raw response");
       }
@@ -836,7 +943,10 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
   let expectedSelectedPages: SyllabusCoverageRecoverySelectedPage[] = [];
   if (selectorAttempt && selectorAttempt.validationProblems.length === 0) {
     try {
-      const selections = projectedSelections(parseJsonCandidate(selectorAttempt.rawResponse));
+      const selections = canonicalSelections(
+        parseJsonCandidate(selectorAttempt.rawResponse),
+        catalog,
+      );
       const rawPages = hydrateSelectedCanonicalSourceRawPages({
         sources: input.sources.map((source) => ({ sourceId: source.sourceId, body: source.body })),
         selections,
@@ -913,7 +1023,8 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
         problems.push("syllabus coverage evidence-recovery outcome does not match the final decision");
       }
       if (input.coverage &&
-          canonicalJson(coverageWithoutReceipt(input.coverage)) !== canonicalJson(projected)) {
+          canonicalJson(coverageWithoutReceipt(input.coverage)) !==
+            canonicalJson(comparableToPersistedCoverage(projected, input.coverage))) {
         problems.push("persisted syllabus coverage does not exactly project the recovered final decision");
       }
     }

@@ -485,6 +485,12 @@ export default function GardenVideoImport({
   const [jobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
   const [jobsLoaded, setJobsLoaded] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // "Watch" analysis adds sampled frames + a frame-grounded reading of what
+  // the video shows (slides, boards, equations) to the transcript source.
+  const [analyzeVisuals, setAnalyzeVisuals] = useState(true);
+  // Off: the video file is never kept - uploads are deleted once the source
+  // is written; YouTube media only ever exists inside the analysis runtime.
+  const [keepMedia, setKeepMedia] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
@@ -753,6 +759,8 @@ export default function GardenVideoImport({
       id: provisionalId,
       gardenId: clusterSlug,
       inputKind: submissionFile ? "upload" : "youtube",
+      analysis: analyzeVisuals ? "watch" : "transcript",
+      retainMedia: keepMedia,
       status: submissionFile ? "uploading" : "validating",
       progressPercent: null,
       currentStage: submissionFile ? "Uploading media" : "Checking YouTube URL",
@@ -802,12 +810,18 @@ export default function GardenVideoImport({
       if (submissionFile) {
         const form = new FormData();
         form.append("media", submissionFile, submissionFile.name);
+        form.append("analysis", analyzeVisuals ? "watch" : "transcript");
+        form.append("retainMedia", keepMedia ? "true" : "false");
         res = await fetch(apiBase, { method: "POST", body: form });
       } else {
         res = await fetch(apiBase, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ youtubeUrl: submissionUrl }),
+          body: JSON.stringify({
+            youtubeUrl: submissionUrl,
+            analysis: analyzeVisuals ? "watch" : "transcript",
+            retainMedia: keepMedia,
+          }),
         });
       }
       const data = (await res.json().catch(() => ({}))) as {
@@ -1090,6 +1104,39 @@ export default function GardenVideoImport({
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="flex cursor-pointer items-start gap-2 text-[11px] text-gray-400">
+              <input
+                type="checkbox"
+                checked={analyzeVisuals}
+                onChange={(event) => setAnalyzeVisuals(event.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-gray-300"
+                aria-label="Analyze what the video shows"
+              />
+              <span>
+                Analyze what the video shows
+                <span className="block text-[10px] text-gray-600">
+                  Sampled frames and a frame-grounded reading (slides, boards, equations) are saved with the transcript, the way /watch reads a video.
+                </span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-2 text-[11px] text-gray-400">
+              <input
+                type="checkbox"
+                checked={keepMedia}
+                onChange={(event) => setKeepMedia(event.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-gray-300"
+                aria-label="Keep the video file"
+              />
+              <span>
+                Keep the video file
+                <span className="block text-[10px] text-gray-600">
+                  Off: the file is deleted once the Markdown is saved (YouTube media is never stored by Breadboard).
+                </span>
+              </span>
+            </label>
           </div>
 
           <button

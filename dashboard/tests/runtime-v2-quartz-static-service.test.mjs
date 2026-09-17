@@ -58,6 +58,13 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
     "utf8",
   );
   fs.writeFileSync(path.join(temporaryRoot, "secret.txt"), "secret", "utf8");
+  const em1Path = "electromagnetism-1/learning/1. Fields and the Mathematical Language of Space/1.1 Why Electromagnetic Fields Matter";
+  const emittedPath = em1Path.replaceAll(" ", "-");
+  fs.mkdirSync(path.dirname(path.join(publicRoot, emittedPath)), { recursive: true });
+  fs.writeFileSync(path.join(publicRoot, `${emittedPath}.html`), "<h1>EM1 INTRODUCTION</h1>");
+  fs.writeFileSync(path.join(publicRoot, "garden", "Fields--and--50-percent.html"), "<p>CHARGE</p>");
+  fs.writeFileSync(path.join(publicRoot, "garden", "exact file.txt"), "EXACT ASSET");
+  fs.writeFileSync(path.join(publicRoot, "garden", "editable.html"), '<html><head><script src="/postscript.js" defer></script></head><body><div class="markdown-actions"></div><article>Published text</article></body></html>');
   const port = await freePort();
   const child = spawn(process.execPath, [servicePath, "--port", String(port)], {
     env: {
@@ -84,6 +91,15 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
     const index = await fetch(`${origin}/`);
     assert.equal(index.status, 200);
     assert.equal(await index.text(), "<h1>Breadboard</h1>");
+    const editable = await fetch(`${origin}/garden/editable`);
+    const editableHtml = await editable.text();
+    assert.match(editableHtml, /second-brain:canonical-document/);
+    assert.ok(editableHtml.indexOf('data-persist="canonical-reader"') < editableHtml.indexOf('src="/postscript.js"'));
+    assert.match(editableHtml, /<article>Published text<\/article>/);
+    assert.equal(Number(editable.headers.get("content-length")), Buffer.byteLength(editableHtml));
+    const editableHead = await fetch(`${origin}/garden/editable`, { method: "HEAD" });
+    assert.equal(editableHead.headers.get("content-length"), editable.headers.get("content-length"));
+    assert.equal(await editableHead.text(), "");
     const garden = await fetch(`${origin}/garden/`);
     assert.equal(garden.status, 200);
     assert.equal(await garden.text(), "<p>Garden</p>");
@@ -115,6 +131,26 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
     );
     const traversal = await fetch(`${origin}/%2e%2e/secret.txt`);
     assert.equal(traversal.status, 404);
+    for (const suffix of ["", "/", ".md", ".html"]) {
+      const requestPath = (em1Path + suffix).split("/").map(encodeURIComponent).join("/");
+      const redirected = await fetch(`${origin}/${requestPath}?theme=dark&refresh=123`, { redirect: "manual" });
+      assert.equal(redirected.status, 302);
+      assert.equal(redirected.headers.get("location"), `/${emittedPath}?theme=dark&refresh=123`);
+      const article = await fetch(`${origin}${redirected.headers.get("location")}`);
+      assert.equal(article.status, 200);
+      assert.equal(await article.text(), "<h1>EM1 INTRODUCTION</h1>");
+    }
+    const special = await fetch(`${origin}/garden/${encodeURIComponent("Fields & 50%?#")}/`);
+    assert.equal(special.status, 200);
+    assert.equal(await special.text(), "<p>CHARGE</p>");
+    const exactAsset = await fetch(`${origin}/garden/exact%20file.txt`);
+    assert.equal(exactAsset.status, 200);
+    assert.equal(await exactAsset.text(), "EXACT ASSET");
+    for (const missing of ["missing%20page/", "%ZZ", "%2e%2e%2fsecret", "garden%5c..%5csecret"]) {
+      const response = await fetch(`${origin}/${missing}`, { redirect: "manual" });
+      assert.equal(response.status, 404);
+      assert.match(await response.text(), /could not be found/);
+    }
     const source = fs.readFileSync(servicePath, "utf8");
     assert.doesNotMatch(source, /node:child_process|\bspawn\s*\(|bootstrap-cli|esbuild/u);
   } finally {

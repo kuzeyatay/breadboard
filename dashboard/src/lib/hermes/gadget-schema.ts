@@ -72,7 +72,13 @@ export function migrateArtifactKindsForGadgets(database: Database.Database): boo
       from: "'data','unknown','gadget'))",
       to: "'data','unknown','gadget','model'))",
     });
-    return gadgetChanged || modelChanged;
+    const folderChanged = widenCheckConstraint(database, {
+      table: "hermes_artifacts",
+      sentinel: "'folder'",
+      from: "'data','unknown','gadget','model'))",
+      to: "'data','unknown','gadget','model','folder'))",
+    });
+    return gadgetChanged || modelChanged || folderChanged;
   } catch (cause) {
     console.warn(
       "[breadboard] Could not widen hermes_artifacts.kind; newer artifact kinds will be rejected until this is resolved.",

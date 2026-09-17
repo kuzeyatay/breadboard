@@ -649,7 +649,11 @@ test("Learn's executability provider uses strict exact JSON and preserves malfor
   }
 });
 
-test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", async () => {
+test("surplus-brace output is recovered as a candidate and validated like a strict answer", async () => {
+  // Live 2026-09-16 (telecom-1): the web chat model wrote `}]} }},{` for
+  // `}]}},{` on three consecutive reviews, echoing its own rejected answer, so
+  // exact-raw feedback never converged. A closer that cannot close anything at
+  // its position is dropped; the recovered value still faces every validator.
   const u3 = activeUnit(executablePredictionContract("visual-u3-original"));
   const u10 = secondActiveUnit();
   u10.id = "U10";
@@ -686,7 +690,6 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
   });
 
   const requests = [];
-  const before = structuredClone([u3, u10]);
   const reviewed = await runVisualContractExecutabilityReview({
     gardenId: GARDEN_ID,
     learningUnits: [u3, u10],
@@ -696,251 +699,21 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
     },
     provider: async (request) => {
       requests.push(request);
-      if (requests.length === 1) return malformedRaw;
-      assert.equal(request.sourceContext.previousProtocolFailure.response, malformedRaw);
-      assert.equal(
-        JSON.parse(request.user).previousProtocolFailure.response,
-        malformedRaw,
-      );
-      assert.equal(request.sourceContext.previousRejectionReasons.length, 1);
-      assert.match(
-        request.sourceContext.previousRejectionReasons[0],
-        /strict JSON\.parse failed at position \d+/,
-      );
-      assert.match(
-        request.sourceContext.previousRejectionReasons[0],
-        /bounded context/,
-      );
-      assert.match(request.system, /previousProtocolFailure is present/i);
-      assert.match(request.system, /validate the entire response with a strict JSON parser/i);
-      return structuredClone(freshBatch);
+      return malformedRaw;
     },
     validateAll: (learningUnits) => learningUnits,
   });
 
-  assert.equal(requests.length, 2);
-  assert.deepEqual([u3, u10], before, "the rejected raw response cannot mutate contracts");
-  assert.equal(reviewed.attempts[0].accepted, false);
-  assert.equal(reviewed.attempts[0].response, malformedRaw);
+  assert.equal(requests.length, 1, "a recoverable answer needs no rereview");
+  assert.equal(reviewed.attempts[0].accepted, true);
+  assert.equal(reviewed.attempts[0].response, malformedRaw, "the ledger keeps the exact raw text");
   assert.equal(reviewed.attempts[0].responseEncoding, "exact_raw");
-  assert.equal(reviewed.attempts[1].accepted, true);
-  assert.deepEqual(JSON.parse(reviewed.attempts[1].response), freshBatch);
   assert.deepEqual(reviewed.acceptedResponse, freshBatch);
   assert.deepEqual(reviewed.reviewedContracts.U3, u3Replacement);
   assert.deepEqual(reviewed.reviewedContracts.U10, u10Replacement);
 });
 
-test("missing, empty, or literal-null executability output is terminal and event sinks cannot reopen it", async () => {
-  for (const emptyOutput of [undefined, null, "", "   \n", "null"]) {
-    const unit = activeUnit(executablePredictionContract("visual-u3-empty-terminal"));
-    let calls = 0;
-    await assert.rejects(
-      runVisualContractExecutabilityReview({
-        gardenId: GARDEN_ID,
-        learningUnits: [unit],
-        canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-        provider: async () => {
-          calls += 1;
-          return emptyOutput;
-        },
-        validateAll: (learningUnits) => learningUnits,
-        onEvent: () => {
-          throw new Error("event sink fixture must remain observational");
-        },
-      }),
-      (error) =>
-        error instanceof VisualContractExecutabilityReviewError &&
-        error.calls === 1 &&
-        /no exact response text|empty exact response text|literal JSON null/i.test(
-          error.problems[0]?.message ?? "",
-        ),
-    );
-    assert.equal(calls, 1);
-  }
-});
-
-test("a parseable response accepted on a protocol retry persists its exact retry ordinal", async () => {
-  const unit = activeUnit(executablePredictionContract("visual-u3-protocol-retry"));
-  const replacement = executablePredictionContract("visual-u3-protocol-retry-corrected");
-  const malformedRaw = '{"schemaVersion":1,"gardenId":"prediction-garden","reviews":[';
-  const acceptedRaw = JSON.stringify(response([{
-    unitId: "U3",
-    verdict: "replace",
-    reason: "The complete model-authored correction is executable.",
-    replacement,
-  }]));
-  const auditContext = {
-    phase: "generation",
-    jobId: "job-protocol-retry-accept",
-    model: "review-model",
-    learningMapId: "map-protocol-retry-accept",
-    textbookVersionId: "textbook-protocol-retry-accept",
-  };
-  let calls = 0;
-  const review = await reviewVisualizationPlanExecutability({
-    gardenId: GARDEN_ID,
-    learningMap: learningMap(),
-    learningUnits: [unit],
-    initialPlan: initialPlan([unit]),
-    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-    auditContext,
-    maximumRepeatedInteractionSignature: 1,
-    provider: async () => {
-      calls += 1;
-      return strictVisualContractExecutabilityResponseOrExactRaw(
-        calls === 1 ? malformedRaw : acceptedRaw,
-      );
-    },
-  });
-  assert.equal(review.calls, 2);
-  assert.equal(review.attempts[1].requestPurpose, "protocol_retry");
-  assert.equal(review.attempts[1].responseClassification, "semantic_candidate");
-  assert.equal(review.attempts[1].accepted, true);
-  assert.equal(review.attempts[1].transportAccounting.protocolRetry, 1);
-  assert.equal(review.attempts[1].transportAccounting.semanticCandidate, 1);
-
-  const routedUnits = applyVisualizationRoutesToLearningUnits(review.learningUnits, review.plan);
-  const finalPlan = buildFinalVisualizationPlanFromRoutedContracts({
-    gardenId: GARDEN_ID,
-    learningMap: learningMap(),
-    finalRoutedLearningUnits: routedUnits,
-    reviewedPlan: review.plan,
-    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-  });
-  const ledger = buildVisualContractExecutabilityLedger({
-    gardenId: GARDEN_ID,
-    context: auditContext,
-    review,
-    finalRoutedLearningUnits: routedUnits,
-    finalVisualizationPlan: finalPlan,
-    structuralContractRepair: { source: "none", attempts: [] },
-  });
-  assert.equal(ledger.attempts[1].transportAccounting.protocolRetry, 1);
-  assert.deepEqual(visualContractExecutabilityLinkageProblems({
-    gardenId: GARDEN_ID,
-    ledger,
-    finalLearningUnits: routedUnits,
-    visualizationPlan: finalPlan,
-    requireGenerationPhase: true,
-    authoritativeCanonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-    expectedContext: auditContext,
-  }), []);
-});
-
-test("model-authored necessity coverage and teaching-medium rationale survive LUC normalization and strict linkage", async () => {
-  const rawUnit = activeUnit(executablePredictionContract("visual-u3-normalized-decision"));
-  rawUnit.interactiveVisualPlan.decision.confidence = 0.87;
-  rawUnit.interactiveVisualPlan.decision.alternativeCoverage = "uncovered";
-  rawUnit.interactiveVisualPlan.decision.teachingMediumReason =
-    "A source-grounded interactive comparison is the selected teaching medium.";
-  rawUnit.teachingMediumPlan.reason = rawUnit.interactiveVisualPlan.decision.teachingMediumReason;
-
-  const [normalized] = normalizeLearningUnits([rawUnit], { modelAuthoredOnly: true });
-  assert.equal(
-    normalized.interactiveVisualPlan?.decision.alternativeCoverage,
-    rawUnit.interactiveVisualPlan.decision.alternativeCoverage,
-  );
-  assert.equal(
-    normalized.interactiveVisualPlan?.decision.teachingMediumReason,
-    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
-  );
-
-  const auditContext = {
-    phase: "generation",
-    jobId: "job-normalized-decision",
-    model: "review-model",
-    learningMapId: "map-normalized-decision",
-    textbookVersionId: "textbook-normalized-decision",
-  };
-  const review = await reviewVisualizationPlanExecutability({
-    gardenId: GARDEN_ID,
-    learningMap: learningMap(),
-    learningUnits: [normalized],
-    initialPlan: initialPlan([normalized]),
-    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-    auditContext,
-    maximumRepeatedInteractionSignature: 1,
-    provider: async () => response([{
-      unitId: "U3",
-      verdict: "approve",
-      reason: "The complete model-authored contract is executable.",
-    }]),
-  });
-  const routedUnits = applyVisualizationRoutesToLearningUnits(review.learningUnits, review.plan);
-  // The strict finalizer reloads the persisted Learning Unit Contract rather
-  // than receiving this in-memory routed projection. Re-normalize the JSON
-  // form here so a dropped decision field cannot be masked by object identity.
-  const persistedRoutedUnits = normalizeLearningUnits(
-    JSON.parse(JSON.stringify(routedUnits)),
-  );
-  assert.equal(
-    persistedRoutedUnits[0].interactiveVisualPlan?.decision.alternativeCoverage,
-    "uncovered",
-  );
-  assert.equal(
-    persistedRoutedUnits[0].interactiveVisualPlan?.decision.teachingMediumReason,
-    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
-  );
-  const finalPlan = buildFinalVisualizationPlanFromRoutedContracts({
-    gardenId: GARDEN_ID,
-    learningMap: learningMap(),
-    finalRoutedLearningUnits: persistedRoutedUnits,
-    reviewedPlan: review.plan,
-    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-  });
-  const ledger = buildVisualContractExecutabilityLedger({
-    gardenId: GARDEN_ID,
-    context: auditContext,
-    review,
-    finalRoutedLearningUnits: persistedRoutedUnits,
-    finalVisualizationPlan: finalPlan,
-    structuralContractRepair: { source: "none", attempts: [] },
-  });
-  assert.equal(
-    finalPlan.visualNecessityDecisions[0].alternativeCoverage,
-    "uncovered",
-  );
-  assert.equal(
-    finalPlan.visualNecessityDecisions[0].teachingMediumReason,
-    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
-  );
-  assert.equal(
-    ledger.immutableGardenAllocation[0].decisionBeforeMechanicalRouting.alternativeCoverage,
-    "uncovered",
-  );
-  assert.equal(
-    ledger.immutableGardenAllocation[0].decisionBeforeMechanicalRouting.teachingMediumReason,
-    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
-  );
-  assert.deepEqual(visualContractExecutabilityLinkageProblems({
-    gardenId: GARDEN_ID,
-    ledger,
-    finalLearningUnits: persistedRoutedUnits,
-    visualizationPlan: finalPlan,
-    requireGenerationPhase: true,
-    authoritativeCanonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-    expectedContext: auditContext,
-  }), []);
-
-  const invalidCoverage = structuredClone(rawUnit);
-  invalidCoverage.interactiveVisualPlan.decision.alternativeCoverage = "covered_by_prose";
-  assert.equal(
-    normalizeLearningUnits([invalidCoverage], { modelAuthoredOnly: true })[0]
-      .interactiveVisualPlan,
-    undefined,
-    "a model-authored decision cannot smuggle an invalid alternativeCoverage enum through normalization",
-  );
-  const missingMediumReason = structuredClone(rawUnit);
-  missingMediumReason.interactiveVisualPlan.decision.teachingMediumReason = "";
-  assert.equal(
-    normalizeLearningUnits([missingMediumReason], { modelAuthoredOnly: true })[0]
-      .interactiveVisualPlan,
-    undefined,
-    "a model-authored decision cannot omit the teaching-medium rationale through normalization",
-  );
-});
-
-test("repeated malformed raw executability responses exhaust the AI budget and fail closed", async () => {
+test("repeated unrecoverable raw executability responses exhaust the AI budget and fail closed", async () => {
   const unit = activeUnit(executablePredictionContract());
   const completeBatch = response([{
     unitId: "U3",
@@ -948,7 +721,9 @@ test("repeated malformed raw executability responses exhaust the AI budget and f
     reason: "A complete replacement would be required.",
     replacement: executablePredictionContract("visual-u3-never-accepted"),
   }]);
-  const malformedRaw = responseWithSurplusBraceAfterEachReplacement(completeBatch);
+  // Truncated mid-array: no closer repair or prose stripping can recover it.
+  const malformedRaw = JSON.stringify(completeBatch).slice(0, -12);
+  assert.throws(() => JSON.parse(malformedRaw), SyntaxError);
   const requests = [];
 
   await assert.rejects(

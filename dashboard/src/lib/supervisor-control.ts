@@ -70,6 +70,7 @@ export type SupervisedServiceId =
   | "whatsapp-gateway"
   | "recall"
   | "spotify-playback"
+  | "bambu-printer"
   | "solidworks-mcp";
 
 export type SupervisedCapabilityId =

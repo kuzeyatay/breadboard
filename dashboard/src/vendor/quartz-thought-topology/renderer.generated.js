@@ -1,4 +1,4 @@
-// Generated from ../quartz/quartz/components/scripts/thoughtTopologyRenderer.ts. Do not edit by hand.
+// Generated from ../quartz/quartz/components/scripts/thoughtTopologyViewer.ts. Do not edit by hand.
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -218,7 +218,53 @@ var require_rfdc = __commonJS({
   }
 });
 
-// quartz/components/scripts/thoughtTopologyRenderer.ts
+// quartz/components/scripts/thoughtTopology3DGeometry.ts
+var TopologyCamera3D = class {
+  yaw = 0.42;
+  pitch = -0.26;
+  project(point) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const depth = -sy * point.x + cy * point.z;
+    return {
+      x: cy * point.x + sy * point.z,
+      y: cp * point.y - sp * depth,
+      z: sp * point.y + cp * depth
+    };
+  }
+  /** Inverse rotation: dragging follows the screen plane at any camera angle. */
+  unproject(point) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const depth = -sp * point.y + cp * point.z;
+    return {
+      x: cy * point.x - sy * depth,
+      y: cp * point.y + sp * point.z,
+      z: sy * point.x + cy * depth
+    };
+  }
+  orbit(dx, dy) {
+    this.yaw += dx * 6e-3;
+    this.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.pitch + dy * 6e-3));
+  }
+};
+function signedHash(id) {
+  let hash = 2166136261;
+  for (let i = 0; i < id.length; i++) hash = Math.imul(hash ^ id.charCodeAt(i), 16777619);
+  return (hash >>> 0) / 4294967295 * 2 - 1;
+}
+function topologyNodeDepth(node, spread) {
+  if (node.kind === "garden") return 0;
+  const sector = node.sectorId ?? node.folderId ?? node.id;
+  return spread * (signedHash(sector) * 0.8 + signedHash(node.id) * 0.35);
+}
+function sphericalDepthFactor(node, layoutRadius, floor = 0.22) {
+  if (!(layoutRadius > 0)) return 1;
+  const ratio = Math.min(1, Math.hypot(node.x, node.y) / layoutRadius);
+  return floor + (1 - floor) * Math.sqrt(1 - ratio * ratio);
+}
+
+// quartz/components/scripts/thoughtTopology3DRenderer.ts
 import {
   select,
   zoom,
@@ -321,6 +367,44 @@ function topologySourceKind(node, folderPath = "") {
   if (sourceType.includes("pdf") || /\.pdf(?:\s|$)/i.test(fallback)) return "pdf";
   return "document";
 }
+
+// quartz/components/scripts/renderSlot.ts
+var RenderSlot = class {
+  generation = 0;
+  pending = Promise.resolve();
+  active;
+  release() {
+    const previous = this.active;
+    this.active = void 0;
+    previous?.cleanup();
+  }
+  clear() {
+    this.generation += 1;
+    this.release();
+  }
+  replace(mount) {
+    const generation = ++this.generation;
+    const run = async () => {
+      if (generation !== this.generation) return;
+      this.release();
+      const renderer = await mount();
+      if (generation !== this.generation) {
+        renderer.cleanup();
+        return;
+      }
+      this.active = renderer;
+      return renderer;
+    };
+    const result = this.pending.then(run);
+    this.pending = result.then(
+      () => {
+      },
+      () => {
+      }
+    );
+    return result;
+  }
+};
 
 // quartz/components/scripts/thoughtTopologyLayout.ts
 var CONNECTION_STROKE_WIDTH = 1;
@@ -660,10 +744,13 @@ function planThoughtTopology(payload, options = {}) {
     ).slice(0, bridgeBudget);
     keptEdgeIds = new Set(bridges.map((edge) => edge.id));
     keptPageIds = new Set(bridges.flatMap((edge) => [edge.source, edge.target]));
+    for (const id of options.previewKeepPageIds ?? []) {
+      if (pageById.has(id)) keptPageIds.add(id);
+    }
     const ranked = [...pages].sort(
       (left, right) => importanceOf(right) - importanceOf(left) || naturalCompare(left.title, right.title)
     );
-    if (keptPageIds.size === 0) {
+    if (bridges.length === 0) {
       const perFolder = /* @__PURE__ */ new Map();
       for (const page of ranked) {
         const key = topLevelOf(page.folderId) ?? "root";
@@ -676,6 +763,13 @@ function planThoughtTopology(payload, options = {}) {
     for (const page of ranked) {
       if (keptPageIds.size >= pageBudget) break;
       keptPageIds.add(page.id);
+    }
+    if (bridges.length === 0) {
+      const kept = keptPageIds;
+      const local = semanticEdges.filter((edge) => kept.has(edge.source) && kept.has(edge.target)).sort(
+        (left, right) => (right.score ?? 0) - (left.score ?? 0) || left.id.localeCompare(right.id)
+      ).slice(0, bridgeBudget);
+      for (const edge of local) keptEdgeIds.add(edge.id);
     }
   }
   const visiblePages = pages.filter((page) => {
@@ -1093,7 +1187,7 @@ function pageLabelBudget(zoomRatio, base = 8) {
   return base + Math.floor((zoomRatio - 1.12) * 30);
 }
 
-// quartz/components/scripts/thoughtTopologyRenderer.ts
+// quartz/components/scripts/thoughtTopology3DRenderer.ts
 var CLICK_SLOP_PX = 5;
 var NODE_CLICK_TARGET_RADIUS_PX = 14;
 var RIGHT_DOUBLE_CLICK_MS = 500;
@@ -1101,7 +1195,7 @@ var EMPTY_LESSON_PAGES_NOTICE = /No lesson pages have been generated yet\.?/gi;
 var PAGE_LABEL_WRAP_PX = 128;
 var FOLDER_LABEL_WRAP_PX = 180;
 var GARDEN_LABEL_WRAP_PX = 230;
-var POSITION_STORAGE_PREFIX = "thought-topology-home-positions:v2:";
+var POSITION_STORAGE_PREFIX = "thought-topology-3d-home-positions:v1:";
 function readStoredPositions(slug2) {
   try {
     const raw = window.localStorage.getItem(`${POSITION_STORAGE_PREFIX}${slug2}`);
@@ -1175,23 +1269,61 @@ function mixHex(from, to, t) {
 function isPreviewSurface(config) {
   return Boolean(config.preview) || document.documentElement.classList.contains("quartz-graph-preview");
 }
-async function renderThoughtTopology(graph, fullSlug, config, payload, context) {
+function currentPageIds(payload, fullSlug) {
+  const current = topologyNavigationSlug(fullSlug).toLocaleLowerCase();
+  if (!current) return [];
+  return payload.nodes.filter((node) => {
+    const published = topologyNavigationSlug(node.slug).toLocaleLowerCase();
+    return published && (current === published || current.endsWith(`/${published}`));
+  }).map((node) => node.id);
+}
+async function renderThoughtTopology3D(graph, fullSlug, config, payload, context) {
   const preview = isPreviewSurface(config);
   const isGlobalGraph = graph.classList.contains("global-graph-container");
-  const folderLabelsOnly = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"));
-  const interactive = !preview && !folderLabelsOnly;
+  const compactSidebar = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"));
+  const interactive = !preview && !compactSidebar;
   const settingsScope = context.scopeFolderPath ? `${payload.garden.slug}:folder:${context.scopeFolderPath}` : `${payload.garden.slug}:root`;
   let settings = interactive ? readStoredSettings(settingsScope) : { ...DEFAULT_SETTINGS };
   let disposed = false;
-  let mounting = null;
+  const renderer = new RenderSlot();
   let active = null;
   let recoveryTimer = null;
+  let stableTimer = null;
   let recoveryAttempts = 0;
+  let recoveryNotice = null;
   let renderPanel = () => {
+  };
+  let spinButton = null;
+  const spin = { enabled: interactive };
+  const setSpinning = (enabled) => {
+    spin.enabled = enabled;
+    spinButton?.setAttribute("aria-pressed", String(enabled));
+    if (spinButton) spinButton.title = enabled ? "Stop spinning" : "Spin clockwise";
   };
   const scheduleRecovery = () => {
     if (disposed || recoveryTimer !== null) return;
-    const delay = Math.min(100 * 2 ** recoveryAttempts, 5e3);
+    if (stableTimer !== null) window.clearTimeout(stableTimer);
+    stableTimer = null;
+    if (recoveryAttempts >= 3) {
+      renderer.clear();
+      active = null;
+      if (!recoveryNotice) {
+        recoveryNotice = element(
+          "button",
+          "thought-topology-retry thought-topology-recovery",
+          "Reload map"
+        );
+        recoveryNotice.type = "button";
+        recoveryNotice.title = "The map could not restore its graphics. Reload to try again.";
+        recoveryNotice.addEventListener("click", () => {
+          recoveryAttempts = 0;
+          void remount();
+        });
+        graph.append(recoveryNotice);
+      }
+      return;
+    }
+    const delay = 250 * 2 ** recoveryAttempts;
     recoveryAttempts += 1;
     recoveryTimer = window.setTimeout(() => {
       recoveryTimer = null;
@@ -1200,43 +1332,32 @@ async function renderThoughtTopology(graph, fullSlug, config, payload, context) 
   };
   const remount = async () => {
     if (disposed) return;
-    const run = async () => {
-      const previous = active;
-      try {
-        const replacement = await mountThoughtTopology(
-          graph,
-          fullSlug,
-          config,
-          payload,
-          context,
-          settings,
-          scheduleRecovery
-        );
-        if (disposed) {
-          replacement.cleanup();
-          return;
-        }
+    if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
+    recoveryTimer = null;
+    if (stableTimer !== null) window.clearTimeout(stableTimer);
+    stableTimer = null;
+    recoveryNotice?.remove();
+    recoveryNotice = null;
+    try {
+      const replacement = await renderer.replace(
+        () => mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, scheduleRecovery)
+      );
+      if (replacement && !disposed) {
         active = replacement;
-        previous?.cleanup();
-        recoveryAttempts = 0;
+        stableTimer = window.setTimeout(() => {
+          stableTimer = null;
+          recoveryAttempts = 0;
+        }, 3e4);
         renderPanel();
-      } catch {
-        active = previous;
-        scheduleRecovery();
       }
-    };
-    mounting = (mounting ?? Promise.resolve()).then(run, run);
-    await mounting;
+    } catch {
+      active = null;
+      scheduleRecovery();
+    }
   };
-  active = await mountThoughtTopology(
-    graph,
-    fullSlug,
-    config,
-    payload,
-    context,
-    settings,
-    scheduleRecovery
-  );
+  active = await renderer.replace(
+    () => mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, scheduleRecovery)
+  ) ?? null;
   const outer = graph.parentElement;
   const controlsHost = outer?.querySelector(
     ":scope > .thought-topology-controls"
@@ -1295,7 +1416,13 @@ async function renderThoughtTopology(graph, fullSlug, config, payload, context) 
     capRow.append(capSelect);
     linesSection.append(linesTitle, hierarchyRow, strengthRow, capRow);
     body.append(summary, foldersSection, linesSection);
-    panel.append(toggle, body);
+    spinButton = element("button", "thought-topology-filter-toggle thought-topology-spin");
+    spinButton.type = "button";
+    spinButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M20 12a8 8 0 1 0-2.4 5.7"/></svg>';
+    spinButton.append(element("span", void 0, "Spin"));
+    spinButton.addEventListener("click", () => setSpinning(!spin.enabled));
+    setSpinning(spin.enabled);
+    panel.append(toggle, spinButton, body);
     const expandedFolders = /* @__PURE__ */ new Set();
     const describeStrength = (value) => value <= 0 ? "showing all" : `below ${Math.round(value * 100)}%`;
     renderPanel = () => {
@@ -1413,8 +1540,10 @@ async function renderThoughtTopology(graph, fullSlug, config, payload, context) 
   return () => {
     disposed = true;
     if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
-    active?.cleanup();
+    if (stableTimer !== null) window.clearTimeout(stableTimer);
+    renderer.clear();
     active = null;
+    recoveryNotice?.remove();
     panel?.remove();
   };
 }
@@ -1424,24 +1553,80 @@ function element(tag, className, text) {
   if (text !== void 0) node.textContent = text;
   return node;
 }
-async function mountThoughtTopology(graph, fullSlug, config, payload, context, settings, onRendererInvalidated) {
+async function mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, onRendererInvalidated) {
+  const resources = [];
+  const cleanup = () => {
+    for (const release of resources.splice(0).reverse()) {
+      try {
+        release();
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  };
+  try {
+    const mounted = await mountThoughtTopologyScene(
+      graph,
+      fullSlug,
+      config,
+      payload,
+      context,
+      settings,
+      spin,
+      (release) => resources.push(release),
+      onRendererInvalidated
+    );
+    return { ...mounted, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+async function mountThoughtTopologyScene(graph, fullSlug, config, payload, context, settings, spin, onCleanup, onRendererInvalidated) {
   const preview = isPreviewSurface(config);
   const isGlobalGraph = graph.classList.contains("global-graph-container");
-  const folderLabelsOnly = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"));
-  const interactive = !preview && !folderLabelsOnly;
+  const compactSidebar = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"));
+  const interactive = !preview && !compactSidebar;
+  const compact = preview || compactSidebar;
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   const gardenSlug = payload.garden.slug;
   const positionScope = context.scopeFolderPath ? `${gardenSlug}:folder:${context.scopeFolderPath}` : `${gardenSlug}:root`;
   const storedPositions = interactive ? readStoredPositions(positionScope) : {};
   const planOptions = {
-    preview,
+    preview: compact,
+    previewKeepPageIds: compactSidebar ? currentPageIds(payload, fullSlug) : [],
     scopeFolderPath: context.scopeFolderPath,
     excludedFolderIds: settings.excludedFolderIds,
     minConnectionStrength: settings.minConnectionStrength,
     maxConnectionsPerNode: settings.maxConnectionsPerNode
   };
   const plan = planThoughtTopology(payload, { ...planOptions, positionOverrides: storedPositions });
-  const homePositions = new Map(plan.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+  const camera = new TopologyCamera3D();
+  const layoutRadius = plan.nodes.reduce(
+    (max, node) => node.id in storedPositions ? max : Math.max(max, Math.hypot(node.x, node.y)),
+    0
+  );
+  const depthSpread = Math.max(
+    180,
+    Math.sqrt(payload.nodes.length + payload.folders.length) * 65,
+    layoutRadius * 0.85
+  );
+  const defaultDepth = (node) => topologyNodeDepth(node, depthSpread) * sphericalDepthFactor(node, layoutRadius);
+  for (const planned of plan.nodes) {
+    const node = planned;
+    const savedZ = storedPositions[node.id]?.z;
+    node.z = Number.isFinite(savedZ) ? savedZ : defaultDepth(node);
+  }
+  const homePositions = new Map(
+    plan.nodes.map((node) => [
+      node.id,
+      {
+        x: node.x,
+        y: node.y,
+        z: node.z
+      }
+    ])
+  );
   const permanentHomeIds = new Set(Object.keys(storedPositions));
   let plannedHomeCache = null;
   const plannedHome = (nodeId) => {
@@ -1449,7 +1634,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       plannedHomeCache = new Map(
         planThoughtTopology(payload, planOptions).nodes.map((node) => [
           node.id,
-          { x: node.x, y: node.y }
+          { x: node.x, y: node.y, z: defaultDepth(node) }
         ])
       );
     }
@@ -1536,6 +1721,10 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   };
   const fontFamily = cssVar("--bodyFont") || "system-ui, sans-serif";
   const app = new Application();
+  onCleanup(() => {
+    if (app.renderer) app.destroy({ removeView: true }, { children: true });
+    else app.stage?.destroy({ children: true });
+  });
   await app.init({
     width,
     height,
@@ -1544,7 +1733,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     autoDensity: true,
     backgroundAlpha: 0,
     // WebGL is substantially more stable for this long-lived, repeatedly
-    // remounted 2D scene. Some Chromium/WebGPU devices leave a live but blank
+    // remounted scene. Some Chromium/WebGPU devices leave a live but blank
     // canvas after tab suspension or repeated filter/theme remounts.
     preference: "webgl",
     resolution: window.devicePixelRatio,
@@ -1559,9 +1748,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   const linkLayer = new Container({ zIndex: 1 });
   const nodeLayer = new Container({ zIndex: 2, sortableChildren: true });
   const labelLayer = new Container({ zIndex: 5, isRenderGroup: true });
-  hierarchyLayer.visible = !folderLabelsOnly && settings.showHierarchy;
-  linkLayer.visible = !folderLabelsOnly;
-  nodeLayer.visible = !folderLabelsOnly;
+  hierarchyLayer.visible = settings.showHierarchy;
   world.addChild(hierarchyLayer, linkLayer, nodeLayer);
   stage.addChild(world, labelLayer);
   let transform = zoomIdentity;
@@ -1582,6 +1769,10 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   let labelsDirty = true;
   let stopAnimation = false;
   const cleanups = [];
+  onCleanup(() => {
+    stopAnimation = true;
+    for (const cleanup2 of cleanups.splice(0)) cleanup2();
+  });
   const inspectorRoot = interactive && outer ? element("aside", "thought-inspector") : null;
   const inspectorContent = inspectorRoot ? element("div", "thought-inspector-content") : null;
   const inspectorClose = inspectorRoot ? element("button", "thought-inspector-close", "\xD7") : null;
@@ -1593,6 +1784,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     inspectorClose.setAttribute("aria-label", "Close node connections");
     inspectorRoot.append(inspectorClose, inspectorContent);
     outer?.append(inspectorRoot);
+    onCleanup(() => inspectorRoot.remove());
   }
   let rendererInvalidated = false;
   const invalidateRenderer = () => {
@@ -1775,14 +1967,14 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   const edgeById = new Map(connectionViews.map((view) => [view.edge.id, view]));
   const simNodes = plan.nodes;
   const simNodeById = new Map(simNodes.map((node) => [node.id, node]));
-  const labelLayoutScale = preview ? 1.8 : isGlobalGraph ? 1 : 1.15;
+  const labelLayoutScale = compact ? 1.8 : isGlobalGraph ? 1 : 1.15;
   const clearanceById = new Map(
     views.map((view) => [
       view.node.id,
       labelClearanceRadius(
         view.node.radius,
-        folderLabelsOnly && view.node.kind !== "folder" || !shouldShowTopologyNodeLabel(view.node) ? 0 : view.label.width,
-        folderLabelsOnly && view.node.kind !== "folder" || !shouldShowTopologyNodeLabel(view.node) ? 0 : view.label.height,
+        compactSidebar && view.node.kind !== "folder" || !shouldShowTopologyNodeLabel(view.node) ? 0 : view.label.width,
+        compactSidebar && view.node.kind !== "folder" || !shouldShowTopologyNodeLabel(view.node) ? 0 : view.label.height,
         labelLayoutScale
       )
     ])
@@ -1790,16 +1982,16 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   const returnTargets = /* @__PURE__ */ new Map();
   const returningNodeIds = /* @__PURE__ */ new Set();
   let activeDragNodeId = null;
-  if (!reducedMotion && !folderLabelsOnly) {
-    for (const node of simNodes) {
-      if (permanentHomeIds.has(node.id)) {
-        const home = homePositions.get(node.id);
-        node.fx = home?.x ?? node.x;
-        node.fy = home?.y ?? node.y;
-      } else {
-        node.x = Number.NaN;
-        node.y = Number.NaN;
-      }
+  for (const node of simNodes) {
+    if (permanentHomeIds.has(node.id)) {
+      const home = homePositions.get(node.id);
+      node.fx = home?.x ?? node.x;
+      node.fy = home?.y ?? node.y;
+      node.fz = home?.z ?? node.z;
+    } else if (!reducedMotion && !compactSidebar) {
+      node.x = Number.NaN;
+      node.y = Number.NaN;
+      node.z *= 0.12;
     }
   }
   const links = [...plan.hierarchyEdges, ...plan.edges].flatMap((edge) => {
@@ -1824,7 +2016,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   const homeYForNode = (node) => homePositions.get(node.id)?.y ?? node.y ?? 0;
   const homeXForce = forceX(homeXForNode).strength(isGlobalGraph ? 0.11 : 0.09);
   const homeYForce = forceY(homeYForNode).strength(isGlobalGraph ? 0.055 : 0.045);
-  let simulationSettled = reducedMotion || folderLabelsOnly;
+  let simulationSettled = reducedMotion || compactSidebar;
   let draggingNode = false;
   const simulation = forceSimulation(simNodes).force("charge", forceManyBody().strength(-125 * config.repelForce)).force("center", forceCenter(0, 0).strength(config.centerForce)).force(
     "collide",
@@ -1834,7 +2026,18 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   ).force(
     "link",
     forceLink(links).distance((link) => link.distance)
-  ).force("home-x", homeXForce).force("home-y", homeYForce).alphaDecay(0.018).velocityDecay(0.5).on("tick", () => {
+  ).force("home-x", homeXForce).force("home-y", homeYForce).force("home-z", (alpha) => {
+    for (const node of simNodes) {
+      if (node.fz != null) {
+        node.z = node.fz;
+        node.vz = 0;
+        continue;
+      }
+      const target = returnTargets.get(node.id)?.z ?? homePositions.get(node.id)?.z ?? 0;
+      node.vz = ((node.vz ?? 0) + (target - node.z) * 0.1 * alpha) * 0.5;
+      node.z += node.vz;
+    }
+  }).alphaDecay(0.018).velocityDecay(0.5).on("tick", () => {
     simulationSettled = false;
     labelsDirty = true;
   }).on("end", () => {
@@ -1843,8 +2046,10 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       if (!node) continue;
       node.x = target.x;
       node.y = target.y;
+      node.z = target.z;
       node.fx = target.pin ? target.x : null;
       node.fy = target.pin ? target.y : null;
+      node.fz = target.pin ? target.z : null;
     }
     returnTargets.clear();
     returningNodeIds.clear();
@@ -1852,14 +2057,20 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     labelsDirty = true;
     if (viewState === "fit" && !userMovedView && !activeDragNodeId) fitView(true);
   });
-  if (folderLabelsOnly) {
+  onCleanup(() => simulation.stop());
+  if (compactSidebar) {
     simulation.stop();
   } else if (reducedMotion) {
     simulation.stop();
     simulation.tick(360);
   }
-  const worldX = (node) => node.x + width / 2;
-  const worldY = (node) => node.y + height / 2;
+  const projected = (node) => camera.project({
+    x: node.x,
+    y: node.y,
+    z: node.z ?? homePositions.get(node.id)?.z ?? 0
+  });
+  const worldX = (node) => projected(node).x + width / 2;
+  const worldY = (node) => projected(node).y + height / 2;
   const screenOf = (node) => ({
     x: transform.applyX(worldX(node)),
     y: transform.applyY(worldY(node))
@@ -1874,8 +2085,9 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
         NODE_CLICK_TARGET_RADIUS_PX,
         (view.node.radius + 7) * Math.sqrt(transform.k)
       );
-      if (distance > hitRadius || match && distance >= match.distance) continue;
-      match = { view, distance };
+      const depth = projected(view.node).z;
+      if (distance > hitRadius || match && depth <= match.depth) continue;
+      match = { view, depth };
     }
     return match?.view;
   }
@@ -1969,14 +2181,20 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     }
   }
   function currentInsets() {
-    if (preview) return { top: 10, right: 10, bottom: 10, left: 10 };
+    if (compact) return { top: 10, right: 10, bottom: 10, left: 10 };
     return { top: 14, right: 14, bottom: 14, left: 14 };
   }
   function blockedRects() {
-    if (preview) return [];
+    if (compact) return [];
     const canvasRect = graph.getBoundingClientRect();
     const rects = [];
-    for (const blocker of [heading, searchPanel, overlayClose, calloutRoot, inspectorRoot]) {
+    for (const blocker of [
+      heading,
+      searchPanel,
+      overlayClose,
+      calloutRoot,
+      inspectorRoot
+    ]) {
       if (blocker === calloutRoot && !calloutVisible) continue;
       if (blocker === inspectorRoot && !inspectorRoot?.classList.contains("open")) continue;
       if (!blocker || blocker.hidden || blocker.offsetParent === null) continue;
@@ -1991,19 +2209,21 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     return rects;
   }
   function fitView(animate2, useHomeLayout = false) {
-    const visiblePlanNodes = folderLabelsOnly ? plan.nodes.filter((node) => node.kind === "folder") : plan.nodes;
-    const fitNodes = useHomeLayout ? visiblePlanNodes.map((node) => ({ ...node, ...homePositions.get(node.id) ?? {} })) : visiblePlanNodes;
+    const fitNodes = useHomeLayout ? plan.nodes.map((node) => ({ ...node, ...homePositions.get(node.id) ?? {} })) : plan.nodes;
     const gardenAnchor = useHomeLayout ? { ...plan.garden, ...homePositions.get(plan.garden.id) ?? {} } : plan.garden;
-    const bounds = boundsOf(fitNodes, preview ? 18 : 44);
+    const bounds = boundsOf(
+      fitNodes.map((node) => ({ ...node, ...projected(node) })),
+      compact ? 18 : 44
+    );
     const next = fitTransform(
       bounds,
       { width, height },
       currentInsets(),
       {
-        minScale: 0.3,
-        maxScale: preview ? 1.25 : 1.35
+        minScale: compactSidebar ? 0.01 : 0.3,
+        maxScale: compact ? 1.25 : 1.35
       },
-      { x: gardenAnchor.x, y: gardenAnchor.y }
+      projected(gardenAnchor)
     );
     fitK = next.k;
     viewState = "fit";
@@ -2035,17 +2255,20 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     return set;
   }
   function refreshStyles() {
+    if (hoveredEdgeId && !canHoverConnection(edgeById.get(hoveredEdgeId))) hoveredEdgeId = null;
     let emphasis = null;
     const selectedEdge = selectedEdgeId ? edgeById.get(selectedEdgeId) : void 0;
     const hoveredEdge = hoveredEdgeId ? edgeById.get(hoveredEdgeId) : void 0;
     const focusedEdge = hoveredEdge ?? selectedEdge;
-    if (focusedEdge) {
+    if (inspectedNodeId) {
+      emphasis = emphasisFor(inspectedNodeId);
+    } else if (focusedEdge) {
       emphasis = /* @__PURE__ */ new Set([focusedEdge.edge.source, focusedEdge.edge.target]);
     } else if (selectedNodeId) {
       const selected = viewById.get(selectedNodeId)?.node;
       emphasis = selected && selected.kind !== "garden" ? emphasisFor(selectedNodeId) : null;
     }
-    if (hoveredNodeId && viewById.get(hoveredNodeId)?.node.kind !== "garden") {
+    if (!inspectedNodeId && hoveredNodeId && viewById.get(hoveredNodeId)?.node.kind !== "garden") {
       const hovered = emphasisFor(hoveredNodeId);
       emphasis = emphasis ? /* @__PURE__ */ new Set([...emphasis, ...hovered]) : hovered;
     }
@@ -2068,7 +2291,8 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       const hovered = view.edge.id === hoveredEdgeId;
       const touchesFocus = selectedNodeId !== null && (source === selectedNodeId || target === selectedNodeId) || hoveredNodeId !== null && (source === hoveredNodeId || target === hoveredNodeId) || searchQuery !== "" && (searchHits.has(source) || searchHits.has(target));
       const withinEmphasis = emphasis ? emphasis.has(source) && emphasis.has(target) : true;
-      const active = selected || hovered || touchesFocus || (emphasis === null ? true : withinEmphasis);
+      const active = inspectedNodeId ? source === inspectedNodeId || target === inspectedNodeId : selected || hovered || touchesFocus || (emphasis === null ? true : withinEmphasis);
+      view.gfx.eventMode = interactive && canHoverConnection(view) ? "static" : "none";
       view.selected = selected;
       view.alphaTarget = selected ? 1 : hovered ? Math.min(1, view.edge.opacity + 0.42) : active ? emphasis ? Math.min(1, view.edge.opacity + 0.3) : view.edge.opacity : 0.05;
       view.color = selected ? colors.edgeSelected : hovered ? colors.edgeActive : active && emphasis ? colors.edgeActive : view.restColor;
@@ -2172,7 +2396,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       const inFocus = selectedNodeId === node.id || hoveredNodeId === node.id && !draggingNode || selectedNeighbours.has(node.id) || Boolean(
         selectedEdge && (selectedEdge.edge.source === node.id || selectedEdge.edge.target === node.id)
       ) || Boolean(searchQuery && searchHits.has(node.id));
-      if (folderLabelsOnly && node.kind !== "folder" || quietName && !inFocus && ratio < QUIET_NAME_ZOOM) {
+      if (compactSidebar && node.kind !== "folder" || quietName && !inFocus && ratio < QUIET_NAME_ZOOM) {
         view.placement = null;
         view.labelTarget = 0;
         continue;
@@ -2241,12 +2465,12 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       bottom: height - 4
     };
     const placements = placeLabels(candidates, obstacles, clip, blockedRects());
-    if (preview) {
+    if (compact) {
       const budgetWinners = candidates.filter((candidate) => candidate.priority < 600 && placements.has(candidate.id)).sort((left, right) => right.priority - left.priority);
       for (const loser of budgetWinners.slice(budget)) placements.delete(loser.id);
     }
     for (const view of views) {
-      const placement = placements.get(view.node.id) ?? ((preview ? labelMustStayAttached(view.node.id) : wanted.has(view.node.id) && !budgetTier.has(view.node.id)) ? attachedLabelPlacement(view) : null);
+      const placement = placements.get(view.node.id) ?? ((compact ? labelMustStayAttached(view.node.id) : wanted.has(view.node.id) && !budgetTier.has(view.node.id)) ? attachedLabelPlacement(view) : null);
       view.placement = placement;
       view.labelTarget = placement ? view.alphaTarget < 1 ? 0.6 : 1 : 0;
     }
@@ -2390,6 +2614,11 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       if (left.kind !== right.kind) return left.kind === "semantic" ? -1 : 1;
       return right.edge.score - left.edge.score || left.edge.id.localeCompare(right.edge.id);
     });
+  }
+  function canHoverConnection(view) {
+    return Boolean(
+      view && (view.kind !== "hierarchy" || settings.showHierarchy) && (!inspectedNodeId || view.edge.source === inspectedNodeId || view.edge.target === inspectedNodeId)
+    );
   }
   function inspectorNodeSummary(node) {
     if (node.kind === "garden") {
@@ -2594,18 +2823,32 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       offsetX = normalX * 22;
       offsetY = normalY * 22;
     }
-    const calloutWidth = Math.min(
-      calloutRoot.offsetWidth || 320,
-      Math.max(180, width - 2 * padding)
-    );
+    let availableWidth = width;
+    let availableHeight = height;
+    if (inspectedNodeId && inspectorRoot) {
+      if (inspectorRoot.offsetWidth < width - 1) availableWidth -= inspectorRoot.offsetWidth;
+      else availableHeight -= inspectorRoot.offsetHeight;
+    }
+    calloutRoot.style.maxWidth = `${Math.max(0, availableWidth - 2 * padding)}px`;
+    const calloutWidth = calloutRoot.offsetWidth || 320;
     const calloutHeight = calloutRoot.offsetHeight || 120;
     let left = anchorX + offsetX;
     if (offsetX < 0) left -= calloutWidth;
-    if (left + calloutWidth > width - padding) left = anchorX - calloutWidth - 18;
-    if (left < padding) left = Math.min(width - calloutWidth - padding, anchorX + 18);
+    if (left + calloutWidth > availableWidth - padding) left = anchorX - calloutWidth - 18;
+    if (left < padding) left = anchorX + 18;
+    left = Math.max(padding, Math.min(availableWidth - calloutWidth - padding, left));
     let top = anchorY + offsetY - calloutHeight * 0.22;
-    top = Math.max(padding, Math.min(height - calloutHeight - padding, top));
-    calloutRoot.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+    top = Math.max(padding, Math.min(availableHeight - calloutHeight - padding, top));
+    const target = floatingCalloutTarget;
+    const depth = target.kind === "node" ? projected(target.view.node).z : (projected(target.view.source.node).z + projected(target.view.target.node).z) / 2;
+    const tiltX = Math.sin(camera.pitch) * -18;
+    const tiltY = Math.sin(camera.yaw) * 24;
+    const scale = 1 + Math.max(-0.08, Math.min(0.08, depth / (depthSpread * 12)));
+    const inset = Math.min(28, Math.max(0, (availableWidth - calloutWidth) / 2));
+    left = Math.max(inset, Math.min(availableWidth - calloutWidth - inset, left));
+    top = Math.max(20, Math.min(availableHeight - calloutHeight - 20, top));
+    calloutRoot.style.transformOrigin = "50% 50%";
+    calloutRoot.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0) perspective(900px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) scale(${scale})`;
   }
   function syncFloatingCallout() {
     if (!calloutRoot) return;
@@ -2691,7 +2934,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   }
   function pinNode(view) {
     const node = view.node;
-    const position = { x: node.x, y: node.y };
+    const position = { x: node.x, y: node.y, z: node.z };
     const positions = readStoredPositions(positionScope);
     positions[node.id] = position;
     homePositions.set(node.id, position);
@@ -2700,6 +2943,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     returningNodeIds.delete(node.id);
     node.fx = position.x;
     node.fy = position.y;
+    node.fz = position.z;
     homeXForce.x(homeXForNode);
     homeYForce.y(homeYForNode);
     writeStoredPositions(positionScope, positions);
@@ -2718,12 +2962,14 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     if (home) homePositions.set(node.id, home);
     node.fx = null;
     node.fy = null;
+    node.fz = null;
     homeXForce.x(homeXForNode);
     homeYForce.y(homeYForNode);
     if (reducedMotion) {
       if (home) {
         node.x = home.x;
         node.y = home.y;
+        node.z = home.z;
       }
     } else {
       simulationSettled = false;
@@ -2760,6 +3006,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     }
     for (const view of connectionViews) {
       view.gfx.on("pointerover", () => {
+        if (!canHoverConnection(view)) return;
         hoveredEdgeId = view.edge.id;
         refreshStyles();
         syncFloatingCallout();
@@ -2770,9 +3017,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       }).on("pointertap", (event) => {
         event.stopPropagation();
         const point = world.toLocal(event.global);
-        const closest = [...connectionViews].sort(
-          (left, right) => distanceToEdge(left, point) - distanceToEdge(right, point)
-        )[0];
+        const closest = connectionViews.filter(canHoverConnection).sort((left, right) => distanceToEdge(left, point) - distanceToEdge(right, point))[0];
         selectEdge(closest ?? view);
       });
     }
@@ -2787,7 +3032,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       let nextDragIsPermanent = false;
       canvasSelection.call(
         drag().filter((event) => {
-          const accepted = !event.ctrlKey && (event.button === 0 || event.button === 2);
+          const accepted = !event.ctrlKey && (event.type === "touchstart" || event.button === 0 || event.button === 2);
           if (accepted) nextDragIsPermanent = event.button === 2;
           return accepted;
         }).container(() => app.canvas).subject((event) => {
@@ -2822,6 +3067,8 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
                 view,
                 x: view.node.x,
                 y: view.node.y,
+                z: view.node.z,
+                fz: view.node.fz,
                 fx: view.node.fx,
                 fy: view.node.fy
               }
@@ -2829,6 +3076,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
           };
           view.node.fx = view.node.x;
           view.node.fy = view.node.y;
+          view.node.fz = view.node.z;
         }).on("drag", (event) => {
           if (!dragState) return;
           const source = event.sourceEvent;
@@ -2841,11 +3089,15 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
           if (dragState.moved <= CLICK_SLOP_PX || dragState.members.length === 0) return;
           const dx = (event.x - event.subject.x) / transform.k;
           const dy = (event.y - event.subject.y) / transform.k;
+          const delta = camera.unproject({ x: dx, y: dy, z: 0 });
           for (const member of dragState.members) {
-            const x = member.x + dx;
-            const y = member.y + dy;
+            const x = member.x + delta.x;
+            const y = member.y + delta.y;
+            const z = member.z + delta.z;
             member.view.node.x = x;
             member.view.node.y = y;
+            member.view.node.z = z;
+            member.view.node.fz = z;
             member.view.node.fx = x;
             member.view.node.fy = y;
           }
@@ -2864,9 +3116,11 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
               if (permanentHomeIds.has(member.view.node.id) && home) {
                 member.view.node.fx = home.x;
                 member.view.node.fy = home.y;
+                member.view.node.fz = home.z;
               } else {
                 member.view.node.fx = member.fx;
                 member.view.node.fy = member.fy;
+                member.view.node.fz = member.fz;
               }
             }
             if (state.permanent) handleRightNodeClick(state.view);
@@ -2878,7 +3132,11 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
           if (state.permanent) {
             const positions = readStoredPositions(positionScope);
             for (const member of state.members) {
-              const position = { x: member.view.node.x, y: member.view.node.y };
+              const position = {
+                x: member.view.node.x,
+                y: member.view.node.y,
+                z: member.view.node.z
+              };
               homePositions.set(member.view.node.id, position);
               positions[member.view.node.id] = position;
               permanentHomeIds.add(member.view.node.id);
@@ -2886,6 +3144,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
               returningNodeIds.delete(member.view.node.id);
               member.view.node.fx = position.x;
               member.view.node.fy = position.y;
+              member.view.node.fz = position.z;
             }
             homeXForce.x(homeXForNode);
             homeYForce.y(homeYForNode);
@@ -2903,13 +3162,16 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
             if (reducedMotion) {
               member.view.node.x = home.x;
               member.view.node.y = home.y;
+              member.view.node.z = home.z;
               member.view.node.fx = permanentHomeIds.has(member.view.node.id) ? home.x : null;
               member.view.node.fy = permanentHomeIds.has(member.view.node.id) ? home.y : null;
+              member.view.node.fz = permanentHomeIds.has(member.view.node.id) ? home.z : null;
             } else {
               member.view.node.fx = null;
               member.view.node.fy = null;
+              member.view.node.fz = null;
               const pin = permanentHomeIds.has(member.view.node.id);
-              const target = pin ? home : { x: member.x, y: member.y };
+              const target = pin ? home : { x: member.x, y: member.y, z: member.z };
               returnTargets.set(member.view.node.id, { ...target, pin });
               returningNodeIds.add(member.view.node.id);
               if (!pin) {
@@ -2935,7 +3197,66 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
         );
     }
     if (config.zoom) {
+      zoomBehavior.filter(
+        (event) => event.type === "wheel" || event.type === "touchstart" && event.touches.length > 1 || event.type === "mousedown" && (event.shiftKey || event.button === 1)
+      );
       canvasSelection.call(zoomBehavior).on("dblclick.zoom", null);
+    }
+    if (config.drag) {
+      let orbit = null;
+      const startOrbit = (event) => {
+        if (orbit && orbit.id !== event.pointerId) {
+          orbit = null;
+          return;
+        }
+        if (event.button !== 0 || event.shiftKey || event.ctrlKey) return;
+        const point = canvasPoint(event);
+        if (nodeAtScreenPoint(point.x, point.y)) return;
+        orbit = {
+          id: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false
+        };
+      };
+      const moveOrbit = (event) => {
+        if (!orbit || orbit.id !== event.pointerId || draggingNode) return;
+        if (!orbit.moved && Math.hypot(event.clientX - orbit.startX, event.clientY - orbit.startY) <= CLICK_SLOP_PX)
+          return;
+        if (!orbit.moved) {
+          canvasSelection.interrupt();
+          transitioning = false;
+          hoveredNodeId = null;
+          hoveredEdgeId = null;
+          refreshStyles();
+          syncFloatingCallout();
+        }
+        orbit.moved = true;
+        camera.orbit(event.clientX - orbit.x, event.clientY - orbit.y);
+        orbit.x = event.clientX;
+        orbit.y = event.clientY;
+        userMovedView = true;
+        viewState = "user";
+        labelsDirty = true;
+        emitGraphContext();
+      };
+      const endOrbit = () => {
+        orbit = null;
+      };
+      app.canvas.addEventListener("pointerdown", startOrbit);
+      window.addEventListener("pointermove", moveOrbit);
+      window.addEventListener("pointerup", endOrbit);
+      window.addEventListener("pointercancel", endOrbit);
+      window.addEventListener("blur", endOrbit);
+      cleanups.push(() => {
+        app.canvas.removeEventListener("pointerdown", startOrbit);
+        window.removeEventListener("pointermove", moveOrbit);
+        window.removeEventListener("pointerup", endOrbit);
+        window.removeEventListener("pointercancel", endOrbit);
+        window.removeEventListener("blur", endOrbit);
+      });
     }
     let backgroundPress = null;
     const onPointerDown = (event) => {
@@ -2998,6 +3319,10 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   const handleGraphSearchCommit = () => commitSearch();
   graph.addEventListener("graph-search", handleGraphSearch);
   graph.addEventListener("graph-search-commit", handleGraphSearchCommit);
+  onCleanup(() => {
+    graph.removeEventListener("graph-search", handleGraphSearch);
+    graph.removeEventListener("graph-search-commit", handleGraphSearchCommit);
+  });
   if (graph.dataset.searchQuery) updateSearch(graph.dataset.searchQuery);
   function emitGraphContext() {
     const selectedEdge = selectedEdgeId ? edgeById.get(selectedEdgeId) : void 0;
@@ -3021,6 +3346,7 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
       filters: searchQuery ? [searchQuery] : [],
       depth: context.configuredDepth < 0 ? 3 : context.configuredDepth,
       relationshipTypes: selectedEdge ? [selectedEdge.edge.relationType] : ["semantic-affinity"],
+      dimension: "3d",
       viewport: { x: transform.x, y: transform.y, width, height, scale: transform.k }
     };
     const graphWindow = window;
@@ -3049,14 +3375,23 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     labelsDirty = true;
   });
   resizeObserver?.observe(graph);
+  onCleanup(() => resizeObserver?.disconnect());
   const lerp = (current, target) => Math.abs(target - current) < 0.01 ? target : current + (target - current) * 0.22;
-  function animate() {
+  let lastFrameTime = null;
+  function animate(time) {
     if (stopAnimation) return;
+    const elapsed = lastFrameTime === null ? 0 : Math.min(50, time - lastFrameTime);
+    lastFrameTime = time;
+    if (interactive && spin.enabled && !document.hidden) {
+      camera.yaw += elapsed * Math.PI * 2 / (reducedMotion ? 12e4 : 6e4);
+      labelsDirty = true;
+    }
     if (labelsDirty) updateLabels();
     const inverseScale = 1 / Math.sqrt(transform.k);
     for (const view of views) {
       const { node } = view;
       view.gfx.position.set(worldX(node), worldY(node));
+      view.gfx.zIndex = projected(node).z;
       view.gfx.scale.set(inverseScale, inverseScale);
       view.alpha = lerp(view.alpha, view.alphaTarget);
       view.gfx.alpha = view.alpha;
@@ -3082,6 +3417,9 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     if (debugEnabled) {
       const debugWindow = window;
       debugWindow.__breadboardThoughtTopologyDebug = {
+        dimension: "3d",
+        spinning: spin.enabled,
+        camera: { yaw: camera.yaw, pitch: camera.pitch },
         selectedConnectionId: selectedEdgeId,
         selectedNodeId,
         inspectedNodeId,
@@ -3094,14 +3432,19 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
         viewSettled: !transitioning && (simulationSettled || draggingNode),
         simulationSettled,
         calloutVisible,
-        folderLabelsOnly,
+        compactSidebar,
+        visibleLayers: {
+          nodes: nodeLayer.visible,
+          connections: linkLayer.visible,
+          hierarchy: hierarchyLayer.visible
+        },
         transform: { k: transform.k, x: transform.x, y: transform.y },
         labels: Object.fromEntries(
           views.filter((view) => view.label.visible).map((view) => [view.node.id, view.label.text])
         ),
         nodes: Object.fromEntries(views.map((view) => [view.node.id, screenOf(view.node)])),
         worldNodes: Object.fromEntries(
-          views.map((view) => [view.node.id, { x: view.node.x, y: view.node.y }])
+          views.map((view) => [view.node.id, { x: view.node.x, y: view.node.y, z: view.node.z }])
         ),
         hierarchyEdges: Object.fromEntries(
           hierarchyViews.map((view) => {
@@ -3155,12 +3498,11 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
   requestAnimationFrame(animate);
   const cleanup = () => {
     stopAnimation = true;
-    simulation.stop();
-    resizeObserver?.disconnect();
-    graph.removeEventListener("graph-search", handleGraphSearch);
-    graph.removeEventListener("graph-search-commit", handleGraphSearchCommit);
-    for (const cleanup2 of cleanups) cleanup2();
     hideCallout();
+    if (calloutRoot) {
+      calloutRoot.style.removeProperty("transform-origin");
+      calloutRoot.style.removeProperty("transform");
+    }
     obscureOverlayClose(false);
     inspectorRoot?.remove();
     const hasReplacementCanvas = graph.querySelectorAll(":scope > canvas").length > 1;
@@ -3169,8 +3511,8 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
         delete graphRoot.dataset.activeMode;
       if (heading) heading.hidden = true;
     }
-    app.destroy({ removeView: true });
   };
+  onCleanup(cleanup);
   return {
     cleanup,
     folderOptions: plan.folderOptions,
@@ -3178,6 +3520,12 @@ async function mountThoughtTopology(graph, fullSlug, config, payload, context, s
     totalPageCount: plan.totalPageCount,
     connectionCount: plan.edges.length
   };
+}
+
+// quartz/components/scripts/thoughtTopologyViewer.ts
+async function renderThoughtTopology(...args) {
+  args[0].dataset.topologyDimension = "3d";
+  return renderThoughtTopology3D(...args);
 }
 export {
   renderThoughtTopology

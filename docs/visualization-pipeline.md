@@ -1,5 +1,45 @@
 # Breadboard visualization pipeline
 
+## Native Learn visualizers
+
+Learn generation and the per-visual Regenerate endpoint select
+`interactive-visualizer-in-chat` explicitly. `learn-native-visualizer.ts` reads
+the actual first-party skill on each new run and records its SHA-256 hash.
+It requests a native schema-2 plan/package through the existing strict Council
+receipt path. Complete requests and the skill snapshot are retained per attempt
+so a transport timeout can resume the exact request without duplicate dispatch.
+
+The disposable compiler uses the same `compileCustomInteractiveVisualizerPackage`
+and `bundleCustomInteractiveVisualizer` as chat. This supports animated Canvas,
+SVG and optional Three.js, with pause/reset, reduced motion and host themes.
+Source claims and required controls remain bound to the original learning unit.
+Browser gates check changes to the primary scene during playback and after each
+required control, pause stability, deterministic reset, overflow, and reduced
+motion. SVG text changes alone do not count as scene changes. A separate critic
+reviews the actual package, lesson, browser evidence and preview before publish.
+
+The existing garden ID/version fence and rollback storage remain compatible.
+The v1 garden envelope carries an explicit `nativeRuntime` tagged as
+`breadboard-interactive-visualizer` v2; the native bundle is never admitted by the
+declarative SDK compiler. The historical `source.tsx` artifact filename contains
+the JSON plan/package for native versions. `compiled.js` remains a fixed JSON
+envelope, parsed rather than executed by Quartz. Only its compiler-produced
+offline bundle executes, in an opaque `allow-scripts` iframe. Legacy versions
+continue to render and can be restored.
+
+Hover-wheel zoom uses the shared `interactive-visualizer-wheel.ts` adapter in
+new native bundles, stored chat/Artifacts previews, and Quartz embeds. It drives
+the existing zoom range or zoom buttons, preserving their bounds, readouts,
+reset, and keyboard behavior. Existing camera wheel handlers take priority;
+unrelated form controls, touch scrolling, and Ctrl/Cmd-wheel remain available.
+Preview-time injection updates older bundles without rewriting their stored
+artifact bytes. Packaged Quartz receives a local copy of the same shared module.
+
+`dashboard/scripts/regenerate-learn-visualizers.mjs` stages replacements for
+existing published visual IDs. It snapshots all lesson hashes, preserves IDs,
+and updates only visual version fences. Generation itself never publishes the
+staging tree to the live garden.
+
 ## Audited legacy flow
 
 The production path before generated modules is:

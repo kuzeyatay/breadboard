@@ -120,15 +120,15 @@ function boundedText(value, maximumBytes = 16 * 1024) {
     : "";
 }
 
-function normalizeCloneResult(result, request) {
+export function normalizeCloneResult(result, request) {
   const meta = isRecord(result?._meta) && isRecord(result._meta.error)
     ? result._meta.error
     : null;
-  if (meta) {
+  if (meta || result?.isError === true) {
     return {
       ok: false,
       code: "image_search_upstream_error",
-      message: boundedText(meta.message, 400) || "Google image search rejected the request.",
+      message: boundedText(meta?.message, 400) || "Google image search rejected the request.",
     };
   }
   const content = Array.isArray(result?.content) ? result.content : [];
@@ -144,11 +144,11 @@ function normalizeCloneResult(result, request) {
         message: "The image search returned too much data.",
       };
     }
-    if (!item.text.startsWith('{"imageResults":')) continue;
     try {
-      parsed = JSON.parse(item.text).imageResults ?? null;
+      const candidate = JSON.parse(item.text)?.imageResults;
+      if (isRecord(candidate)) parsed = candidate;
     } catch {
-      parsed = null;
+      // Human-readable notes can accompany the structured result.
     }
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.items)) {
@@ -158,16 +158,20 @@ function normalizeCloneResult(result, request) {
       message: "The image search returned no readable results.",
     };
   }
-  const items = parsed.items.slice(0, request.count).flatMap((item) => {
+  const candidatePositions = [];
+  const items = parsed.items.slice(0, request.count).flatMap((item, index) => {
     if (!isRecord(item)) return [];
-    const link = boundedText(item.link);
-    if (!/^https?:\/\//iu.test(link)) return [];
     const image = isRecord(item.image) ? item.image : {};
     const thumbnail = isRecord(image.thumbnail) ? image.thumbnail : {};
+    const original = boundedText(item.link);
+    const thumb = boundedText(thumbnail.link);
+    const link = /^https?:\/\//iu.test(original) ? original : thumb;
+    if (!/^https?:\/\//iu.test(link)) return [];
+    candidatePositions.push((request.startIndex ?? 1) + index);
     return [{
       title: boundedText(item.title, 4_096),
       image: link,
-      thumb: boundedText(thumbnail.link),
+      thumb,
       page: boundedText(image.contextLink),
       site: boundedText(item.displayLink, 4_096),
       ...parseDimensions(image.dimensions),
@@ -186,6 +190,7 @@ function normalizeCloneResult(result, request) {
         ? { nextPageStartIndex: next }
         : {}),
       display: { query, items },
+      candidatePositions,
     },
   };
 }

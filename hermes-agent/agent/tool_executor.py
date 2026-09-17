@@ -266,6 +266,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        tuple(sorted((getattr(agent, "tool_access", None) or {}).items())),
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -277,7 +278,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
             quiet_mode=True,
             skip_tool_search_assembly=True,
         ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
+        names = _ts.scoped_deferrable_names([d for d in scoped_defs
+            if (getattr(agent, "tool_access", None) or {}).get(d.get("function", {}).get("name")) is not False])
     except Exception:
         names = frozenset()
     try:
@@ -443,6 +445,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        if (getattr(agent, "tool_access", None) or {}).get(function_name) is False:
+            _ts_scope_block = json.dumps({"error": f"{function_name} is disabled for this turn."})
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
@@ -1122,6 +1126,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        if (getattr(agent, "tool_access", None) or {}).get(function_name) is False:
+            _ts_scope_block = json.dumps({"error": f"{function_name} is disabled for this turn."})
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
@@ -1518,6 +1524,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    tool_access=getattr(agent, "tool_access", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
                 _spinner_result = function_result
@@ -1560,6 +1567,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    tool_access=getattr(agent, "tool_access", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
             except KeyboardInterrupt:

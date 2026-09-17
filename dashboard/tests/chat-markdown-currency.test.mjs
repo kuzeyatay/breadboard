@@ -99,6 +99,53 @@ test("display maths still renders", () => {
   assert.match(markup, /katex/);
 });
 
+const formulaList = String.raw`- **Net charge:**
+  \[
+  Q=(N_p-N_e)e
+  \]
+  Net charge depends on the difference between protons and electrons.
+
+- **Charge conservation:**
+  \[
+  Q_{\text{before}}=Q_{\text{after}}
+  \]
+  Charge can move between objects, but its total stays constant.`
+  .replace(/(\*\*|\\\])\n/g, "$1  \n");
+
+for (const [name, content] of [
+  ["bullet list", formulaList],
+  ["Windows line endings", formulaList.replaceAll("\n", "\r\n")],
+  ["nested list", "- Charge concepts\n\n" + formulaList.replace(/^/gm, "  ")],
+  ["numbered list", formulaList.replace(/^- /gm, "1. ").replace(/^  /gm, "   ")],
+  ["quoted list", formulaList.replace(/^/gm, "> ")],
+  ["single-line delimiters", formulaList.replace(/\\\[\n  ([^\n]+)\n  \\\]/g, "\\[$1\\]")],
+]) {
+  test(`display equations keep their explanations outside math in a ${name}`, () => {
+    const markup = render(content);
+    const equations = Array.from(
+      markup.matchAll(/<annotation encoding="application\/x-tex">([\s\S]*?)<\/annotation>/g),
+      (match) => match[1].trim(),
+    );
+    assert.deepEqual(equations, [
+      "Q=(N_p-N_e)e",
+      String.raw`Q_{\text{before}}=Q_{\text{after}}`,
+    ]);
+    assert.equal((markup.match(/class="katex-display"/g) ?? []).length, 2);
+    assert.doesNotMatch(markup, /katex-error/);
+    assert.match(markup, /<strong>Net charge:<\/strong>/);
+    assert.match(markup, /<strong>Charge conservation:<\/strong>/);
+    assert.match(markup, /Net charge depends on the difference between protons and electrons\./);
+    assert.match(markup, /Charge can move between objects, but its total stays constant\./);
+  });
+}
+
+test("LaTeX display delimiters in code remain literal", () => {
+  const markup = render('Use `\\[Q=0\\]` as an example.\n\n```latex\n\\[\nQ=0\n\\]\n```');
+  assert.doesNotMatch(markup, /katex/);
+  assert.match(markup, /\\\[Q=0\\\]/);
+  assert.match(markup, /\\\[\nQ=0\n\\\]/);
+});
+
 test("a dollar inside code is the author's, and is left alone", () => {
   const inline = render('Run `echo "$5"` to print it.');
   assert.doesNotMatch(inline, /\\$5/);

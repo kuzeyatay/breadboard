@@ -254,6 +254,14 @@ export interface CliproxyAccount {
   account: string;
   /** Credential-file time, used only to keep siblings in connection order. */
   connectedAt: string | null;
+  /**
+   * Whether the proxy routes requests to this credential. CLIProxyAPI spreads a
+   * provider's traffic over every enabled credential it holds, so "the active
+   * account" is the one sibling left enabled; the others stay signed in but
+   * disabled (`"disabled": true` inside the file, which the proxy honours and
+   * its management API toggles).
+   */
+  active: boolean;
 }
 
 /**
@@ -281,12 +289,20 @@ export function readCliproxyAccounts(): CliproxyAccount[] {
     const prefix = spec.filePrefixes.find((candidate) => file.startsWith(candidate)) ?? "";
     const identity = file.slice(prefix.length).replace(/\.json$/i, "").trim();
     let connectedAt: string | null = null;
+    let active = true;
     try {
-      const stat = fs.statSync(path.join(cliproxyAuthDir(), file));
+      const fullPath = path.join(cliproxyAuthDir(), file);
+      const stat = fs.statSync(fullPath);
       const timestamps = [stat.birthtimeMs, stat.mtimeMs].filter(
         (timestamp) => Number.isFinite(timestamp) && timestamp > 0,
       );
       connectedAt = timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null;
+      const stored = JSON.parse(fs.readFileSync(fullPath, "utf8")) as unknown;
+      active = !(
+        stored &&
+        typeof stored === "object" &&
+        (stored as { disabled?: unknown }).disabled === true
+      );
     } catch {
       // The proxy may rotate a credential between readdir and stat. It remains
       // visible in this response and sorts after siblings with known times.
@@ -298,6 +314,7 @@ export function readCliproxyAccounts(): CliproxyAccount[] {
       file,
       account: identity || "Signed in",
       connectedAt,
+      active,
     });
   }
   return accounts.sort((left, right) => {

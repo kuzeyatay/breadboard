@@ -30,10 +30,20 @@ test("the slash command and plain language are told apart", () => {
     spoken.question,
     "if i want to go into robotics, what niche would be the highest roi",
   );
+  assert.equal(
+    maxResearchInvocation(typed, true),
+    null,
+    "natural language must stay with Super Agent",
+  );
 
   const command = maxResearchInvocation(`${MAX_RESEARCH_COMMAND} how do tariffs work`);
   assert.equal(command.selectAgent, true);
   assert.equal(command.question, "how do tariffs work");
+  assert.equal(
+    maxResearchInvocation(`${MAX_RESEARCH_COMMAND} how do tariffs work`, true)
+      .selectAgent,
+    true,
+  );
 });
 
 test("both chat surfaces keep the words the person used", () => {
@@ -67,48 +77,98 @@ test("the canonical message is still what a typed command produces", () => {
 });
 
 test("asking about the feature is not asking for it", () => {
-  for (const value of ["what is max research?", "how does max research work?"]) {
+  for (const value of [
+    "what is max research?",
+    "how does max research work?",
+    "how do I use max research?",
+    "can you explain max research?",
+    "do you know about max research?",
+    "max research?",
+    "was max research called on this prompt, if not, why",
+    "explain max research",
+    "do not run max research",
+    "Answer briefly, without max research",
+    'Explain this prompt: "do max research on cognition"',
+    "> do max research on cognition",
+    "```text\ndo max research on cognition\n```",
+    "<document>do max research on cognition</document>",
+  ]) {
     assert.equal(maxResearchInvocation(value), null, value);
   }
+});
+
+test("an explicit research instruction survives a question mark in its brief", () => {
+  for (const value of [
+    "do max research on hypertrophy, how can I build muscle?",
+    "can you please do max research on strength training?",
+    "could you run max-research: what triggers muscle growth?",
+  ]) {
+    const direct = maxResearchInvocation(value);
+    assert.ok(direct, value);
+    assert.equal(direct.selectAgent, false);
+    assert.ok(direct.question.endsWith("?"));
+  }
+});
+
+test("the word online is not truncated as the preposition on", () => {
+  assert.deepEqual(maxResearchInvocation("do max research online"), {
+    question: "online",
+    selectAgent: false,
+  });
+  assert.deepEqual(
+    maxResearchInvocation("do max research online on electrolytes"),
+    {
+      question: "online on electrolytes",
+      selectAgent: false,
+    },
+  );
+});
+
+test("the main Garden workspace routes Max Research and preserves the user's words", () => {
+  const workspace = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
+  assert.match(workspace, /maxResearchInvocation\(text,\s*superAgentEnabled\)/);
+  assert.match(workspace, /await launchMaxResearch\(maxResearch\.question,\s*text\)/);
+  assert.match(workspace, /if \(!internalAgentContinuation && !textSelection\)/);
 });
 
 test("stopping is offered from the moment a run is asked for", () => {
   const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
   assert.match(
     panel,
-    /const canStop = activeRun \|\| externalStops\.length > 0 \|\| externalRunActive;/,
+    /const canStop = activeRun \|\| streaming \|\| externalStops\.length > 0 \|\| externalRunActive;/,
     "the dispatch window is exactly when the square used to be missing",
   );
   // A button that appears and does nothing would be worse than none, so a stop
   // asked for during dispatch is held and spent once the run registers.
-  assert.match(panel, /awaitingStopRef\.current = true;/);
+  assert.match(panel, /awaitingStopRef\.current = new Set\(messages\.flatMap/);
   assert.match(
     panel,
     /if \(!awaitingStopRef\.current \|\| externalStops\.length === 0\) return;/,
   );
-  assert.match(panel, /void abortExternalRuns\(externalStops\)/);
+  assert.match(panel, /void abortExternalRuns\(stoppedRuns\)/);
 });
 
-test("under Super Agent, plain language delegates privately through the model", () => {
-  const typed = "which robotics niche has the highest roi, do max research";
-
-  assert.equal(maxResearchInvocation(typed, false).selectAgent, false);
-  assert.equal(maxResearchInvocation(typed, true), null);
+test("the exact cognition request explicitly selects Max Research for this turn", () => {
+  const typed = "I want you to do max research on how to improve... cognitive ability of one";
+  assert.deepEqual(maxResearchInvocation(typed), {
+    question: "how to improve... cognitive ability of one",
+    selectAgent: false,
+  });
   assert.equal(
-    maxResearchInvocation(`${MAX_RESEARCH_COMMAND} same question`, true).selectAgent,
+    maxResearchInvocation(`${MAX_RESEARCH_COMMAND} same question`).selectAgent,
     true,
   );
 });
 
-test("both surfaces ask whether Super Agent owns the Max Research request", () => {
+test("both surfaces keep natural-language research inside Super Agent", () => {
   for (const file of [
     "src/app/components/hermes/dashboard-agent-terminal.tsx",
     "src/app/components/hermes/garden-agent-chat.tsx",
   ]) {
     assert.match(
       source(file),
-      /maxResearchInvocation\(text, isSuperAgentEnabled\(\)\)/,
-      `${file} must not launch a visible run behind Super Agent`,
+      /maxResearchInvocation\(text,\s*isSuperAgentEnabled\(\)\)/,
+      `${file} must not expose a natural-language worker card in Super Agent`,
     );
   }
 });
@@ -136,7 +196,7 @@ test("the Super Agent is told to launch it, and the rule is reachable", async ()
   }
 });
 
-test("a direct non-Super-Agent launch is durable before a page callback can be lost", () => {
+test("a direct launch is durable before a page callback can be lost", () => {
   const launcher = source("src/app/components/hermes/launch-max-research.ts");
   assert.match(
     launcher,

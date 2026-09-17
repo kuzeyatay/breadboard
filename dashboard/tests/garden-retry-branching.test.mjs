@@ -42,7 +42,7 @@ test("the branch switcher reaches the Garden transcript's assistant actions", ()
   // stores exactly the transcript on screen.
   assert.match(
     workspace,
-    /void persistChatSession\(activeChat\.id, nextMessages\)/,
+    /await persistChatSession\(activeChat\.id, nextMessages, undefined,\s*\{\s*updateLocal: false, branchGroups:/,
   );
 });
 

@@ -1,6 +1,8 @@
 import { runGoogleImageSearch } from "./image-search-runtime-v2.ts";
 import { ImageSearchServiceError } from "./image-search-errors.ts";
 import { readGoogleImageCredentials } from "./image-search-credentials.ts";
+import { prepareImageSearchPreview } from "./image-search-preview.ts";
+import { MAX_IMAGE_RESULTS, imageResultUrl } from "./image-results.ts";
 
 export { ImageSearchServiceError } from "./image-search-errors.ts";
 
@@ -12,7 +14,6 @@ export { ImageSearchServiceError } from "./image-search-errors.ts";
 // it uses DuckDuckGo's process-free HTTP endpoint, so a fresh deployment still
 // shows images with zero setup.
 const KEYLESS_FETCH_TIMEOUT_MS = 15_000;
-const MAX_COUNT = 10;
 
 export interface ImageSearchDisplayItem {
   title: string;
@@ -29,6 +30,11 @@ export interface ImageSearchResult {
   itemsReturned: number;
   nextPageStartIndex?: number;
   display: { query: string; items: ImageSearchDisplayItem[] };
+  screenshot?: { dataUrl: string };
+  guidance?: string;
+  inspection?: { status: "awaiting_review" | "unavailable"; requested: number; loaded: number; timedOut: boolean };
+  /** Provider positions for an internal candidate pool; never part of display. */
+  candidatePositions?: number[];
 }
 
 export interface ImageSearchInput {
@@ -65,27 +71,26 @@ export interface CanonicalImageSearchRequest {
 }
 
 function normalizeArgs(input: ImageSearchInput): CanonicalImageSearchRequest {
-  const query = typeof input.query === "string" ? input.query.trim() : "";
+  const query = input && typeof input.query === "string" ? input.query.trim() : "";
   if (!query || query.length > 512) {
     throw new ImageSearchServiceError(
       "image_search_invalid_arguments",
       "Image search needs a non-empty query of at most 512 characters.",
     );
   }
-  // The clone's own default is 2, which reads as a broken grid next to the
-  // "give me 5 images" phrasing these turns arrive with — default to 5.
+  // The model chooses count explicitly. Older callers get one useful picture.
   const args: CanonicalImageSearchRequest = {
     query,
-    count: 5,
+    count: 1,
     safe: null,
     startIndex: null,
   };
   if (input.count !== undefined) {
-    const count = Number(input.count);
-    if (!Number.isInteger(count) || count < 1 || count > MAX_COUNT) {
+    const count = input.count;
+    if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGE_RESULTS) {
       throw new ImageSearchServiceError(
         "image_search_invalid_arguments",
-        `Image search count must be an integer between 1 and ${MAX_COUNT}.`,
+        `Image search count must be an integer between 1 and ${MAX_IMAGE_RESULTS}.`,
       );
     }
     args.count = count;
@@ -100,7 +105,7 @@ function normalizeArgs(input: ImageSearchInput): CanonicalImageSearchRequest {
     args.safe = input.safe;
   }
   if (input.startIndex !== undefined) {
-    const startIndex = Number(input.startIndex);
+    const startIndex = input.startIndex;
     if (!Number.isInteger(startIndex) || startIndex < 1 || startIndex > 91) {
       throw new ImageSearchServiceError(
         "image_search_invalid_arguments",
@@ -210,6 +215,9 @@ async function searchImagesKeyless(
       );
     }
     payload = (await response.json()) as { results?: DdgImageResult[]; next?: unknown };
+    if (!payload || !Array.isArray(payload.results)) {
+      throw new ImageSearchServiceError("image_search_upstream_error", "The image search returned an unreadable result list.");
+    }
   } catch (error) {
     if (error instanceof ImageSearchServiceError) throw error;
     if (signal?.aborted) {
@@ -221,30 +229,37 @@ async function searchImagesKeyless(
     );
   }
   const results = Array.isArray(payload.results) ? payload.results : [];
-  const displayItems: ImageSearchDisplayItem[] = results
-    .flatMap((item): ImageSearchDisplayItem[] => {
-      const image = typeof item.image === "string" ? item.image : "";
-      if (!/^https?:\/\//i.test(image)) return [];
-      const page = typeof item.url === "string" ? item.url : "";
+  const candidatePositions: number[] = [];
+  // Keep raw positions: dropped malformed entries must not make "more images"
+  // revisit the same provider results or loop on an empty page.
+  const poolSize = Math.min(results.length, count);
+  const displayItems: ImageSearchDisplayItem[] = results.slice(0, poolSize)
+    .flatMap((item, index): ImageSearchDisplayItem[] => {
+      if (!item || typeof item !== "object") return [];
+      const thumb = imageResultUrl(item.thumbnail);
+      const image = imageResultUrl(item.image) || thumb;
+      if (!image) return [];
+      const page = imageResultUrl(item.url);
+      candidatePositions.push(startIndex + index);
       return [
         {
           title: typeof item.title === "string" ? item.title : "",
           image,
-          thumb: typeof item.thumbnail === "string" ? item.thumbnail : "",
+          thumb,
           page,
           site: hostnameOf(page),
           ...(typeof item.width === "number" ? { w: item.width } : {}),
           ...(typeof item.height === "number" ? { h: item.height } : {}),
         },
       ];
-    })
-    .slice(0, count);
-  const hasMore = typeof payload.next === "string" && results.length > count;
+    });
+  const hasMore = poolSize > 0 && (results.length > poolSize || typeof payload.next === "string");
   return {
     query,
     itemsReturned: displayItems.length,
-    ...(hasMore ? { nextPageStartIndex: startIndex + displayItems.length } : {}),
+    ...(hasMore && startIndex + poolSize <= 91 ? { nextPageStartIndex: startIndex + poolSize } : {}),
     display: { query, items: displayItems },
+    candidatePositions,
   };
 }
 
@@ -255,12 +270,27 @@ export async function searchImages(
   options: ImageSearchExecutionOptions = {},
 ): Promise<ImageSearchResult> {
   const args = normalizeArgs(input);
+  if (options.signal?.aborted) {
+    throw new ImageSearchServiceError("image_search_aborted", "The image search was cancelled.");
+  }
   const credentials = options.scope
     ? readGoogleImageCredentials(options.scope.userId)
     : null;
   const mode = imageSearchMode(credentials !== null);
-  if (mode === "keyless" || credentials === null) {
-    return searchImagesKeyless(args, options.signal);
+  // Overfetch a bounded candidate pool to replace broken/duplicate images.
+  // This internal count may exceed the public tool's 1–5 display limit.
+  const candidateArgs = { ...args, count: Math.min(10, Math.max(5, args.count * 2)) };
+  const candidates = mode === "keyless" || credentials === null
+    ? await searchImagesKeyless(candidateArgs, options.signal)
+    : await runGoogleImageSearch(candidateArgs, options.scope, credentials, options.signal);
+  try {
+    return await prepareImageSearchPreview(candidates, args.count, args.startIndex ?? 1, {
+      signal: options.signal,
+    });
+  } catch {
+    throw new ImageSearchServiceError(
+      options.signal?.aborted ? "image_search_aborted" : "image_search_preview_failed",
+      options.signal?.aborted ? "The image search was cancelled." : "The image previews could not be loaded. Try a more focused query once.",
+    );
   }
-  return runGoogleImageSearch(args, options.scope, credentials, options.signal);
 }

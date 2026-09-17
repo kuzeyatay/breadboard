@@ -4,7 +4,12 @@ export interface DisplayUsageLimitWindow {
   resets_in_seconds?: number;
 }
 
-export type UsageLimitWindowKey = "primary" | "secondary" | "five-hour";
+export type UsageLimitWindowKey =
+  | "primary"
+  | "secondary"
+  | "five-hour"
+  | "reserve"
+  | "reserve-secondary";
 
 export interface DisplayUsageLimitRow {
   key: UsageLimitWindowKey;
@@ -95,4 +100,54 @@ export function usageLimitRowsWithFiveHour(payload: {
     },
     ...rows,
   ];
+}
+
+export interface DisplayUsageLimitReserve {
+  model?: string | null;
+  active?: boolean;
+  limit_reached?: boolean;
+  primary?: DisplayUsageLimitWindow;
+  secondary?: DisplayUsageLimitWindow;
+}
+
+/** "GPT-5.6 Luna" from `gpt-5.6-luna`; the pool is named after its model. */
+export function usageReserveModelLabel(model: string | null | undefined): string {
+  const slug = (model ?? "").trim();
+  if (!slug) return "Reserve";
+  const match = /^gpt-([0-9.]+)-([a-z]+)$/i.exec(slug);
+  if (match) {
+    const [, version, name] = match;
+    return `GPT-${version} ${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+  }
+  return slug;
+}
+
+/**
+ * The reserve pool's windows as rows beneath the plan's own. Only OpenAI's
+ * report carries a reserve; a header snapshot yields no rows here.
+ */
+export function usageReserveRows(payload: {
+  reserve?: DisplayUsageLimitReserve | null;
+}): DisplayUsageLimitRow[] {
+  const reserve = payload.reserve;
+  if (!reserve) return [];
+  const name = usageReserveModelLabel(reserve.model);
+  const rows: DisplayUsageLimitRow[] = [];
+  if (reserve.primary) {
+    rows.push({
+      key: "reserve",
+      label: `${name} reserve · ${usageLimitWindowLabel(reserve.primary, "limit").toLowerCase()}`,
+      window: reserve.primary,
+      reported: true,
+    });
+  }
+  if (reserve.secondary) {
+    rows.push({
+      key: "reserve-secondary",
+      label: `${name} reserve · ${usageLimitWindowLabel(reserve.secondary, "limit").toLowerCase()}`,
+      window: reserve.secondary,
+      reported: true,
+    });
+  }
+  return rows;
 }

@@ -5,7 +5,10 @@
 // route so the streaming + persistence policy lives in one place.
 
 import { leastPrivilegeDecision } from "./dispatch-core.ts";
+import { mergeExplanationUsage, type ExplanationReviewReport } from "./explanation-review.ts";
+import { reviewRuntimeExplanation } from "./explanation-review-runtime.ts";
 import db from "../db.ts";
+import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { runtimeStartupResourceFailure } from "../agent-runtime/startup-error.ts";
 import { encodeSseEvent, type NormalizedAgentEvent } from "./events.ts";
@@ -69,6 +72,7 @@ import {
 import { listSuccessfulMemorySavesForRun } from "./memory-evidence.ts";
 import { capabilitySummaryForRun } from "./capability-evidence.ts";
 import { listCompletedTerminalCommandsForRun } from "./terminal-evidence.ts";
+import { publishProducedFilesForTurn } from "./produced-artifacts-turn.ts";
 import {
   acquireDetachedEventPump,
   type DetachedEventPumpSink,
@@ -78,6 +82,7 @@ import {
   gardenNavigationResourceFromSources,
   type GenerativeUiResource,
 } from "../generative-ui/contracts.ts";
+import { uiResourcesForUserRequest } from "../generative-ui/request-policy.ts";
 
 type CompletedToolEvent = Extract<
   NormalizedAgentEvent,
@@ -95,6 +100,7 @@ function persistAssistantOnce(
   uiResources: GenerativeUiResource[],
   tokenUsage?: unknown,
   reasoning?: string,
+  failure?: { code: string; message: string },
 ): void {
   let persistedTokenUsage = normalizeChatTokenUsage(tokenUsage) ?? undefined;
   if (session.row.conversation_id !== null) {
@@ -125,6 +131,7 @@ function persistAssistantOnce(
       ...(reasoning ? { reasoning } : {}),
       verification,
       runtimeStatus,
+      ...(failure?.code ? { errorCode: failure.code } : {}),
       ...(uiResources.length ? { uiResources } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(dispatchedModel ? { model: dispatchedModel } : {}),
@@ -151,7 +158,9 @@ function persistAssistantOnce(
         status: runtimeStatus === "aborted" ? "aborted" : "failed",
         content,
         metadata,
-        error: runtimeStatus,
+        error: failure?.message ?? (runtimeStatus === "aborted"
+          ? "Response stopped."
+          : "The agent stopped before delivering a complete response. Retry this response with its saved attachments."),
         // The turn burned these tokens whether or not it ended well, and the
         // response meta reads them back off the row after a reload.
         tokenUsage: persistedTokenUsage,
@@ -233,7 +242,9 @@ function driveSessionEventPump(
   // An event stream that closes without an explicit terminal runtime status is
   // a failure, not a completed answer.
   let finalStatus = "failed";
+  let failure: { code: string; message: string } | undefined;
   let tokenUsage: unknown;
+  let explanationReview: ExplanationReviewReport | undefined;
   let stableAnswerEmitted = false;
   // The browser deliberately opens this stream before POSTing the prompt so
   // the first text delta cannot be missed. That means there may not be an
@@ -389,7 +400,9 @@ function driveSessionEventPump(
         createdAt: streamRun.started_at,
         sources: grounding.sources,
       });
-      if (navigator) uiResources.push(navigator);
+      if (navigator) {
+        uiResources.push(...uiResourcesForUserRequest([navigator], streamRun.instruction));
+      }
       for (const [index, source] of grounding.sources.entries()) {
         const label = `${source.title} (${source.gardenName})`;
         if (!sources.includes(label)) sources.push(label);
@@ -456,6 +469,10 @@ function driveSessionEventPump(
     const emit = (
       event: NormalizedAgentEvent | { type: string; [k: string]: unknown },
     ) => {
+      if (event.type === "error") {
+        const payload = event.payload as { code?: string; message?: string } | undefined;
+        if (payload?.message) failure = { code: payload.code ?? "runtime_error", message: payload.message };
+      }
       sink.emit(encoder.encode(encodeSseEvent(event)));
     };
     const promoteNarrationFallback = () => {
@@ -472,6 +489,24 @@ function driveSessionEventPump(
       if (stableAnswerEmitted) return;
       promoteNarrationFallback();
       stableAnswerEmitted = true;
+      // Publish delegation provenance before the text, so a final hand-off
+      // sentence enters Thinking immediately instead of flashing as an answer.
+      const externalAgents = externalAgentsForTurn();
+      if (externalAgents.length) {
+        emit({
+          type: "verification.updated",
+          sessionId: session.hermesSessionId,
+          timestamp: new Date().toISOString(),
+          payload: assessVerification(assistantText, evidence, {
+            geographicGroundingRequired: geographicGroundingRequired(),
+            webGroundingRequired: webGroundingAppliesToCompletion(),
+            externalAgents,
+            researchExhaustion: researchExhaustionForTurn(),
+            researchCoverage: researchCoverageForTurn(),
+            capabilities: capabilitiesForTurn(),
+          }),
+        });
+      }
       emit({
         type: "assistant.completed",
         sessionId: session.hermesSessionId,
@@ -745,6 +780,7 @@ function driveSessionEventPump(
         // to emit: a delegation the agent asked for in its last breath belongs
         // in this answer's provenance even if the client never saw the event.
         const verification = assessVerification(assistantText, evidence, {
+          explanationReview,
           geographicGroundingRequired: geographicGroundingRequired(),
           webGroundingRequired: webGroundingAppliesToCompletion(),
           externalAgents: externalAgentsForTurn(),
@@ -764,6 +800,7 @@ function driveSessionEventPump(
             uiResources,
             tokenUsage,
             reasoning,
+            failure,
           );
         } catch {
           // Do not strand the canonical placeholder in `pending` if final
@@ -993,6 +1030,29 @@ function driveSessionEventPump(
           // completing empty while its real generation continues orphaned.
           if (!streamRun) continue;
 
+          // Save live metadata for headless turns and viewers opening mid-run.
+          // Never update a terminal row or allow a late event to revive a stop.
+          if (session.row.conversation_id && ["permission.requested", "clarify.requested", "tool.started",
+            "tool.completed", "reasoning.status", "assistant.usage"].includes(event.type) &&
+            (!("messageId" in event) || !event.messageId || !assistantMessageId || event.messageId === assistantMessageId) &&
+            getRuntimeRun(streamRun.id)?.status === "active") {
+            const label = event.type === "permission.requested" ? "Waiting for permission"
+              : event.type === "clarify.requested" ? "Waiting for your answer"
+              : event.type === "tool.started" ? (event.payload.toolName === "attachment_image" ? "Reading image"
+                : /search|extract/.test(event.payload.toolName) ? "Searching" : "Using tools")
+              : event.type === "tool.completed" ? "Waiting for model response"
+              : event.type === "reasoning.status" ? event.payload.label : undefined;
+            const usage = event.type === "assistant.usage" ? normalizeChatTokenUsage(event.payload.usage) : null;
+            if (label || usage) {
+              db.prepare(`UPDATE conversation_messages SET
+                metadata=json_patch(COALESCE(metadata, '{}'), ?),
+                token_usage=COALESCE(?, token_usage), updated_at=datetime('now')
+                WHERE conversation_id=? AND client_message_id=? AND role='assistant' AND status='pending'`)
+                .run(JSON.stringify(label ? { activityLabel: label } : {}),
+                  usage ? JSON.stringify(usage) : null, session.row.conversation_id,
+                  parseRuntimeRunDispatch(streamRun).clientMessageId ?? "");
+            }
+          }
           let forwardEvent = true;
           if (event.type === "assistant.delta") {
             if (
@@ -1038,6 +1098,10 @@ function driveSessionEventPump(
                 ? event.payload.detail
                 : reasoning + event.payload.detail;
             }
+          } else if (event.type === "assistant.usage") {
+            if (!event.messageId || !assistantMessageId || event.messageId === assistantMessageId) {
+              tokenUsage = event.payload.usage;
+            } else continue;
           } else if (event.type === "assistant.completed") {
             if (
               !sawTurnOutput ||
@@ -1065,6 +1129,10 @@ function driveSessionEventPump(
               },
             });
           } else if (event.type === "tool.completed") {
+            event.payload.uiResources = uiResourcesForUserRequest(
+              event.payload.uiResources,
+              streamRun.instruction,
+            );
             recordCompletedTool(event);
           } else if (event.type === "permission.requested") {
             recordAuditEvent({
@@ -1078,6 +1146,11 @@ function driveSessionEventPump(
               },
             });
           } else if (event.type === "clarify.requested") {
+            recordQuestionNotification(db, {
+              runtimeSessionId: session.row.id,
+              runId: streamRun.id,
+              ...event.payload,
+            });
             recordAuditEvent({
               eventType: "clarify.requested",
               runtimeSessionId: session.row.id,
@@ -1088,6 +1161,8 @@ function driveSessionEventPump(
                 choiceCount: event.payload.choices.length,
               },
             });
+          } else if (event.type === "clarify.expired") {
+            resolveQuestionNotification(db, session.row.id, event.payload.requestId);
           }
           if (
             event.type === "session.status" &&
@@ -1142,6 +1217,22 @@ function driveSessionEventPump(
               }
             }
           }
+          if (event.type === "session.status" && event.payload.status === "idle" && sawTurnOutput) {
+            const checked = await reviewRuntimeExplanation({
+              runId: streamRun.id, answer: assistantText, evidence,
+              onStage: () => {
+                lastRuntimeEventAt = Date.now();
+                emit({ type: "reasoning.status", sessionId: session.hermesSessionId,
+                  timestamp: new Date().toISOString(), payload: { label: "Checking explanation coverage" } });
+              },
+            });
+            if (!checked) event.payload.status = "aborted";
+            else {
+              assistantText = checked.answer;
+              explanationReview = checked.report;
+              tokenUsage = mergeExplanationUsage(tokenUsage, checked.usage);
+            }
+          }
           if (
             event.type === "session.status" &&
             (event.payload.status === "idle" ||
@@ -1164,6 +1255,16 @@ function driveSessionEventPump(
               // turn's terminal idle event. It is not completion for this run
               // until the run has emitted answer text or tool activity.
               if (!sawTurnOutput) continue;
+              // Whatever this turn left on disk becomes a card now: before the
+              // stream closes, so the cards arrive with the answer, and before
+              // the capability decision is revoked below.
+              if (streamRun) {
+                await publishProducedFilesForTurn({
+                  session,
+                  runId: streamRun.id,
+                  clientMessageId: parseRuntimeRunDispatch(streamRun).clientMessageId ?? null,
+                });
+              }
               emitArtifactEvents();
               // Last chance: after this the stream closes, and an unemitted
               // launch would be a run the agent believes it started.
@@ -1180,6 +1281,7 @@ function driveSessionEventPump(
                 sessionId: session.hermesSessionId,
                 timestamp: new Date().toISOString(),
                 payload: assessVerification(assistantText, evidence, {
+                  explanationReview,
                   geographicGroundingRequired: geographicGroundingRequired(),
                   webGroundingRequired: webGroundingAppliesToCompletion(),
                   externalAgents: externalAgentsForTurn(),

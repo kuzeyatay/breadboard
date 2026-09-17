@@ -508,7 +508,7 @@ export default function InlineSpotifyPlayer({
         </div>
       </div>
       <div
-        className="relative grid grid-cols-5 items-center border-t px-4 py-2.5 backdrop-blur-xl"
+        className="relative grid grid-cols-5 items-center border-t px-4 py-2.5 backdrop-blur-xl last:rounded-b-[19px]"
         style={{
           backgroundColor: palette.surface,
           borderColor: palette.border,
@@ -603,7 +603,7 @@ export default function InlineSpotifyPlayer({
       </div>
       {error ? (
         <p
-          className="relative border-t px-4 py-2.5 text-xs backdrop-blur-xl"
+          className="relative rounded-b-[19px] border-t px-4 py-2.5 text-xs backdrop-blur-xl"
           style={{
             backgroundColor: palette.errorSurface,
             borderColor: palette.border,

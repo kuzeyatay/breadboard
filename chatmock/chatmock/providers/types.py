@@ -96,6 +96,12 @@ class ModelCall:
     # non-acceptance/idempotency proof. Merely buffering fragments does not make
     # an accepted model request safe to replay.
     transport_recoveries_out: List[Dict[str, Any]] = field(default_factory=list)
+    # What asked for this call (see usage_ledger.request_origin). Captured in
+    # the request thread; council seats run on worker threads without one.
+    origin: Optional[Dict[str, Any]] = None
+    # Out-param: the account that paid for the call, as the usage ledger names
+    # it (email + plan for ChatGPT). Set by the provider once it has chosen.
+    account_out: Optional[Dict[str, Any]] = None
 
 
 class ModelProvider(Protocol):

@@ -66,7 +66,7 @@ def test_terminal_permission_card_retries_the_exact_approved_command(monkeypatch
 
     monkeypatch.setattr(approval, "request_tool_approval", approve)
     result = breadboard._call_breadboard(
-        {"command": "du -sh ."},
+        {"command": "du -sh .", "timeoutSeconds": 90},
         tool_name="terminal_execute_command",
         route="/api/hermes/tools/terminal",
         route_kind="terminal",
@@ -81,7 +81,20 @@ def test_terminal_permission_card_retries_the_exact_approved_command(monkeypatch
         True,
     ]
     assert _Connection.timeouts == [135, 135]
+    assert [body["timeoutSeconds"] for body in _Connection.bodies] == [90, 90]
     assert "1G" in result
+
+
+def test_terminal_timeout_is_exposed_and_optional():
+    schema = next(tool[3] for tool in breadboard._TOOLS if tool[0] == "terminal_execute_command")
+    parameters = schema["parameters"]
+    assert "timeoutSeconds" in parameters["properties"]
+    assert "timeoutSeconds" not in parameters["required"]
+    payload = breadboard._request_payload(
+        route_kind="terminal", tool_name="terminal_execute_command",
+        args={"command": "Get-PSDrive"}, tool_call_id=None,
+    )
+    assert payload == {"command": "Get-PSDrive"}
 
 
 def test_denied_terminal_permission_does_not_retry(monkeypatch):

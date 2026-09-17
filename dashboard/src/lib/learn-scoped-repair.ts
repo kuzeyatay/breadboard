@@ -156,6 +156,56 @@ export interface LearnScopedRepairResult {
   reportMarkdownPath: string;
 }
 
+/** What a finished scoped repair reports back through the durable job result.
+ * The full record (operations with complete page bodies, fingerprints, issue
+ * evidence) is written to .breadboard/scoped-repair.json; returning it here
+ * exceeded the 1 MiB Learn result envelope and failed a repair that had
+ * already published. */
+export interface LearnScopedRepairSummary {
+  repairId: string;
+  committed: boolean;
+  rolledBack: boolean;
+  accepted: boolean;
+  publishReady: boolean;
+  promoted: boolean;
+  reason: string;
+  issueIds: string[];
+  pageIds: string[];
+  changedFiles: string[];
+  operationTypes: string[];
+  modelCalls: number;
+  verifiedModelDecisions: number;
+  rejectedModelDecisions: number;
+  blockersBefore: number;
+  blockersAfter: number;
+  reportJsonPath: string;
+  reportMarkdownPath: string;
+}
+
+export function summarizeLearnScopedRepairResult(result: LearnScopedRepairResult): LearnScopedRepairSummary {
+  const { transaction } = result;
+  return {
+    repairId: transaction.repairId,
+    committed: transaction.committed,
+    rolledBack: transaction.rolledBack,
+    accepted: result.accepted,
+    publishReady: result.publishReady,
+    promoted: result.promotion.promoted,
+    reason: transaction.reason,
+    issueIds: result.selectedIssues.map((issue) => issue.issueId),
+    pageIds: [...result.scope.pageIds],
+    changedFiles: [...result.files.changedFiles],
+    operationTypes: transaction.operations.map((operation) => operation.type),
+    modelCalls: transaction.modelCalls,
+    verifiedModelDecisions: transaction.verifiedModelDecisions,
+    rejectedModelDecisions: transaction.rejectedModelDecisions,
+    blockersBefore: transaction.blockersBefore.length,
+    blockersAfter: transaction.blockersAfter.length,
+    reportJsonPath: result.reportJsonPath,
+    reportMarkdownPath: result.reportMarkdownPath,
+  };
+}
+
 function copyTree(source: string, destination: string): void {
   fs.mkdirSync(destination, { recursive: true });
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
@@ -471,6 +521,9 @@ function reportMarkdown(result: {
   ].join("\n");
 }
 
+/** A refused scoped-repair decision gets one retry carrying its refusal reason. */
+export const SCOPED_REPAIR_ATTEMPTS_PER_ISSUE = 2;
+
 export async function executeLearnScopedRepair(input: {
   gardenDir: string;
   gardenId: string;
@@ -503,7 +556,10 @@ export async function executeLearnScopedRepair(input: {
   const beforeFiles = fingerprintGardenFiles(input.gardenDir);
   const policy = buildScopedFileMutationPolicy(current.state, scope, beforeFiles);
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), `breadboard-${input.gardenId}-repair-`));
-  const staging = path.join(workspaceRoot, "staging");
+  // Name the staging copy after the garden: finalize resolves "/<garden>/assets/..."
+  // URLs from the directory name, so a copy called "staging" could not find a
+  // single crop and failed every repair on its audit.
+  const staging = path.join(workspaceRoot, input.gardenId);
   try {
     copyTree(input.gardenDir, staging);
     if (!identicalFingerprints(beforeFiles, fingerprintGardenFiles(staging))) {
@@ -537,32 +593,51 @@ export async function executeLearnScopedRepair(input: {
       operations.push(...scope.allowedSemanticOperations);
     }
 
-    for (const issue of selectedIssues.slice(0, options.maxIssuesPerRound)) {
-      if (!input.modelRepair || modelCalls >= options.maxModelCalls) break;
+    // The whole selection must be fixed for the garden to pass its audit, so
+    // the call budget covers every selected issue plus one retry each; a
+    // fixed small cap used to stop partway and discard every verified fix.
+    const issuesThisRound = selectedIssues.slice(0, options.maxIssuesPerRound);
+    const modelCallBudget = Math.max(options.maxModelCalls, issuesThisRound.length * SCOPED_REPAIR_ATTEMPTS_PER_ISSUE);
+    for (const issue of issuesThisRound) {
+      if (!input.modelRepair || modelCalls >= modelCallBudget) break;
       const handler = scopedRepairHandlerForIssue(issue);
       const deterministic = handler?.proposeDeterministicOperations(issue, current.state) ?? [];
       if (deterministic.length > 0) continue;
-      const packet = handler?.buildModelPacket?.(issue, state, scope);
-      if (!packet) continue;
-      reportLearnScopedRepairProgress(input.onProgress, {
-        step: `Repairing ${issue.target.visualId ?? issue.target.unitId ?? issue.type}`,
-        issue,
-        scope,
-      });
-      if (input.verifyLease && !input.verifyLease()) {
-        throw new Error(
-          "Scoped repair lost its fenced garden lease before a model request.",
-        );
+      const firstPacket = handler?.buildModelPacket?.(issue, state, scope);
+      if (!firstPacket) continue;
+      let packet: unknown = firstPacket;
+      for (let attempt = 1; attempt <= SCOPED_REPAIR_ATTEMPTS_PER_ISSUE && modelCalls < modelCallBudget; attempt += 1) {
+        reportLearnScopedRepairProgress(input.onProgress, {
+          step: `Repairing ${issue.target.visualId ?? issue.target.unitId ?? issue.type}`,
+          issue,
+          scope,
+        });
+        if (input.verifyLease && !input.verifyLease()) {
+          throw new Error(
+            "Scoped repair lost its fenced garden lease before a model request.",
+          );
+        }
+        modelCalls += 1;
+        const decision = await requestScopedModelRepairCandidate(input.modelRepair, packet, issue);
+        const verified = handler?.verifyModelDecision?.(issue, decision, state, scope);
+        let rejection = "";
+        if (!verified?.valid) {
+          rejection = verified?.reason ?? "the decision could not be verified";
+        } else {
+          const applied = applyGardenBuildTransaction(state, verified.operations, { expectedStage: "repair", validateAfter: true });
+          if (applied.transaction.rolledBack) {
+            rejection = applied.transaction.reason ?? "the operations failed validation when applied";
+          } else {
+            verifiedModelDecisions += 1;
+            state = applied.state;
+            operations.push(...verified.operations);
+            break;
+          }
+        }
+        rejectedModelDecisions += 1;
+        // One informed retry: the model sees exactly why its decision was refused.
+        packet = { ...(firstPacket as Record<string, unknown>), previousAttemptRejected: { reason: rejection } };
       }
-      modelCalls += 1;
-      const decision = await requestScopedModelRepairCandidate(input.modelRepair, packet, issue);
-      const verified = handler?.verifyModelDecision?.(issue, decision, state, scope);
-      if (!verified?.valid) { rejectedModelDecisions += 1; continue; }
-      const applied = applyGardenBuildTransaction(state, verified.operations, { expectedStage: "repair", validateAfter: true });
-      if (applied.transaction.rolledBack) { rejectedModelDecisions += 1; continue; }
-      verifiedModelDecisions += 1;
-      state = applied.state;
-      operations.push(...verified.operations);
     }
 
     renderScopedState(staging, current.state, state, scope, operations);

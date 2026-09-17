@@ -435,7 +435,9 @@ async function executeTranscription(layout, launch, signal, io, inputPath) {
     job = store.getJob(job.id);
     if (!job) fail("The durable Scriberr job disappeared during execution.");
     return {
-      ok: job.status === "completed",
+      // A watch-style job leaves the worker in analyzing_visuals: the
+      // transcript source is written and the dashboard finishes the frames.
+      ok: job.status === "completed" || job.status === "analyzing_visuals",
       operation: launch.request.operation,
       legacyJobId: job.id,
       status: job.status,

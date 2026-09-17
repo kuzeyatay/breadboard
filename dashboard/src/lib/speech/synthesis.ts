@@ -16,7 +16,10 @@ import {
   type SpeechMediaRuntimeScope,
 } from "../runtime-v2/speech-media-job.ts";
 import { getSpeechSettings } from "./settings.ts";
+import { synthesizeElevenLabsSpeech } from "./elevenlabs.ts";
+import { synthesizeWebSpeech } from "./web-speech.ts";
 import { voiceboxFetch, voiceboxJson, voiceboxResponseError } from "./voicebox-client.ts";
+import { applyPronunciations } from './pronunciation.ts';
 
 interface VoiceProfile {
   id: string;
@@ -55,7 +58,9 @@ export async function synthesizeSpeech({
   if (!settings.enabled) {
     throw new RouteError(409, "Speech is turned off in Intelligence → Settings → Speech.");
   }
-  const spoken = typeof text === "string" ? text.trim() : "";
+  const input = typeof text === "string" ? text.trim() : "";
+  if (input.length > MAX_SPEECH_CHARACTERS) throw new RouteError(413, "Responses longer than 50,000 characters cannot be spoken at once.");
+  const spoken = applyPronunciations(input, settings.pronunciations);
   if (!spoken) throw new RouteError(400, "There is no response text to speak.");
   if (spoken.length > MAX_SPEECH_CHARACTERS) {
     throw new RouteError(413, "Responses longer than 50,000 characters cannot be spoken at once.");
@@ -63,6 +68,12 @@ export async function synthesizeSpeech({
 
   if (settings.speechProvider === "chatgpt") {
     throw new RouteError(409, "Subscription speech requires the browser audio connection. Reload Breadboard and try again.");
+  }
+  if (settings.speechProvider === "elevenlabs") {
+    return synthesizeElevenLabsSpeech(userId, spoken, settings.elevenlabsVoiceId, settings.elevenlabsModel, signal);
+  }
+  if (settings.speechProvider === "openaiweb") {
+    return synthesizeWebSpeech(userId, spoken, settings.openaiVoice, signal);
   }
   if (!settings.profileId) {
     throw new RouteError(409, "Choose a speech voice in Intelligence → Settings → Voice first.");
@@ -101,6 +112,11 @@ export async function synthesizeSpeech({
         language: settings.language,
         engine,
         model_size: settings.modelSize,
+        // CustomVoice 1.7B supports delivery instructions. Cloning, Kokoro and
+        // the smaller checkpoint do not provide equivalent instruction control.
+        ...(engine === 'qwen_custom_voice' && settings.modelSize === '1.7B' ? {
+          instruct: 'Read naturally at a calm, steady conversational pace. Pause between paragraphs and list items. Use light emphasis on meaning-bearing words and natural question intonation. Keep headings neutral and maintain the same delivery throughout.',
+        } : {}),
       }),
     },
     10 * 60_000,

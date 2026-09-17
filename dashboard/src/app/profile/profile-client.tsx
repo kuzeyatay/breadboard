@@ -15,14 +15,15 @@ import { RefreshCw } from "lucide-react";
 
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
+import DefaultModelPanel from "./default-model-panel";
 import BrainMapPanel from "./brain-map-panel";
 import BrowserProfilePanel from "./browser-profile-panel";
 import ContactsPanel from "./contacts-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
 import ClapActionPanel from "./clap-action-panel";
 import VoiceAssistantPanel from "./voice-assistant-panel";
+import UsageLedgerPanel from "./usage-ledger-panel";
 import type { ClapActionSettings } from "@/lib/profile/clap-action";
-import type { BrowserProfileState } from "@/lib/agent-browser/service.ts";
 import type { Contact } from "@/lib/contacts/types.ts";
 import type { CalendarCollection } from "@/lib/calendar/types.ts";
 import {
@@ -79,6 +80,11 @@ import {
   startupSoundControl,
   type StartupSoundControl,
 } from "@/lib/desktop-startup-sound.ts";
+import {
+  getNotificationSoundEnabled,
+  setNotificationSoundEnabled,
+  subscribeNotificationSound,
+} from "@/lib/notification-sound";
 import {
   browserNavigationControl,
   type BrowserNavigationControl,
@@ -657,6 +663,73 @@ function ThemePanel() {
   );
 }
 
+function ThoughtTopologyPanel({ initialEnabled }: { initialEnabled: boolean }) {
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/assistant-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ switches: { thoughtTopologyAutoUpdate: !enabled } }),
+      });
+      if (!response.ok) throw new Error("Could not save the Thought Topology preference.");
+      setEnabled(!enabled);
+    } catch {
+      setError("Could not save the Thought Topology preference. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Thought Topology" hint="Choose when your gardens’ maps update.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Auto-update Thought Topology</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled
+              ? "Maps update automatically as your gardens change."
+              : "Use the retry icon on an outdated map to update it."}
+          </p>
+        </div>
+        <Switch checked={enabled} label="Auto-update Thought Topology" busy={busy} onChange={toggle} />
+      </div>
+      {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
+    </Card>
+  );
+}
+
+function NotificationSoundPanel() {
+  const enabled = useSyncExternalStore(subscribeNotificationSound, getNotificationSoundEnabled, () => true);
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <Card title="Notification sound" hint="A small chime when a new notification arrives.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Play notification chime</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled ? "Sound is on for this device." : "Notifications arrive silently."}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          label="Play notification chime"
+          busy={false}
+          onChange={() => setError(setNotificationSoundEnabled(!enabled)
+            ? null : "Breadboard could not save this preference on this device.")}
+        />
+      </div>
+      {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
+    </Card>
+  );
+}
+
 /**
  * The chime the desktop app opens with.
  *
@@ -1107,7 +1180,7 @@ function LocationPanel() {
 
         <Switch
           checked={preference.useForAnswers}
-          label="Use this device's current location in relevant answers"
+          label="Keep my current location available to the assistant"
           busy={false}
           onChange={() => void toggleLocation()}
         />
@@ -1255,6 +1328,7 @@ function ReviewDeliveryPanel() {
               type="range"
               min={1}
               max={50}
+              aria-label="Review questions per day"
               value={settings.dailyLimit}
               disabled={busy}
               onChange={(event) => void patch({ dailyLimit: Number(event.target.value) })}
@@ -1273,6 +1347,7 @@ function ReviewDeliveryPanel() {
               type="range"
               min={0}
               max={23}
+              aria-label="Review start sending hour"
               value={settings.sendHour}
               disabled={busy}
               onChange={(event) => void patch({ sendHour: Number(event.target.value) })}
@@ -1295,6 +1370,7 @@ function ReviewDeliveryPanel() {
               type="range"
               min={70}
               max={97}
+              aria-label="Review target recall percentage"
               value={Math.round(settings.desiredRetention * 100)}
               disabled={busy}
               onChange={(event) =>
@@ -2531,12 +2607,12 @@ function GardenRow({
 
 export default function ProfileClient({
   stats,
+  initialThoughtTopologyAutoUpdate = true,
   initialClapAction,
   initialSnapAction,
   clapActionUserId,
   initialShortcuts,
   initialNavbarFlowers,
-  browserProfile,
   contacts,
   contactTotal,
   syncedCalendars,
@@ -2546,12 +2622,12 @@ export default function ProfileClient({
   initialBrainScope,
 }: {
   stats: ProfileStats;
+  initialThoughtTopologyAutoUpdate?: boolean;
   initialClapAction: ClapActionSettings;
   initialSnapAction: ClapActionSettings;
   clapActionUserId: string;
   initialShortcuts: NavbarShortcuts;
   initialNavbarFlowers: boolean;
-  browserProfile: BrowserProfileState;
   contacts: Contact[];
   contactTotal: number;
   syncedCalendars: CalendarCollection[];
@@ -2597,7 +2673,7 @@ export default function ProfileClient({
       <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
         <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
-          <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" fixed />
+          <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" />
           <span className="text-gray-700">/</span>
           <h1 className="truncate text-sm font-semibold text-white">
             {tab === "knowledge" ? "Knowledge" : "Profile"}
@@ -2849,6 +2925,10 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
+            <UsageLedgerPanel />
+          </Packed>
+
+          <Packed>
             <ContactsPanel initial={contacts} initialTotal={contactTotal} />
           </Packed>
 
@@ -2865,6 +2945,14 @@ export default function ProfileClient({
 
           <Packed>
             <InvitePanel initial={stats.invites} />
+          </Packed>
+
+          <Packed>
+            <DefaultModelPanel />
+          </Packed>
+
+          <Packed>
+            <ThoughtTopologyPanel initialEnabled={initialThoughtTopologyAutoUpdate} />
           </Packed>
 
           <Packed>
@@ -2888,7 +2976,7 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
-            <BrowserProfilePanel initial={browserProfile} />
+            <BrowserProfilePanel />
           </Packed>
 
           <Packed>
@@ -2897,6 +2985,10 @@ export default function ProfileClient({
 
           <Packed>
             <StartupSoundPanel />
+          </Packed>
+
+          <Packed>
+            <NotificationSoundPanel />
           </Packed>
 
           <Packed>

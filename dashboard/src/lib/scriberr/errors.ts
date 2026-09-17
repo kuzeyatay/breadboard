@@ -95,6 +95,7 @@ export function userMessageForCode(code: VideoTranscriptionErrorCode): string {
 }
 
 const RETRYABLE_CODES: ReadonlySet<VideoTranscriptionErrorCode> = new Set([
+  "BREADBOARD_RESOURCE_EXHAUSTED",
   "scriberr_unavailable",
   "scriberr_auth_failed",
   "youtube_metadata_failed",

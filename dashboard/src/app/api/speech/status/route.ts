@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import { getSpeechSettings } from "@/lib/speech/settings";
 import { subscriptionStatus } from "@/lib/speech/subscription-server";
+import { elevenLabsCredentialStatus } from "@/lib/speech/elevenlabs-credentials";
+import { webSpeechStatus } from "@/lib/speech/web-speech";
 import {
   voiceboxObservationJson,
   voiceboxStartupStatus,
@@ -24,6 +26,20 @@ export async function GET() {
   try {
     const userId = await requireUserId();
     const settings = getSpeechSettings(userId);
+    if (settings.speechProvider === "elevenlabs") {
+      const elevenlabs = elevenLabsCredentialStatus(userId);
+      return NextResponse.json({
+        available: elevenlabs.configured, elevenlabs, settings, health: null, startup: null,
+        profiles: [], models: [], presets: { kokoro: [], qwen_custom_voice: [] },
+      }, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (settings.speechProvider === "openaiweb") {
+      const web = await webSpeechStatus(userId);
+      return NextResponse.json({
+        available: web.configured, web, settings, health: null, startup: null,
+        profiles: [], models: [], presets: { kokoro: [], qwen_custom_voice: [] },
+      }, { headers: { "Cache-Control": "no-store" } });
+    }
     const cloud = await subscriptionStatus(userId);
     if (settings.speechProvider === "chatgpt") {
       return NextResponse.json({

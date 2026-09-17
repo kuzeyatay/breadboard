@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 interface Position { x: number; y: number }
-interface Placement { position: Position | null; collapsed: boolean }
+interface Placement { position: Position | null; collapsed: boolean; layoutVersion?: number }
 
 export function useNotepadPosition(ownerKey: string) {
   const panelRef = useRef<HTMLElement>(null);
@@ -14,9 +14,9 @@ export function useNotepadPosition(ownerKey: string) {
   const [dragging, setDragging] = useState(false);
   const key = `breadboard:new-tab:notepad:${ownerKey}`;
 
-  function save() {
+  const save = useCallback(() => {
     try { localStorage.setItem(key, JSON.stringify(placement.current)); } catch { /* Still movable. */ }
-  }
+  }, [key]);
 
   function place(position: Position) {
     const panel = panelRef.current;
@@ -32,32 +32,37 @@ export function useNotepadPosition(ownerKey: string) {
     const panel = panelRef.current;
     const parent = panel?.parentElement;
     if (!panel || !parent) return;
-    const saved: Placement = { position: null, collapsed: parent.clientWidth < 1180 };
+    const saved: Placement = { position: null, collapsed: parent.clientWidth < 1180, layoutVersion: 2 };
     try {
       const value = JSON.parse(localStorage.getItem(key) ?? "null");
       if (value && typeof value.collapsed === "boolean") saved.collapsed = value.collapsed;
       if (Number.isFinite(value?.position?.x) && Number.isFinite(value?.position?.y)) {
-        saved.position = value.position;
+        // Move legacy right-side placements left once to make room for usage.
+        // Subsequent drag positions belong to the user and remain untouched.
+        saved.position = value.layoutVersion !== 2 && value.position.x > parent.clientWidth / 2
+          ? { x: 28, y: value.position.y }
+          : value.position;
       }
     } catch { /* A malformed preference falls back to the visible default. */ }
     placement.current = saved;
     const fit = () => {
       // Do not overwrite the preferred position when a smaller window clamps it.
       place(placement.current.position ?? {
-        x: parent.clientWidth - panel.offsetWidth - 28,
+        x: 28,
         y: parent.clientWidth < 1180 ? 20 : 116,
       });
     };
     const frame = requestAnimationFrame(() => {
       setCollapsed(saved.collapsed);
       fit();
+      save();
       setReady(true);
     });
     const observer = new ResizeObserver(fit);
     observer.observe(parent);
     observer.observe(panel);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [key]);
+  }, [key, save]);
 
   function onPointerDown(event: PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0 || !event.isPrimary) return;

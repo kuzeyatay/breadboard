@@ -6,6 +6,7 @@ import {
   InvalidLearnRouteBodyError,
   isLearnRouteConflict,
   readLearnRouteJsonObject,
+  resolveLearnRequestModel,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
@@ -36,7 +37,7 @@ export async function POST(
       return NextResponse.json({ error: "The Regenerate endpoint accepts repair mode only. Use the separate rebuild action for full_rebuild." }, { status: 400 });
     }
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const model = selectedModelForUser(userId);
+    const model = resolveLearnRequestModel(body, selectedModelForUser(userId));
     const execution = await executeLearnOperationForRoute<{
       job: unknown;
       repair: unknown;

@@ -10,7 +10,7 @@ import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.t
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   availableTextHumanizer,
-  storedTextHumanizerForUser,
+  storedLearnTextHumanizerForUser,
 } from "./humanizer/auto-server.ts";
 
 export interface LearnHumanizerValidation {
@@ -283,7 +283,7 @@ export async function humanizeFinishedLearnBuild(
   // must never produce a half-humanized garden.
   const humanize = input.force
     ? availableTextHumanizer()
-    : storedTextHumanizerForUser(input.userId!);
+    : storedLearnTextHumanizerForUser(input.userId!);
   if (!humanize) {
     const unavailable = result({
       requested: input.force === true,

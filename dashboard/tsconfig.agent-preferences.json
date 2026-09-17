@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": [
+    "next-env.d.ts",
+    "src/lib/agent-preferences/**/*.ts",
+    "src/app/api/agent-preferences/route.ts",
+    "src/app/components/hermes/agent-preferences-dialog.tsx"
+  ],
+  "exclude": ["node_modules"]
+}

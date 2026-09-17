@@ -1,0 +1,33 @@
+{
+  "electron": true,
+  "normalizedToolEvent": true,
+  "realApiHandlers": true,
+  "realDurableService": true,
+  "authenticatedGateway": true,
+  "authorization": "cross-origin, bearer-agent approval, wrong owner/chat and unauthenticated daemon rejected",
+  "authorizedAttachment": true,
+  "keyboard": true,
+  "brokenImageFallback": true,
+  "sharedViews": true,
+  "completedJobsStopPolling": true,
+  "adapter": "deterministic fake",
+  "supervisor": "test lease provider; native compile/tests separate",
+  "writes": [
+    "upload",
+    "start",
+    "control",
+    "control"
+  ],
+  "screenshots": [
+    "completed-dark-narrow.png",
+    "error-dark-narrow.png",
+    "last-state.png",
+    "offline-dark-narrow.png",
+    "paused-dark-narrow.png",
+    "paused-light.png",
+    "printing-light.png",
+    "review-light.png",
+    "uploading-light.png"
+  ],
+  "hardware": "BLOCKED: no printer configuration or physical approval supplied"
+}

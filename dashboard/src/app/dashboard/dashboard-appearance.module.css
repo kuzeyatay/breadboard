@@ -1,0 +1,36 @@
+/* Scope the wallpaper palette to exposed text, keeping cards and inputs on
+   their own surface palette. Tailwind's inline theme reads the bb aliases. */
+.surface[data-wallpaper-ready="true"][data-wallpaper-tone] .wallpaperText {
+  --quartz-dark: var(--browser-wallpaper-foreground);
+  --bb-color-white: var(--browser-wallpaper-foreground);
+  --bb-color-gray-300: var(--browser-wallpaper-foreground);
+  --bb-color-gray-500: var(--browser-wallpaper-muted);
+  --bb-color-gray-600: var(--browser-wallpaper-muted);
+  --bb-color-gray-700: var(--browser-wallpaper-muted);
+  color: var(--browser-wallpaper-foreground);
+  text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
+}
+
+.surface[data-wallpaper-tone] .folderHeader > svg {
+  color: var(--browser-wallpaper-muted);
+}
+
+.surface[data-wallpaper-tone] .folderHeader:not([data-drop-target="true"]) {
+  border-color: color-mix(in srgb, var(--browser-wallpaper-foreground) 28%, transparent);
+}
+
+.surface[data-wallpaper-tone] .folderHeader:not([data-drop-target="true"]):hover {
+  border-color: color-mix(in srgb, var(--browser-wallpaper-foreground) 48%, transparent);
+  background-color: color-mix(in srgb, var(--browser-wallpaper-foreground) 8%, transparent);
+}
+
+.surface[data-wallpaper-tone] .folderHeader [data-card-action="true"]:is(:hover, :focus-visible) {
+  color: var(--browser-wallpaper-foreground);
+  background-color: color-mix(in srgb, var(--browser-wallpaper-foreground) 12%, transparent);
+}
+
+.surface[data-wallpaper-tone] .folderHeader:focus-visible,
+.surface[data-wallpaper-tone] .folderHeader [data-card-action="true"]:focus-visible {
+  outline: 2px solid var(--browser-wallpaper-foreground);
+  outline-offset: 2px;
+}

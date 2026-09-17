@@ -20,6 +20,9 @@ test("the Sim agent resolves its delayed registry import inside the vendored nam
 
 test("the source PDF route reads garden content only at runtime", () => {
   const source = read("src/app/api/documents/[slug]/source-pdf/route.ts");
+  const history = read(
+    "src/app/api/documents/[slug]/source-pdf/history/route.ts",
+  );
   const walker = read("src/lib/source-pdf-garden.ts");
   assert.doesNotMatch(source, /from ["']@\/lib\/knowledge["']/);
   assert.match(source, /from ["']@\/lib\/source-pdf-garden["']/);
@@ -39,6 +42,9 @@ test("the source PDF route reads garden content only at runtime", () => {
     source,
     /path\.resolve\(\s*\/\* turbopackIgnore: true \*\/ clusterDir,\s*["']assets["']/,
   );
+  for (const writer of [source, history]) {
+    assert.match(writer, /acquireGardenMutationLease/);
+  }
 });
 
 test("the source PDF walker preserves missing-path and duplicate ordering behavior", () => {

@@ -10,15 +10,14 @@ import {
   getProposalById,
   setProposalStatus,
 } from "@/lib/hermes/runtime-store.ts";
-import { createGardenDocument } from "@/lib/garden-documents.ts";
+import { createGardenDocument, reviseGardenDocument } from "@/lib/garden-documents.ts";
 
 export const dynamic = "force-dynamic";
 
 // Apply or reject an agent proposal. Only the garden owner may decide. Applying
 // is where a proposal becomes a real change — routed through Breadboard's own
 // authoring paths, never a silent markdown overwrite by the agent. New-note
-// proposals are written through the same canonical Garden document service as
-// the authoring UI; other proposal kinds retain their existing decision path.
+// proposals and page revisions are written through the Garden document service.
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ gardenId: string; proposalId: string }> },
@@ -36,10 +35,6 @@ export async function POST(
     if (!proposal || proposal.garden_id !== gardenId) {
       throw new ApiError(404, "proposal_not_found", "Proposal not found.");
     }
-    if (proposal.status !== "pending") {
-      throw new ApiError(409, "already_decided", "This proposal was already decided.");
-    }
-
     const body = await readJsonBody(request);
     const decision = body.decision === "apply" ? "applied" : body.decision === "reject" ? "rejected" : null;
     if (!decision) {
@@ -67,6 +62,20 @@ export async function POST(
         tags: Array.isArray(payload.tags)
           ? payload.tags.filter((tag): tag is string => typeof tag === "string")
           : ["assistant-response"],
+      });
+    }
+    // A lost response may be retried safely without applying the patch twice.
+    if (proposal.status === decision) return NextResponse.json({ id, status: decision, kind: proposal.kind, pageSlug: proposal.page_slug });
+    if (proposal.status !== "pending") {
+      throw new ApiError(409, "already_decided", "This proposal was already decided.");
+    }
+
+    if (decision === "applied" && proposal.kind === "page_revision") {
+      document = await reviseGardenDocument({
+        userId,
+        clusterSlug: access.slug,
+        pageSlug: proposal.page_slug ?? "",
+        patchOrReplacement: typeof payload.patchOrReplacement === "string" ? payload.patchOrReplacement : "",
       });
     }
 

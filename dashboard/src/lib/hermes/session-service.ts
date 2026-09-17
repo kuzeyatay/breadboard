@@ -13,6 +13,7 @@
 // the client — they are derived here from the authorized DB record.
 
 import db from "@/lib/db";
+import { isPdfAssistantPageContext } from "../pdf-assistant-scope.ts";
 import {
   organizationClusterClause,
   organizationIdsForUser,
@@ -57,6 +58,7 @@ import {
   type FilesystemAccessMode,
 } from "./runtime-store.ts";
 import { ApiError } from "./route-core.ts";
+import { runtimeMessagesForBranch } from "../conversations/branch-history.ts";
 import { listMcpConnections, runtimeMcpConfig } from "./mcp-connections.ts";
 import { composioConnectedIntegrationSlugs } from "../composio/service.ts";
 import {
@@ -502,6 +504,8 @@ export async function resolveConversationRuntime(input: {
   forceRecreate?: boolean;
   historyOverride?: Array<{ role: "user" | "assistant"; content: string }>;
   branchContextId?: string;
+  /** One isolated runtime for a highlight question; canonical history stays in its chat. */
+  inlineTurnId?: string;
 }): Promise<AuthorizedRuntimeSession> {
   if (input.surface !== input.conversation.surface) {
     throw new ApiError(
@@ -519,16 +523,18 @@ export async function resolveConversationRuntime(input: {
     }
     active = { clusterId: access.clusterId, slug: access.slug };
   }
-  if (input.activePageSlug && !active) {
+  // PDF keys identify a reader conversation; they grant no garden/file access.
+  // The document itself is supplied through authenticated chat attachments.
+  if (input.activePageSlug && !active && !isPdfAssistantPageContext(input.surface, input.activePageSlug)) {
     throw new ApiError(400, "garden_required", "An active page requires an active garden.");
   }
 
-  let row = getRuntimeSessionByConversation(input.conversation.id);
+  let row = getRuntimeSessionByConversation(input.conversation.id, input.inlineTurnId);
   if (row && row.user_id !== input.conversation.user_id) {
     throw new ApiError(404, "session_not_found", "Session not found.");
   }
   if (!row) {
-    row = await createConversationRuntime(input.conversation, input.surface, active, input.activePageSlug ?? null, gardens);
+    row = await createConversationRuntime(input.conversation, input.surface, active, input.activePageSlug ?? null, gardens, input.inlineTurnId);
   } else {
     row = updateRuntimeActiveContext({
       runtimeSessionId: row.id,
@@ -610,11 +616,12 @@ async function createConversationRuntime(
   active: { clusterId: number; slug: string } | null,
   pageSlug: string | null,
   gardens: AuthorizedGardenSummary[],
+  inlineTurnId?: string,
 ): Promise<RuntimeSessionRow> {
   const settings = getHermesUserSettings(conversation.user_id);
   const selected = await createWithConfiguredRuntimeFallback({
     surface,
-    sessionKey: conversation.public_id,
+    sessionKey: inlineTurnId ? `${conversation.public_id}-inline-${inlineTurnId}` : conversation.public_id,
     conversationKey: conversation.public_id,
     title: conversation.title,
     metadata: { conversationPublicId: conversation.public_id },
@@ -642,7 +649,7 @@ async function createConversationRuntime(
     runtimeKind: runtime.kind,
     externalSessionId: created.externalSessionId,
     liveSessionId: created.liveSessionId,
-    runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id },
+    runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id, ...(inlineTurnId ? { inlineTurnId } : {}) },
   });
   await loadUnifiedToolRegistryForRuntime(row, created.directory, runtime);
   recordAuditEvent({
@@ -699,6 +706,7 @@ async function recreateConversationRuntime(
     activeDirectory: created.directory,
     agentName: created.agentName,
     runtimeMetadata: {
+      ...(row.runtime_metadata ? JSON.parse(row.runtime_metadata) : {}),
       title: conversation.title,
       conversationPublicId: conversation.public_id,
       rehydrated: true,
@@ -840,21 +848,10 @@ function runtimeReference(
 function canonicalRuntimeMessages(
   conversationId: number,
 ): Array<{ role: "user" | "assistant"; content: string }> {
-  return listConversationMessages(
+  return runtimeMessagesForBranch(listConversationMessages(
     conversationId,
     { limit: 500, includePending: false },
-  )
-    .filter(
-      (
-        message,
-      ): message is typeof message & { role: "user" | "assistant" } =>
-        message.role === "user" || message.role === "assistant",
-    )
-    .filter((message) => message.content.trim().length > 0)
-    .map((message) => ({
-      role: message.role,
-      content: message.content,
-    }));
+  ));
 }
 
 function normalizedAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {

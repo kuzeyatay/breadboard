@@ -91,6 +91,7 @@ const dataTraceExcludes = [
   "db/**",
   "goal-mode/**",
   "hyperframes-cli/**",
+  "hyperframes-browser/**",
   "hyperframes-runs/**",
   "install-speech.mjs",
   "loopx-goals/**",
@@ -108,9 +109,16 @@ const dataTraceExcludes = [
   "undefined/**",
   "tests/**",
   "test-results/**",
+  // Local QA screenshots and reports are generated outside the program tree.
+  "output/**",
   "neumorphic-before/**",
   "neumorphic-after/**",
   "scripts/**",
+
+  // Printer provenance belongs with the supervised LAN adapter. Packaging
+  // copies this directory explicitly in prepare-app-resources.mjs; dynamic
+  // filesystem traces must not pull it into unrelated dashboard routes.
+  "third-party/bambu-printer-mcp/**",
 
   // Stale build dirs only. Do not replace these with `.next*/**`: the active
   // desktop distDir (.next-desktop) must remain traceable for server chunks.

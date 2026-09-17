@@ -5,6 +5,7 @@ import {
   ASSISTANT_MODELS_CHANGED_EVENT,
   notifyAssistantModelsChanged,
 } from "@/app/components/use-assistant-models";
+import SettingsOpenaiWeb from "@/app/components/settings-openai-web";
 import type { CliproxyStatus } from "@/lib/cliproxy/management";
 import {
   fetchCachedSettings,
@@ -20,9 +21,15 @@ import {
  * model picker uses, so "Claude" and "Anthropic" cannot look like two entries.
  *
  * Adding one used to be somewhere else again: this list had a button that
- * opened a second vendor picker. The provider header now owns that action, so
- * Switch and Add another stay beside the provider they affect while Sign out
- * remains beside the specific account it removes.
+ * opened a second vendor picker. The provider header now owns that action,
+ * while Sign out remains beside the specific account it removes.
+ *
+ * One account per provider is *active* — the one requests go to — and it is
+ * the only one with a green dot; the rest are signed in and waiting, amber.
+ * Switch sits on those waiting rows and makes that account the active one
+ * without any OAuth, so trying the other account is one click and undoable.
+ * (Only a vendor that can hold a single account keeps Switch in its header,
+ * where it still means "sign in as someone else".)
  *
  * ChatGPT authenticates through ChatMock's own OAuth (this panel drives it, and
  * preserves the current credential first so a sign-in adds rather than
@@ -48,7 +55,20 @@ interface ChatgptAccountRow {
   plan: string | null;
   /** The account in `auth.json`, which the login flow keeps writing to. */
   primary: boolean;
+  /**
+   * The account the user chose (the primary). A spent plan window does not
+   * undo the choice: it stays active, `standIn` names the sibling serving in
+   * its place, and it resumes by itself when the window resets.
+   */
+  active: boolean;
+  standIn: string | null;
+  /** Whether requests go to this account right now. */
+  serving: boolean;
   connectedAt: string | null;
+  /**
+   * Its quota cooldown, if any. Shown on the row: an amber dot alone reads as
+   * "waiting its turn", when the account may in fact be out of usage for days.
+   */
   available: boolean;
   cooldownSeconds: number;
   cooldownReason: string | null;
@@ -81,52 +101,65 @@ const POLL_INTERVAL_MS = 2000;
  * accessible name and the tooltip: colour on its own is not a status anyone
  * should have to decode.
  *
+ * Green is reserved for the account that is actually serving. A second
+ * account signed in beside it is amber: connected, but requests are not
+ * going to it. With three ChatGPT rows all green there was no way to tell
+ * which one a reply had come from.
+ *
  * Deliberately the same bare 8px circle as the runtime lamp in the terminal
  * header, so one shape means "is this thing up" everywhere. Its colours come
  * from the palette rather than the terminal's literal hexes, because this
  * panel is themed and that header is not.
  */
-function ConnectionDot({ connected }: { connected: boolean }) {
-  const label = connected ? "Connected" : "Not connected";
+type ConnectionState = "active" | "standby" | "off";
+
+const CONNECTION_DOT: Record<ConnectionState, { label: string; className: string }> = {
+  active: { label: "Active", className: "bg-[var(--botanical)]" },
+  standby: { label: "Connected, not active", className: "bg-[var(--standby)]" },
+  off: { label: "Not connected", className: "bg-[var(--danger)]" },
+};
+
+function ConnectionDot({ state }: { state: ConnectionState }) {
+  const { label, className } = CONNECTION_DOT[state];
   return (
     <span
       role="status"
       aria-label={label}
       title={label}
-      className={`h-2 w-2 shrink-0 rounded-full ${
-        connected ? "bg-[var(--botanical)]" : "bg-[var(--danger)]"
-      }`}
+      className={`h-2 w-2 shrink-0 rounded-full ${className}`}
     />
   );
 }
 
-/** Coarse, because a cooldown counted to the second would need a live clock. */
-function formatDuration(seconds: number): string {
-  if (seconds >= 86_400) {
-    const days = Math.round(seconds / 86_400);
-    return `${days} day${days === 1 ? "" : "s"}`;
-  }
-  if (seconds >= 3_600) {
-    const hours = Math.round(seconds / 3_600);
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
-  }
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+/** "4d 10h" — the resolution a plan window is worth; seconds are noise. */
+function formatRest(seconds: number): string {
+  const clamped = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(clamped / 86400);
+  const hours = Math.floor((clamped % 86400) / 3600);
+  const minutes = Math.floor((clamped % 3600) / 60);
+  const parts = [days ? `${days}d` : "", hours ? `${hours}h` : "", minutes ? `${minutes}m` : ""];
+  return parts.filter(Boolean).join(" ") || "under a minute";
 }
 
 /**
- * Why an account is signed in but not answering. ChatMock steps over an
- * exhausted account rather than failing, so this is the difference between
- * "your second account is pointless" and "your second account is the one
- * working right now".
+ * One line for a resting account. ChatGPT's own message is "The usage limit
+ * has been reached", which says nothing about when that ends; the cooldown
+ * length does.
  */
-function restingLabel(row: ChatgptAccountRow): string | null {
-  if (row.available) return null;
-  const when =
-    row.cooldownSeconds > 0
-      ? `for about ${formatDuration(row.cooldownSeconds)}`
-      : "until its quota resets";
-  return row.cooldownReason ? `Resting ${when} — ${row.cooldownReason}` : `Resting ${when}`;
+const FIVE_HOURS_SECONDS = 5 * 60 * 60;
+
+function describeRest(reason: string | null, seconds: number, standIn: string | null): string {
+  let what = reason?.trim() || "Out of usage";
+  // A cooldown recorded before ChatMock learned to name the window carries
+  // the backend's bare sentence. A reset more than five hours out can only be
+  // the weekly window; say so, or the reader checks the five-hour meter and
+  // finds it nearly empty.
+  if (/usage limit has been reached/i.test(what) && !/weekly|5-hour/i.test(what) && seconds > FIVE_HOURS_SECONDS) {
+    what = "The weekly Codex usage limit has been reached";
+  }
+  const parts = [seconds > 0 ? `${what} · resets in ${formatRest(seconds)}` : what];
+  if (standIn) parts.push(`${standIn} stands in until then`);
+  return parts.join(" · ");
 }
 
 /** Oldest first; unknown dates stay visible at the end in their source order. */
@@ -155,6 +188,7 @@ export default function SettingsAccounts() {
     | "add"
     | `forget:${string}`
     | `switch:${string}`
+    | `activate:${string}`
     | `drop:${string}`
     | null
   >(null);
@@ -390,6 +424,26 @@ export default function SettingsAccounts() {
             return;
           }
 
+          // A fresh sign-in becomes the account that serves, as it does for
+          // ChatGPT (where the login flow writes the primary credential).
+          // The one it joins stays signed in, one Switch away.
+          const added = (fresh?.accounts ?? []).find(
+            (entry) => entry.provider === provider && !before.includes(entry.file),
+          );
+          const joinsSibling =
+            added !== undefined &&
+            (fresh?.accounts ?? []).some(
+              (entry) => entry.provider === provider && entry.file !== added.file,
+            );
+          if (added && joinsSibling) {
+            await fetch("/api/cliproxy/accounts", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ file: added.file }),
+            }).catch(() => undefined);
+            await refreshSubscriptions(true);
+          }
+
           await syncSubscriptionModels();
           setNotice(
             landed ? `${label} connected.` : `${label} re-authorised on the same account.`,
@@ -453,6 +507,36 @@ export default function SettingsAccounts() {
     }
   }
 
+  /**
+   * Make one subscription account the one its provider serves from. Nothing
+   * is removed and no OAuth runs, so this needs no confirmation: switching
+   * back is the same click on the other row.
+   */
+  async function activateSubscriptionAccount(file: string, label: string) {
+    setBusy(`activate:${file}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/cliproxy/accounts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error ?? "That account could not be made the active one.");
+      }
+      await refreshSubscriptions(true);
+      setNotice(`${label} is now the active account.`);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "That account could not be made the active one.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   /** Remove a subscription credential. Confirmed by the caller; not undoable. */
   async function signOutSubscription(file: string, label: string) {
     setBusy(`drop:${file}`);
@@ -499,6 +583,50 @@ export default function SettingsAccounts() {
       await startLogin();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The account could not be added.");
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Make a ChatGPT account the one requests go to. ChatMock swaps which
+   * credential `auth.json` holds (keeping the old primary as a sibling) and
+   * clears the account's quota cooldown, so a primary that was being stepped
+   * over for an exhausted window can be chosen back deliberately. The list is
+   * the same set of accounts with the green dot moved.
+   */
+  async function activateChatgptAccount(key: string, label: string) {
+    setBusy(`activate:${key}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/chatmock/accounts?key=${encodeURIComponent(key)}`, {
+        method: "PATCH",
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        wasResting?: { reason: string; remainingSeconds: number } | null;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "That account could not be made the active one.");
+      }
+      invalidateSettingsCache("/api/chatmock/account", "/api/chatmock/accounts");
+      await refreshChatgptAccounts(true);
+      await refresh(true);
+      // Switching clears the account's rest, but it does not refill the plan.
+      // The choice sticks either way; if the window really is still spent,
+      // the next request is refused, a sibling stands in, and it resumes on
+      // its own at the reset — say so, or the stand-in looks like a failure.
+      const rest = payload.wasResting;
+      setNotice(
+        rest
+          ? `${label} is the active account and will be tried on the next request. It last reported "${rest.reason}" (resets in ${formatRest(rest.remainingSeconds)}); if that still holds, another account stands in until then.`
+          : `${label} is now the active account.`,
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "That account could not be made the active one.",
+      );
+    } finally {
       setBusy(null);
     }
   }
@@ -612,6 +740,9 @@ export default function SettingsAccounts() {
             email: account.email,
             plan: account.plan,
             primary: true,
+            active: true,
+            standIn: null,
+            serving: true,
             connectedAt: account.lastRefresh,
             available: true,
             cooldownSeconds: 0,
@@ -646,14 +777,6 @@ export default function SettingsAccounts() {
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void startLogin()}
-                  disabled={busy !== null || pendingSignIn}
-                  className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-                >
-                  {busy === "login" ? "Starting…" : "Switch"}
-                </button>
-                <button
-                  type="button"
                   onClick={() => void addChatgptAccount()}
                   disabled={busy !== null || pendingSignIn}
                   className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
@@ -667,7 +790,7 @@ export default function SettingsAccounts() {
                 const confirmKey = `chatgpt:${row.key}`;
                 const confirming = confirmingSignOut === confirmKey;
                 const dropping = busy === "signout" || busy === `forget:${row.key}`;
-                const resting = restingLabel(row);
+                const activating = busy === `activate:${row.key}`;
                 const label = row.email ?? "ChatGPT";
                 return (
                   <li
@@ -678,14 +801,33 @@ export default function SettingsAccounts() {
                       <p className="truncate text-xs text-[var(--ink-muted)]">
                         {row.email ?? "Signed in with ChatGPT"}
                       </p>
-                      {resting ? (
-                        <p className="mt-0.5 truncate text-[11px] text-[var(--ink-muted)]">
-                          {resting}
+                      {!row.available ? (
+                        <p className="truncate text-[11px] text-[var(--standby)]">
+                          {describeRest(row.cooldownReason, row.cooldownSeconds, row.standIn)}
                         </p>
                       ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <ConnectionDot connected />
+                      <ConnectionDot state={row.active ? "active" : "standby"} />
+                      {/* Switch makes another account the choice; on the
+                          chosen account while it rests the same call is
+                          "try it now" — the plan may have been topped up. */}
+                      {(!row.active || !row.available) && !confirming ? (
+                        <button
+                          type="button"
+                          onClick={() => void activateChatgptAccount(row.key, label)}
+                          disabled={busy !== null || pendingSignIn}
+                          className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          {activating
+                            ? row.active
+                              ? "Trying…"
+                              : "Switching…"
+                            : row.active
+                              ? "Try again"
+                              : "Switch"}
+                        </button>
+                      ) : null}
                       {confirming ? (
                         <>
                           <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
@@ -739,7 +881,7 @@ export default function SettingsAccounts() {
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <ConnectionDot connected={false} />
+              <ConnectionDot state="off" />
               <button
                 type="button"
                 onClick={() => void startLogin()}
@@ -752,14 +894,25 @@ export default function SettingsAccounts() {
           </li>
         ) : null}
 
+        {/* The same OpenAI plan reached through chatgpt.com in a browser tab.
+            Its own row because it is a separate sign-in with separate models
+            and limits, not a second credential for the OAuth account above. */}
+        <SettingsOpenaiWeb />
+
         {/* Everything signed in through the subscription proxy. The provider
-            header switches its most recently connected credential or adds a
-            sibling; Sign out stays on each account because it removes that
-            specific credential and cannot be undone without redoing OAuth. */}
+            header adds a sibling; Switch sits on each waiting account and
+            makes it the one that serves; Sign out stays on each account
+            because it removes that specific credential and cannot be undone
+            without redoing OAuth. A vendor that holds one account at a time
+            keeps Switch in its header, where it re-signs-in as someone else. */}
         {subscriptionGroups.map(({ provider, accounts }) => {
           const supportsMultiple = provider?.singleAccount !== true;
           const switchAccount = accounts[accounts.length - 1];
           const switching = busy === `switch:${switchAccount.file}`;
+          // More than one active credential means the proxy is spreading
+          // requests over them (the state before Switch existed). Every row
+          // then offers Switch, each meaning "make this the only one".
+          const activeCount = accounts.filter((entry) => entry.active).length;
           return (
             <li
               key={provider.id}
@@ -770,20 +923,22 @@ export default function SettingsAccounts() {
                   {provider.vendorLabel}
                 </p>
                 <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void startSubscriptionLogin(
-                        provider.id,
-                        provider.vendorLabel,
-                        switchAccount.file,
-                      )
-                    }
-                    disabled={busy !== null || pendingSignIn}
-                    className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-                  >
-                    {switching ? "Starting…" : "Switch"}
-                  </button>
+                  {supportsMultiple ? null : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void startSubscriptionLogin(
+                          provider.id,
+                          provider.vendorLabel,
+                          switchAccount.file,
+                        )
+                      }
+                      disabled={busy !== null || pendingSignIn}
+                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                    >
+                      {switching ? "Starting…" : "Switch"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() =>
@@ -804,8 +959,10 @@ export default function SettingsAccounts() {
               <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
                 {accounts.map((subscription) => {
                   const dropping = busy === `drop:${subscription.file}`;
+                  const activating = busy === `activate:${subscription.file}`;
                   const confirming =
                     confirmingSignOut === `cliproxy:${subscription.file}`;
+                  const canSwitch = !subscription.active || activeCount > 1;
                   return (
                     <li
                       key={subscription.file}
@@ -815,7 +972,22 @@ export default function SettingsAccounts() {
                         {subscription.account}
                       </p>
                       <div className="flex shrink-0 items-center gap-2">
-                        <ConnectionDot connected />
+                        <ConnectionDot state={subscription.active ? "active" : "standby"} />
+                        {canSwitch && !confirming ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void activateSubscriptionAccount(
+                                subscription.file,
+                                subscription.account,
+                              )
+                            }
+                            disabled={busy !== null || pendingSignIn}
+                            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                          >
+                            {activating ? "Switching…" : "Switch"}
+                          </button>
+                        ) : null}
                         {confirming ? (
                           <>
                             <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
@@ -880,7 +1052,7 @@ export default function SettingsAccounts() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <ConnectionDot connected={false} />
+                <ConnectionDot state="off" />
                 <button
                   type="button"
                   onClick={() =>

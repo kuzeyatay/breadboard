@@ -60,11 +60,18 @@ app.whenReady().then(async () => {
   const frameServer = http.createServer((_req, res) => res.end('<!doctype html><body><p id="frame-text">Un marco</p></body>'));
   const frameOrigin = await listen(frameServer);
   let navigationWaiting = false;
+  let slowImage;
   const external = http.createServer((req, res) => {
     if (req.url === "/wait") { navigationWaiting = true; return; }
+    if (req.url === "/slow-image") { slowImage = res; return; }
     res.setHeader("Content-Type", "text/html");
     res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'nonce-fixture'; style-src 'unsafe-inline'; img-src data:; frame-src http://127.0.0.1:*");
     if (req.url === "/next") return res.end('<!doctype html><body><p id="new-document">Nueva pagina</p></body>');
+    if (req.url === "/many") return res.end('<!doctype html><body>' + Array.from({ length: 125 }, (_, i) => `<p>Texto ${i}</p>`).join('') + '</body>');
+    if (req.url === "/slow") {
+      res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self'");
+      return res.end('<!doctype html><body><p>Texto temprano</p><img src="/slow-image"></body>');
+    }
     res.end(`<!doctype html><html lang="es"><head><title>Fixture page</title><script nonce="fixture">window.notificationAtStart = Notification.name;</script></head><body style="background:#eee;font-family:Arial">
       <h1 id="heading">Hola mundo</h1><p id="paragraph">Visita <a id="link" href="/next">nuestro sitio</a> ahora.</p><p>Hola<span contenteditable="true">Private nested edit</span></p>
       <button id="button">Continuar</button><img id="image" alt="Un gato" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Crect width='32' height='32' fill='green'/%3E%3C/svg%3E">
@@ -77,8 +84,10 @@ app.whenReady().then(async () => {
       </body></html>`);
   });
   const web = await listen(external);
-  const dictionary = { "Hola mundo": "Hello world", "Visita ": "Visit ", "nuestro sitio": "our site", " ahora.": " now.", "Continuar": "Continue", "Un gato": "A cat", "Tu nombre": "Your name", "Un marco": "A frame", "Texto sombra": "Shadow text", "Texto nuevo": "New text", "Actualizado": "Updated" };
+  const dictionary = { "Hola mundo": "Hello world", "Visita ": "Visit ", "nuestro sitio": "our site", " ahora.": " now.", "Continuar": "Continue", "Un gato": "A cat", "Tu nombre": "Your name", "Un marco": "A frame", "Texto sombra": "Shadow text", "Texto nuevo": "New text", "Actualizado": "Updated", "Nueva pagina": "New page" };
   const batches = [];
+  let parallelProbe = false;
+  const parallelReplies = [];
   let failure = false, hold = false, heldResponse;
   const server = http.createServer(async (req, res) => {
     if (req.url === "/app.js") { res.setHeader("Content-Type", "text/javascript"); return res.end(bundle.outputFiles[0].text); }
@@ -91,8 +100,13 @@ app.whenReady().then(async () => {
       const reply = () => {
         res.setHeader("Content-Type", "application/json");
         if (failure) { res.statusCode = 502; return res.end(JSON.stringify({ error: "Fixture provider unavailable" })); }
-        res.end(JSON.stringify({ segments: input.segments.map(value => ({ id: value.id, text: dictionary[value.text] ?? value.text })) }));
+        res.end(JSON.stringify({ segments: input.segments.map(value => ({ id: value.id, text: dictionary[value.text] ?? value.text.replace(/^Texto (\d+)$/, 'Text $1') })) }));
       };
+      if (parallelProbe && parallelReplies.length < 3) {
+        parallelReplies.push(reply);
+        if (parallelReplies.length === 3) parallelReplies.forEach(reply => reply());
+        return;
+      }
       if (hold) heldResponse = reply; else reply();
       return;
     }
@@ -244,6 +258,7 @@ app.whenReady().then(async () => {
   assert.equal(await page.executeJavaScript("document.querySelector('#input').placeholder"), "Tu nombre");
 
   failure = true;
+  await page.executeJavaScript("const retry=document.createElement('p');retry.textContent='Texto sin cache';document.body.append(retry)");
   await manager.handleCommand(chrome, { type: "browser-translate", language: "en" });
   await until(() => state()?.status === "error", "provider failure reaches toolbar state");
   assert.match(state().error, /Fixture provider unavailable/);
@@ -261,18 +276,51 @@ app.whenReady().then(async () => {
   await until(() => navigationWaiting, "navigation starts without replacing the document");
   page.stop();
   await stoppedNavigation;
-  await until(() => state()?.status === "error", "cancelled navigation leaves an actionable translation state");
+  await until(() => state()?.status === "translated", "translation automatically resumes after cancelled navigation");
   assert.equal(await page.executeJavaScript("document.querySelector('#heading').textContent"), "Updated");
-  await manager.handleCommand(chrome, { type: "browser-translate", language: "en" });
-  await until(() => state()?.status === "translated", "translation resumes after cancelled navigation");
   assert.equal(manager.handleCommand(chrome, { type: "browser-notification-permission", origin: web, permission: "default" }), true);
   await requestPermission();
   const navigatedRequestId = notices.at(-1).notificationPermission.id;
-  await page.loadURL(web + "/next");
+  await page.executeJavaScript("document.querySelector('#link').click()");
+  await until(() => page.getURL() === web + "/next" && !page.isLoading(), "translated link opens the next site page");
   await until(() => overlay.executeJavaScript("!document.querySelector('[role=dialog]')"), "navigation removes the permission request");
   assert.equal(manager.handleCommand(overlay, { type: "browser-notification-permission-response", id: navigatedRequestId, permission: "granted" }), false);
   assert.equal(await page.executeJavaScript("Notification.permission"), "default");
-  assert.equal(state().status, "original");
+  await until(() => state()?.status === "translated", "linked page translates automatically");
+  assert.equal(await page.executeJavaScript("document.querySelector('#new-document').textContent"), "New page");
+  const beforeReload = batches.length;
+  await page.loadURL(web + "/next");
+  await until(() => state()?.status === "translated", "reloaded page translates automatically");
+  assert.equal(batches.length, beforeReload, "reload uses the translation cache without a provider request");
+  await page.executeJavaScript("history.pushState({}, '', '/spa/another');document.querySelector('#new-document').textContent='Texto nuevo'");
+  await until(() => page.executeJavaScript("document.querySelector('#new-document').textContent === 'New text'"), "SPA path and replacement text stay translated");
+  await manager.handleCommand(chrome, { type: "browser", url: web + "/next" });
+  let otherPage, otherChrome;
+  await until(() => {
+    otherPage = webContents.getAllWebContents().find(c => c !== page && c.getURL() === web + "/next");
+    otherChrome = webContents.getAllWebContents().find(c => c !== chrome && c.getURL() === origin + "/browser");
+    return otherPage && otherChrome && !otherPage.isLoading() && !otherChrome.isLoading();
+  }, "another tab on the same site loads");
+  await until(() => otherPage.executeJavaScript("document.querySelector('#new-document').textContent === 'New page'"), "new tab inherits saved site language");
+  await manager.handleCommand(otherChrome, { type: "close", id: manager.stateFor(otherChrome).selfId });
+  parallelProbe = true;
+  await page.loadURL(web + "/many");
+  await until(() => state()?.status === "translated", "large page translates with concurrent batches");
+  assert.equal(parallelReplies.length, 3, "three provider requests start before any one has to finish");
+  assert.equal(await page.executeJavaScript("[...document.querySelectorAll('p')].filter(p=>/^Text \\d+$/.test(p.textContent)).length"), 125);
+  parallelProbe = false;
+  const slowNavigation = page.loadURL(web + '/slow');
+  await until(() => slowImage, 'page remains loading while its image is delayed');
+  slowImage.end();
+  await slowNavigation;
+  await until(() => state()?.status === 'translated', 'translation finishes on the slow-loading page');
+  await page.loadURL(frameOrigin);
+  assert.equal(state().status, "original", "another site is not automatically opted in");
+  await page.loadURL(web + "/next");
+  await until(() => state()?.status === "translated", "returning to the remembered site translates again");
+  await manager.handleCommand(chrome, { type: "browser-translation-restore" });
+  await page.loadURL(web + "/next");
+  assert.equal(state().status, "original", "show original turns off future automatic translation for the site");
   assert.equal(await page.executeJavaScript("document.querySelector('#new-document').textContent"), "Nueva pagina");
   await manager.handleCommand(chrome, { type: "open", url: origin + "/browser/settings" });
   let settings;

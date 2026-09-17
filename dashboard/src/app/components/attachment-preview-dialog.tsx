@@ -1,7 +1,13 @@
 "use client";
 
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import type { ReactElement, ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   ContextMenuSurface,
   OpenInNewTabItem,
@@ -67,6 +73,22 @@ export default function AttachmentPreviewDialog({
   className,
   title,
 }: Props) {
+  const sourceIdentity = `${source.kind}:${source.href}:${source.name}`;
+  const [dialogState, setDialogState] = useState(() => ({
+    sourceIdentity,
+    open: false,
+  }));
+  const pointerActivationAtRef = useRef<number | null>(null);
+  const open =
+    dialogState.sourceIdentity === sourceIdentity && dialogState.open;
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      setDialogState({ sourceIdentity, open: nextOpen });
+    },
+    [sourceIdentity],
+  );
+
   const trigger = (
     <DialogPrimitive.Trigger asChild>
       <button
@@ -74,6 +96,30 @@ export default function AttachmentPreviewDialog({
         className={className}
         title={title ?? `Open ${source.name}`}
         aria-label={`Open ${source.name} preview`}
+        onPointerDown={(event) => {
+          pointerActivationAtRef.current = event.timeStamp;
+        }}
+        onPointerCancel={() => {
+          pointerActivationAtRef.current = null;
+        }}
+        onClick={(event) => {
+          // The document-level hydration bridge can replay an early click, but
+          // it cannot replay the pointer sequence that located the control.
+          // Chat rows move substantially when their virtual measurements land,
+          // so accepting that detached click can open a PDF whose chip is now
+          // far outside the viewport. Keyboard activation has detail === 0 and
+          // remains supported.
+          const pointerActivationAt = pointerActivationAtRef.current;
+          const pointerActivationDelay =
+            pointerActivationAt === null
+              ? Number.POSITIVE_INFINITY
+              : event.timeStamp - pointerActivationAt;
+          const hasDirectActivation =
+            event.detail === 0 ||
+            (pointerActivationDelay >= 0 && pointerActivationDelay <= 1_000);
+          pointerActivationAtRef.current = null;
+          if (!hasDirectActivation) event.preventDefault();
+        }}
       >
         {children}
       </button>
@@ -81,7 +127,7 @@ export default function AttachmentPreviewDialog({
   );
 
   return (
-    <DialogPrimitive.Root defaultOpen={false}>
+    <DialogPrimitive.Root open={open} onOpenChange={handleOpenChange}>
       {source.kind === "audio" ? (
         trigger
       ) : (

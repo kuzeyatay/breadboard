@@ -188,6 +188,8 @@ export async function POST(request: Request) {
         `A reason is required: one line naming what ${agent.name} reaches that this turn does not — a mailbox, a repository, a browser, a persistent workspace, a file kind. If you cannot name one, do not launch; answer the request yourself.`,
       );
     }
+    const dispatch = parseRuntimeRunDispatch(run);
+    const queuedAgents = listAgentLaunchRequestsAfter({ runId: run.id, afterId: 0 });
     // A slash-prefixed brief is a capability expression, not a self-contained
     // instruction for an isolated specialist. Reject it at the tool boundary
     // even though the structured client path no longer replays the command.
@@ -204,10 +206,7 @@ export async function POST(request: Request) {
     // different briefs to the same agent stay allowed: they can be genuinely
     // independent parts.
     const normalizedBrief = brief.replace(/\s+/g, " ").toLowerCase();
-    const duplicate = listAgentLaunchRequestsAfter({
-      runId: run.id,
-      afterId: 0,
-    }).some(
+    const duplicate = queuedAgents.some(
       (queued) =>
         queued.agentId === agent.id &&
         queued.brief.replace(/\s+/g, " ").toLowerCase() === normalizedBrief,
@@ -221,7 +220,7 @@ export async function POST(request: Request) {
     }
 
     const originClientMessageId =
-      parseRuntimeRunDispatch(run).clientMessageId?.trim() || undefined;
+      dispatch.clientMessageId?.trim() || undefined;
     if (!originClientMessageId) {
       throw new ApiError(
         409,
@@ -260,7 +259,6 @@ export async function POST(request: Request) {
           "The conversation for this delegated run could not be found.",
         );
       }
-      const dispatch = parseRuntimeRunDispatch(run);
       const originMessage = getConversationMessageByClientId(
         conversation.id,
         originClientMessageId,

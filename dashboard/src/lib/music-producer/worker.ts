@@ -60,6 +60,13 @@ export async function executeMusicWorker(input: MusicWorkerRequest & {
       event("run.completed", { summary: launch.summary, artifactId: launch.artifact_id, version: launch.artifact_version });
       return { status: "completed" };
     }
+    const config = JSON.parse(launch.provider_json) as AceStepConfig;
+    if (!config.baseUrl || !config.model)
+      throw new Error("Missing launch-time provider identity.");
+    const missingModels = "Local music models are not prepared. Open Music Producer settings and choose Download and prepare ACE-Step, or connect an external ACE-Step provider, then retry this response.";
+    // If no arrangement adapter is available, planning cannot bypass missing models.
+    if (config.managed && !config.resonantDigest && !preparedAceStep(config.directory))
+      throw new Error(missingModels);
     stage("Planning one music draft");
     const request = launch.request_json ? musicRequestSchema.parse(JSON.parse(launch.request_json)) : await planMusic({
       ...input,
@@ -78,9 +85,6 @@ export async function executeMusicWorker(input: MusicWorkerRequest & {
       if (request.interval!.end > info.duration || Math.abs(info.duration - request.duration) > 0.05)
         throw new Error("Repaint duration must match the selected WAV source.");
     }
-    const config = JSON.parse(launch.provider_json) as AceStepConfig;
-    if (!config.baseUrl || !config.model)
-      throw new Error("Missing launch-time provider identity.");
     let receipt = launch.provider_receipt, resolvedSeed: number | null = null;
     let arrangement: Awaited<ReturnType<typeof renderArrangement>> | null = null;
     if (request.operation === "arrange") {
@@ -93,7 +97,7 @@ export async function executeMusicWorker(input: MusicWorkerRequest & {
     else {
       if (config.managed) {
         if (!preparedAceStep(config.directory))
-          throw new Error("Missing models. Prepare ACE-Step explicitly in settings.");
+          throw new Error(missingModels);
         stage("Waiting for resources and loading the model");
         lease = await dependencies.acquireServiceLease("acestep", "music-generation");
         if (!lease)

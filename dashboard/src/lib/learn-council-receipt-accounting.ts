@@ -95,7 +95,6 @@ function parseUsage(value: unknown): LearnCouncilReceiptAttemptUsage | null {
     required.some((key) => !nonnegativeSafeInteger(usage[key])) ||
     Number(usage.totalTokens) < Number(usage.inputTokens) + Number(usage.outputTokens) ||
     Number(usage.cachedInputTokens) > Number(usage.inputTokens) ||
-    Number(usage.reasoningTokens) > Number(usage.outputTokens) ||
     Number(usage.reportedCallCount) > Number(usage.callCount)
   ) {
     return null;
@@ -196,10 +195,35 @@ export function parseLearnCouncilReceiptAttempts(
   return attempts;
 }
 
+/** ChatMock settles a receipt its previous process left in flight as a
+ * no-answer failure with this provider marker. It cannot know which model the
+ * dead process was calling, and no tokens were reported, so the attempt proves
+ * only that the call produced nothing - exactly what authorizes one redispatch. */
+export const ORPHANED_COUNCIL_RECEIPT_PROVIDER = "orphaned_process_restart";
+
+export function isOrphanSettledLearnCouncilReceiptAttempt(
+  attempt: LearnCouncilReceiptAttempt,
+): boolean {
+  const route = attempt.modelRouting[0];
+  return (
+    attempt.outcome !== "completed" &&
+    attempt.modelRouting.length === 1 &&
+    route?.provider === ORPHANED_COUNCIL_RECEIPT_PROVIDER &&
+    route?.endpoint === "council" &&
+    route?.outcome === "failed" &&
+    route?.fallback === false &&
+    route?.requestId === attempt.councilRunId &&
+    attempt.usage.callCount === 1 &&
+    attempt.usage.reportedCallCount === 0 &&
+    attempt.usageEstimated === true
+  );
+}
+
 export function assertExactOrdinaryLearnCouncilReceiptAttempt(
   attempt: LearnCouncilReceiptAttempt,
   requestedModel: string,
 ): void {
+  if (isOrphanSettledLearnCouncilReceiptAttempt(attempt)) return;
   const expected = expectedStrictLearnModelRoute(requestedModel);
   const route = attempt.modelRouting[0];
   const succeeded = attempt.outcome === "completed";

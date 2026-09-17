@@ -164,11 +164,17 @@ export function isRendererPermissionAllowed(
   requestingUrl: string | undefined,
   mediaTypes: readonly string[] = [],
   allowGeolocation = false,
+  embedderUrl: string | undefined = requestingUrl,
 ): boolean {
-  if (!requestingUrl) return false;
+  // Fullscreen is judged by the page, not the frame: an embedded player
+  // (YouTube's iframe in a chat message) requests it from its own origin,
+  // and the page only reaches it there by delegating allow="fullscreen".
+  // Every other permission stays with the requesting frame.
+  const judgedUrl = permission === "fullscreen" ? embedderUrl : requestingUrl;
+  if (!judgedUrl) return false;
   let origin: string;
   try {
-    origin = new URL(requestingUrl).origin;
+    origin = new URL(judgedUrl).origin;
   } catch {
     return false;
   }
@@ -263,6 +269,7 @@ export function hardenSession(targetSession: Session, allowed: AllowedOrigins): 
           _webContents &&
             themeLocationAllowedWebContents.has(_webContents.id),
         ),
+        _webContents?.getURL() || details.embeddingOrigin,
       );
     },
   );
@@ -282,6 +289,7 @@ export function hardenSession(targetSession: Session, allowed: AllowedOrigins): 
         details.requestingUrl || securityOrigin || webContents.getURL(),
         mediaTypes,
         themeLocationAllowedWebContents.has(webContents.id),
+        webContents.getURL(),
       ),
     );
   });

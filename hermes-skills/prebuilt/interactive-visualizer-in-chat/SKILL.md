@@ -61,8 +61,9 @@ Match Gemini's in-chat simulations:
 - Do not use cards inside cards, sidebars, control-panel headings, gradients,
   shadows, glass effects, illustrations, long help copy, status dashboards, or
   decorative badges.
-- Aim for one screen: approximately 700-900 CSS pixels tall on desktop. Stack
-  cleanly at 375 CSS pixels without horizontal overflow.
+- Aim for one screen: approximately 700-900 CSS pixels tall on desktop. Adapt
+  to the available chat or artifact pane without horizontal overflow.
+  Phone-size rendering is not a publication requirement.
 - Use the host tokens `--viz-bg`, `--viz-panel`, `--viz-control`,
   `--viz-control-hover`, `--viz-text`, `--viz-muted`, `--viz-line`,
   `--viz-accent`, and `--viz-accent-text` so light and dark mode match chat.
@@ -77,9 +78,78 @@ Match Gemini's in-chat simulations:
   label/control overlap, alignment, and the continuity of every intended
   connection. Treat this as a release check, not descriptive filler.
 
-Choose the representation that best explains the prompt. Use SVG for crisp
-labelled geometry, Canvas for animation and dense plots, and the supplied
-global `THREE` only when depth and camera movement genuinely matter.
+## Choose 2D, 3D, or hybrid before the renderer
+
+Make this decision in the plan before writing the package. Flat interface
+styling does not mean a 2D scene. Do not default to 2D for implementation ease.
+
+1. Honor the user's requested dimension, view, or simplification. An explicit
+   cross-section or planar approximation can be 2D even for a spatial concept;
+   label the slice and what it omits. A request to make an existing visual 3D
+   is a change of representation, not just styling.
+2. Identify what the user needs to understand. Choose **3d** when enclosure,
+   volume, depth, surface orientation, solid angle, or non-coplanar geometry
+   is central. Choose **2d** when a plane, diagram, or graph fully expresses
+   the requested relationship. Judge the question, not just the topic name or
+   the number of variables. For mixed signals, ask what a flat view would hide.
+3. Choose **hybrid** only when a spatial scene and a linked 2D slice or plot
+   together explain something neither view explains alone. Keep one shared
+   model and one dominant scene; an ordinary numeric readout is not hybrid.
+4. In `plan.rationale`, briefly name the deciding geometric relationship and
+   why the chosen view preserves it. Record any dimensional simplification in
+   `assumptions` and `limitations`. Set `manifest.mode` to the same choice.
+
+Examples of applying the decision:
+
+| Requested explanation | Mode and reason |
+| --- | --- |
+| Gauss's law: charges inside/outside a Gaussian surface, or equal charge and different enclosing shapes | **3d**: show a closed surface enclosing a volume, the spatial field, and outward normals. A circle is only a slice of that surface. |
+| An equatorial cross-section of a Gaussian sphere | **2d**: the user requested a slice; label it and retain the full-surface meaning of total flux. |
+| Total electric flux versus enclosed charge | **2d**: the requested scalar relationship is fully expressed by a graph. |
+| How a plane cuts a solid, with the resulting cross-section alongside | **hybrid**: link the 3D solid and cutting plane to the 2D section. |
+| A circuit schematic, time trace, or planar wave | **2d**: extra depth would not explain the requested relationship. |
+
+Then choose SVG for crisp labelled geometry, Canvas for animation and dense
+plots, or the supplied global `THREE` for a spatial scene. Projected 3D in
+SVG/Canvas is also valid when it models real x/y/z geometry. A `3d` label,
+perspective styling, or a tilted 2D drawing does not make a spatial model.
+Make spatial relationships inspectable with rotate/orbit and zoom controls,
+including a keyboard-accessible alternative. Derive scene, measurements,
+and any linked slice from the same model. For Gauss's law, rotating the view
+must not change enclosed charge or flux, and an external charge must not
+change net flux through the closed surface. Include a semantic test of the
+representation's key invariant, not only that the scene renders.
+
+Hovering a zoomable visualizer and turning the scroll wheel must zoom its scene.
+Use a labelled native zoom range with `data-visualizer-zoom`, or buttons with
+`data-action="zoom-in"` and `data-action="zoom-out"`; the shared runtime connects
+wheel input to these same controls in chat, Artifacts, and Learn pages. Keep the
+zoom value, bounds, reset, and keyboard controls synchronized. Mark an inverse
+camera-distance range with `data-zoom-direction="inverse"`. A bespoke camera
+wheel handler may handle the event and call `preventDefault()` to take priority.
+Preserve touch scrolling and browser Ctrl/Cmd-wheel zoom.
+
+## Teaching difficult concepts
+
+Make the mechanism visible: show a field evolving, vectors combining, a wave
+propagating, a geometric construction unfolding, or a numerical method
+converging. Each control must change the main scene in a way that answers the
+learner's question. A dropdown that changes only a label or paragraph is not a
+useful interactive explanation. Avoid decorative motion and spinning objects
+whose rotation explains nothing.
+
+Use animation when time, a process, or a continuous parameter explains the
+concept. For a static concept, label any animated probe or construction as an
+explanatory sweep rather than physical motion. Keep equations and readouts tied
+to the actual geometry and state. Expose a useful default, a contrasting case,
+and a visible limiting case; label any normalization or approximation.
+
+The Learn generator reuses this exact skill and schema-2 package through its
+garden publication adapter. It preserves the lesson, references and visual ID,
+and replaces only the versioned visual artifact after compiler, real animation
+and control tests, and source-aware critique. Learn simulations include working
+Play/Pause and Reset; Reset restores the initial state and pauses. The adapter
+returns the package to the host instead of making a chat artifact tool call.
 
 ## Package contract
 
@@ -140,6 +210,11 @@ modification. Do not invent citations. Use source references only when the
 answer actually relies on them.
 
 For revisions, reuse the artifact id and send a complete schema-2 replacement
-package to `interactive_visualizer_revise`. A failed revision must preserve the
-last ready version. Use rollback only for a previously validated version and
-cancel when the user asks to stop.
+package to `interactive_visualizer_revise`. Reconsider the mode when the
+requested explanation changes. When the user asks for 2D, 3D, or a linked view,
+implement that representation, set the replacement `manifest.mode`, and state
+the change and reason in `revisionPrompt`. The service stages the revised plan
+with that mode and saves it only after successful publication; do not keep the
+old mode to satisfy a stale plan. A failed revision must preserve the last
+ready version. Use rollback only for a previously validated version and cancel
+when the user asks to stop.

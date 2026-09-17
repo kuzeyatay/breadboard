@@ -11,6 +11,13 @@ Keep the normal page and browser controls visible while loading. Do not replace
 them with a loading screen, centered spinner card, or “Starting/Opening” message.
 Show actual failures inline with retry actions.
 
+# Failed chat responses
+
+Keep failed and stopped assistant messages in the normal response layout:
+thinking above, the error as response text, and the full existing bottom action
+row. Regeneration belongs in that action row. Do not add a separate failure
+notice, text Retry button, or Details disclosure.
+
 # Adding a runtime agent
 
 Read `docs/ADDING_AN_AGENT.md` first. It covers the wiring (identity, run manager,

@@ -19,7 +19,9 @@ import ArtifactViewer, {
   artifactPdfHref,
   artifactUrl,
   ArtifactFileIcon,
+  useFileExplorerAvailable,
 } from "./artifact-viewer";
+import { artifactLocalPath, openInFileExplorer } from "@/lib/desktop-file-explorer";
 import ArtifactImageStudio from "./artifact-image-studio";
 import ArtifactVideoStudio from "./artifact-video-studio";
 import InlineInteractiveVisualizer from "./inline-interactive-visualizer";
@@ -28,8 +30,6 @@ interface ArtifactScopeProps {
   conversationId?: string | null;
   legacyChatSessionId?: number | null;
   gardenSlug?: string | null;
-  /** Increment to retire the cards currently shown for this conversation. */
-  retireVersion?: number;
 }
 
 /**
@@ -70,6 +70,7 @@ export function inlineArtifactQuery({
     params.set("chatSessionId", String(legacyChatSessionId));
   }
   if (gardenSlug) params.set("gardenSlug", gardenSlug);
+  if (params.size > 0) params.set("presentation", "transcript");
   return params.toString();
 }
 
@@ -163,6 +164,8 @@ interface Props extends ArtifactScopeProps {
    * legacy/unassigned artifacts; omitted preserves the all-artifacts view.
    */
   ownerMessageId?: string | null;
+  /** Keep generated files hidden until their response finishes thinking. */
+  thinking?: boolean;
 }
 
 /**
@@ -198,12 +201,22 @@ interface ArtifactCardsContextValue {
   artifacts: PresentedArtifact[];
   scope: InlineArtifactScope;
   openId: string | null;
-  openArtifact: (id: string) => Promise<void>;
+  openArtifact: (id: string, version?: number) => Promise<void>;
   openImageStudio: (request: InlineImageStudioRequest) => void;
   registerArtifact: (artifact: PresentedArtifact) => void;
 }
 
 const ArtifactCardsContext = createContext<ArtifactCardsContextValue | null>(null);
+
+function artifactViewerKey(artifact: PresentedArtifact): string {
+  return artifact.renderer === "interactive-visualizer"
+    ? `${artifact.id}:v${artifact.version}`
+    : artifact.id;
+}
+
+function artifactReplyKey(artifact: PresentedArtifact): string {
+  return `${artifact.id}:${artifact.assistantMessageId ?? "unassigned"}`;
+}
 
 /** An artifact can be the whole answer; lack of prose is not a failed reply. */
 export function InlineArtifactEmptyState({ ownerMessageId, children }: {
@@ -253,11 +266,11 @@ function InlineImageArtifact({
     <article className="bb-neu-artifact-card relative isolate overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] shadow-[0_10px_30px_rgba(28,45,36,0.08)]">
       <button
         type="button"
-        onClick={() => void context.openArtifact(artifact.id)}
+        onClick={() => void context.openArtifact(artifact.id, artifact.version)}
         className="absolute inset-0 z-[1] cursor-pointer rounded-2xl text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--botanical)]"
-        title={`${context.openId === artifact.id ? "Close" : "Open"} ${artifact.title}`}
-        aria-label={`${context.openId === artifact.id ? "Close" : "Open"} ${artifact.title}`}
-        aria-pressed={context.openId === artifact.id}
+        title={`${context.openId === artifactViewerKey(artifact) ? "Close" : "Open"} ${artifact.title}`}
+        aria-label={`${context.openId === artifactViewerKey(artifact) ? "Close" : "Open"} ${artifact.title}`}
+        aria-pressed={context.openId === artifactViewerKey(artifact)}
       />
       <div className="neu-inset block w-full overflow-hidden bg-[var(--paper-bg)]">
         {/* The intrinsic aspect ratio must remain untouched: generated images
@@ -294,7 +307,6 @@ export function InlineArtifactCardsProvider({
   conversationId,
   legacyChatSessionId,
   gardenSlug,
-  retireVersion = 0,
   children,
 }: ArtifactScopeProps & { children: ReactNode }) {
   const query = useMemo(
@@ -311,36 +323,23 @@ export function InlineArtifactCardsProvider({
   const [imageStudioRequest, setImageStudioRequest] =
     useState<InlineImageStudioRequest | null>(null);
   const [videoStudioSource, setVideoStudioSource] = useState<PresentedArtifact | null>(null);
-  const [retiredSnapshot, setRetiredSnapshot] = useState<{
-    query: string;
-    version: number;
-    ids: string[];
-  }>({ query, version: retireVersion, ids: [] });
+  const [editorQuery, setEditorQuery] = useState(query);
   const snapshotRef = useRef(snapshot);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
   }, [snapshot]);
 
-  useEffect(() => {
-    const currentSnapshot = snapshotRef.current;
-    setRetiredSnapshot((current) => {
-      if (current.query !== query) {
-        return { query, version: retireVersion, ids: [] };
-      }
-      if (current.version === retireVersion) return current;
-
-      const ids = new Set(current.query === query ? current.ids : []);
-      if (currentSnapshot.query === query) {
-        for (const artifact of currentSnapshot.artifacts) ids.add(artifact.id);
-      }
-      return { query, version: retireVersion, ids: Array.from(ids) };
-    });
+  // Close editors in the same render as a conversation switch, so content
+  // from the previous chat cannot flash under the new conversation's scope.
+  if (editorQuery !== query) {
+    setEditorQuery(query);
     setOpenId(null);
     setImageStudioSource(null);
     setImagePromptSource(null);
     setImageStudioRequest(null);
-  }, [query, retireVersion]);
+    setVideoStudioSource(null);
+  }
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!query) return;
@@ -396,29 +395,31 @@ export function InlineArtifactCardsProvider({
     return () => window.removeEventListener(ARTIFACT_BROWSER_EVENT, listener);
   }, [conversationId, gardenSlug, refresh]);
 
-  const retirementPending =
-    retiredSnapshot.query === query &&
-    retiredSnapshot.version !== retireVersion;
-  const retiredIds = new Set(
-    retiredSnapshot.query === query ? retiredSnapshot.ids : [],
-  );
   // Switching chats leaves the snapshot behind for a tick; the cache answers
   // for the new one so its cards are there on the first paint.
-  const knownArtifacts =
+  // Branches select their own message rows; ArtifactCardList keeps each file
+  // with its owner. Retrying one row must never hide the conversation's files.
+  const artifacts =
     snapshot.query === query
       ? snapshot.artifacts
       : artifactCache.get(query) ?? [];
-  const artifacts = retirementPending
-    ? []
-    : knownArtifacts.filter((artifact) => !retiredIds.has(artifact.id));
-  const openArtifact = openId ? artifacts.find((item) => item.id === openId) ?? null : null;
+  const openArtifact = openId
+    ? artifacts.find((item) => artifactViewerKey(item) === openId) ??
+      artifacts.find((item) => item.id === openId) ?? null
+    : null;
   const openArtifactById = useCallback(
-    async (id: string) => {
-      setOpenId((current) => (current === id ? null : id));
+    async (id: string, version?: number) => {
       const current = snapshotRef.current;
+      const selected = current.query === query
+        ? current.artifacts.find((artifact) => artifact.id === id &&
+          (version === undefined || artifact.version === version))
+        : undefined;
+      const key = selected ? artifactViewerKey(selected) : id;
+      setOpenId((current) => (current === key ? null : key));
       if (
         current.query !== query ||
-        !current.artifacts.some((artifact) => artifact.id === id)
+        !current.artifacts.some((artifact) => artifact.id === id &&
+          (version === undefined || artifact.version === version))
       ) {
         await refresh();
       }
@@ -426,6 +427,12 @@ export function InlineArtifactCardsProvider({
     [query, refresh],
   );
   const registerArtifact = useCallback((artifact: PresentedArtifact) => {
+    if (artifact.renderer === "interactive-visualizer") {
+      // Tool/editor results carry the artifact's original owner. The server's
+      // publication history is the authority for each reply's version.
+      void refresh();
+      return;
+    }
     const cachedOrVisible = artifactCache.get(query) ?? (
       snapshotRef.current.query === query ? snapshotRef.current.artifacts : []
     );
@@ -534,12 +541,23 @@ function InlineArtifactFileCard({
   context: ArtifactCardsContextValue;
 }) {
   const pdfHref = artifactPdfHref(artifact);
+  // A folder card opens the folder itself where a file explorer exists; the
+  // in-app listing and ZIP remain behind the viewer, which is also where the
+  // click lands when the directory has since been moved or deleted.
+  const explorerAvailable = useFileExplorerAvailable();
+  const folderLocation = artifact.kind === "folder" ? artifactLocalPath(artifact.metadata) : null;
+  const openFolder = folderLocation && explorerAvailable
+    ? async () => {
+        const opened = await openInFileExplorer(folderLocation);
+        if (!opened) await context.openArtifact(artifact.id, artifact.version);
+      }
+    : null;
   const openClasses =
     "flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]";
   const fileContent = (
     <>
       <span className="bb-neu-artifact-preview bb-neu-artifact-preview-tilted inline-flex h-14 w-12 shrink-0 -rotate-3 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] text-[var(--botanical)] shadow-sm [&_svg]:h-5 [&_svg]:w-5 [&_svg]:stroke-current [&_svg]:[stroke-linecap:round] [&_svg]:[stroke-linejoin:round] [&_svg]:[stroke-width:1.6]">
-        <ArtifactFileIcon kind={artifact.kind} />
+        <ArtifactFileIcon kind={artifact.kind} renderer={artifact.renderer} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
@@ -554,17 +572,26 @@ function InlineArtifactFileCard({
 
   return (
     <article className="bb-neu-artifact-card flex min-h-[5.25rem] items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 shadow-[0_8px_24px_rgba(28,45,36,0.06)]">
-      {pdfHref ? (
+      {openFolder ? (
+        <button
+          type="button"
+          onClick={() => void openFolder()}
+          className={openClasses}
+          title={`Open ${artifact.title} in the file explorer`}
+        >
+          {fileContent}
+        </button>
+      ) : pdfHref ? (
         <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
           {fileContent}
         </a>
       ) : artifact.previewAvailable || artifact.downloadAvailable ? (
         <button
           type="button"
-          onClick={() => void context.openArtifact(artifact.id)}
+          onClick={() => void context.openArtifact(artifact.id, artifact.version)}
           className={openClasses}
-          title={`${context.openId === artifact.id ? "Close" : "Open"} ${artifact.title}`}
-          aria-pressed={context.openId === artifact.id}
+          title={`${context.openId === artifactViewerKey(artifact) ? "Close" : "Open"} ${artifact.title}`}
+          aria-pressed={context.openId === artifactViewerKey(artifact)}
         >
           {fileContent}
         </button>
@@ -580,9 +607,10 @@ function InlineArtifactFileCard({
 
 function ArtifactCardList({
   ownerMessageId,
-}: Pick<Props, "ownerMessageId">) {
+  thinking,
+}: Pick<Props, "ownerMessageId" | "thinking">) {
   const context = useContext(ArtifactCardsContext);
-  if (!context) return null;
+  if (!context || thinking) return null;
   const artifacts = ownerMessageId === undefined
     ? context.artifacts
     : context.artifacts.filter(
@@ -613,7 +641,7 @@ function ArtifactCardList({
           artifact.previewAvailable
         ) {
           return (
-            <Fragment key={artifact.id}>
+            <Fragment key={artifactReplyKey(artifact)}>
               <InlineInteractiveVisualizer artifact={artifact} />
               <InlineArtifactFileCard artifact={artifact} context={context} />
             </Fragment>
@@ -626,7 +654,7 @@ function ArtifactCardList({
         ) {
           return (
             <InlineImageArtifact
-              key={artifact.id}
+              key={artifactReplyKey(artifact)}
               artifact={artifact}
               context={context}
             />
@@ -634,7 +662,7 @@ function ArtifactCardList({
         }
         return (
           <InlineArtifactFileCard
-            key={artifact.id}
+            key={artifactReplyKey(artifact)}
             artifact={artifact}
             context={context}
           />
@@ -648,20 +676,19 @@ export default function InlineArtifactCards({
   conversationId,
   legacyChatSessionId,
   gardenSlug,
-  retireVersion = 0,
   ownerMessageId,
+  thinking,
 }: Props) {
   const context = useContext(ArtifactCardsContext);
-  if (context) return <ArtifactCardList ownerMessageId={ownerMessageId} />;
+  if (context) return <ArtifactCardList ownerMessageId={ownerMessageId} thinking={thinking} />;
 
   return (
     <InlineArtifactCardsProvider
       conversationId={conversationId}
       legacyChatSessionId={legacyChatSessionId}
       gardenSlug={gardenSlug}
-      retireVersion={retireVersion}
     >
-      <ArtifactCardList ownerMessageId={ownerMessageId} />
+      <ArtifactCardList ownerMessageId={ownerMessageId} thinking={thinking} />
     </InlineArtifactCardsProvider>
   );
 }

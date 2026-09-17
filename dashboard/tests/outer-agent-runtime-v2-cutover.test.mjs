@@ -18,7 +18,6 @@ import {
   validateRuntimeV2DeepTutorRequest,
   validateRuntimeV2HyperframesRequest,
   validateRuntimeV2OpenCodeRequest,
-  validateRuntimeV2OpenGymRequest,
   validateRuntimeV2OpenMontageRequest,
   validateRuntimeV2OpenPlanterRequest,
   validateRuntimeV2OpenworkRequest,
@@ -149,19 +148,6 @@ function shortsRequest(overrides = {}) {
     model: "test-model",
     whisperModel: "base",
     baseUrl: "http://127.0.0.1:8765/v1",
-    ...overrides,
-  };
-}
-
-function openGymRequest(overrides = {}) {
-  return {
-    task: "Build a three-day strength program",
-    model: "test-model",
-    reasoningEffort: "medium",
-    baseUrl: "http://127.0.0.1:8765/v1",
-    conversationContext: "User: I train at home.",
-    conversationPublicId: `conv_${"b".repeat(24)}`,
-    maxSteps: 16,
     ...overrides,
   };
 }
@@ -334,7 +320,6 @@ test("outer-agent Runtime adapters are one sealed registry", () => {
     "meeting-notes",
       "money-printer",
       "music-producer",
-    "open-gym",
     "opencode",
     "openexecutive",
     "openmontage",
@@ -372,7 +357,6 @@ test("outer-agent Runtime adapters are one sealed registry", () => {
       "outer-agent-tars-node",
       "outer-openwork-node",
       "outer-shorts-node",
-      "outer-open-gym-node",
       "outer-legal-node",
       "outer-openplanter-node",
       "outer-resource2skill-node",
@@ -433,8 +417,6 @@ test("canonical requests contain product inputs, never execution or secret overr
     assert.equal(expectedRuntimeV2OuterAgentInputCount("openwork", openwork), 0);
     const shorts = validateRuntimeV2ShortsRequest(shortsRequest());
     assert.equal(expectedRuntimeV2OuterAgentInputCount("shorts", shorts), 0);
-    const openGym = validateRuntimeV2OpenGymRequest(openGymRequest());
-    assert.equal(expectedRuntimeV2OuterAgentInputCount("open-gym", openGym), 0);
     const openPlanter = validateRuntimeV2OpenPlanterRequest(openPlanterRequest());
     assert.equal(expectedRuntimeV2OuterAgentInputCount("openplanter", openPlanter), 0);
     const resource2skill = validateRuntimeV2Resource2SkillRequest(resource2SkillRequest());
@@ -479,10 +461,6 @@ test("canonical requests contain product inputs, never execution or secret overr
       );
       assert.throws(
         () => validateRuntimeV2ShortsRequest({ ...shortsRequest(), ...override }),
-        /invalid/u,
-      );
-      assert.throws(
-        () => validateRuntimeV2OpenGymRequest({ ...openGymRequest(), ...override }),
         /invalid/u,
       );
       assert.throws(
@@ -550,6 +528,29 @@ test("launch loading binds identity, scope, paths, count, size, and SHA-256", ()
     );
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("every zero-input worker accepts its registered input count", () => {
+  for (const [id, adapter] of Object.entries(RUNTIME_V2_OUTER_AGENT_WORKER_ADAPTERS)) {
+    if (adapter.maximumInputs === 0) assert.equal(expectedRuntimeV2OuterAgentInputCount(id, {}), 0, id);
+  }
+});
+
+test("Music Producer loads its actual native launch manifest without uploaded files", () => {
+  const request = {
+    launchId: `music_${"a".repeat(32)}`, task: "Create a symphony", model: "fixture", reasoningEffort: "medium",
+    baseUrl: "http://127.0.0.1:8765/v1", conversationPublicId: `conv_${"b".repeat(24)}`,
+    conversationContext: "", defaults: { duration: 60, vocalMode: "instrumental" }, explicit: {},
+  };
+  const fixture = runtimeFixture({ adapterId: "music-producer", request });
+  try {
+    const launch = loadRuntimeV2OuterAgentLaunch({ adapterId: "music-producer", argv: ["start.json"], launchDirectory: fixture.attemptRoot });
+    assert.equal(launch.request.launchId, request.launchId);
+    assert.equal(launch.inputPaths.length, 0);
+    assert.equal(launch.adapter.id, "music-producer");
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -1283,7 +1284,6 @@ test("routes and managers cross the Runtime boundary without changing run APIs",
     { adapter: "trading-agent", path: "tradingagents" },
     { adapter: "career-ops", path: "career-ops" },
     { adapter: "shorts", path: "shorts" },
-    { adapter: "open-gym", path: "open-gym" },
   ]) {
     const manager = source(`src/lib/${agentPath}/run-manager.ts`);
     const route = source(`src/app/api/${agentPath}/runs/route.ts`);
@@ -1378,7 +1378,7 @@ test("routes and managers cross the Runtime boundary without changing run APIs",
 test("only fixed worker adapters can reach direct local run entrypoints", () => {
   const adapters = source("scripts/runtime-v2-outer-agent-adapters.mjs");
   assert.match(adapters, /manager\.startRuntimeWorkerRun/);
-  for (const kind of ["codex", "ruflo", "deep-tutor", "deer-flow", "deep-research", "video-use", "opencode", "tradingagents", "career-ops", "shorts", "open-gym", "openplanter", "openwork", "openscience", "resource2skill", "matraix", "hyperframes", "openmontage", "bolt-slides", "max-research", "wardrobe", "cad", "stock-analyst", "vibe-trading", "money-printer"]) {
+  for (const kind of ["codex", "ruflo", "deep-tutor", "deer-flow", "deep-research", "video-use", "opencode", "tradingagents", "career-ops", "shorts", "openplanter", "openwork", "openscience", "resource2skill", "matraix", "hyperframes", "openmontage", "bolt-slides", "max-research", "wardrobe", "cad", "stock-analyst", "vibe-trading", "money-printer"]) {
     const routeTree = source(`src/app/api/${kind}/runs/route.ts`);
     assert.doesNotMatch(routeTree, /startRuntimeWorkerRun/);
   }
@@ -1395,7 +1395,6 @@ test("only fixed worker adapters can reach direct local run entrypoints", () => 
   assert.match(source("scripts/runtime-v2-trading-agent-worker.mjs"), /runRuntimeV2OuterAgentWorker\("trading-agent"\)/);
   assert.match(source("scripts/runtime-v2-career-ops-worker.mjs"), /runRuntimeV2OuterAgentWorker\("career-ops"\)/);
   assert.match(source("scripts/runtime-v2-shorts-worker.mjs"), /runRuntimeV2OuterAgentWorker\("shorts"\)/);
-  assert.match(source("scripts/runtime-v2-open-gym-worker.mjs"), /runRuntimeV2OuterAgentWorker\("open-gym"\)/);
   assert.match(source("scripts/runtime-v2-openplanter-worker.mjs"), /runRuntimeV2OuterAgentWorker\("openplanter"\)/);
   assert.match(source("scripts/runtime-v2-resource2skill-worker.mjs"), /runRuntimeV2OuterAgentWorker\("resource2skill"\)/);
   assert.match(source("scripts/runtime-v2-matraix-worker.mjs"), /runRuntimeV2OuterAgentWorker\("matraix"\)/);

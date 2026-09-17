@@ -23,6 +23,11 @@ test("the Skills hub lists the user's own workflows and can create one", () => {
   assert.match(panel, /\/workflows\?workflow=\$\{encodeURIComponent\(workflow\.id\)\}/);
   assert.match(panel, /<TrashIcon \/>/);
   assert.match(panel, /method: "DELETE"/);
+  assert.match(panel, /useConfirmDialog/);
+  assert.match(panel, /title: "Delete workflow\?"/);
+  assert.match(panel, /confirmLabel: "Delete workflow"/);
+  assert.match(panel, /\{confirmDialog\}/);
+  assert.doesNotMatch(panel, /window\.confirm/);
   assert.match(panel, /<WorkflowSourceIcon source=\{workflow\.source\} \/>/);
   const sourceIcon = source("../src/app/workflows/components/workflow-source-icon.tsx");
   assert.match(sourceIcon, /source === "demonstration"/);
@@ -65,6 +70,16 @@ test("saved automations are staged in the composer, then execute as chat turns",
   assert.match(source("../src/lib/workflows/native-execution.ts"), /parseWorkflowInputPrompt/);
   assert.match(source("../src/lib/workflows/native-execution.ts"), /startDemonstrationRun/);
   assert.match(source("../src/app/workflows/page.tsx"), /teachOnOpen=\{value\("teach"\) === "1"\}/);
+});
+
+test("workflow teaching uses Breadboard's managed Hermes Computer Use driver", () => {
+  const backends = source("../src/lib/teach/backends.ts");
+  const hermesComputer = source("../src/lib/teach/hermes-computer.ts");
+  assert.match(backends, /new HermesComputerBackend\(\)/);
+  assert.match(hermesComputer, /function managedCuaDriverCommand\(\)/);
+  assert.match(hermesComputer, /desktop", "resources", "bin", "cua-driver"/);
+  assert.match(hermesComputer, /HERMES_CUA_DRIVER_CMD/);
+  assert.match(hermesComputer, /managed Hermes Computer Use driver is missing/);
 });
 
 test("workflows are stored by Breadboard itself, not a supervised service", () => {
@@ -167,10 +182,12 @@ test("the workflows page is a native canvas, not an embedded third-party editor"
 test("leaving the workflows page cannot restore a click-blocking capability overlay", () => {
   const hub = source("../src/app/components/hermes/command-hub.tsx");
   const panel = source("../src/app/components/hermes/workflow-templates-panel.tsx");
+  const client = source("../src/app/workflows/workflows-client.tsx");
   const markdown = source("../src/app/components/chat-markdown.tsx");
   assert.match(panel, /onNavigate\?: \(\) => void/);
   assert.match(panel, /rememberWorkflowReturnPath\(\)/);
   assert.match(hub, /onNavigate=\{\(\) => onOpenChange\(false\)\}/);
+  assert.match(client, /function leaveWorkflows\(\)[\s\S]*startNavigationProgress\(\);[\s\S]*router\.replace\(returnPath \?\? "\/dashboard"/);
   assert.match(markdown, /target=\{isWorkflowLink \? undefined : '_blank'\}/);
   assert.match(markdown, /rememberWorkflowReturnPath\(\)/);
 });

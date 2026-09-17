@@ -103,21 +103,21 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.doesNotMatch(composer, /pendingSteer|applyingSteer|steerError/);
   assert.match(composer, /headerContent/);
   assert.doesNotMatch(composer, /steerQueued/);
-  assert.match(runtimePanel, /onQueueSteer=\{queueFollowUp\}/);
-  assert.match(runtimePanel, /headerContent=\{queuedFollowUpsHeader\}/);
+  assert.match(runtimePanel, /onQueueSteer=\{(?:queueFollowUp|\(text, (?:queuedAttachments|attachments)\) => \{\s*queueFollowUp\(text, (?:queuedAttachments|attachments),)/);
+  assert.match(runtimePanel, /headerContent=\{queuedFollowUpsHeader/);
   // The queue itself is shared: every chat surface renders the same list with
   // the same edit, reorder, steer, and delete affordances.
   assert.match(queuedFollowUpsModule, /visibleQueued\.map/);
   assert.match(
     queuedFollowUpsModule,
-    /await onSteer\(item\.text, item\.attachments\)/,
+    /await onSteer\(item\.text, item\.attachments, item\.textSelection\)/,
   );
   assert.match(queuedFollowUpsModule, /Steer the active response with:/);
   assert.match(queuedFollowUpsModule, /Delete queued message:/);
   assert.match(queuedFollowUpsModule, /Edit queued message:/);
   assert.match(
     queuedFollowUpsModule,
-    /onRestoreDraft\(item\.text, item\.attachments\)/,
+    /onRestoreDraft\(item\.text, item\.attachments, item\.textSelection\)/,
   );
   assert.match(queuedFollowUpsModule, /textarea\.focus\(\)/);
   assert.match(
@@ -132,7 +132,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(queuedFollowUpsModule, /reorderQueuedFollowUps\(current, draggedQueuedId, targetId\)/);
   assert.match(
     queuedFollowUpsModule,
-    /onSendQueued\(next\.text, next\.attachments\)/,
+    /onSendQueued\(next\.text, next\.attachments, next\.textSelection\)/,
   );
   // Images are first-class queued content: image-only sends are valid, render
   // as compact thumbnails, and expand in a portal without losing their bytes.
@@ -158,9 +158,10 @@ test("the shared composer keeps its controls stable during an active run", () =>
   );
   assert.match(
     composer,
-    /aria-label=\{stopping \? 'Stopping active run' : 'Stop active run'\}/,
+    /aria-label="Stop active run"/,
   );
-  assert.match(composer, /aria-busy=\{stopping\}/);
+  const stopControl = composer.slice(composer.indexOf('onClick={onStop}'), composer.indexOf('onClick={onStop}') + 800);
+  assert.doesNotMatch(stopControl, /disabled=|aria-busy=|<Spinner/);
   assert.match(composer, /h-11 w-11/);
   assert.match(runtimePanel, /disabled=\{conversationLocked\}/);
   assert.match(
@@ -238,7 +239,7 @@ test("a working external agent holds the composer and the queue", () => {
   // stop a working conversation — so the composer's square covers both.
   assert.match(
     composer,
-    /runInFlight && onStop && !canQueueFollowUp && !canSubmitDuringRun \? \(/,
+    /\(activeRun \|\| externalRunActive \|\| isSending\) && onStop && !canQueueFollowUp && !canSubmitDuringRun && !clarificationPending \? \(/,
   );
   assert.match(
     runtimePanel,
@@ -248,15 +249,15 @@ test("a working external agent holds the composer and the queue", () => {
   // composer's square would be stopping something it is not showing. That run
   // is stopped from the popover it belongs to.
   assert.match(runtimePanel, /onStop=\{thread\.pending \? stopInlineAnswer : undefined\}/);
-  assert.match(runtimePanel, /stopPending=\{stopRequestPending\}/);
-  assert.match(runtimePanel, /if \(stopRequestPendingRef\.current\) return/);
+  assert.match(runtimePanel, /const locallyStopped = stopRequestPending/);
+  assert.match(runtimePanel, /if \(stopRequestPendingRef\.current && stoppedTurnKeyRef\.current === latestUserTurnKey\) return/);
   assert.match(runtimePanel, /stopRequestPendingRef\.current = true/);
   assert.match(runtimePanel, /setStopRequestPending\(true\)/);
   assert.match(
     runtimePanel,
     /stopRequestPendingRef\.current = false;[\s\S]*?setStopRequestPending\(false\);[\s\S]*?\}, \[sessionId\]\)/,
   );
-  assert.match(runtimePanel, /if \(activeRun\) onAbort\(\)/);
+  assert.match(runtimePanel, /onAbort\(\);/);
   assert.match(runtimePanel, /onStopRequested\?\.\([\s\S]*?externalStops\.flatMap/);
   // The cancellations themselves, wherever the loop lives. It was extracted
   // into `abortExternalRuns` so a stop asked for during the dispatch window can
@@ -279,9 +280,10 @@ test("a working external agent holds the composer and the queue", () => {
   // to appear, so the request is now held and spent when the run registers.
   assert.match(
     runtimePanel,
-    /const canStop = activeRun \|\| externalStops\.length > 0 \|\| externalRunActive/,
+    /const canStop = activeRun \|\| streaming \|\| externalStops\.length > 0 \|\| externalRunActive/,
   );
-  assert.match(runtimePanel, /awaitingStopRef\.current = true;/);
+  assert.match(runtimePanel, /awaitingStopRef\.current = new Set/);
+  assert.match(runtimePanel, /awaitingStopRef\.current\?\.has\(clientMessageId\)/);
   // A stop is the end of an awaited delegation, not a signal to send the
   // worker's terminal snapshot back through Hermes as another hidden turn.
   assert.match(terminal, /const handleStopRequested = useCallback/);
@@ -313,7 +315,7 @@ test("Dashboard terminal and Garden Chat share real steering controls", () => {
   for (const surface of [terminal, garden]) {
     assert.match(surface, /runState=\{session\.runState\}/);
     assert.doesNotMatch(surface, /activeInstruction=\{session\.activeInstruction\}/);
-    assert.match(surface, /return session\.steer\(trimmed(?:, attachments)?\)/);
+    assert.match(surface, /return session\.steer\(trimmed, attachments, textSelection\)/);
     assert.match(surface, /onSteer=\{steer\}/);
     assert.match(surface, /onSendQueued=\{sendQueued\}/);
     assert.match(surface, /onEditMessage=\{editMessage\}/);
@@ -324,7 +326,7 @@ test("Dashboard terminal and Garden Chat share real steering controls", () => {
 
 test("the garden workspace stays editable and steers its active Hermes run", () => {
   const composerStart = workspace.lastIndexOf("<AssistantComposer");
-  const composerBlock = workspace.slice(composerStart, composerStart + 2_500);
+  const composerBlock = workspace.slice(composerStart, composerStart + 4_000);
   assert.ok(composerStart >= 0);
   assert.match(
     workspace,
@@ -335,15 +337,15 @@ test("the garden workspace stays editable and steers its active Hermes run", () 
   assert.match(composerBlock, /runState=\{/);
   // A mid-run message queues — it is never fired directly at a run that may
   // not exist (an external agent run has no steerable Hermes turn behind it).
-  assert.match(composerBlock, /onQueueSteer=\{queueFollowUp\}/);
-  assert.match(composerBlock, /headerContent=\{queuedFollowUpsHeader\}/);
-  // Stop aborts only a Hermes turn. While only an external agent is working,
-  // withholding onStop keeps the send button, which queues — its card carries
-  // the run's own stop control.
+  assert.match(composerBlock, /onQueueSteer=\{(?:queueFollowUp|\(text, (?:queuedAttachments|attachments)\) => \{\s*queueFollowUp\(text, (?:queuedAttachments|attachments),)/);
+  assert.match(composerBlock, /headerContent=\{queuedFollowUpsHeader/);
+  // Stop follows the selected conversation, including restored and external
+  // work. Inline questions use a separate stream and their own Stop control.
   assert.match(
     composerBlock,
-    /onStop=\{\s*steerableTurnActive && !respondingToInlineSelection\s*\? agentActivity\.abort\s*: undefined/,
+    /onStop=\{\s*canStopGardenChat\s*\? stopActiveGardenTurn\s*: undefined/,
   );
+  assert.match(workspace, /agentActivity\.abort\(conversationId\)/);
   assert.match(
     composerBlock,
     /externalRunActive=\{\s*externalRunHoldsQueue \|\| respondingToInlineSelection\s*\}/,
@@ -370,8 +372,8 @@ test("the garden assistant and knowledge terminal queue and steer like the termi
   );
   for (const surface of [gardenAssistant, knowledgeTerminal]) {
     assert.match(surface, /useQueuedFollowUps\(\{/);
-    assert.match(surface, /onQueueSteer=\{queueFollowUp\}/);
-    assert.match(surface, /headerContent=\{queuedFollowUpsHeader\}/);
+    assert.match(surface, /onQueueSteer=\{(?:queueFollowUp|\(text, (?:queuedAttachments|attachments)\) => \{\s*queueFollowUp\(text, (?:queuedAttachments|attachments),)/);
+    assert.match(surface, /headerContent=\{queuedFollowUpsHeader/);
     assert.match(surface, /runState=\{/);
     assert.match(surface, /onStop=\{/);
   }
@@ -379,7 +381,7 @@ test("the garden assistant and knowledge terminal queue and steer like the termi
   // messages can steer the streaming turn and the correction joins the
   // transcript the same way the workspace's does.
   assert.match(gardenAssistant, /onSteer: steerActiveResponse/);
-  assert.match(gardenAssistant, /agentActivity\.steer\(correction, attachments\)/);
+  assert.match(gardenAssistant, /agentActivity\.steer\(correction, attachments, selection\)/);
   assert.match(gardenAssistant, /context\.messages\.push\(correctionMessage\)/);
   assert.match(gardenAssistant, /\.\.\.steerContext\.messages/);
   // The knowledge terminal has no runtime session behind it: queued messages
@@ -443,8 +445,8 @@ test("the steer route enforces auth, ownership, active-run validation, dedupe, a
 
 test("Stop is idempotent and cancelled output remains distinct from failure", () => {
   assert.match(abortRoute, /getActiveRuntimeRun/);
-  assert.match(abortRoute, /alreadyFinished: true/);
-  assert.match(abortRoute, /finishRuntimeRun\(activeRun\.id, "cancelled"\)/);
+  assert.match(abortRoute, /alreadyFinished: !aborted/);
+  assert.match(abortRoute, /cancelRuntimeSessionWork\(userId, row\)/);
   assert.match(eventStream, /status === "aborted"\s*\? "cancelled"/);
   assert.match(eventStream, /type: event\.payload\.status === "aborted" \? "cancelled" : "done"/);
   assert.match(sessionHook, /interrupted: true/);
@@ -467,27 +469,19 @@ test("runtime problems render as recoverable in-chat errors", () => {
   const stateBlock = runtimePanel.slice(stateRow, stateRow + 900);
   assert.doesNotMatch(stateBlock, /stateAction=/);
   assert.doesNotMatch(stateBlock, /Try again/);
-  const inlineError = runtimePanel.search(
-    /\{failureInline &&\s*index === lastAssistantIndex &&/,
-  );
-  assert.ok(inlineError > stateRow);
-  const inlineBlock = runtimePanel.slice(inlineError, inlineError + 700);
-  assert.match(inlineBlock, /role="alert"/);
-  assert.match(inlineBlock, /<ChatMarkdown content=\{failureText/);
+  assert.match(runtimePanel, /const responseFailure = \(failureInline && index === lastAssistantIndex \? failureText : null\)/);
+  assert.match(runtimePanel, /<SelectableAssistantMarkdown\s+content=\{responseContent\}/);
+  assert.doesNotMatch(runtimePanel, /AssistantResponseNotice|responseHasErrorBody|responseIssue/);
   // Failures that cannot attach to a plain assistant message — run cards,
   // inline selection answers, turns with no assistant message yet — keep the
   // standalone notice at the end of the transcript.
   const fallback = runtimePanel.indexOf("{failureText && !failureInline ? (");
   assert.ok(fallback >= 0);
   const fallbackBlock = runtimePanel.slice(fallback, fallback + 2_000);
-  assert.match(fallbackBlock, /role="alert"/);
-  assert.match(fallbackBlock, /<AssistantResponseMeta/);
-  assert.match(
-    fallbackBlock,
-    /label=\{messages\.length === 0 \? "Couldn’t run that turn" : "Interrupted"\}/,
-  );
-  assert.match(fallbackBlock, /action=/);
-  assert.match(fallbackBlock, /aria-label="Regenerate response"/);
+  assert.match(fallbackBlock, /<ActivityPanel/);
+  assert.match(fallbackBlock, /<ChatMarkdown content=\{failureText\}/);
+  assert.match(fallbackBlock, /<AssistantMessageActions/);
+  assert.match(fallbackBlock, /onRetry=/);
   assert.doesNotMatch(fallbackBlock, /Try again/);
   assert.doesNotMatch(fallbackBlock, /Response interrupted/);
   assert.doesNotMatch(fallbackBlock, /backdrop-blur|red-950/);
@@ -496,8 +490,8 @@ test("runtime problems render as recoverable in-chat errors", () => {
   assert.ok(actions > stateRow);
   const actionsBlock = runtimePanel.slice(actions, actions + 2_500);
   assert.match(actionsBlock, /onRetry=/);
-  assert.match(actionsBlock, /\(!responseInterrupted \|\| !disabled\)/);
-  assert.match(actionsBlock, /retryAssistantAsBranch\(index\)/);
+  assert.match(actionsBlock, /onRetry=\{retryResponse\}/);
+  assert.match(runtimePanel, /const retryResponse = onRetryMessage && !activeRun && !conversationLocked && !disabled/);
 });
 
 test("a newly opened turn stream ignores stale zero-output completion events", () => {
@@ -553,8 +547,8 @@ test("send and stop use one stable responsive button shell", () => {
   assert.ok(sendLabel >= 0);
   const sendButton = composer.slice(sendLabel - 2_000, sendLabel + 500);
   const stopButton = composer.slice(
-    composer.indexOf("aria-label={stopping") - 1_000,
-    composer.indexOf("aria-label={stopping") + 500,
+    composer.indexOf('aria-label="Stop active run"') - 500,
+    composer.indexOf('aria-label="Stop active run"') + 300,
   );
   for (const button of [sendButton, stopButton]) {
     assert.match(button, /neu-button-accent/);

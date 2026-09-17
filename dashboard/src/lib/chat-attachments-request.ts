@@ -25,18 +25,16 @@ import {
   isStoredFileBlobId,
 } from "./stored-file-attachments.ts";
 
-const MAX_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_TEXT_LENGTH = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_DATA_URL_LENGTH = 12 * 1024 * 1024;
 
 export function parseChatAttachments(value: unknown): ChatAttachment[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > MAX_ATTACHMENTS) {
-    throw new ApiError(
-      400,
-      "invalid_attachments",
-      `Attachments must contain at most ${MAX_ATTACHMENTS} items.`,
-    );
+  // No cap on the number of attachments: a user pasting a stack of
+  // screenshots should not be turned away at ten. Each item is still bounded
+  // by the per-attachment size limits below.
+  if (!Array.isArray(value)) {
+    throw new ApiError(400, "invalid_attachments", "Attachments must be a list.");
   }
   return value.map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -47,6 +45,7 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
       );
     }
     const attachment = item as Record<string, unknown>;
+    const context = attachment.context === "pdf" ? { context: "pdf" as const } : {};
     const name = requireString(attachment.name, `attachments[${index}].name`, 500);
     if (
       (attachment.type === "product" && /\0/.test(name)) ||
@@ -80,6 +79,7 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
       }
       return {
         type: "text",
+        ...context,
         name,
         text: attachmentText,
         ...stored,
@@ -98,7 +98,7 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
           "Image attachment must be a base64 data URL.",
         );
       }
-      return { type: "image", name, dataUrl };
+      return { type: "image", name, dataUrl, ...context };
     }
     if (attachment.type === "video") {
       // Same contract as a mesh: the bytes were checked and stored by
@@ -195,6 +195,7 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
       const sizeBytes = Number(attachment.sizeBytes);
       return {
         type: "document",
+        ...context,
         name,
         blobId: attachment.blobId,
         format: attachment.format,

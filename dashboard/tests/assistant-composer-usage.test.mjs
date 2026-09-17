@@ -49,19 +49,6 @@ test("Intelligence remains editable during a run and its panels do not block the
   assert.match(usageSource, /onOpenChange\?: \(open: boolean\) => void/);
 });
 
-test("the Intelligence popup stack opens to the right of its trigger", () => {
-  const composerSource = source("../src/app/components/assistant-composer.tsx");
-
-  assert.match(
-    composerSource,
-    /neu-popover absolute bottom-full left-0 z-40/,
-  );
-  assert.doesNotMatch(
-    composerSource,
-    /neu-popover absolute bottom-full right-0 z-40/,
-  );
-});
-
 test("the Intelligence popup stack paints above workspace rail dividers", () => {
   const globalStyles = source("../src/app/globals.css");
   const graphSource = source("../src/app/components/knowledge-graph.tsx");

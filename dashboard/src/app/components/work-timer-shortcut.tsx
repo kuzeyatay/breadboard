@@ -13,6 +13,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import LinkContextMenu from "./link-context-menu";
+import NavigationLink from "./navigation-link";
 
 import {
   BREAK_TIMER_DEFAULT_MS,
@@ -378,54 +380,54 @@ export default function WorkTimerShortcut() {
         </button>
       </div>
 
-      <a
+      <NavigationLink newTab label="Work Timer"
         href="/pomodoro"
-        target="_blank"
-        rel="noopener noreferrer"
         className="mt-3 block rounded-md text-center text-[11px] text-gray-500 transition-colors hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
       >
         Open in another tab
-      </a>
+      </NavigationLink>
     </div>
   ) : null;
 
   return (
     <>
       <div ref={containerRef} className="relative">
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={togglePanel}
-          aria-expanded={open}
-          aria-haspopup="dialog"
-          title={open ? "Close the work timer" : "Open the work timer"}
-          className={`flex items-center gap-1.5 text-xs transition-colors ${
-            open || phase !== "idle" ? "text-white" : "text-gray-400 hover:text-white"
-          }`}
-        >
-          <svg
-            className="h-3.5 w-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.8}
-            aria-hidden="true"
+        <LinkContextMenu href="/pomodoro" label="Work Timer">
+          <button
+            ref={triggerRef}
+            type="button"
+            onClick={togglePanel}
+            aria-expanded={open}
+            aria-haspopup="dialog"
+            title={open ? "Close the work timer" : "Open the work timer"}
+            className={`flex items-center gap-1.5 text-xs transition-colors ${
+              open || phase !== "idle" ? "text-white" : "text-gray-400 hover:text-white"
+            }`}
           >
-            <circle cx="12" cy="13" r="7.5" strokeLinecap="round" strokeLinejoin="round" />
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M12 9.5V13l2.2 2.2M9.5 2.5h5M12 2.5v3"
-            />
-          </svg>
-          {phase === "running" || phase === "paused" ? (
-            <span className="font-medium tabular-nums">{clock}</span>
-          ) : phase === "finished" ? (
-            <span className="font-medium">Time&apos;s up</span>
-          ) : (
-            "Work timer"
-          )}
-        </button>
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="13" r="7.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9.5V13l2.2 2.2M9.5 2.5h5M12 2.5v3"
+              />
+            </svg>
+            {phase === "running" || phase === "paused" ? (
+              <span className="font-medium tabular-nums">{clock}</span>
+            ) : phase === "finished" ? (
+              <span className="font-medium">Time&apos;s up</span>
+            ) : (
+              "Work timer"
+            )}
+          </button>
+        </LinkContextMenu>
       </div>
       {typeof document === "undefined" || !panel ? null : createPortal(panel, document.body)}
     </>

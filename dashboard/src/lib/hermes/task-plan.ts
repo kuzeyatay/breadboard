@@ -33,6 +33,7 @@
 // watch-intent (does this URL select Watch?), or a link could select the Watch
 // pipeline while still being judged as an unopened web source.
 import { hasVideoUrl } from "./watch-intent.ts";
+import { actionMatches, requestedActions, requestProse, requestKeywords, type RequestedAction } from "./request-language.ts";
 
 export type TaskCapability =
   | "conversation"
@@ -134,9 +135,12 @@ const MODIFICATION_VERB =
   /\b(change|edit|modify|update|adjust|revise|replace|extend|rename)\b/i;
 
 // Artifacts that are software. Note: a *filename* with a code extension is
-// deliberately NOT in this list — see codeArtifactMentioned().
+// deliberately not enough: the requested action must author the software.
 const CODE_ARTIFACT =
   /\b(api|app|application|authentication|authori[sz]ation|backend|bug|class|cli|codebase|code|component|constructor|controller|dependency|endpoint|feature|frontend|function|handler|hook|interface|library|method|middleware|migration|module|package|parser|pipeline|plugin|program|regression|route|schema|script|server|service|software|test|tests|suite|type|typing|validator|variable|website|webhook)\b/i;
+const WRITTEN_DELIVERABLE = /\b(plan|proposal|summary|report|explanation|guide|tutorial|outline|comparison|recommendations?|email|message|notes?|documentation|description|checklist|review)\b/i;
+const SOFTWARE_OBJECT = /\b(api|app|authentication|authori[sz]ation|backend|bug|cli|codebase|code|config(?:uration)?|constructor|database|endpoint|frontend|handler|middleware|parser|plugin|regression|repository|schema|script|software|validator|variable|website|webhook)\b/i;
+const SOFTWARE_QUALIFIER = /\b(python|typescript|javascript|java|rust|golang|react|vue|svelte|html|css|sql|npm|node|git|unit|integration|regression|failing|compiler|runtime|async|keyboard|navigation|ui|web|desktop|mobile)\b/i;
 
 // Explicit file-system objects.
 const FILE_OBJECT =
@@ -153,8 +157,7 @@ const SEARCH_VERB =
 const FS_MUTATION_VERB =
   /\b(move|copy|duplicate|rename|organi[sz]e|sort|tidy|group|consolidate|flatten|archive|unzip|zip|extract|relocate|reorgani[sz]e|restructure|back\s+up|stage)\b/i;
 
-const FS_CREATE_VERB =
-  /\b(create|make|add|new)\b[^.\n]{0,24}\b(folder|directory|file|note|subfolder)\b/i;
+const FS_CREATE_OBJECT = /\b(folder|directory|file|subfolder)\b/i;
 
 const DESTRUCTIVE_FS_VERB =
   /\b(delete|remove|erase|purge|trash|wipe|discard|clear\s+out|get\s+rid\s+of)\b/i;
@@ -182,7 +185,23 @@ const MEDIA_ANALYSIS_VERB =
   /\b(analy[sz]e|describe|inspect|listen\s+to|review|summari[sz]e|watch|what\s+(?:happens?|is\s+said|was\s+said))\b/i;
 
 const WEB_VERB =
-  /\b(browse|google|research|search\s+(?:the\s+)?(?:web|internet|online)|look\s+up\s+online|check\s+online|latest|current|news|recent\s+developments?|up[- ]to[- ]date)\b/i;
+  /\b(browse|google|research)\b/i;
+
+// "Read those papers", "open the studies behind it": a published source the
+// user names but has not supplied is only reachable by opening it. Without
+// this clause the follow-up carried no web signal at all, so nothing in the
+// directive asked the model to fetch anything and a model that answered "I
+// cannot access papers" with its web tools sitting unused drew no shortfall
+// notice. Attached material is the documents signal's business: an object
+// that points at an upload, or a turn that names a local path, is excluded.
+const PUBLISHED_SOURCE_VERB =
+  /\b(read|open|review|analy[sz]e|examine|inspect|assess|audit|interpret|summari[sz]e|find|locate|look\s+up|fetch|grab)\b/i;
+const PUBLISHED_SOURCE_OBJECT =
+  /\b(papers?|studies|study|articles?|publications?|preprints?|literature|journals?|citations?|trials?|meta-?analys[ie]s|research)\b|\bsources?\b(?!\s+(?:code|files?|tree|maps?))/i;
+const SUPPLIED_SOURCE_OBJECT =
+  /\b(attached|attachments?|uploaded|uploads?|pasted|this\s+file|these\s+files|pdfs?|docx?)\b/i;
+const LIVE_INFORMATION = /\b(?:latest|recent|up[- ]to[- ]date)\s+\w|\bcurrent\s+(?:time|date|weather|forecast|prices?|costs?|rates?|scores?|standings?|results?|availability|versions?|releases?|president|ceo|government)\b|\bnews\b/i;
+const CONCEPTUAL_WEATHER = /\b(?:explain\s+(?:how|why|what)|how\s+(?:do|does)|what\s+(?:is|are)\s+(?:a|an)|difference\s+between)\b/i;
 
 // Live conditions are inherently time-sensitive even when the user does not
 // spell that out with words such as "current" or "latest". Treating a plain
@@ -209,7 +228,7 @@ const SCHEDULED_REAL_WORLD_EVENT =
 const LIVE_RECOMMENDATION_STRONG =
   /\b(things? to do|something (?:fun|interesting|unusual) to do|places? to (?:visit|eat|stay|go)|where to (?:eat|stay|go|visit)|what to do (?:in|near|around)|near me|gezilecek yer(?:ler)?|yapilacak sey(?:ler)?|nereye gidilir|nereye gidelim|ne yapalim|nerede yenir|yakinda ne yapilir|(?:orada|orda|cevre(?:si)?nde) neler var)\b/i;
 const LIVE_RECOMMENDATION_INTENT =
-  /\b(recommend(?:ation)?s?|suggest(?:ion)?s?|(?:i am|i m|we are|we re) looking for|find (?:me|us)|help (?:me|us) (?:choose|pick|find)|(?:i|we) want|best|top|good|great|popular|must[- ](?:see|visit|try)|worth (?:visiting|buying|trying)|interesting|unusual|nearby|near me|around here|where should|which|what should (?:i|we) (?:buy|try|visit|choose)|oner\w*|tavsiye|ariyorum|istiyorum|bul|hangi|sec|en iyi|iyi|populer|mutlaka|ilginc|degisik|guzel|yakinda|yakinlarda|cevre(?:si)?nde|nerede|nereye|ne yapilir|var mi)\b/i;
+  /\b(recommend(?:ation)?s?|suggest(?:ion)?s?|(?:i am|i m|we are|we re) looking for|find (?:me|us)|help (?:me|us) (?:choose|pick|find)|(?:i|we) want(?! (?:to|you)\b)|best|top|good|great|popular|must[- ](?:see|visit|try)|worth (?:visiting|buying|trying)|interesting|unusual|nearby|near me|around here|where should|which|what should (?:i|we) (?:buy|try|visit|choose)|oner\w*|tavsiye|ariyorum|istiyorum|bul|hangi|sec|en iyi|iyi|populer|mutlaka|ilginc|degisik|guzel|yakinda|yakinlarda|cevre(?:si)?nde|nerede|nereye|ne yapilir|var mi)\b/i;
 const LIVE_RECOMMENDATION_OBJECT =
   /\b(places?|venues?|restaurants?|cafes?|coffee shops?|bars?|museums?|galler(?:y|ies)|exhibitions?|events?|concerts?|shows?|tours?|classes|nightlife|date ideas?|activit(?:y|ies)|experiences?|attractions?|hotels?|destinations?|trips?|vacations?|itinerar(?:y|ies)|shops?|stores?|products?|laptops?|phones?|cameras?|headphones|monitors?|apps?|software|services?|subscriptions?|food|eat|mekan(?:lar)?|yer(?:ler)?|restoran(?:lar)?|kafe(?:ler)?|kahveci(?:ler)?|bar(?:lar)?|muze(?:ler)?|sergi(?:ler)?|etkinlik(?:ler)?|konser(?:ler)?|gosteri(?:ler)?|tur(?:lar)?|kurs(?:lar)?|gece hayati|aktivite(?:ler)?|deneyim(?:ler)?|gezi(?:ler)?|rota(?:lar)?|otel(?:ler)?|tatil(?:ler)?|magaza(?:lar)?|urun(?:ler)?|telefon(?:lar)?|kulaklik(?:lar)?|uygulama(?:lar)?|hizmet(?:ler)?|yemek)\b/i;
 const RECOMMENDATION_FOLLOW_UP =
@@ -331,17 +350,14 @@ const EXTERNAL_ACTION_VERB =
 // conversation-only path while preserving requests such as "message the
 // team" and "message Alex".
 const MESSAGE_ACTION =
-  /\bmessage\s+(?:the|a|an|my|our|your|him|her|them|[A-Za-z][\w.-]*)\b/i;
+  /\b(message|text|msg|forward|deliver|whats\s?app|telegram)\b/i;
 
 const DESTRUCTIVE_SYSTEM =
   /\b(force[- ]push|git\s+reset\s+--hard|rebase|deploy|release|drop\s+(?:the\s+)?(?:database|table)|revoke|rotate\s+(?:the\s+)?(?:secret|credential|key)|uninstall|format\s+(?:the\s+)?(?:drive|disk)|shut\s*down|reboot)\b/i;
 
-const EXPLICIT_NO_MUTATION =
-  /\b(?:do\s+not|don'?t|without|no\s+need\s+to)\b[^.\n]{0,60}\b(?:change|edit|modify|write|delete|remove|move|implement)\b/i;
-
-// Phrases that state the request is purely conceptual, so no artifact is touched.
-const CONCEPTUAL_ONLY =
-  /\b(brainstorm|conceptually|in\s+theory|hypothetically|what\s+would\s+it\s+take|pros\s+and\s+cons|trade[- ]?offs?)\b/i;
+const COMMAND_OBJECT = /\b(commands?|scripts?|programs?|tests?|suite|build|server|service|cli|terminal|shell|npm|npx|node|python|pytest|git|cargo|bun|deno|powershell|bash)\b/i;
+const FORMAT_OBJECT = /\b(pdfs?|docx?|xlsx?|csv|markdown|md|html|txt|json|png|jpe?g|mp3|mp4|wav)\b/i;
+const CONTENT_ACTION = /\b(summari[sz]e|read|review|analy[sz]e|extract|write|create|make|generate|produce|edit|revise)\b/i;
 
 /* ------------------------------------------------------------------ */
 /* Reference extraction                                                */
@@ -426,6 +442,14 @@ function extractResources(text: string): ResourceReference[] {
     });
   }
   for (const match of withoutUrls.matchAll(KNOWN_FOLDER)) {
+    // A document or picture is not the user's Documents/Pictures directory.
+    // Require a personal/location phrase, an explicit folder noun, or the
+    // conventional capitalized plural name rather than a bare category word.
+    const before = withoutUrls.slice(Math.max(0, match.index! - 24), match.index);
+    const after = withoutUrls.slice(match.index! + match[0].length);
+    if (!/\b(?:my|our|in|under|inside)\s+(?:the\s+)?$/i.test(before) &&
+        !/^\s+(?:folder|directory|fodler)\b/i.test(after) &&
+        !/^(?:Documents|Downloads|Pictures|Desktop|OneDrive)$/.test(match[0])) continue;
     const key = match[0].toLowerCase().replace(/\s+/g, " ");
     push({
       kind: "path",
@@ -500,67 +524,39 @@ function mergeResources(
  * .ts files" names files, not software behaviour. The artifact has to be
  * described in software terms.
  */
-function codeArtifactMentioned(text: string): boolean {
-  return CODE_ARTIFACT.test(text);
+function isCodingAction(action: RequestedAction): boolean {
+  if (!actionMatches(action, CODE_AUTHORING_VERB) &&
+      !actionMatches(action, CREATION_VERB) &&
+      !actionMatches(action, MODIFICATION_VERB)) return false;
+  // A file's incidental extension/type never makes relocation code authoring.
+  if (actionMatches(action, FS_MUTATION_VERB) &&
+      !/\b(function|class|method|variable|symbol|type|interface)\b/i.test(action.object)) return false;
+  if (FS_CREATE_OBJECT.test(action.object) &&
+      !actionMatches(action, CODE_AUTHORING_VERB) &&
+      !/\b(script|program|module|component|function|class|api|parser)\b/i.test(action.object)) return false;
+  if (WRITTEN_DELIVERABLE.test(action.object)) return false;
+  return SOFTWARE_OBJECT.test(action.object) ||
+    (CODE_ARTIFACT.test(action.object) && SOFTWARE_QUALIFIER.test(action.object)) ||
+    (CODE_ARTIFACT.test(action.object) && actionMatches(action, /\b(refactor|debug|instrument|scaffold|deprecate|unit[- ]test)\b/i)) ||
+    // Naming a symbol as a rename target is unambiguously code manipulation.
+    (action.verb === "rename" && /\b(function|class|method|variable|symbol|type|interface)\b/i.test(action.object));
 }
 
-/**
- * Decide whether producing the requested end state requires writing or
- * modifying source code.
- *
- * True only when an authoring/creation/modification verb is applied to a
- * software artifact. Filesystem manipulation of code files, inspection of
- * code, and execution of existing commands all return false.
- */
 export function requiresCodingOutcome(text: string): boolean {
-  if (EXPLICIT_NO_MUTATION.test(text)) return false;
-  if (CONCEPTUAL_ONLY.test(text) && !CODE_AUTHORING_VERB.test(text)) return false;
-
-  const codeArtifact = codeArtifactMentioned(text);
-  if (!codeArtifact) return false;
-
-  // "fix the failing tests", "refactor the parser", "debug this handler"
-  if (CODE_AUTHORING_VERB.test(text)) {
-    // Guard: a filesystem mutation verb applied to files wins over an
-    // incidental authoring word (e.g. "move the fixed files").
-    if (isPurelyFileManipulation(text)) return false;
-    return true;
-  }
-
-  // "create a Python script that cleans this dataset", "add authentication"
-  if (CREATION_VERB.test(text) || MODIFICATION_VERB.test(text)) {
-    if (isPurelyFileManipulation(text)) return false;
-    // "create a folder", "add a file" are filesystem outcomes even though the
-    // creation verb matched.
-    if (FS_CREATE_VERB.test(text) && !CODE_AUTHORING_VERB.test(text)) {
-      // Only filesystem if no software artifact is the object of creation.
-      if (!/\b(?:script|program|application|app|cli|library|module|component|function|class|api|endpoint|service|parser)\b/i.test(text)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  return false;
+  return requestedActions(text).some(isCodingAction);
 }
 
-/**
- * True when the request is about relocating/organising/removing files, even if
- * those files happen to contain code. This is the guard that keeps
- * "move these .ts files into an archive folder" out of the coding class.
- */
-function isPurelyFileManipulation(text: string): boolean {
-  const mutates = FS_MUTATION_VERB.test(text) || DESTRUCTIVE_FS_VERB.test(text);
-  if (!mutates) return false;
-  // If the sentence also asks for behaviour change, it is not purely file work.
-  if (/\b(so\s+that\s+it|so\s+it|and\s+(?:make|fix|implement|refactor)\b)/i.test(text)) {
-    return false;
-  }
-  // Renaming a *symbol* is coding; renaming *files* is not.
-  if (/\brename\b/i.test(text) && /\b(function|class|method|variable|symbol|type|interface)\b/i.test(text)) {
-    return false;
-  }
-  return true;
+function isExternalAction(action: RequestedAction): boolean {
+  if (action.personalIntent || !action.target) return false;
+  // Ordering information is a presentation request; purchasing is a different
+  // sense of the verb and remains subject to confirmation.
+  if (action.verb === "order" && /\b(?:alphabetically|chronologically|ascending|descending|by\s+(?:date|name|size|priority|importance|difficulty)|from\s+(?:best|worst|highest|lowest|smallest|largest))\b/i.test(action.target)) return false;
+  // Delivery inside the current conversation needs no external connection.
+  // Explicit recipients/channels still win over a conversational "me".
+  if (/^(?:send|share|post)$/.test(action.verb) &&
+      !/\b(?:to|via|on|through)\s+(?:(?:my|our|the)\s+)?(?:whats\s?app|telegram|phone|mobile|email|slack|discord|linkedin|twitter|x|facebook)\b|\bto\s+(?!me\b|us\b|this\s+chat\b)\S+/i.test(action.target) &&
+      (/^(?:me|us|your\s+(?:thoughts|feedback|ideas))\b/i.test(action.object) || /\b(?:here|in\s+(?:this|the)\s+chat)\b/i.test(action.target))) return false;
+  return actionMatches(action, EXTERNAL_ACTION_VERB) || actionMatches(action, MESSAGE_ACTION);
 }
 
 /* ------------------------------------------------------------------ */
@@ -597,47 +593,71 @@ interface Signals {
   externalAction: boolean;
   destructiveSystem: boolean;
   coding: boolean;
+  filesystemRead: boolean;
   fileScope: boolean;
   pathReference: boolean;
 }
 
-function readSignals(text: string, resources: ResourceReference[]): Signals {
+function readSignals(text: string, resources: ResourceReference[], resolvedResources: readonly ResourceReference[] = []): Signals {
+  const actions = requestedActions(text);
+  const keywords = requestKeywords(text);
+  const has = (verbs: RegExp, predicate: (action: RequestedAction) => boolean = () => true) =>
+    actions.some((action) => actionMatches(action, verbs) && predicate(action));
   const pathReference = resources.some((r) => r.kind === "path");
+  const verifiedReference = resolvedResources.some((resolved) =>
+    resolved.kind === "path" && resolved.absolute === true &&
+    resources.some((resource) => resource.kind === "path" && resource.value === resolved.value));
   const fileScope = FILE_OBJECT.test(text) || pathReference;
-  const garden = GARDEN_OBJECT.test(text);
-  const fsMutate = FS_MUTATION_VERB.test(text);
-  const fsCreate = FS_CREATE_VERB.test(text);
-  const destructiveFs = DESTRUCTIVE_FS_VERB.test(text);
-  const convert = CONVERT_VERB.test(text);
-  const explicitContentProcessing =
-    convert ||
-    MEDIA_VERB.test(text) ||
-    /\b(?:summari[sz]e|transcribe|caption|subtitle|extract\s+(?:audio|text)|read|review|analy[sz]e)\b/i.test(text);
-  // An extension such as .mp4 or .pdf describes the file being moved/deleted;
-  // it does not by itself ask Breadboard to process the media/document. The
-  // previous broad object match turned a deletion into media processing plus
-  // an artifact write, producing alternating permission prompts.
-  const filesystemOnlyMutation =
-    (fsMutate || fsCreate || destructiveFs) && !explicitContentProcessing;
+  const garden = GARDEN_OBJECT.test(keywords);
+  const namesPath = (action: RequestedAction) =>
+    extractResources(action.objectSource.replace(/"([^"\n]*)"|`([^`\n]*)`|'([^'\n]*)'|“([^”\n]*)”/g,
+      (_literal, ...groups) => {
+        const value = groups.slice(0, 4).find((group) => typeof group === "string") ?? "";
+        return /^(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|[\w.-]+[\\/][\w./\\-]+$)/.test(value) ||
+          /^(?:Documents|Downloads|Pictures|Desktop|OneDrive)$/i.test(value) ? value : "";
+      })).some((r) => r.kind === "path") ||
+    (verifiedReference && /^(?:(?:all|both)\s+)?(?:it|them|these|those|this|that)\b/i.test(action.object));
+  const fileTarget = (action: RequestedAction) => FILE_OBJECT.test(action.object) || namesPath(action);
+  const fsMutate = has(FS_MUTATION_VERB, (action) => fileTarget(action) && !isCodingAction(action));
+  const fsCreate = has(CREATION_VERB, (action) => FS_CREATE_OBJECT.test(action.object) && !isCodingAction(action));
+  const destructiveFs = has(DESTRUCTIVE_FS_VERB, fileTarget);
+  const convert = has(CONVERT_VERB, (action) =>
+    fileTarget(action) || DOCUMENT_OBJECT.test(action.target) || MEDIA_OBJECT.test(action.target) || FORMAT_OBJECT.test(action.target));
+  const documents = has(CONTENT_ACTION, (action) => DOCUMENT_OBJECT.test(action.object.replace(/\bword\b/g, ""))) ||
+    (convert && actions.some((action) => actionMatches(action, CONVERT_VERB) && DOCUMENT_OBJECT.test(action.target)));
+  const media = has(MEDIA_VERB, (action) => MEDIA_OBJECT.test(action.object) || namesPath(action) ||
+    /^(?:it|this|that|these|those)(?:\s+(?:please|too))?$/i.test(action.object)) ||
+    has(MEDIA_ANALYSIS_VERB, (action) => MEDIA_OBJECT.test(action.object));
+  const filesystemRead = fsMutate || fsCreate || destructiveFs ||
+    actions.some((action) =>
+      (actionMatches(action, INSPECT_VERB) || actionMatches(action, SEARCH_VERB) || actionMatches(action, CONVERT_VERB) || actionMatches(action, MEDIA_VERB)) &&
+      (namesPath(action) || /\b(files?|folders?|director(?:y|ies))\b/i.test(action.object))) ||
+    // Information questions can name a location without an imperative verb.
+    text.split(/[?!;\n]+/).some((clause) =>
+      /^\s*(?:what(?:'?s|\s+is|\s+are)|which|where)\b/i.test(clause) &&
+      /\b(files?|folders?|director(?:y|ies))\b/i.test(clause) &&
+      extractResources(clause).some((resource) => resource.kind === "path"));
   return {
     inspect: INSPECT_VERB.test(text),
     search: SEARCH_VERB.test(text),
     fsMutate,
     fsCreate,
     destructiveFs,
-    run: RUN_VERB.test(text),
+    run: has(RUN_VERB, (action) => COMMAND_OBJECT.test(action.objectSource) || namesPath(action) || /^`[^`]+`/.test(action.objectSource)),
     convert,
-    documents: DOCUMENT_OBJECT.test(text) && !filesystemOnlyMutation,
-    media:
-      MEDIA_VERB.test(text) ||
-      (MEDIA_OBJECT.test(text) &&
-        MEDIA_ANALYSIS_VERB.test(text) &&
-        !filesystemOnlyMutation),
+    documents,
+    media,
     web:
-      WEB_VERB.test(text) ||
-      LIVE_WEATHER_QUERY.test(text) ||
-      (RELATIVE_DATE_QUERY.test(text) &&
-        SCHEDULED_REAL_WORLD_EVENT.test(text)) ||
+      has(WEB_VERB) ||
+      has(/\b(search|look\s+up|check)\b/i, (action) => /\b(web|internet|online)\b/i.test(action.target)) ||
+      LIVE_INFORMATION.test(keywords) ||
+      (LIVE_WEATHER_QUERY.test(keywords) && !CONCEPTUAL_WEATHER.test(keywords)) ||
+      (RELATIVE_DATE_QUERY.test(keywords) &&
+        SCHEDULED_REAL_WORLD_EVENT.test(keywords)) ||
+      (!pathReference &&
+        has(PUBLISHED_SOURCE_VERB, (action) =>
+          PUBLISHED_SOURCE_OBJECT.test(action.object) &&
+          !SUPPLIED_SOURCE_OBJECT.test(action.object))) ||
       // A pasted link is a live source the answer must open — except a video
       // link. "What happens in this video <url>" is settled by the Watch
       // pipeline downloading that very video, not by a browser, so counting it
@@ -646,14 +666,19 @@ function readSignals(text: string, resources: ResourceReference[]): Signals {
       // same predicate Watch selection uses decides this, so the two can
       // never disagree about what a video link is.
       resources.some((r) => r.kind === "url" && !hasVideoUrl(r.value)),
-    download: DOWNLOAD_VERB.test(text),
+    download: has(DOWNLOAD_VERB, (action) => action.verb === "download" ||
+      fileTarget(action) || DOCUMENT_OBJECT.test(action.object) || MEDIA_OBJECT.test(action.object) ||
+      /^BBLITERAL\d+TOKEN$/.test(action.object)),
     garden,
-    gardenWrite: garden && GARDEN_WRITE_VERB.test(text),
-    memory: MEMORY_VERB.test(text),
-    externalAction:
-      EXTERNAL_ACTION_VERB.test(text) || MESSAGE_ACTION.test(text),
-    destructiveSystem: DESTRUCTIVE_SYSTEM.test(text),
-    coding: requiresCodingOutcome(text),
+    gardenWrite: has(GARDEN_WRITE_VERB, (action) => GARDEN_OBJECT.test(action.object) ||
+      /\b(?:to|into|in)\s+(?:(?:my|our|the|this|that)\s+)?(?:garden|notes?|page|quartz)\b/i.test(action.target)),
+    memory: has(MEMORY_VERB),
+    externalAction: actions.some(isExternalAction),
+    destructiveSystem: actions.some((action) => DESTRUCTIVE_SYSTEM.test(action.verb) ||
+      (action.verb === "drop" && /^(?:the\s+)?(?:database|table)\b/i.test(action.target)) ||
+      (action.verb === "format" && /^(?:the\s+)?(?:drive|disk)\b/i.test(action.target))),
+    coding: actions.some(isCodingAction),
+    filesystemRead,
     fileScope,
     pathReference,
   };
@@ -682,22 +707,23 @@ function describeOutcome(text: string, signals: Signals): string {
  */
 export function planTask(input: TaskPlanInput): TaskPlan {
   const raw = requestWithoutSelectors(input.request).slice(0, 8_000);
+  const prose = requestWithoutSelectors(requestProse(input.request)).slice(0, 8_000);
   // Continuation context is used for *goal* wording only, never to widen
   // capability: a prior turn cannot silently escalate the current one.
   const goal = raw || (input.priorRequests?.at(-1) ?? "").slice(0, 8_000);
   const resources = mergeResources(
-    extractResources(raw),
+    extractResources(prose),
     input.resolvedResources ?? [],
   );
-  const signals = readSignals(raw, resources);
+  const signals = readSignals(prose, resources, input.resolvedResources);
   // Prior text can continue a low-risk recommendation query, but it can never
   // grant web capability by itself. A current correction/reference marker is
   // required, preventing a stale restaurant question from making an unrelated
   // later turn browse.
   signals.web =
     signals.web ||
-    requestsLiveRecommendation(raw) ||
-    continuesLiveRecommendation(raw, input.priorRequests ?? []);
+    requestsLiveRecommendation(requestKeywords(prose)) ||
+    continuesLiveRecommendation(requestKeywords(prose), (input.priorRequests ?? []).map(requestKeywords));
 
   // A deletion cannot be planned before its target is known. "Delete them all",
   // "how do I delete a file in Python", and "should I clear my Gradle cache"
@@ -753,18 +779,7 @@ export function planTask(input: TaskPlanInput): TaskPlan {
   // --- Filesystem reads -------------------------------------------------
   // Any request that names files/paths and asks to inspect, search, organise,
   // convert, or delete needs to look at the filesystem first.
-  const needsFsRead =
-    !isolated &&
-    (signals.pathReference || signals.fileScope) &&
-    (signals.inspect ||
-      signals.search ||
-      signals.fsMutate ||
-      signals.fsCreate ||
-      signals.destructiveFs ||
-      signals.convert ||
-      signals.documents ||
-      signals.media ||
-      signals.coding);
+  const needsFsRead = !isolated && signals.filesystemRead;
   if (needsFsRead) {
     addStep("Inspect the approved location to identify the relevant files.", ["filesystem_read"]);
   }

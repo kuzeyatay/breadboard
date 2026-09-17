@@ -34,6 +34,7 @@ test("the notification overlay IPC accepts only bounded card data", () => {
       title: "Task completed",
       message: "Finished the task.",
       type: "success",
+      id: "toast:notification-1",
     }),
     true,
   );
@@ -41,6 +42,9 @@ test("the notification overlay IPC accepts only bounded card data", () => {
     isDesktopNotificationToast({ message: "", type: "success" }),
     false,
   );
+  for (const id of ["", 7, "x".repeat(257)]) {
+    assert.equal(isDesktopNotificationToast({ id, message: "Finished.", type: "success" }), false);
+  }
   assert.equal(
     isDesktopNotificationToast({ message: "Nope", type: "warning" }),
     false,
@@ -130,4 +134,34 @@ test("the preload bridge carries local cards and overlay measurements", async ()
       ],
     },
   ]);
+});
+
+test("notification navigation validates bounded destinations and allows clearing tab targets", () => {
+  const urls = ["http://127.0.0.1:3000/dashboard?terminalChat=conv_1"];
+  assert.equal(isTabsCommand({ type: "notification-open", urls }), true);
+  assert.equal(isTabsCommand({ type: "notification-targets", urls }), true);
+  assert.equal(isTabsCommand({ type: "notification-targets", urls: [] }), true);
+  assert.equal(isTabsCommand({ type: "notification-open", urls: [] }), false);
+  for (const type of ["notification-open", "notification-targets"]) {
+    for (const invalid of [null, "url", [42], [""], ["x".repeat(8_193)], Array(9).fill(urls[0])]) {
+      assert.equal(isTabsCommand({ type, urls: invalid }), false);
+    }
+  }
+});
+
+test("overlay visibility starts silent, replays for late subscribers, and follows native hiding", () => {
+  const ipc = new FakeIpcRenderer();
+  const api = createDesktopApi(ipc);
+  const received: boolean[] = [];
+  const unsubscribe = api.onNotificationOverlayVisibility(visible => received.push(visible));
+  assert.deepEqual(received, [false]);
+  ipc.listeners.get(IPC_CHANNELS.notificationOverlayVisibility)?.({}, true);
+  ipc.listeners.get(IPC_CHANNELS.notificationOverlayVisibility)?.({}, false);
+  assert.deepEqual(received, [false, true, false]);
+  unsubscribe();
+  ipc.listeners.get(IPC_CHANNELS.notificationOverlayVisibility)?.({}, true);
+  assert.deepEqual(received, [false, true, false]);
+  const late: boolean[] = [];
+  api.onNotificationOverlayVisibility(visible => late.push(visible));
+  assert.deepEqual(late, [true]);
 });

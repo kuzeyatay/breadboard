@@ -41,7 +41,13 @@ app.whenReady().then(async () => {
     bundle: true, write: false, format: 'iife', platform: 'browser',
     define: { 'process.env.NODE_ENV': '"production"' },
   }).outputFiles[0].text;
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
+    if (req.url === '/api/browser/translate') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      const input = JSON.parse(body);
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ segments: input.segments.map(segment => ({ id: segment.id, text: 'Vertaling' })) }));
+    }
     res.setHeader('Content-Type', req.url === '/app.js' ? 'text/javascript' : 'text/html');
     res.end(req.url === '/app.js' ? script : '<!doctype html><title>Browser</title><div id="root"></div><script src="/app.js"></script>');
   });
@@ -129,11 +135,16 @@ app.whenReady().then(async () => {
   assert.equal(await page.executeJavaScript('typeof window.breadboardDesktop'), 'undefined');
   assert.equal(await page.executeJavaScript('Notification.permission'), 'denied');
   assert.equal(await page.executeJavaScript('Notification.requestPermission()'), 'denied');
+  await manager.handleCommand(privateChrome, { type: 'browser-translate', language: 'nl' });
+  await until(() => page.executeJavaScript("document.body.textContent === 'Vertaling'"), 'private page translates');
+  assert.equal(manager.browserPreferences.translationLanguageFor(web), undefined, 'private translation never opts in the regular profile');
+  assert.ok(!manager.browserPreferences.snapshot().translationSites?.[new URL(web).host]);
   await page.executeJavaScript(`window.open(${JSON.stringify(web + '/private-popup')}, '_blank'); void 0`, true);
   const popup = await findPage(web + '/private-popup');
   assert.equal(popup.session, privateSession, 'popup inherits private storage');
   assert.equal(manager.isPrivateBrowser(popup), true);
   assert.equal(await popup.executeJavaScript("localStorage.getItem('secret')"), 'private');
+  await until(() => popup.executeJavaScript("document.body.textContent === 'Vertaling'"), 'private popup inherits translation within the private session');
   assert.ok(!manager.browserHistory.snapshot().items.some(item => item.url.includes('private-')));
   // Menu commands must come from the active trusted tab.
   await manager.handleCommand(privateChrome, { type: 'activate', id: manager.stateFor(privateChrome).selfId });
@@ -163,6 +174,8 @@ app.whenReady().then(async () => {
   const fresh = await findPage(web + '/new-session');
   assert.notEqual(fresh.session, privateSession);
   assert.equal(await fresh.executeJavaScript("localStorage.getItem('secret')"), null);
+  assert.equal(await fresh.executeJavaScript('document.body.textContent'), 'Browser isolation test', 'a fresh private session forgets the translated site');
+  assert.equal(manager.browserPreferences.translationLanguageFor(web), undefined);
   assert.equal((await normalSession.cookies.get({ url: web, name: 'normal' }))[0].value, 'regular-profile');
   for (const candidate of BrowserWindow.getAllWindows()) candidate.destroy();
   app.exit(0);

@@ -4,11 +4,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { EventEmitter } from "node:events";
+import { deflateRawSync } from "node:zlib";
 import type { ClientRequest, ClientRequestConstructorOptions } from "electron";
 import { runElectronFixture } from "./helpers/run-electron-fixture";
 import {
   BROWSER_EXTENSIONS_STATE_FILE,
   MAX_EXTENSION_ARCHIVE_BYTES,
+  MAX_EXTENSION_UNPACKED_BYTES,
   browserExtensionInstallId,
   browserWebStoreInstallBootstrapScript,
   browserWebStoreInstallCleanupScript,
@@ -18,9 +20,36 @@ import {
   downloadChromeWebStorePackage,
   installChromeWebStorePackage,
   normalizeBrowserExtensionPaths,
+  readBrowserExtensionIcon,
   readBrowserExtensionPaths,
   writeBrowserExtensionPaths,
 } from "../src/main/browser-extensions";
+
+test("extension icons prefer a retina image and stay inside the extension directory", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-extension-icons-"));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const extension = path.join(root, "extension");
+  fs.mkdirSync(extension);
+  fs.writeFileSync(path.join(extension, "small.png"), "small");
+  fs.writeFileSync(path.join(extension, "retina.png"), "retina");
+  fs.writeFileSync(path.join(extension, "large.png"), "large");
+  fs.writeFileSync(path.join(root, "outside.png"), "outside");
+  assert.equal(readBrowserExtensionIcon(extension, { 16: "small.png", 64: "retina.png", 128: "large.png" }),
+    `data:image/png;base64,${Buffer.from("retina").toString("base64")}`);
+  assert.equal(readBrowserExtensionIcon(extension, { 32: "../outside.png" }), undefined);
+  assert.equal(readBrowserExtensionIcon(extension, { 32: path.join(root, "outside.png") }), undefined);
+  assert.equal(readBrowserExtensionIcon(extension, { 32: "missing.png" }), undefined);
+  assert.equal(readBrowserExtensionIcon(extension, null), undefined);
+  assert.equal(readBrowserExtensionIcon(extension, { 64: "missing.png", 16: "small.png" }),
+    `data:image/png;base64,${Buffer.from("small").toString("base64")}`);
+  fs.writeFileSync(path.join(extension, "large.png"), Buffer.alloc(512 * 1024 + 1));
+  assert.equal(readBrowserExtensionIcon(extension, { 128: "large.png" }), undefined);
+  fs.writeFileSync(path.join(extension, "icon.svg"), "<svg/>");
+  assert.equal(readBrowserExtensionIcon(extension, { 32: "icon.svg" }), undefined);
+});
 
 class DownloadRequest extends EventEmitter {
   aborted = false;
@@ -106,36 +135,45 @@ function crc32(buffer: Buffer): number {
   return (value ^ 0xffffffff) >>> 0;
 }
 
-function zip(entries: Array<{ name: string; contents: Buffer }>): Buffer {
+function zip(entries: Array<{ name: string; contents: Buffer; unpackedSize?: number }>, deflate = false): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
+  const prepared = new Map<Buffer, { checksum: number; data: Buffer }>();
   let localOffset = 0;
   for (const entry of entries) {
     const name = Buffer.from(entry.name, "utf8");
-    const checksum = crc32(entry.contents);
+    let payload = prepared.get(entry.contents);
+    if (!payload) {
+      payload = { checksum: crc32(entry.contents), data: deflate ? deflateRawSync(entry.contents) : entry.contents };
+      prepared.set(entry.contents, payload);
+    }
+    const { checksum, data } = payload;
+    const unpackedSize = entry.unpackedSize ?? entry.contents.length;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(deflate ? 8 : 0, 8);
     local.writeUInt32LE(checksum, 14);
-    local.writeUInt32LE(entry.contents.length, 18);
-    local.writeUInt32LE(entry.contents.length, 22);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(unpackedSize, 22);
     local.writeUInt16LE(name.length, 26);
-    locals.push(local, name, entry.contents);
+    locals.push(local, name, data);
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(0x0314, 4);
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(deflate ? 8 : 0, 10);
     central.writeUInt32LE(checksum, 16);
-    central.writeUInt32LE(entry.contents.length, 20);
-    central.writeUInt32LE(entry.contents.length, 24);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(unpackedSize, 24);
     central.writeUInt16LE(name.length, 28);
     central.writeUInt32LE((0o100644 << 16) >>> 0, 38);
     central.writeUInt32LE(localOffset, 42);
     centrals.push(central, name);
-    localOffset += local.length + name.length + entry.contents.length;
+    localOffset += local.length + name.length + data.length;
   }
   const localBytes = Buffer.concat(locals);
   const centralBytes = Buffer.concat(centrals);
@@ -239,6 +277,59 @@ test("a signed Web Store package is unpacked durably with a stable extension id"
     );
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("compressed extensions with filter data larger than 256 MiB install successfully", (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bb-browser-large-extension-"));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(fixture)), path.resolve(os.tmpdir()));
+    fs.rmSync(fixture, { recursive: true, force: true });
+  });
+  const publicKey = Buffer.from("large-filter-extension-fixture");
+  const id = chromeExtensionIdFromPublicKey(publicKey);
+  const manifest = Buffer.from(JSON.stringify({ manifest_version: 3, name: "Large filters", version: "1.0" }));
+  // Reuse one compressed chunk so the regression does not need a huge fixture archive.
+  const contents = Buffer.alloc(16 * 1024 * 1024, "filter-data\n");
+  const rules = Array.from({ length: 20 }, (_, index) => ({ name: `data/rules/${index}.txt`, contents }));
+  const archive = crx2(publicKey, zip([{ name: "manifest.json", contents: manifest }, ...rules], true));
+  assert.ok(archive.length < MAX_EXTENSION_ARCHIVE_BYTES);
+  const installed = installChromeWebStorePackage(fixture, id, archive);
+  let total = fs.statSync(path.join(installed, "manifest.json")).size;
+  for (const rule of rules) {
+    const size = fs.statSync(path.join(installed, rule.name)).size;
+    assert.equal(size, contents.length);
+    total += size;
+  }
+  assert.ok(total > 256 * 1024 * 1024);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(installed, "manifest.json"), "utf8")).key, publicKey.toString("base64"));
+});
+
+test("oversized and misdeclared compressed extensions fail without replacing an installed copy", (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bb-browser-extension-limits-"));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(fixture)), path.resolve(os.tmpdir()));
+    fs.rmSync(fixture, { recursive: true, force: true });
+  });
+  const publicKey = Buffer.from("bounded-extension-fixture");
+  const id = chromeExtensionIdFromPublicKey(publicKey);
+  const manifest = Buffer.from(JSON.stringify({ manifest_version: 3, name: "Existing extension", version: "1.0" }));
+  const installed = installChromeWebStorePackage(fixture, id, crx2(publicKey, zip([{ name: "manifest.json", contents: manifest }])));
+  const installedManifest = fs.readFileSync(path.join(installed, "manifest.json"), "utf8");
+  const cases = [
+    { label: "single file exceeds total limit", size: MAX_EXTENSION_UNPACKED_BYTES + 1, error: /unpacked browser extension is too large/ },
+    { label: "files together exceed total limit", size: MAX_EXTENSION_UNPACKED_BYTES - manifest.length + 1, error: /unpacked browser extension is too large/ },
+    { label: "deflated data exceeds declared size", size: 1, error: /larger than/ },
+    { label: "deflated data is shorter than declared size", size: 100, error: /integrity check/ },
+  ];
+  for (const entry of cases) {
+    const archive = crx2(publicKey, zip([
+      { name: "manifest.json", contents: manifest },
+      { name: "data/rules.txt", contents: Buffer.from("filter-data"), unpackedSize: entry.size },
+    ], true));
+    assert.throws(() => installChromeWebStorePackage(fixture, id, archive), entry.error, entry.label);
+    assert.equal(fs.readFileSync(path.join(installed, "manifest.json"), "utf8"), installedManifest);
+    assert.deepEqual(fs.readdirSync(path.join(fixture, "browser-extensions")), [id]);
   }
 });
 

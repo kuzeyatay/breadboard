@@ -110,11 +110,11 @@ test("Knowledge mounts the exact Quartz Thought Topology renderer and hierarchy"
   assert.match(rendererBridge, /renderer\.generated\.js/);
   assert.match(
     generatedRenderer,
-    /Generated from \.\.\/quartz\/quartz\/components\/scripts\/thoughtTopologyRenderer\.ts/,
+    /Generated from \.\.\/quartz\/quartz\/components\/scripts\/thoughtTopologyViewer\.ts/,
   );
-  assert.match(rendererSync, /thoughtTopologyRenderer\.ts/);
-  assert.match(packageJson, /"predev": "npm run sync:quartz-topology"/);
-  assert.match(packageJson, /"prebuild": "npm run sync:quartz-topology"/);
+  assert.match(rendererSync, /thoughtTopologyViewer\.ts/);
+  assert.match(JSON.parse(packageJson).scripts.predev, /^npm run sync:quartz-topology(?: &&|$)/);
+  assert.match(JSON.parse(packageJson).scripts.prebuild, /^npm run sync:quartz-topology(?: &&|$)/);
   assert.match(
     topologyAdapter,
     /Quartz's Thought Topology deliberately describes Gardens/,
@@ -186,7 +186,7 @@ test("Knowledge mounts the exact Quartz Thought Topology renderer and hierarchy"
   assert.match(renderer, /resizeObserver\?\.disconnect\(\)/);
   assert.match(
     renderer,
-    /app\.destroy\(\{ removeView: true \}\)/,
+    /app\.destroy\(\{ removeView: true \}(?:,|\))/,
     "re-mounts remove the old canvas",
   );
   assert.doesNotMatch(renderer, /contentIndex|fetch\(/);

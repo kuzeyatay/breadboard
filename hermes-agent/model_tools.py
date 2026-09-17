@@ -1079,6 +1079,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False,
     skip_tool_request_middleware: bool = False,
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    tool_access: Optional[Dict[str, bool]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
@@ -1106,6 +1107,8 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    if (tool_access or {}).get(function_name) is False:
+        return json.dumps({"error": f"{function_name} is disabled for this turn."})
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -1145,6 +1148,8 @@ def handle_function_call(
             ) or []
         except Exception:
             current_defs = []
+        current_defs = [d for d in current_defs
+                        if (tool_access or {}).get(d.get("function", {}).get("name")) is not False]
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
             return _ts_mod.dispatch_tool_search(function_args or {},
                                                 current_tool_defs=current_defs)
@@ -1185,6 +1190,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                tool_access=tool_access,
             )
 
     _tool_original_args = dict(function_args)

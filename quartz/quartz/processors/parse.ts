@@ -9,6 +9,10 @@ import { PerfTimer } from "../util/perf"
 import { read } from "to-vfile"
 import { FilePath, QUARTZ, slugifyFilePath } from "../util/path"
 import path from "path"
+import fs from "fs"
+import { aliasSlugsFromSource } from "../plugins/transformers/frontmatter"
+import { rehypeNeutralizeInvalidTagNames } from "./sanitizeTagNames"
+import { createTreeSpill, TreeSpill } from "./treeSpill"
 import workerpool, { Promise as WorkerPromise } from "workerpool"
 import { QuartzLogger } from "../util/log"
 import { trace } from "../util/trace"
@@ -90,6 +94,8 @@ export function createHtmlProcessor(ctx: BuildCtx): QuartzHtmlProcessor {
       .use(remarkRehype, { allowDangerousHtml: true })
       // HTML AST -> HTML AST transforms
       .use(transformers.flatMap((plugin) => plugin.htmlPlugins?.(ctx) ?? []))
+      // Guarantee every element can be rendered, whatever raw HTML produced.
+      .use(rehypeNeutralizeInvalidTagNames)
   )
 }
 
@@ -131,38 +137,95 @@ async function transpileWorkerScript() {
   })
 }
 
-export function createFileParser(ctx: BuildCtx, fps: FilePath[]) {
+/** Text -> Markdown AST for one file, or `undefined` when it failed to parse. */
+async function parseMarkdownFile(
+  ctx: BuildCtx,
+  processor: QuartzMdProcessor,
+  fp: FilePath,
+): Promise<MarkdownContent | undefined> {
   const { argv, cfg } = ctx
+  try {
+    const perf = new PerfTimer()
+    const file = await read(fp)
+
+    // strip leading and trailing whitespace
+    file.value = file.value.toString().trim()
+
+    // Text -> Text transforms
+    for (const plugin of cfg.plugins.transformers.filter((p) => p.textTransform)) {
+      file.value = plugin.textTransform!(ctx, file.value.toString())
+    }
+
+    // base data properties that plugins may use
+    file.data.filePath = file.path as FilePath
+    file.data.relativePath = path.posix.relative(argv.directory, file.path) as FilePath
+    file.data.slug = slugifyFilePath(file.data.relativePath)
+
+    const ast = processor.parse(file)
+    const newAst = await processor.run(ast, file)
+
+    if (argv.verbose) {
+      console.log(`[markdown] ${fp} -> ${file.data.slug} (${perf.timeSince()})`)
+    }
+    return [newAst, file]
+  } catch (err) {
+    trace(`\nFailed to process markdown \`${fp}\``, err as Error)
+    return undefined
+  }
+}
+
+/** Markdown AST -> HTML AST for one file, or `undefined` when rendering failed. */
+async function renderMarkdownFile(
+  ctx: BuildCtx,
+  processor: QuartzHtmlProcessor,
+  [ast, file]: MarkdownContent,
+): Promise<ProcessedContent | undefined> {
+  try {
+    const perf = new PerfTimer()
+    const fileDataBeforeRender = structuredClone(file.data)
+    const messageCountBeforeRender = file.messages.length
+    let newAst: HTMLRoot
+    try {
+      // HTML transformers are allowed to mutate their input. Keep the
+      // Markdown tree pristine so a malformed raw fragment can be retried
+      // without any partial mutations from the failed first pass.
+      newAst = await processor.run(structuredClone(ast) as MDRoot, file)
+    } catch (initialError) {
+      file.data = fileDataBeforeRender
+      file.messages.length = messageCountBeforeRender
+      const fallbackAst = structuredClone(ast) as MDRoot
+      const degradedRawNodeCount = degradeRawHtmlNodesForRetry(fallbackAst)
+      if (degradedRawNodeCount === 0) throw initialError
+      try {
+        newAst = await processor.run(fallbackAst, file)
+        console.warn(
+          `[quartz] Recovered malformed raw HTML in ${file.data.filePath ?? file.path} ` +
+            `by rendering ${degradedRawNodeCount} raw node(s) as text.`,
+        )
+      } catch (fallbackError) {
+        throw new AggregateError(
+          [initialError, fallbackError],
+          "HTML rendering failed before and after the malformed-raw-HTML fallback.",
+        )
+      }
+    }
+
+    if (ctx.argv.verbose) {
+      console.log(`[html] ${file.data.slug} (${perf.timeSince()})`)
+    }
+    return [newAst, file]
+  } catch (err) {
+    trace(`\nFailed to process html \`${file.data.filePath}\``, err as Error)
+    return undefined
+  }
+}
+
+export function createFileParser(ctx: BuildCtx, fps: FilePath[]) {
   return async (processor: QuartzMdProcessor) => {
     const res: MarkdownContent[] = []
     for (const fp of fps) {
-      try {
-        const perf = new PerfTimer()
-        const file = await read(fp)
-
-        // strip leading and trailing whitespace
-        file.value = file.value.toString().trim()
-
-        // Text -> Text transforms
-        for (const plugin of cfg.plugins.transformers.filter((p) => p.textTransform)) {
-          file.value = plugin.textTransform!(ctx, file.value.toString())
-        }
-
-        // base data properties that plugins may use
-        file.data.filePath = file.path as FilePath
-        file.data.relativePath = path.posix.relative(argv.directory, file.path) as FilePath
-        file.data.slug = slugifyFilePath(file.data.relativePath)
-
-        const ast = processor.parse(file)
-        const newAst = await processor.run(ast, file)
-        res.push([newAst, file])
-
-        if (argv.verbose) {
-          console.log(`[markdown] ${fp} -> ${file.data.slug} (${perf.timeSince()})`)
-        }
-      } catch (err) {
-        trace(`\nFailed to process markdown \`${fp}\``, err as Error)
-      }
+      const parsed = await parseMarkdownFile(ctx, processor, fp)
+      if (parsed) res.push(parsed)
     }
 
     return res
@@ -172,44 +235,46 @@ export function createFileParser(ctx: BuildCtx, fps: FilePath[]) {
 export function createMarkdownParser(ctx: BuildCtx, mdContent: MarkdownContent[]) {
   return async (processor: QuartzHtmlProcessor) => {
     const res: ProcessedContent[] = []
-    for (const [ast, file] of mdContent) {
-      try {
-        const perf = new PerfTimer()
-        const fileDataBeforeRender = structuredClone(file.data)
-        const messageCountBeforeRender = file.messages.length
-        let newAst: HTMLRoot
-        try {
-          // HTML transformers are allowed to mutate their input. Keep the
-          // Markdown tree pristine so a malformed raw fragment can be retried
-          // without any partial mutations from the failed first pass.
-          newAst = await processor.run(structuredClone(ast) as MDRoot, file)
-        } catch (initialError) {
-          file.data = fileDataBeforeRender
-          file.messages.length = messageCountBeforeRender
-          const fallbackAst = structuredClone(ast) as MDRoot
-          const degradedRawNodeCount = degradeRawHtmlNodesForRetry(fallbackAst)
-          if (degradedRawNodeCount === 0) throw initialError
-          try {
-            newAst = await processor.run(fallbackAst, file)
-            console.warn(
-              `[quartz] Recovered malformed raw HTML in ${file.data.filePath ?? file.path} ` +
-                `by rendering ${degradedRawNodeCount} raw node(s) as text.`,
-            )
-          } catch (fallbackError) {
-            throw new AggregateError(
-              [initialError, fallbackError],
-              "HTML rendering failed before and after the malformed-raw-HTML fallback.",
-            )
-          }
-        }
-        res.push([newAst, file])
+    for (const content of mdContent) {
+      const rendered = await renderMarkdownFile(ctx, processor, content)
+      if (rendered) res.push(rendered)
+    }
 
-        if (ctx.argv.verbose) {
-          console.log(`[html] ${file.data.slug} (${perf.timeSince()})`)
-        }
-      } catch (err) {
-        trace(`\nFailed to process html \`${file.data.filePath}\``, err as Error)
-      }
+    return res
+  }
+}
+
+/**
+ * Single-thread pipeline that takes each file all the way to HTML before
+ * reading the next one. Running the two stages over the whole garden in turn
+ * would keep every Markdown tree alive until the last HTML tree exists, which
+ * is what pushed large gardens past the V8 heap limit.
+ */
+/**
+ * Add the alias and permalink slugs declared by these files to `ctx.allSlugs`
+ * without parsing them. The FrontMatter transformer does the same as each
+ * file is parsed; this lets links resolve against files parsed later, or not
+ * parsed at all in a scoped build.
+ */
+export async function registerAliasSlugs(ctx: BuildCtx, fps: FilePath[]) {
+  for (const fp of fps) {
+    try {
+      ctx.allSlugs.push(...aliasSlugsFromSource(await fs.promises.readFile(fp)))
+    } catch {
+      // Unreadable files are reported when (and if) they are parsed.
+    }
+  }
+  ctx.allSlugs.splice(0, ctx.allSlugs.length, ...new Set(ctx.allSlugs))
+}
+
+export function createFusedParser(ctx: BuildCtx, fps: FilePath[], spill: TreeSpill | null) {
+  return async (mdProcessor: QuartzMdProcessor, htmlProcessor: QuartzHtmlProcessor) => {
+    const res: ProcessedContent[] = []
+    for (const fp of fps) {
+      const parsed = await parseMarkdownFile(ctx, mdProcessor, fp)
+      if (!parsed) continue
+      const rendered = await renderMarkdownFile(ctx, htmlProcessor, parsed)
+      if (rendered) res.push(spill ? spill.stash(rendered) : rendered)
     }
 
     return res
@@ -219,21 +284,34 @@ export function createMarkdownParser(ctx: BuildCtx, mdContent: MarkdownContent[]
 const clamp = (num: number, min: number, max: number) =>
   Math.min(Math.max(Math.round(num), min), max)
 
+// A worker holds one chunk of Markdown and HTML trees at a time; math-heavy
+// chunks still run to a few hundred megabytes.
+const WORKER_MAX_OLD_SPACE_MB = 2048
+
 export async function parseMarkdown(ctx: BuildCtx, fps: FilePath[]): Promise<ProcessedContent[]> {
   const { argv } = ctx
   const perf = new PerfTimer()
   const log = new QuartzLogger(argv.verbose)
 
-  // rough heuristics: 128 gives enough time for v8 to JIT and optimize parsing code paths
-  const CHUNK_SIZE = 128
-  const concurrency = ctx.argv.concurrency ?? clamp(fps.length / CHUNK_SIZE, 1, 4)
+  // Pool workers stay warm across chunks, so a chunk only needs to be large
+  // enough to amortise the transfer. A worker holds a whole chunk's Markdown
+  // and HTML trees at once, and math-heavy pages run to megabytes each; small
+  // chunks keep every worker's peak well inside its heap budget.
+  const CHUNK_SIZE = 32
+  const concurrency = ctx.argv.concurrency ?? clamp(fps.length / 128, 1, 4)
+
+  const spill = createTreeSpill(ctx)
+  ctx.treeSpill = spill ?? undefined
 
   let res: ProcessedContent[] = []
   log.start(`Parsing input files using ${concurrency} threads`)
   if (concurrency === 1) {
     try {
-      const mdRes = await createFileParser(ctx, fps)(createMdProcessor(ctx))
-      res = await createMarkdownParser(ctx, mdRes)(createHtmlProcessor(ctx))
+      res = await createFusedParser(
+        ctx,
+        fps,
+        spill,
+      )(createMdProcessor(ctx), createHtmlProcessor(ctx))
     } catch (error) {
       log.end()
       throw error
@@ -244,6 +322,9 @@ export async function parseMarkdown(ctx: BuildCtx, fps: FilePath[]): Promise<Pro
       minWorkers: "max",
       maxWorkers: concurrency,
       workerType: "thread",
+      workerThreadOpts: {
+        resourceLimits: { maxOldGenerationSizeMb: WORKER_MAX_OLD_SPACE_MB },
+      },
     })
     const errorHandler = (err: any) => {
       console.error(err)
@@ -258,32 +339,21 @@ export async function parseMarkdown(ctx: BuildCtx, fps: FilePath[]): Promise<Pro
       incremental: ctx.incremental,
     }
 
-    const textToMarkdownPromises: WorkerPromise<MarkdownContent[]>[] = []
+    // Each worker takes its chunk all the way to HTML, so the main thread
+    // never holds every Markdown tree at once; each chunk's HTML trees are
+    // spilled the moment they arrive.
+    const chunkPromises: WorkerPromise<ProcessedContent[]>[] = []
     let processedFiles = 0
     for (const chunk of chunks(fps, CHUNK_SIZE)) {
-      textToMarkdownPromises.push(pool.exec("parseMarkdown", [serializableCtx, chunk]))
+      chunkPromises.push(pool.exec("processChunk", [serializableCtx, chunk]))
     }
 
-    const mdResults: Array<MarkdownContent[]> = await Promise.all(
-      textToMarkdownPromises.map(async (promise) => {
-        const result = await promise
-        processedFiles += result.length
-        log.updateText(`text->markdown ${styleText("gray", `${processedFiles}/${fps.length}`)}`)
-        return result
-      }),
-    ).catch(errorHandler)
-
-    const markdownToHtmlPromises: WorkerPromise<ProcessedContent[]>[] = []
-    processedFiles = 0
-    for (const mdChunk of mdResults) {
-      markdownToHtmlPromises.push(pool.exec("processHtml", [serializableCtx, mdChunk]))
-    }
     const results: ProcessedContent[][] = await Promise.all(
-      markdownToHtmlPromises.map(async (promise) => {
+      chunkPromises.map(async (promise) => {
         const result = await promise
         processedFiles += result.length
-        log.updateText(`markdown->html ${styleText("gray", `${processedFiles}/${fps.length}`)}`)
-        return result
+        log.updateText(`text->html ${styleText("gray", `${processedFiles}/${fps.length}`)}`)
+        return spill ? result.map((content) => spill.stash(content)) : result
       }),
     ).catch(errorHandler)
 
@@ -291,6 +361,15 @@ export async function parseMarkdown(ctx: BuildCtx, fps: FilePath[]): Promise<Pro
     await pool.terminate()
   }
 
-  log.end(`Parsed ${res.length} Markdown files in ${perf.timeSince()}`)
+  // With --expose-gc the figure below is what the emitters actually inherit.
+  ;(globalThis as { gc?: () => void }).gc?.()
+  const memory = process.memoryUsage()
+  const megabytes = (bytes: number) => `${Math.round(bytes / 1_048_576)} MB`
+  log.end(
+    `Parsed ${res.length} Markdown files in ${perf.timeSince()} ` +
+      `(heap ${megabytes(memory.heapUsed)}, rss ${megabytes(memory.rss)}` +
+      (spill ? `, trees spilled to ${spill.directory}` : "") +
+      ")",
+  )
   return res
 }

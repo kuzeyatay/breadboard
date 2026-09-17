@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import {
   GardenFilesystemError,
   createGardenFolder,
+  copyGardenFolder,
   listGardenFolders,
   deleteGardenFolder,
   moveGardenDocument,
@@ -75,14 +76,17 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 }
 
-// Create an (empty) folder. A placeholder `_index.md` keeps it visible in Quartz.
+// Create an empty folder or copy an existing folder to a unique sibling.
 export async function POST(request: Request): Promise<NextResponse> {
   const body = await request.json().catch(() => ({}));
   const context = await getContext(body.clusterSlug);
   if ('error' in context) return context.error;
 
   try {
-    const result = await createGardenFolder({
+    if (body.action !== undefined && body.action !== 'copy') {
+      throw new GardenFilesystemError('Unknown folder action', 400);
+    }
+    const result = await (body.action === 'copy' ? copyGardenFolder : createGardenFolder)({
       userId: context.userId,
       clusterSlug: context.clusterSlug,
       folder: body.folder,

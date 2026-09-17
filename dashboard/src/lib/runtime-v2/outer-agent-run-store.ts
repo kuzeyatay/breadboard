@@ -21,7 +21,6 @@ export type OuterAgentKind =
   | "agent-tars"
   | "openwork"
   | "shorts"
-  | "open-gym"
   | "legal"
   | "openplanter"
   | "resource2skill"
@@ -65,7 +64,7 @@ function ensureSchema(): void {
     CREATE TABLE IF NOT EXISTS runtime_v2_outer_agent_runs (
       job_id          TEXT PRIMARY KEY,
       owner_user_id   INTEGER NOT NULL,
-      agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'open-gym', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'music-producer', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
+      agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'music-producer', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
       request_id      TEXT NOT NULL,
       idempotency_key TEXT NOT NULL,
       garden_id       TEXT,
@@ -117,7 +116,7 @@ function ensureSchema(): void {
         CREATE TABLE runtime_v2_outer_agent_runs (
           job_id          TEXT PRIMARY KEY,
           owner_user_id   INTEGER NOT NULL,
-          agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'open-gym', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'music-producer', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
+          agent_kind      TEXT NOT NULL CHECK (agent_kind IN ('codex', 'ruflo', 'deep-tutor', 'deer-flow', 'deep-research', 'opencode', 'trading-agent', 'career-ops', 'openexecutive', 'agent-reach', 'praxist', 'agent-tars', 'openwork', 'shorts', 'legal', 'openplanter', 'resource2skill', 'matraix', 'hyperframes', 'openmontage', 'bolt-slides', 'hardware-blueprint', 'inbox-zero', 'socials-manager', 'music-producer', 'get-doc', 'get-doc-download', 'meeting-notes', 'money-printer', 'video-use', 'openscience', 'max-research', 'wardrobe', 'parametric-cad', 'stock-analyst', 'vibe-trading')),
           request_id      TEXT NOT NULL,
           idempotency_key TEXT NOT NULL,
           garden_id       TEXT,
@@ -126,7 +125,9 @@ function ensureSchema(): void {
           terminal_at     TEXT,
           UNIQUE (owner_user_id, agent_kind, request_id)
         );
-        INSERT INTO runtime_v2_outer_agent_runs
+        -- Retired agents have no correlation target. Preserve the remaining
+        -- agents when an older database still contains those retired rows.
+        INSERT OR IGNORE INTO runtime_v2_outer_agent_runs
           (job_id, owner_user_id, agent_kind, request_id, idempotency_key,
            garden_id, conversation_id, created_at, terminal_at)
         SELECT job_id, owner_user_id, agent_kind, request_id, idempotency_key,

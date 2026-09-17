@@ -45,7 +45,7 @@ test("a finished run's stream is closed rather than reconnected forever", async 
   try {
     resolveAgentRunStreamError({
       source,
-      base: "/api/open-gym/runs/r1",
+      base: "/api/deep-research/runs/r1",
       replayEnding: (event) => replayed.push(event.type),
       onUnavailable: () => assert.fail("a run that still exists is not unavailable"),
     });
@@ -73,7 +73,7 @@ test("a run still working keeps its stream so a dropped connection recovers", as
   try {
     resolveAgentRunStreamError({
       source,
-      base: "/api/open-gym/runs/r2",
+      base: "/api/deep-research/runs/r2",
       onUnavailable: () => assert.fail("a live run is not unavailable"),
     });
     await settle();
@@ -98,7 +98,7 @@ test("repeated stream errors share one terminal-state probe", async () => {
   try {
     const input = {
       source,
-      base: "/api/open-gym/runs/r-concurrent",
+      base: "/api/deep-research/runs/r-concurrent",
       replayEnding: (event) => replayed.push(event.type),
       onUnavailable: () => assert.fail("the completed run still exists"),
     };
@@ -153,7 +153,7 @@ test("a stuck terminal-state probe is aborted and can be retried", async () => {
   };
   const input = {
     source,
-    base: "/api/open-gym/runs/r-stuck",
+    base: "/api/deep-research/runs/r-stuck",
     onUnavailable: () => assert.fail("a timeout lets EventSource reconnect"),
   };
   try {
@@ -195,7 +195,7 @@ test("repeated failed probes exhaust a bounded budget and release ownership", as
   };
   const input = {
     source,
-    base: "/api/open-gym/runs/r-failing",
+    base: "/api/deep-research/runs/r-failing",
     onUnavailable: (reason) => reasons.push(reason),
   };
   try {
@@ -239,7 +239,7 @@ test("a successful live-run probe resets the transient failure budget", async ()
   };
   const input = {
     source,
-    base: "/api/open-gym/runs/r-recovers",
+    base: "/api/deep-research/runs/r-recovers",
     onUnavailable: (reason) => reasons.push(reason),
   };
   try {
@@ -280,7 +280,7 @@ test("malformed or duplicate terminal history can finish at most once", async ()
   try {
     resolveAgentRunStreamError({
       source,
-      base: "/api/open-gym/runs/r-duplicate-ending",
+      base: "/api/deep-research/runs/r-duplicate-ending",
       replayEnding: (event) => replayed.push([event.sequenceNumber, event.type]),
       onUnavailable: () => assert.fail("one valid ending is available"),
     });
@@ -311,7 +311,7 @@ test("route cleanup aborts an active terminal-state probe immediately", async ()
   try {
     resolveAgentRunStreamError({
       source,
-      base: "/api/open-gym/runs/route-change",
+      base: "/api/deep-research/runs/route-change",
       onUnavailable: () => assert.fail("route cleanup is not an unavailable run"),
     });
     closeAgentRunStream(source);
@@ -336,7 +336,7 @@ test("a forgotten run closes its stream and says which failure it was", async ()
     try {
       resolveAgentRunStreamError({
         source,
-        base: "/api/open-gym/runs/r3",
+        base: "/api/deep-research/runs/r3",
         onUnavailable: (reason) => reasons.push(reason),
       });
       await settle();
@@ -395,18 +395,4 @@ test("named EventSource owners cannot escape the shared single-flight probe", ()
       `${name} must not replay its complete journal after every stream error`,
     );
   }
-});
-
-test("openGym keeps a saved answer when its run has aged out of the manager", () => {
-  // The run manager forgets a run half an hour after it ends, so every openGym
-  // turn older than that reaches the unavailable branch on load. In the quiet
-  // presentation the guidance and animation are the whole message: replacing
-  // them with "its saved result remains below" left nothing below.
-  const card = fs.readFileSync(path.join(cardsDir, "inline-open-gym-run.tsx"), "utf8");
-  const handler = card.match(/onUnavailable: \(reason\) => \{[\s\S]*?\n {8}\},/);
-  assert.ok(handler, "the openGym card must handle an unavailable stream");
-  assert.match(
-    handler[0],
-    /if \(persistedOutcome && persistedOutcome !== "running"\) return;/,
-  );
 });

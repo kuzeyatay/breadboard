@@ -37,10 +37,8 @@ export interface BrowserProfileState extends BrowserProfileSummary {
 }
 
 /**
- * Everything the profile page's sign-in card needs, in one read. The profile
- * itself, whether there is a runtime to sign in for, and whether a run is
- * already using it — three modules, one answer, so the page and the API can
- * never disagree about it.
+ * Status for external browser runs and their sign-in windows. The desktop
+ * Profile card reads the built-in browser's live Electron session instead.
  */
 export async function browserProfileState(): Promise<BrowserProfileState> {
   const availability = runtimeAvailability();

@@ -1,5 +1,5 @@
-// Calendar reminders on the phone: twenty minutes before an event and again
-// when it starts, on whichever messaging link is enabled.
+// Calendar reminders on the phone: when event notifications are enabled,
+// optionally twenty minutes before an event and again when it starts.
 //
 // This is the calendar's only push. Everything else about it is pull — you
 // open Plan and look — which is fine at a desk and useless on the way to a
@@ -21,9 +21,9 @@
 //   2. `formatReminderMessage` — the text, written for a phone screen.
 //   3. `CalendarReminderLedger` — which reminders have already gone, so the
 //      minute-by-minute tick (and the other process sharing this database)
-//      cannot send one twice. Delivery is what marks the ledger; a send that
-//      fails stays unmarked and is retried on the next tick while the moment
-//      is still within tolerance.
+//      cannot send one twice. An atomic claim reserves each occurrence before
+//      sending. Confirmed deliveries are recorded; failed sends release their
+//      claims for a retry while the moment is still within tolerance.
 //
 // The tick itself, `runCalendarReminders`, is scheduled by the native Runtime
 // V2 engine ("calendar-reminders" in native/runtime-cli/src/service_engine.rs)
@@ -105,6 +105,7 @@ export function dueReminders(
   const due: DueReminder[] = [];
 
   for (const occurrence of occurrences) {
+    if (occurrence.notificationsEnabled === false) continue;
     if (!parseStamp(occurrence.start)) continue;
     const untilStart = minutesBetween(now, occurrence.start);
 
@@ -118,6 +119,7 @@ export function dueReminders(
     // meant for is not so far behind that "in 20 minutes" would be a lie.
     if (
       !occurrence.allDay &&
+      occurrence.leadReminderEnabled !== false &&
       untilStart > 0 &&
       untilStart <= LEAD_MINUTES &&
       LEAD_MINUTES - untilStart <= LATE_TOLERANCE_MINUTES
@@ -170,14 +172,23 @@ export function formatReminderMessage(
   now: string,
 ): string {
   const today = dateOf(now);
-  return reminders
+  const blocks = reminders
     .map((reminder) => {
+      // The lead notice is the useful preparation window, so include the
+      // event details there. At the start time the notification should stay
+      // lightweight: its headline is enough to signal that the event is due.
+      if (reminder.kind === "start") return headline(reminder);
+
       const lines = [headline(reminder), whenLine(reminder.occurrence, today)];
       const location = reminder.occurrence.location?.trim();
       if (location) lines.push(`📍 ${location}`);
+      const notes = reminder.occurrence.description?.trim();
+      if (notes) lines.push(notes);
       return lines.join("\n");
-    })
-    .join("\n\n");
+    });
+  // Imported copies can have different event ids but the same phone notice.
+  // Keep every occurrence in the ledger, while displaying each block once.
+  return [...new Set(blocks)].join("\n\n");
 }
 
 // ---------------------------------------------------------------- the ledger
@@ -199,6 +210,15 @@ export function ensureCalendarReminderSchema(db: Db): void {
 
     CREATE INDEX IF NOT EXISTS idx_calendar_reminder_deliveries_sent
       ON calendar_reminder_deliveries(sent_at);
+
+    CREATE TABLE IF NOT EXISTS calendar_reminder_claims (
+      user_id        INTEGER NOT NULL,
+      channel        TEXT NOT NULL CHECK (channel IN ('whatsapp','telegram')),
+      occurrence_key TEXT NOT NULL,
+      kind           TEXT NOT NULL CHECK (kind IN ('lead','start')),
+      created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, channel, occurrence_key, kind)
+    );
   `);
 }
 
@@ -231,6 +251,24 @@ export class CalendarReminderLedger {
     );
   }
 
+  /** Reserve before awaiting a send, including across database connections. */
+  claim(userId: number, channel: ReminderChannel, candidates: readonly DueReminder[]): DueReminder[] {
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO calendar_reminder_claims
+      (user_id, channel, occurrence_key, kind) VALUES (?, ?, ?, ?)`);
+    return this.db.transaction(() => this.unsent(userId, channel, candidates)
+      .filter(reminder => insert.run(userId, channel, reminder.occurrence.key, reminder.kind).changes > 0)
+    ).immediate();
+  }
+
+  /** A failed transport gives the next tick another chance while still due. */
+  release(userId: number, channel: ReminderChannel, reminders: readonly DueReminder[]): void {
+    const remove = this.db.prepare(`DELETE FROM calendar_reminder_claims
+      WHERE user_id = ? AND channel = ? AND occurrence_key = ? AND kind = ?`);
+    this.db.transaction(() => {
+      for (const reminder of reminders) remove.run(userId, channel, reminder.occurrence.key, reminder.kind);
+    })();
+  }
+
   /**
    * Record a delivery. Called only after the send succeeded: a reminder whose
    * send failed must stay unsent so the next tick tries again.
@@ -245,12 +283,17 @@ export class CalendarReminderLedger {
       for (const reminder of rows) {
         insert.run(userId, channel, reminder.occurrence.key, reminder.kind, reminder.dueAt);
       }
+      this.release(userId, channel, rows);
     });
     all(reminders);
   }
 
   /** Drop rows too old to matter. Returns how many went. */
   prune(retentionDays = LEDGER_RETENTION_DAYS): number {
+    // Do not expire a claim while a slow send may still complete. An interrupted
+    // process leaves delivery uncertain; that occurrence must not be replayed.
+    this.db.prepare(`DELETE FROM calendar_reminder_claims WHERE created_at < datetime('now', ?)`)
+      .run(`-${Math.max(1, Math.trunc(retentionDays))} days`);
     const result = this.db
       .prepare(
         `DELETE FROM calendar_reminder_deliveries
@@ -273,7 +316,7 @@ export interface CalendarReminderDeps {
   /** Every enabled, linked messaging channel and whose account it belongs to. */
   recipients: () => Promise<ReminderRecipient[]>;
   occurrences: (userId: number, from: string, to: string) => CalendarOccurrence[];
-  ledger: Pick<CalendarReminderLedger, "unsent" | "markSent" | "prune">;
+  ledger: Pick<CalendarReminderLedger, "claim" | "release" | "markSent" | "prune">;
   send: (recipient: ReminderRecipient, text: string) => Promise<void>;
 }
 
@@ -400,7 +443,7 @@ export async function runCalendarReminders(
   }
 
   for (const recipient of recipients) {
-    const owed = deps.ledger.unsent(
+    const owed = deps.ledger.claim(
       recipient.userId,
       recipient.channel,
       dueByUser.get(recipient.userId) ?? [],
@@ -409,6 +452,7 @@ export async function runCalendarReminders(
     try {
       await deps.send(recipient, formatReminderMessage(owed, now));
     } catch (error) {
+      deps.ledger.release(recipient.userId, recipient.channel, owed);
       // Not marked: the next tick tries again while the moment is still
       // within tolerance. One channel being down must not silence the other.
       result.failed += 1;

@@ -75,12 +75,26 @@ export function worldClock(now: Date, timezone: string, localTimezone: string) {
 }
 
 export interface DockWeather {
+  latitude?: number;
+  longitude?: number;
   temperatureC: number;
   apparentC: number;
   code: number;
   condition: string;
   isDay: boolean;
   timezone: string;
+}
+
+export interface DockWeatherForecast {
+  timezone: string;
+  days: {
+    date: string;
+    code: number;
+    condition: string;
+    minC: number;
+    maxC: number;
+    precipitationChance: number | null;
+  }[];
 }
 
 export interface DockBattery {

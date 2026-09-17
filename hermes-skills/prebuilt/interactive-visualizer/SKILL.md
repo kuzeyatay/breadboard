@@ -53,7 +53,8 @@ summary and point to the artifact. Do not paste source into chat.
 - Never use nested cards, sidebars, control-panel headings, gradients, shadows,
   glass effects, long instructional copy, status dashboards, or decorative
   badges.
-- Fit roughly one desktop screen and stack cleanly at 375 CSS pixels.
+- Fit roughly one desktop screen and adapt to resized desktop windows and
+  artifact panes. Phone-size rendering is not a publication requirement.
 - In CSS use the host tokens `--viz-bg`, `--viz-panel`, `--viz-control`,
   `--viz-control-hover`, `--viz-text`, `--viz-muted`, `--viz-line`,
   `--viz-accent`, and `--viz-accent-text`.
@@ -66,15 +67,49 @@ summary and point to the artifact. Do not paste source into chat.
 - Include a `visual integrity` semantic test that covers contrast, clipping,
   label/control overlap, alignment, and connection continuity.
 
-Use SVG for labelled geometry, Canvas for animated/dense 2D work, and the
-supplied global `THREE` only when depth and camera movement add meaning.
+## Choose the dimension before the renderer
+
+Flat interface styling does not mean a 2D scene. Do not default to 2D for
+implementation ease. Decide from the requested explanation:
+
+1. Honor an explicit 2D/3D request, cross-section, or planar approximation.
+   Label a slice of a spatial concept and state what the simplification omits.
+2. Use **3d** when enclosure, volume, depth, surface orientation, solid angle,
+   or non-coplanar geometry is central. Use **2d** when a plane, diagram, or
+   graph fully expresses the requested relationship. Ask what a flat view
+   would hide; topic names and variable counts alone do not decide the mode.
+3. Use **hybrid** for a spatial scene with a linked 2D slice or plot only when
+   both views add explanatory value. They must share a model. A numeric
+   readout alongside a 3D scene does not make it hybrid.
+4. State the deciding relationship in `plan.rationale`, record dimensional
+   simplifications in `assumptions` and `limitations`, and match
+   `manifest.mode` to the plan.
+
+For example, Gauss's law with enclosed charge, closed Gaussian surfaces, or
+surface flux calls for **3d**: show the enclosed volume, spatial field, and
+outward normals. A circle alone is only a slice. An explicitly requested
+equatorial section is **2d**, labelled as a section; a graph of total flux
+versus charge is also **2d**. A cutting plane through a solid alongside its
+linked cross-section calls for **hybrid**. Circuit schematics, time traces,
+and planar waves generally call for **2d**.
+
+Then choose SVG for labelled geometry, Canvas for animation/dense plots, or
+the supplied global `THREE` for spatial scenes. Projected 3D in SVG/Canvas is
+valid if it models real x/y/z geometry; a tilted flat drawing is not enough.
+Make depth inspectable with rotate/orbit and zoom plus a keyboard-accessible
+alternative. Derive the scene and measurements from the same model. Include
+a semantic test of the key invariant: for Gauss's law, camera rotation must
+not change enclosed charge or flux, and an external charge must not change
+net flux through the closed surface.
 
 ## Schema-2 package
 
 Send `schemaVersion: 2`, a matching schema-2 manifest, `assets: []`, and exactly
 `index.html`, `styles.css`, and `main.js`. The manifest runtime is
 `{ id: "breadboard-interactive-visualizer", version: "2.0.0" }`; add
-`threeVersion: "0.185.1"` for 3D or hybrid.
+`threeVersion: "0.185.1"` exactly when JavaScript references the supplied
+`THREE` global. The mode describes the representation, not the rendering API:
+projected 3D SVG/Canvas uses `mode: "3d"` without `threeVersion`.
 
 HTML requires a semantic `#app`, one visible H1, a primary Canvas or inline SVG,
 native labelled controls, and exactly `<script src="main.js"></script>`. CSS is
@@ -92,5 +127,10 @@ dynamic imports, forms, nested frames, device capabilities, host messaging, and
 prototype modification.
 
 For a revision, reuse the artifact id and send a complete schema-2 package to
-`interactive_visualizer_revise`. Failed revisions preserve the active version.
-Use rollback only for validated versions and cancel when requested.
+`interactive_visualizer_revise`. Reconsider the mode when the requested
+explanation changes. Implement a requested 2D/3D/linked view in the replacement
+package, set its `manifest.mode`, and describe the change and reason in
+`revisionPrompt`. The service stages the matching plan and saves it only on
+successful publication; do not retain a stale mode from the original plan.
+Failed revisions preserve the active version. Use rollback only for validated
+versions and cancel when requested.

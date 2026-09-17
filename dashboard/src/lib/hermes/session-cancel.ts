@@ -65,14 +65,11 @@ export interface RuntimeSessionCancelReport extends RuntimeWorkStopReport {
 }
 
 /**
- * Cancel everything one runtime session is doing, on the way to throwing the
- * session away.
+ * Cancel everything one runtime session is doing for Stop or chat deletion.
  *
- * Unlike the abort button this never refuses. The session is about to stop
- * existing, so a runtime that cannot be reached, a session that was never
- * initialized, or a run that finished a moment ago are all just details of how
- * quiet it already was — every one of them still leaves the local child
- * processes to kill and the run row to close out.
+ * A runtime that cannot be reached, a session that was never initialized, or
+ * a run that finished a moment ago must not prevent local child cleanup and
+ * closing the durable run. The caller authorizes ownership of the row first.
  */
 export async function cancelRuntimeSessionWork(
   userId: number,

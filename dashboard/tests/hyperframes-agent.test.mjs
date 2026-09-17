@@ -241,6 +241,9 @@ test("Runtime video receipts fence the exact attempt, project path, and size", (
       artifactId: record.id,
     });
     assert.equal(resolved?.canonicalPath, fs.realpathSync.native(artifactPath));
+    assert.equal(resolveHyperframesArtifactPath({
+      dataRoot: path.toNamespacedPath(dataRoot), job, events: [event], artifactId: record.id,
+    })?.canonicalPath, fs.realpathSync.native(artifactPath));
 
     fs.appendFileSync(artifactPath, "tamper");
     assert.equal(resolveHyperframesArtifactPath({

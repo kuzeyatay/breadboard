@@ -88,6 +88,9 @@ export default async function GardenHomePage({
         userId,
         requireSuccess: true,
         topologyImpact: "none",
+        // Only the library landing pages are stale; every scoped build
+        // rebuilds them.
+        scope: [],
       });
     }
   }

@@ -45,6 +45,23 @@
     #000 97%,
     transparent 100%
   );
+  transform-origin: 50% 100%;
+}
+
+/* The garden moves as one compositor layer. Animating every small SVG plant
+   separately kept inactive Electron tabs busy because retained views still
+   report themselves as visible. */
+.wind[data-animation-ready="true"] {
+  animation: gardenSway 6s ease-in-out var(--wind-delay) infinite;
+  will-change: transform;
+  opacity: 0.82;
+}
+
+/* One subtle animation for the whole sky keeps dark mode alive without
+   scheduling a compositor animation for every star in every retained tab. */
+.starField[data-animation-ready="true"] {
+  animation: starFieldBreathe 12s ease-in-out var(--sky-delay) infinite;
+  will-change: opacity;
 }
 
 .star {
@@ -56,9 +73,7 @@
   border-radius: 999px;
   background: var(--star-color);
   box-shadow: 0 0 5px color-mix(in srgb, var(--star-color) 42%, transparent);
-  opacity: 0.22;
-  animation: starTwinkle var(--star-duration) ease-in-out var(--star-delay) infinite;
-  will-change: transform, opacity;
+  opacity: 0.52;
 }
 
 .comet {
@@ -114,27 +129,15 @@
   bottom: var(--plant-bottom);
   width: 24px;
   height: 30px;
-  transform-origin: 50% 100%;
-  animation: flowerWind var(--plant-duration) ease-in-out var(--plant-delay)
-    infinite;
-  will-change: transform;
 }
 
 /* The deterministic first frame is paused until the component has converted
    its phase to the shared wall clock. This prevents a newly opened tab from
    visibly starting at the beginning of a gust before snapping into sync. */
-.wind:not([data-animation-ready="true"]) .plant,
-.starField:not([data-animation-ready="true"]) .star,
+.wind:not([data-animation-ready="true"]),
+.starField:not([data-animation-ready="true"]),
 .starField:not([data-animation-ready="true"]) .comet {
   animation-play-state: paused;
-}
-
-.plant:nth-of-type(3n) {
-  animation-name: flowerWindSoft;
-}
-
-.plant:nth-of-type(4n) {
-  animation-name: flowerWindLift;
 }
 
 .plantSprite {
@@ -168,13 +171,6 @@
   opacity: 0.52;
 }
 
-/* Flower head colours are per-plant inline custom properties, so they cannot be
-   overridden from here; a filter dims them instead, which keeps the four hues
-   apart while pulling them down to night brightness. */
-:global(html[data-theme="dark"]) .plantSprite {
-  filter: brightness(0.74) saturate(0.8);
-}
-
 .grassDark {
   fill: var(--grass-dark);
 }
@@ -199,60 +195,25 @@
   fill: var(--flower-center);
 }
 
-@keyframes flowerWind {
+@keyframes gardenSway {
   0%,
   100% {
-    transform: translateX(var(--plant-sway-left))
-      rotate(var(--plant-rotate-left));
+    transform: translate3d(-1px, 0, 0);
   }
 
   50% {
-    transform: translateX(var(--plant-sway-right))
-      rotate(var(--plant-rotate-right));
+    transform: translate3d(2px, 0, 0);
   }
 }
 
-@keyframes flowerWindSoft {
+@keyframes starFieldBreathe {
   0%,
   100% {
-    transform: translateX(var(--plant-sway-left))
-      rotate(var(--plant-rotate-left));
-  }
-
-  45% {
-    transform: translateX(var(--plant-sway-soft))
-      rotate(var(--plant-rotate-soft));
-  }
-
-  72% {
-    transform: translateX(var(--plant-sway-rest))
-      rotate(var(--plant-rotate-rest));
-  }
-}
-
-@keyframes flowerWindLift {
-  0%,
-  100% {
-    transform: translateX(var(--plant-sway-left))
-      rotate(var(--plant-rotate-left));
-  }
-
-  52% {
-    transform: translateX(var(--plant-sway-right))
-      rotate(var(--plant-rotate-right));
-  }
-}
-
-@keyframes starTwinkle {
-  0%,
-  100% {
-    opacity: 0.18;
-    transform: translateX(0) scale(0.88);
+    opacity: 0.68;
   }
 
   50% {
-    opacity: 0.72;
-    transform: translateX(var(--star-drift)) scale(1.12);
+    opacity: 0.9;
   }
 }
 
@@ -275,12 +236,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plant {
+  .wind {
     animation: none;
-    transform: translateX(0) rotate(0);
+    transform: none;
   }
 
-  .star,
+  .starField,
   .comet {
     animation: none;
   }

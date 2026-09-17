@@ -1,17 +1,20 @@
 import { createHash } from "node:crypto";
 import { getConversationForUser } from "../conversations/store.ts";
 import { attachExternalAgentRun, recordExternalAgentTurn, finishExternalAgentTurn } from "../conversations/external-agent-turns.ts";
+import { getRuntimeSessionByConversation, runtimeExternalSessionId } from "../hermes/runtime-store.ts";
+import { conversationOrigin } from "../hermes/session-surface.ts";
 import { resolveAceStepConfig } from "../acestep/config.ts";
 import { musicArtifactContext } from "./artifacts.ts";
 import { musicError } from "./errors.ts";
 import { getOuterAgentRuntimeRunByRequest } from "../runtime-v2/outer-agent-run-store.ts";
 import { startOuterAgentRun, readOuterAgentRunView, abortOuterAgentRun, type OuterAgentRunView } from "../runtime-v2/outer-agent-run.ts";
-import { createMusicLaunch, musicLaunch, updateMusicLaunch } from "./store.ts";
+import { createMusicLaunch, musicLaunch, updateMusicLaunch, recoverMusicArtifactRuns } from "./store.ts";
 import { musicProducerUserMessage } from "./identity.ts";
 import type { MusicWorkerRequest } from "./worker.ts";
 export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
   userId: number;
   clientMessageId: string;
+  branchGroupId?: string;
   delegatedAgentRun?: boolean;
   internalAgentContinuation?: boolean;
   attachToExistingTurn?: boolean;
@@ -37,6 +40,7 @@ export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
       recordExternalAgentTurn({
         conversation, clientMessageId: input.clientMessageId, surface: conversation.surface,
         userContent: input.delegatedAgentRun ? input.task : musicProducerUserMessage(input.task), run, outcome: "running",
+        branchGroupId: input.branchGroupId,
         delegatedAgentRun: input.delegatedAgentRun, internalAgentContinuation: input.internalAgentContinuation
       });
     const commandPart = input.task.split(/(?:^|\n)Lyrics:\s*\r?\n/i)[0];
@@ -49,6 +53,18 @@ export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
         throw new Error("Resume requires an uncollected receipt from this conversation.");
       if (!(await readRun(input.userId, previous.id)).terminal)
         throw new Error("The original collector is still active.");
+    }
+    // Creating a chat only persists its conversation. A first-turn music run
+    // must initialize the runtime before binding its artifacts to that chat.
+    const session = getRuntimeSessionByConversation(conversation.id);
+    if (!session || !runtimeExternalSessionId(session)) {
+      const { resolveConversationRuntime } = await import("../hermes/session-service.ts");
+      await resolveConversationRuntime({
+        conversation,
+        surface: conversation.surface,
+        activeGardenSlug: session?.garden_id ?? conversationOrigin(conversation).gardenSlug,
+        activePageSlug: session?.page_slug ?? null,
+      });
     }
     updateMusicLaunch(input.userId, id, {
       context_json: JSON.stringify(musicArtifactContext(input.userId, id)), provider_json: previous?.provider_json ?? JSON.stringify(resolveAceStepConfig(input.userId)),
@@ -88,8 +104,24 @@ export async function readRun(userId: number, id: string, since = 0): Promise<Ou
       updateMusicLaunch(userId, id, { runtime_job_id: admitted.job_id });
     }
   }
-  if (launch.runtime_job_id)
-    return readOuterAgentRunView("music-producer", userId, launch.runtime_job_id, since);
+  if (launch.runtime_job_id) {
+    const view = await readOuterAgentRunView("music-producer", userId, launch.runtime_job_id, since);
+    // Native startup can fail before executeMusicWorker gets a chance to save
+    // its outcome. Persist that terminal result so reload/retry cannot leave a
+    // permanently queued launch or an old provenance lock behind.
+    if (view.terminal && !["completed", "failed", "aborted", "uncertain"].includes(launch.collection_state)) {
+      const terminalView = view.events.some(event => ["run.completed", "run.failed", "run.aborted"].includes(event.type))
+        ? view : await readOuterAgentRunView("music-producer", userId, launch.runtime_job_id, 0);
+      const event = terminalView.events.findLast(event => ["run.completed", "run.failed", "run.aborted"].includes(event.type));
+      const outcome = view.status === "completed" ? "completed" : view.status === "aborted" ? "aborted" : "failed";
+      const summary = String(event?.payload.summary ?? event?.payload.error ?? "Music worker stopped before saving its result.");
+      updateMusicLaunch(userId, id, { collection_state: outcome, summary });
+      const conversation = getConversationForUser(launch.conversation_public_id, userId);
+      finishExternalAgentTurn({ conversationId: conversation.id, clientMessageId: launch.client_message_id, outcome, content: summary });
+      recoverMusicArtifactRuns();
+    }
+    return view;
+  }
   const terminal = ["failed", "aborted", "uncertain"].includes(launch.collection_state) || (launch.created_at > 0 && Date.now() - launch.created_at > 120000);
   return { terminal, status: terminal ? "failed" : "queued", events: terminal && since < 1 ? [{ sequenceNumber: 1, at: new Date(0).toISOString(), type: "run.failed", payload: { summary: launch.summary || "Submission is uncertain. Explicitly retry after checking Runtime status." } }] : [] };
 }

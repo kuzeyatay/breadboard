@@ -6,6 +6,7 @@ import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { countClusterMarkdown, refreshClusterIndex } from "@/lib/knowledge";
+import { cachedGardenNoteCount } from "@/lib/garden-note-count-cache";
 import {
   refreshOrganizationQuartzIndex,
   refreshPrivateQuartzIndex,
@@ -157,11 +158,15 @@ function normalizeCardHeight(value: number | null | undefined): number {
 // pages under `learning/`. A flat read of the Garden root therefore reports 0
 // for a Garden that is full, which is why this walks the tree.
 function countNotes(contentPath: string, slug: string): number {
-  try {
-    return countClusterMarkdown(path.join(contentPath, slug));
-  } catch {
-    return 0;
-  }
+  // The same Garden appears in the private, public, and organization lists,
+  // and each list used to walk its directory tree again (DATA-01).
+  return cachedGardenNoteCount(contentPath, slug, () => {
+    try {
+      return countClusterMarkdown(path.join(contentPath, slug));
+    } catch {
+      return 0;
+    }
+  });
 }
 
 function toCluster(
@@ -470,10 +475,13 @@ export async function setClusterVisibility(
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
     refreshOrganizationQuartzIndex(userId);
-    const scope = nextVisibility === "public" ? "publish" : "unpublish";
-    await publishQuartzAfterMutation(`${scope} cluster ${cluster.slug}`, {
+    const verb = nextVisibility === "public" ? "publish" : "unpublish";
+    // Visibility only rewrites the library landing pages; the Garden's own
+    // pages are untouched.
+    await publishQuartzAfterMutation(`${verb} cluster ${cluster.slug}`, {
       userId,
       topologyImpact: "none",
+      scope: [],
     });
     revalidatePath("/dashboard");
     revalidatePath("/garden");

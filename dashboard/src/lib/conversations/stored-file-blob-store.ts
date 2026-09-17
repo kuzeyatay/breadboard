@@ -76,6 +76,7 @@ export function storedFileBlobPath(input: {
 }
 
 function validateStoredFile(filePath: string, format: StoredFileAttachmentFormat): void {
+  if (format === "bin") return;
   const bytes = fs.readFileSync(filePath);
   if (storedFileIsText(format)) {
     if (bytes.byteLength > MAX_STORED_TEXT_FILE_BYTES) {
@@ -91,8 +92,14 @@ function validateStoredFile(filePath: string, format: StoredFileAttachmentFormat
     }
     return;
   }
-  if (format === "zip" && !(bytes[0] === 0x50 && bytes[1] === 0x4b)) {
-    throw new StoredFileBlobError(415, "file_signature_invalid", "That file is not a ZIP archive.");
+  if ((format === "zip" || format === "mlx") && !(bytes[0] === 0x50 && bytes[1] === 0x4b)) {
+    throw new StoredFileBlobError(
+      415,
+      "file_signature_invalid",
+      format === "mlx"
+        ? "That file is not a MATLAB Live Script."
+        : "That file is not a ZIP archive.",
+    );
   }
 }
 

@@ -13,6 +13,7 @@
 // `node --experimental-strip-types`.
 
 import { createHash } from "node:crypto";
+import { LEARN_FOUNDATION_RULES, LEARN_FOUNDATION_REVIEW_RULES } from "./learn-pedagogy.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
@@ -37,6 +38,7 @@ import {
   type FinalGardenState,
 } from "./final-garden-state.ts";
 import { finalizeGardenExport } from "./garden-finalize.ts";
+import { parseJsonObjectResponse } from "./learn-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +54,7 @@ export type CriticIssueType =
   | "section_index_template_prose"
   | "template_zettelkasten_handle"
   | "repeated_opening"
+  | "explanation_gap"
   | "visual_grounding_mismatch"
   | "worked_example_misclassified"
   | "repair_provenance_error"
@@ -152,9 +155,13 @@ export interface CriticSourceVisualSummary {
 
 export interface CriticReviewPacket {
   gardenTitle: string;
+  /** Complete declared scope/background, so review respects the entry level. */
+  scopeContract?: CriticExcerpt;
+  orientationPages?: Array<{ path: string; bodyText: CriticExcerpt }>;
   sections: Array<{
     title: string;
     indexExcerpt: CriticExcerpt;
+    indexBodyText?: CriticExcerpt;
     pages: Array<{
       path: string;
       title: string;
@@ -702,6 +709,7 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
       return {
         title: section?.title ?? dir.split("/").pop() ?? dir,
         indexExcerpt: makeExcerpt(indexFull, 320, { sourcePath: section?.rel }),
+        indexBodyText: makeExcerpt(section?.body ?? "", Math.max(1, section?.body.length ?? 0), { sourcePath: section?.rel }),
         pages: sortedPages.map((page) => ({
           path: page.rel,
           title: page.title,
@@ -742,6 +750,16 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
 
   return {
     gardenTitle: state.slug,
+    scopeContract: state.planningDocs.scopeContract
+      ? makeExcerpt(state.planningDocs.scopeContract, state.planningDocs.scopeContract.length, { sourcePath: ".breadboard/planning/Scope Contract.md" })
+      : undefined,
+    orientationPages: [
+      ...(state.orientationPages ?? []),
+      ...state.sections.filter((section) => !pagesBySection.has(section.rel.replace(/\/_index\.md$/i, ""))),
+    ].map((page) => ({
+      path: page.rel,
+      bodyText: makeExcerpt(page.body, Math.max(1, page.body.length), { sourcePath: page.rel }),
+    })),
     sections,
     sourceAnchors,
     visualSummaries,
@@ -775,14 +793,18 @@ Deterministic validators already ran; do not re-report anything unless the final
 - A text anchor with no exact source text when the source clearly explains the concept is too generic.
 - A visual grounded to anchors that do not match its title/purpose is mismatched.
 - Debug repair files shipped in the export must be flagged.
+- A learner page containing the generating model's own voice (first-person notes such as "I'm using the pasted contract..." or "I'll treat the pasted text as the request...") or chat transport syntax such as \`:::writing{...}\` / a closing \`:::\` is a BLOCKING debug_artifact_leak targeting unit_page, never a warning.
 - Repair-log entries attributing a change to the wrong target are provenance errors.
 - Every page must answer its model-authored learningQuestion and actually teach every knowledgeClaims[].text in its learningUnitContract, using the cited canonical source evidence. A claimId or tag in frontmatter is metadata, not proof that the prose fulfilled the claim. Compare against bodyText, which is complete and never truncated. Report an omitted or contradicted model-authored claim as a blocking "other" issue targeting unit_page, and include its evidence anchor ids.
+
+${LEARN_FOUNDATION_RULES}
+${LEARN_FOUNDATION_REVIEW_RULES}
 
 Return ONLY a JSON object: {"issues": CriticIssue[]}. Each issue:
 {
   "id": "kebab-unique",
   "severity": "blocking" | "warning" | "cosmetic",
-  "type": one of formula_anchor_mismatch|source_anchor_mismatch|source_coverage_contradiction|stale_caveat|section_index_template_prose|template_zettelkasten_handle|repeated_opening|visual_grounding_mismatch|worked_example_misclassified|repair_provenance_error|debug_artifact_leak|other,
+  "type": one of formula_anchor_mismatch|source_anchor_mismatch|source_coverage_contradiction|stale_caveat|section_index_template_prose|template_zettelkasten_handle|repeated_opening|explanation_gap|visual_grounding_mismatch|worked_example_misclassified|repair_provenance_error|debug_artifact_leak|other,
   "pagePath"?, "sectionPath"?, "visualId"?, "sourceAnchorIds"?: string[],
   "problem": one sentence,
   "evidence": the exact text/field proving it,
@@ -800,6 +822,7 @@ export function buildCriticUserPrompt(packet: CriticReviewPacket): string {
 const VALID_TYPES = new Set<CriticIssueType>([
   "formula_anchor_mismatch", "source_anchor_mismatch", "source_coverage_contradiction", "stale_caveat",
   "section_index_template_prose", "template_zettelkasten_handle", "repeated_opening", "visual_grounding_mismatch",
+  "explanation_gap",
   "worked_example_misclassified", "repair_provenance_error", "debug_artifact_leak", "other",
 ]);
 const VALID_TARGETS = new Set<CriticRepairTarget>([
@@ -822,10 +845,20 @@ export function parseCriticIssues(text: string): CriticIssue[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stripped);
-  } catch (error) {
-    throw new Error(
-      `Critic response validation failed: invalid JSON (${error instanceof Error ? error.message : String(error)}).`,
-    );
+  } catch (strictError) {
+    // The ChatGPT web chat models open even this report with a sentence
+    // ("I'm reading the pasted review packet as the request itself. ...");
+    // on 2026-09-15 a complete 22-issue report failed the whole Learn run for
+    // that alone. Only that leading prose is dropped: trailing prose, a
+    // second object or no object at all still fail this gate.
+    try {
+      parsed = parseJsonObjectResponse(stripped);
+    } catch {
+      const error = strictError;
+      throw new Error(
+        `Critic response validation failed: invalid JSON (${error instanceof Error ? error.message : String(error)}).`,
+      );
+    }
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -1368,6 +1401,7 @@ export function criticIssuesToRepairRequests(
 /** Semantic critic issue types that a MODEL page/section rewrite handles first;
  *  the deterministic layer only fixes the mechanical classes. */
 const MODEL_FIRST_ISSUE_TYPES = new Set<CriticIssueType>([
+  "explanation_gap",
   "section_index_template_prose",
   "template_zettelkasten_handle",
   "repeated_opening",
@@ -1386,6 +1420,8 @@ function requestIsModelFirst(req: ArtifactRepairRequest, issuesById?: Map<string
 
 export const MODEL_REPAIR_SYSTEM_PROMPT = `You repair one file of a Breadboard learning garden to remove a specific semantic issue a critic found. Return ONLY the full revised content of the target file — no commentary, no code fences.
 
+${LEARN_FOUNDATION_RULES}
+
 Hard requirements:
 - Return the ENTIRE target file, not a diff.
 - Preserve the YAML frontmatter block and every required key (title, knowledge_type/breadboardType, learningUnitId, generated_by, tags, sourceAnchors, sourceFormulaAnchors, formulas, visualIds). Change only what the issue requires.
@@ -1396,6 +1432,7 @@ Hard requirements:
 - Preserve every \`\`\`breadboard-visual\`\`\` block verbatim.
 - Preserve contract-backed Zettelkasten tags, unless the issue is a template handle — then replace only the flagged handle with a concrete durable claim.
 - Remove exactly the flagged issue; do not introduce generic scaffold prose ("introduces the core idea", "so the pieces connect into one picture", "one step at a time").
+- For explanation_gap, supply the missing meaning or reasoning before the passage that depends on it. Use a brief concrete explanation built from simpler ideas; an acronym expansion, synonym, glossary link, or promise to explain later is insufficient. Preserve correct teaching elsewhere and keep orientation pages concise.
 - Keep the learner-facing voice; never mention "the paper", "the source", or "this document".
 Output the revised file content only.`;
 
@@ -1428,6 +1465,11 @@ export function buildModelRepairPrompt(input: ModelRepairInput): { system: strin
     input.currentMarkdown ?? "(none)",
     "-----",
     "Return the full revised file content only.",
+    // Seen 2026-09-15: asked for a ~190k-character learning-unit contract,
+    // the ChatGPT web Thinking model wrote it to its own sandbox and replied
+    // with "[learning-unit-contract.json](sandbox:/mnt/data/...)". Nothing
+    // outside that sandbox can read the file, so the repair had no candidate.
+    "Write that content directly in your reply as plain text. Do not create, save or attach a file, do not use a code sandbox, and never answer with a download link or file reference instead of the content.",
   ].filter(Boolean).join("\n");
   return { system: MODEL_REPAIR_SYSTEM_PROMPT, user };
 }
@@ -1444,10 +1486,29 @@ export function parseModelRepairOutput(text: string, targetPath: string): ModelR
     try {
       return { targetPath, revisedJson: JSON.parse(stripped) };
     } catch {
-      return null;
+      // The ChatGPT web chat models put a sentence before the object; a
+      // 189k-character learning-unit contract repair was discarded as "no
+      // candidate" on 2026-09-15 for that alone.
+      try {
+        return { targetPath, revisedJson: parseJsonObjectResponse(stripped) };
+      } catch {
+        return null;
+      }
     }
   }
-  return { targetPath, revisedMarkdown: stripped };
+  return { targetPath, revisedMarkdown: stripLeadingCommentaryBeforeFrontmatter(stripped) };
+}
+
+/** A page repair must start with its frontmatter. A short sentence of
+ * assistant commentary before the opening `---` is dropped; anything longer,
+ * or a page without frontmatter, is returned unchanged for validation to judge. */
+function stripLeadingCommentaryBeforeFrontmatter(markdown: string): string {
+  if (markdown.startsWith("---")) return markdown;
+  const match = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/m.exec(markdown);
+  if (!match || match.index === 0) return markdown;
+  const prefix = markdown.slice(0, match.index).trim();
+  if (prefix.length > 600 || /^#{1,6}\s|^```|^:::/m.test(prefix)) return markdown;
+  return markdown.slice(match.index);
 }
 
 /** ChatMock-backed model repair (OpenAI-compatible chat completion). */

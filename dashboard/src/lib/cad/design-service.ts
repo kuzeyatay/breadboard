@@ -14,7 +14,7 @@ import { buildCadManifest } from "./artifact.ts";
 import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
 import { readSolidWorksRuntimeStatus } from "./solidworks/runtime-service.ts";
 import { runCadAgentLoop, runCadProjectBuildPhase } from "./model-client.ts";
-import { cadSystemPrompt, summariseProjectForModel } from "./prompts.ts";
+import { cadPlanningPrompt, cadSystemPrompt, summariseProjectForModel } from "./prompts.ts";
 import { getCadProject, readRevisionParameters, type CadProjectRow } from "./project-store.ts";
 import {
   assessCadSafety,
@@ -172,6 +172,7 @@ export async function designCadPart(
     defaults,
     engine,
     attemptsRemaining: MAX_BUILD_ATTEMPTS,
+    modelTimeoutRecoveriesRemaining: 1,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.emit ? { emit: input.emit } : {}),
     ...(input.existingProject ? { projectId: input.existingProject.id } : {}),
@@ -230,14 +231,10 @@ export async function designCadPart(
         ...(input.onUsage ? { onUsage: input.onUsage } : {}),
         ...(input.modelRequestTimeoutMs
           ? {
-              requestTimeoutMs: isNewProject
-                ? Math.min(input.modelRequestTimeoutMs, 240_000)
-                : input.modelRequestTimeoutMs,
+              requestTimeoutMs: input.modelRequestTimeoutMs,
             }
-          : isNewProject
-            ? { requestTimeoutMs: 240_000 }
-            : {}),
-        systemPrompt: cadSystemPrompt({
+          : {}),
+        systemPrompt: (isNewProject ? cadPlanningPrompt : cadSystemPrompt)({
           defaults,
           safety,
           engine,

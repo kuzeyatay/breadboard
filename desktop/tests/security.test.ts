@@ -53,6 +53,47 @@ test("embedded browser pages admit only web URLs and are explicitly registered",
   assert.equal(isExternalBrowserWebContents(413), false);
 });
 
+test("an embedded player may go fullscreen only inside an owned page", () => {
+  const allowed = allowedOriginsFor(["http://127.0.0.1:4300"]);
+  // YouTube's own fullscreen button: the frame is cross-origin, the page is ours.
+  assert.ok(
+    isRendererPermissionAllowed(
+      allowed,
+      "fullscreen",
+      "https://www.youtube-nocookie.com/embed/abc",
+      [],
+      false,
+      "http://127.0.0.1:4300/chat",
+    ),
+  );
+  // The same frame on a page that is not ours stays denied.
+  assert.ok(
+    !isRendererPermissionAllowed(
+      allowed,
+      "fullscreen",
+      "https://www.youtube-nocookie.com/embed/abc",
+      [],
+      false,
+      "https://example.com/",
+    ),
+  );
+  // Without a known embedder the frame is judged on its own origin, as before.
+  assert.ok(!isRendererPermissionAllowed(allowed, "fullscreen", "https://www.youtube-nocookie.com/embed/abc"));
+  assert.ok(isRendererPermissionAllowed(allowed, "fullscreen", "http://127.0.0.1:4300/chat"));
+  // The page-level judgement is specific to fullscreen: a cross-origin frame
+  // inside our page still gets no microphone.
+  assert.ok(
+    !isRendererPermissionAllowed(
+      allowed,
+      "media",
+      "https://example.com/",
+      ["audio"],
+      false,
+      "http://127.0.0.1:4300/chat",
+    ),
+  );
+});
+
 test("only the owned dashboard origin may request an audio-only microphone grant", () => {
   const allowed = allowedOriginsFor(["http://127.0.0.1:4300"]);
   assert.ok(

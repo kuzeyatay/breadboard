@@ -10,11 +10,13 @@ import pytest
 import plugins.breadboard as breadboard
 
 
-@pytest.mark.parametrize("tool_name, route, action", [
-    ("browser_terminal", "/api/hermes/tools/browser-terminal", "read"),
-    ("breadboard_use", "/api/hermes/tools/breadboard-use", "snapshot"),
+@pytest.mark.parametrize("tool_name, route, action, surface", [
+    ("browser_terminal", "/api/hermes/tools/browser-terminal", "read", None),
+    ("browser_terminal", "/api/hermes/tools/browser-terminal", "read", "app"),
+    ("breadboard_use", "/api/hermes/tools/breadboard-use", "snapshot", None),
+    ("attachment_image", "/api/hermes/tools/attachment-image", "read", None),
 ])
-def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp_path, tool_name, route, action):
+def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp_path, tool_name, route, action, surface):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("BREADBOARD_HERMES_TOOL_SECRET", "browser-test-secret")
     received = []
@@ -30,7 +32,7 @@ def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             received.append(body)
             page = {"title": "Current tab", "url": "https://example.com/", "text": "Page text", "selection": "Selected words"}
-            if body["args"]["action"] == "screenshot":
+            if body["args"].get("action") == "screenshot":
                 page["screenshot"] = {"dataUrl": data_url, "width": 640, "height": 480}
             payload = json.dumps({"ok": True, "data": page}).encode()
             self.send_response(200)
@@ -52,7 +54,8 @@ def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp
     try:
         read = json.loads(tool["handler"]({"action": action}, task_id="browser-test-session"))
         assert read["selection"] == "Selected words"
-        capture = tool["handler"]({"action": "screenshot"}, task_id="browser-test-session")
+        capture_args = {"action": "screenshot", **({"surface": surface} if surface else {})}
+        capture = tool["handler"](capture_args, task_id="browser-test-session")
         assert capture["_multimodal"] is True
         assert capture["content"][1]["image_url"]["url"] == data_url
         assert "Current tab" in capture["content"][0]["text"]
@@ -60,7 +63,7 @@ def test_browser_tool_callback_delivers_pixels_and_current_page(monkeypatch, tmp
         image = Path(capture["meta"]["screenshot_path"])
         assert image.is_relative_to(tmp_path)
         assert image.read_bytes() == picture
-        assert received[-1]["args"] == {"action": "screenshot"}
+        assert received[-1]["args"] == capture_args
     finally:
         server.shutdown()
         server.server_close()

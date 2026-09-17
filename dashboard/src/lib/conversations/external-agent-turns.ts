@@ -536,6 +536,7 @@ export function finishExternalAgentTurn(input: {
     const mergedMetadata = {
       ...metadata,
       externalAgentOutcome: input.outcome,
+      responseCompletedAt: new Date(completedAtMs).toISOString(),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(metadata.delegatedAgentRun === true
         ? { externalAgentResult: input.content }
@@ -650,7 +651,8 @@ export function reconcileExternalAgentTerminalTiming(input: {
   });
   if (
     responseDurationMs === undefined ||
-    Number(metadata.responseDurationMs) === responseDurationMs
+    (Number(metadata.responseDurationMs) === responseDurationMs &&
+      metadata.responseCompletedAt === new Date(input.terminalAtMs).toISOString())
   ) {
     return row;
   }
@@ -660,7 +662,11 @@ export function reconcileExternalAgentTerminalTiming(input: {
     SET metadata = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
-    JSON.stringify({ ...metadata, responseDurationMs }),
+    JSON.stringify({
+      ...metadata,
+      responseDurationMs,
+      responseCompletedAt: new Date(input.terminalAtMs).toISOString(),
+    }),
     row.id,
   );
   database.prepare(`

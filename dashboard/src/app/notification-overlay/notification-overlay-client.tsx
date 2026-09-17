@@ -23,6 +23,7 @@ export default function NotificationOverlayClient() {
         notice.response,
         notice.website,
         notice.notificationPermission,
+        notice.id,
       );
     }) ?? undefined;
   }, [addToast, dismissToast]);

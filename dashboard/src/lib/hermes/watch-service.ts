@@ -35,6 +35,9 @@ const MAX_REPORT_BYTES = 2 * 1024 * 1024;
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_FRAME_PATHS = 10_000;
 const MAX_RUNTIME_MS = 7 * 60_000;
+/** A lecture-length video needs more than the interactive default to download
+ * and sample; callers may raise the Runtime's processing limit up to this. */
+export const MAX_WATCH_PROCESS_TIMEOUT_MS = 45 * 60_000;
 const POLL_MS = 150;
 const DETAILS = new Set(["transcript", "efficient", "balanced", "token-burner"]);
 const WHISPER_BACKENDS = new Set(["groq", "openai"]);
@@ -56,6 +59,8 @@ export interface WatchOptions {
   whisper?: "groq" | "openai";
   noWhisper: boolean;
   noDedup: boolean;
+  /** Runtime processing limit for the watch script (default 5 min). */
+  processTimeoutMs?: number;
 }
 
 export interface WatchRunResult {
@@ -203,6 +208,7 @@ export function validateWatchOptions(value: unknown): WatchOptions {
     whisper: whisper as WatchOptions["whisper"],
     noWhisper: input.noWhisper === true,
     noDedup: input.noDedup === true,
+    processTimeoutMs: boundedInteger(input.processTimeoutMs, "processTimeoutMs", 60_000, MAX_WATCH_PROCESS_TIMEOUT_MS),
   };
 }
 
@@ -334,14 +340,21 @@ function runtimeDataRoot(env: NodeJS.ProcessEnv): string {
   return configured ? path.resolve(configured) : repositoryRoot();
 }
 
+function comparablePath(value: string): string {
+  const resolved = path.resolve(value);
+  // Runtime's Rust owner supplies extended-length Windows paths, while Node's
+  // realpath and Python's frame report may use the ordinary spelling.
+  return process.platform === "win32"
+    ? path.toNamespacedPath(resolved).toLowerCase()
+    : resolved;
+}
+
 function samePath(left: string, right: string): boolean {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return comparablePath(left) === comparablePath(right);
 }
 
 function pathWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  const relative = path.relative(comparablePath(root), comparablePath(candidate));
   return relative === "" ||
     (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
@@ -409,7 +422,12 @@ function boundedOptionalResultText(value: unknown, maximumBytes: number): value 
   return value === null || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= maximumBytes);
 }
 
-function parseResult(env: NodeJS.ProcessEnv, job: RuntimeJobSnapshot, content: unknown): WatchRunResult {
+function parseResult(
+  env: NodeJS.ProcessEnv,
+  job: RuntimeJobSnapshot,
+  content: unknown,
+  maxDurationMs = MAX_RUNTIME_MS,
+): WatchRunResult {
   if (!exactRecord(content, ["protocolVersion", "identity", "completionSequence", "result"]) ||
     content.protocolVersion !== PROTOCOL_VERSION || content.completionSequence !== job.lastWorkerSequence ||
     !validIdentity(job, content.identity) || !content.result ||
@@ -438,7 +456,7 @@ function parseResult(env: NodeJS.ProcessEnv, job: RuntimeJobSnapshot, content: u
     !boundedOptionalResultText(result.chatmockAnalysis, 256 * 1024) ||
     !boundedOptionalResultText(result.chatmockWarning, 8_000) ||
     !Number.isSafeInteger(result.durationMs) || (result.durationMs as number) < 0 ||
-    (result.durationMs as number) > MAX_RUNTIME_MS || typeof result.stderr !== "string" ||
+    (result.durationMs as number) > maxDurationMs || typeof result.stderr !== "string" ||
     Buffer.byteLength(result.stderr, "utf8") > 8_000) {
     throw new Error("Runtime returned an invalid Watch result.");
   }
@@ -484,6 +502,7 @@ function normalizedRequest(options: WatchOptions, source: string) {
       whisper: options.whisper ?? null,
       noWhisper: options.noWhisper,
       noDedup: options.noDedup,
+      processTimeoutMs: options.processTimeoutMs ?? null,
     },
   };
 }
@@ -546,10 +565,15 @@ export async function runWatch(input: {
   const idempotencyKey = `watch-run-v2:${randomUUID()}`;
   const controller = new AbortController();
   let timedOut = false;
+  // The overall wait covers the script limit plus queueing and analysis.
+  const overallTimeoutMs = Math.max(
+    input.timeoutMs ?? MAX_RUNTIME_MS,
+    (options.processTimeoutMs ?? 0) + 4 * 60_000,
+  );
   const timeout = setTimeout(() => {
     timedOut = true;
     controller.abort(new DOMException("Watch timed out", "TimeoutError"));
-  }, input.timeoutMs ?? MAX_RUNTIME_MS);
+  }, overallTimeoutMs);
   timeout.unref?.();
   const forwardAbort = () => controller.abort(
     input.signal?.reason ?? new DOMException("Request aborted", "AbortError"),
@@ -606,7 +630,8 @@ export async function runWatch(input: {
     if (snapshot.state !== "succeeded") throw terminalError(snapshot);
     if (controller.signal.aborted) throw cancellationError(controller.signal.reason, timedOut);
     const result = parseResult(env, snapshot,
-      (await control.readOutput(jobAuthority, snapshot.jobId, "result", env)).content);
+      (await control.readOutput(jobAuthority, snapshot.jobId, "result", env)).content,
+      overallTimeoutMs);
     if (controller.signal.aborted) throw cancellationError(controller.signal.reason, timedOut);
     return result;
   } catch (error) {

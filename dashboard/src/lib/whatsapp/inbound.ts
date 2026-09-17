@@ -8,10 +8,12 @@
 // in the Terminal's Recents, carries the same memory, capabilities and audit
 // trail, and can be reopened and continued by hand.
 //
-// A WhatsApp thread maps to one conversation while it stays warm; after a quiet
-// period (or an explicit `/new`) the next message opens a fresh chat.
+// A WhatsApp thread maps to one conversation per local calendar day.
+// An explicit /new can still start a fresh chat within the day.
 
 import { wakeAgentRuntime } from "../agent-runtime/wake.ts";
+import db from "../db.ts";
+import { prepareWhatsAppAttachments } from "../messaging-attachments/prepare.ts";
 import {
   createConversation,
   deleteConversation,
@@ -34,7 +36,7 @@ import {
   senderIsAllowed,
 } from "./identity.ts";
 import {
-  conversationIsWarm,
+  conversationIsSameDay,
   messageText,
   HELP_TEXT,
   MAX_REPLY_CHARS,
@@ -88,12 +90,12 @@ export async function routeWhatsAppMessage(
   deps: RouteDependencies,
 ): Promise<WhatsAppRouteOutcome> {
   const { store } = deps;
-  const now = deps.now?.() ?? new Date();
   const settings = store.settings();
 
   if (settings.ownerUserId === null) {
     return { status: "ignored", reason: "no_owner" };
   }
+  const ownerUserId = settings.ownerUserId;
   if (!senderIsAllowed(message.senderId, settings.allowedNumbers, settings.mode)) {
     return { status: "ignored", reason: "not_allowed" };
   }
@@ -107,7 +109,7 @@ export async function routeWhatsAppMessage(
   const text = messageText(message);
   if (!text) return { status: "ignored", reason: "empty" };
 
-  const command = text.trim().toLowerCase();
+  const command = message.hasMedia ? "" : text.trim().toLowerCase();
   if (command === "/help") {
     return { status: "replied", reply: HELP_TEXT, conversationId: "" };
   }
@@ -116,15 +118,15 @@ export async function routeWhatsAppMessage(
   // answer to that question, not the start of a chat. Grading it here — before
   // any conversation is created — is what stops "3" from being routed to the
   // assistant as an inscrutable one-word prompt.
-  const review = await handleInboundReview({ chatId: message.chatId, text });
+  const review = message.hasMedia ? null : await handleInboundReview({ chatId: message.chatId, text });
   if (review) {
     return { status: "replied", reply: review.reply, conversationId: "" };
   }
 
   const label = contactLabel(message);
-  const chat = store.upsertChat({
+  store.upsertChat({
     chatId: message.chatId,
-    userId: settings.ownerUserId,
+    userId: ownerUserId,
     contactLabel: label,
     contactNumber: normalizeWhatsAppIdentifier(message.senderId || message.chatId),
     isGroup: message.isGroup || isGroupChat(message.chatId),
@@ -137,6 +139,7 @@ export async function routeWhatsAppMessage(
     // Fail before creating anything when the runtime is off, so a stopped runtime
     // answers WhatsApp with a reason instead of leaving an empty chat behind.
     requireEnabled();
+    const attachments = await prepareWhatsAppAttachments(ownerUserId, message);
 
     // Hermes is an on-demand service: after a few quiet minutes the supervisor
     // stops it, and only a lease can start it again — which this gateway
@@ -145,29 +148,36 @@ export async function routeWhatsAppMessage(
     // wait: it only names a fresh chat, no turn runs.
     if (!forceNew) await wakeAgentRuntime("whatsapp-inbound");
 
-    const existing =
-      !forceNew && chat.conversation_id !== null
-        ? getConversationById(chat.conversation_id)
-        : null;
-    const warm =
-      existing !== null &&
-      existing.user_id === settings.ownerUserId &&
-      existing.surface === "dashboard_terminal" &&
-      conversationIsWarm(chat.last_message_at, now)
-        ? existing
-        : null;
+    const { conversation, created } = db.transaction(() => {
+      // A reminder may have opened today's chat while the runtime was waking.
+      // Read the current binding and claim it atomically with outbound sends.
+      const now = deps.now?.() ?? new Date();
+      const chat = store.getChat(message.chatId)!;
+      const existing =
+        !forceNew && chat.conversation_id !== null
+          ? getConversationById(chat.conversation_id)
+          : null;
+      const dailyConversation =
+        existing !== null &&
+        existing.user_id === ownerUserId &&
+        existing.surface === "dashboard_terminal" &&
+        conversationIsSameDay(existing.created_at, now)
+          ? existing
+          : null;
 
-    const conversation =
-      warm ??
-      createConversation({
-        userId: settings.ownerUserId,
-        title: conversationTitleFor(label, forceNew ? "" : text),
-        surface: "dashboard_terminal",
-        scopeKind: "global",
-      });
-    if (!warm) createdConversation = conversation;
-
-    store.bindConversation(message.chatId, conversation.id);
+      const conversation =
+        dailyConversation ??
+        createConversation({
+          userId: ownerUserId,
+          title: conversationTitleFor(label, forceNew ? "" : text),
+          surface: "dashboard_terminal",
+          originLabel: "WhatsApp",
+          scopeKind: "global",
+        });
+      store.bindConversation(message.chatId, conversation.id);
+      return { conversation, created: !dailyConversation };
+    }).immediate();
+    if (created) createdConversation = conversation;
 
     if (forceNew) {
       return {
@@ -193,13 +203,14 @@ export async function routeWhatsAppMessage(
     // surface — and fails outright when that model is the one the user moved
     // away from. `getHermesUserSettings` returns DEFAULT_MODEL when nothing is
     // stored, so an owner who never chose keeps the old behaviour.
-    const preference = getHermesUserSettings(settings.ownerUserId);
+    const preference = getHermesUserSettings(ownerUserId);
 
     const clientMessageId = `whatsapp-${message.messageId || `${message.chatId}-${Date.now()}`}`;
     const result = await startConversationTurn({
       conversation,
       clientMessageId,
       text,
+      attachments,
       surface: "dashboard_terminal",
       // The chat is a Terminal chat like any other, so the surface alone would
       // have the agent answering as if the reader were looking at the app.

@@ -29,6 +29,7 @@ function metadata(message: ContextMessage): Record<string, unknown> {
 export function composeRecentConversationContext(
   messages: readonly ContextMessage[],
   redact: (text: string) => string = (text) => text,
+  maximumCharacters = RECENT_CONTEXT_LIMIT,
 ): string {
   const completedTurns = new Set(messages.filter((message) =>
     message.role === "assistant" && message.content.trim() &&
@@ -51,7 +52,7 @@ export function composeRecentConversationContext(
     return true;
   });
   const lines: string[] = [];
-  let remaining = RECENT_CONTEXT_LIMIT - HISTORY_OMISSION.length;
+  let remaining = Math.min(RECENT_CONTEXT_LIMIT, maximumCharacters) - HISTORY_OMISSION.length;
   let omitted = false;
   for (const message of [...visible].reverse()) {
     const content = redact(conversationMessageText(message));

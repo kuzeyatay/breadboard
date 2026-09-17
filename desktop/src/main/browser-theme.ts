@@ -8,5 +8,5 @@ import type { BreadboardWindowTheme } from "./window-options";
  * the shell must not invert or recolour arbitrary site content.
  */
 export function browserPageBackgroundColor(theme: BreadboardWindowTheme): string {
-  return theme === "dark" ? "#0b0c0a" : "#ffffff";
+  return theme === "dark" ? "#0f1210" : "#ffffff";
 }

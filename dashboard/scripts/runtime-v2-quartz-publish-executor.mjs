@@ -14,6 +14,17 @@ const MIN_BUILD_TIMEOUT_MS = 10_000;
 const MAX_BUILD_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_BUILD_CONCURRENCY = 16;
 const MAX_BUILD_ENVIRONMENT_BYTES = 16 * 1024;
+// A scoped publication rebuilds only these content-relative directories and
+// carries everything else over from the current publication.
+const MAX_SCOPE_ROOTS = 32;
+const MAX_SCOPE_ROOT_BYTES = 512;
+const SCOPE_SEGMENT = /^(?!\.)[^\\/\0\p{Cc}]{1,255}$/u;
+const CONTENT_INDEX_RELATIVE_PATH = "static/contentIndex.json";
+const MAX_CONTENT_INDEX_BYTES = 512 * 1024 * 1024;
+// Large gardens can exceed V8's default ~4 GiB old-space limit while Quartz
+// builds its in-memory content graph. Keep the build below the supervisor's
+// 10 GiB hard ceiling while leaving headroom for the ingestion worker.
+const QUARTZ_BUILD_MAX_OLD_SPACE_SIZE_MB = 7 * 1024;
 const CHILD_TERMINATION_GRACE_MS = 10_000;
 const DEFAULT_LOCK_POLL_MS = 100;
 const DEFAULT_LOCK_STALE_MS = 30_000;
@@ -471,7 +482,13 @@ async function copyDirectTree(sourceDirectory, targetDirectory, signal) {
     }
     const temporaryPath = `${targetPath}.pending.${process.pid}.${randomUUID()}`;
     try {
-      fs.copyFileSync(sourcePath, temporaryPath);
+      // The stage is discarded after promotion, so a hard link is as good as
+      // a copy and avoids duplicating gigabytes of garden assets.
+      try {
+        fs.linkSync(sourcePath, temporaryPath);
+      } catch {
+        fs.copyFileSync(sourcePath, temporaryPath);
+      }
       await renameDirectoryWithTransientRetry(
         temporaryPath,
         targetPath,
@@ -811,15 +828,35 @@ function normalizeReasons(value) {
   return reasons;
 }
 
+function normalizeScope(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_SCOPE_ROOTS) {
+    fail("The Quartz publication scope is invalid.");
+  }
+  const scope = [];
+  for (const raw of value) {
+    if (typeof raw !== "string") fail("The Quartz publication scope is invalid.");
+    const root = raw.trim().replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "");
+    if (
+      root.length === 0 ||
+      Buffer.byteLength(root, "utf8") > MAX_SCOPE_ROOT_BYTES ||
+      !root.split("/").every((segment) => SCOPE_SEGMENT.test(segment))
+    ) {
+      fail("The Quartz publication scope is invalid.");
+    }
+    if (!scope.includes(root)) scope.push(root);
+  }
+  return scope;
+}
+
 function normalizeBuildOptions(value) {
+  const optionKeys = ["reasons", "concurrency", "timeoutMs", "buildEnvironment"];
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
-      "reasons",
-      "concurrency",
-      "timeoutMs",
-      "buildEnvironment",
-    ]) ||
+    !hasExactKeys(
+      value,
+      Object.hasOwn(value, "scope") ? [...optionKeys, "scope"] : optionKeys,
+    ) ||
     !Number.isSafeInteger(value.concurrency) ||
     value.concurrency < 1 ||
     value.concurrency > MAX_BUILD_CONCURRENCY ||
@@ -855,6 +892,7 @@ function normalizeBuildOptions(value) {
     concurrency: value.concurrency,
     timeoutMs: value.timeoutMs,
     buildEnvironment,
+    scope: normalizeScope(value.scope),
   };
 }
 
@@ -873,6 +911,7 @@ function runBuildChild({
   concurrency,
   timeoutMs,
   buildEnvironment,
+  scope = [],
   signal,
 }) {
   return new Promise((resolve, reject) => {
@@ -883,11 +922,13 @@ function runBuildChild({
     const child = spawn(
       process.execPath,
       [
+        `--max-old-space-size=${QUARTZ_BUILD_MAX_OLD_SPACE_SIZE_MB}`,
         cliPath,
         "build",
         `--concurrency=${concurrency}`,
         `--directory=${path.join(quartzRoot, "content")}`,
         `--output=${stagePath}`,
+        ...scope.map((root) => `--scope=${root}`),
       ],
       {
         cwd: sourceRoot,
@@ -956,6 +997,132 @@ function runBuildChild({
   });
 }
 
+function scopeContains(scope, relativePosixPath) {
+  return scope.some(
+    (root) => relativePosixPath === root || relativePosixPath.startsWith(`${root}/`),
+  );
+}
+
+/**
+ * Link a previously published file into the stage. Hard links keep the
+ * overlay at a few seconds for gigabytes of scans and PDFs; a volume without
+ * them (exFAT, network shares) falls back to a copy once for the whole run.
+ */
+function placePreviousFile(sourcePath, targetPath, state) {
+  if (state.linkable) {
+    try {
+      fs.linkSync(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT") throw error;
+      state.linkable = false;
+    }
+  }
+  fs.copyFileSync(sourcePath, targetPath);
+}
+
+async function overlayPreviousDirectory({
+  sourceDirectory,
+  targetDirectory,
+  relativePosixPath,
+  scope,
+  state,
+  signal,
+}) {
+  for (const entry of fs.readdirSync(sourceDirectory, { withFileTypes: true })) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Quartz publication was canceled.");
+    }
+    if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+      fail("The Quartz public tree contains an indirect or unsupported entry.");
+    }
+    if (entry.name.startsWith(".breadboard-quartz")) continue;
+    const relativePath = relativePosixPath
+      ? `${relativePosixPath}/${entry.name}`
+      : entry.name;
+    // Scoped roots were rendered by this build; a root missing from the
+    // stage was deleted from the garden and must not be carried over.
+    if (scopeContains(scope, relativePath)) continue;
+    const sourcePath = path.join(sourceDirectory, entry.name);
+    const targetPath = path.join(targetDirectory, entry.name);
+    if (entry.isDirectory()) {
+      if (fs.existsSync(targetPath)) {
+        assertDirectDirectory(targetPath, "The staged Quartz public tree");
+      } else {
+        fs.mkdirSync(targetPath);
+      }
+      await overlayPreviousDirectory({
+        sourceDirectory: sourcePath,
+        targetDirectory: targetPath,
+        relativePosixPath: relativePath,
+        scope,
+        state,
+        signal,
+      });
+      continue;
+    }
+    if (relativePath === CONTENT_INDEX_RELATIVE_PATH) continue;
+    // The build's own output (component resources, static assets, 404 page)
+    // is current; only fill in what it did not produce.
+    if (fs.existsSync(targetPath)) continue;
+    placePreviousFile(sourcePath, targetPath, state);
+    state.carried += 1;
+  }
+}
+
+function readContentIndex(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const value = readBoundedJson(
+    filePath,
+    MAX_CONTENT_INDEX_BYTES,
+    "The Quartz content index",
+  );
+  if (!isRecord(value)) fail("The Quartz content index is invalid.");
+  return value;
+}
+
+/**
+ * Search, the explorer, popovers, and the graph all read one site-wide
+ * `static/contentIndex.json`. A scoped build emits entries for its own pages
+ * only, so splice them over the previous index in place of the entries that
+ * used to describe those roots.
+ */
+function mergeContentIndex({ publicPath, stagePath, scope }) {
+  const previous = readContentIndex(path.join(publicPath, CONTENT_INDEX_RELATIVE_PATH));
+  const stagedPath = path.join(stagePath, CONTENT_INDEX_RELATIVE_PATH);
+  const staged = readContentIndex(stagedPath);
+  const merged = {};
+  for (const [slug, details] of Object.entries(previous)) {
+    if (!scopeContains(scope, slug)) merged[slug] = details;
+  }
+  Object.assign(merged, staged);
+  fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
+  fs.writeFileSync(stagedPath, JSON.stringify(merged));
+  return Object.keys(merged).length;
+}
+
+/**
+ * Turn a scoped stage into a complete site: everything the current
+ * publication holds outside the scoped roots is linked in, and the content
+ * index is merged. The stage then promotes exactly like a full build, so
+ * journaling, recovery, and the in-place fallback stay unchanged.
+ */
+async function overlayPreviousPublication({ publicPath, stagePath, scope, signal }) {
+  assertDirectDirectory(publicPath, "The Quartz public tree");
+  assertDirectDirectory(stagePath, "The staged Quartz public tree");
+  const state = { linkable: true, carried: 0 };
+  await overlayPreviousDirectory({
+    sourceDirectory: publicPath,
+    targetDirectory: stagePath,
+    relativePosixPath: "",
+    scope,
+    state,
+    signal,
+  });
+  const indexed = mergeContentIndex({ publicPath, stagePath, scope });
+  return { carried: state.carried, indexed, linked: state.linkable };
+}
+
 function transactionFor(identity) {
   const suffix = `${identity.jobId}-${identity.attempt}-${identity.workerInstanceId}`;
   return {
@@ -995,6 +1162,18 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
     if (fs.existsSync(stagePath) || fs.existsSync(previousPath)) {
       fail("The fenced Quartz publication paths already exist.");
     }
+    // A scoped request can only be satisfied on top of a complete previous
+    // publication; a fresh profile gets the full site instead.
+    const scope =
+      options.scope.length > 0 && fs.existsSync(path.join(publicPath, "index.html"))
+        ? options.scope
+        : [];
+    if (options.scope.length > 0 && scope.length === 0) {
+      console.warn(
+        "[quartz] No previous publication to overlay; building the whole site instead of " +
+          options.scope.join(", "),
+      );
+    }
     atomicWriteJson(journalPath, transaction);
     try {
       await runBuildChild({
@@ -1005,11 +1184,25 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
         concurrency: options.concurrency,
         timeoutMs: options.timeoutMs,
         buildEnvironment: options.buildEnvironment,
+        scope,
         signal: attestation.signal,
       });
       assertDirectDirectory(stagePath, "The staged Quartz public tree");
       if (attestation.signal?.aborted) {
         throw attestation.signal.reason ?? new Error("Quartz publication was canceled.");
+      }
+      if (scope.length > 0) {
+        const overlay = await overlayPreviousPublication({
+          publicPath,
+          stagePath,
+          scope,
+          signal: attestation.signal,
+        });
+        console.log(
+          `[quartz] Scoped publication of ${scope.join(", ")} carried over ` +
+            `${overlay.carried} published file(s) (${overlay.linked ? "linked" : "copied"}) ` +
+            `and indexed ${overlay.indexed} page(s).`,
+        );
       }
       atomicWriteJson(path.join(stagePath, COMPLETE_MARKER_FILE_NAME), {
         version: 1,

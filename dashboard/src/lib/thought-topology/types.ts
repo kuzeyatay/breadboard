@@ -174,6 +174,8 @@ export type ThoughtTopologyApiResponse =
       mode: "thought-topology";
       topology: ThoughtTopology;
       stale?: boolean;
+      autoUpdate?: boolean;
+      retryAvailable?: boolean;
       status?: {
         state: "building" | "failed" | "stale";
         message: string;

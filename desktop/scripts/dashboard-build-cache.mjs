@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -1094,6 +1095,38 @@ function dashboardBuildBackupPath(repoRoot) {
   return path.join(repoRoot, "dashboard", ".next-desktop-last-good");
 }
 
+// Output rotation runs only in a one-shot build/recovery command. Windows can
+// retain directory handles briefly after a dashboard process has shut down.
+export function renameDashboardBuildOutput(source, destination, {
+  platform = process.platform,
+  rename = fs.renameSync,
+  wait = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
+  maxRetries = 12,
+  retryDelay = 250,
+} = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rename(source, destination);
+      return;
+    } catch (cause) {
+      if (platform !== "win32" || !["EACCES", "EBUSY", "EPERM"].includes(cause?.code)) {
+        throw cause;
+      }
+      if (attempt >= maxRetries) {
+        const error = new Error(
+          "Windows could not move the standalone dashboard build directory. " +
+          "Stop the Breadboard app and any background/headless Breadboard runtime, then retry. " +
+          "If no runtime is running, check the directory permissions.",
+          { cause },
+        );
+        error.code = "BREADBOARD_DASHBOARD_OUTPUT_LOCKED";
+        throw error;
+      }
+      wait(retryDelay);
+    }
+  }
+}
+
 function removeDashboardBuildTree(target) {
   fs.rmSync(target, {
     recursive: true,
@@ -1112,7 +1145,7 @@ export function recoverInterruptedDashboardBuild(repoRoot) {
   const backup = dashboardBuildBackupPath(repoRoot);
   if (fs.existsSync(backup)) {
     if (fs.existsSync(output)) removeDashboardBuildTree(output);
-    fs.renameSync(backup, output);
+    renameDashboardBuildOutput(backup, output);
     return true;
   }
 
@@ -1126,19 +1159,93 @@ export function recoverInterruptedDashboardBuild(repoRoot) {
   return false;
 }
 
+function normalizeProcessPath(value, platform) {
+  const unified = String(value).replace(/\//g, "\\");
+  return platform === "win32" ? unified.toLowerCase() : unified;
+}
+
+/** Every live process as `{ pid, name, commandLine }`, without this one. */
+function listProcesses(platform) {
+  if (platform === "win32") {
+    const result = spawnSync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+    ], { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+    if (result.status !== 0 || !result.stdout?.trim()) return [];
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return [];
+    }
+    return (Array.isArray(parsed) ? parsed : [parsed]).map((entry) => ({
+      pid: Number(entry?.ProcessId),
+      name: String(entry?.Name ?? ""),
+      commandLine: String(entry?.CommandLine ?? ""),
+    }));
+  }
+  const result = spawnSync("ps", ["-eo", "pid=,comm=,args="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (result.status !== 0 || !result.stdout) return [];
+  return result.stdout.split("\n").flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\S+)\s*(.*)$/.exec(line);
+    return match ? [{ pid: Number(match[1]), name: match[2], commandLine: match[3] }] : [];
+  });
+}
+
+/**
+ * Processes still running out of the build output that is about to be rotated.
+ * The dev desktop serves its dashboard as `node <output>/standalone/server.js`
+ * with that directory as cwd; a rename or removal underneath it leaves the app
+ * answering from memory while every chunk request 404s. Anything whose command
+ * line points into the output (the standalone server, a worker traced from
+ * it, a QA stack) counts.
+ */
+export function listDashboardBuildConsumers(repoRoot, {
+  platform = process.platform,
+  processes = () => listProcesses(platform),
+  selfPid = process.pid,
+} = {}) {
+  const { output } = dashboardBuildPaths(repoRoot);
+  const needle = normalizeProcessPath(output, platform);
+  return processes().filter((entry) =>
+    entry.pid !== selfPid && normalizeProcessPath(entry.commandLine, platform).includes(needle),
+  );
+}
+
+/** Refuse to rotate a build that a running Breadboard is serving from. */
+export function assertDashboardBuildOutputUnused(repoRoot, options = {}) {
+  const consumers = listDashboardBuildConsumers(repoRoot, options);
+  if (consumers.length === 0) return;
+  const listed = consumers
+    .map((entry) => `${entry.name || "process"} (pid ${entry.pid})`)
+    .join(", ");
+  const error = new Error(
+    `Breadboard is still running from the standalone dashboard build: ${listed}. ` +
+    "Rebuilding now would move the served files out from under the open app, " +
+    "which then loads every page as an empty shell. Close the Breadboard app " +
+    "(and any headless/QA runtime) before rebuilding.",
+  );
+  error.code = "BREADBOARD_DASHBOARD_OUTPUT_IN_USE";
+  error.consumers = consumers;
+  throw error;
+}
+
 /**
  * Move the current complete artifact out of Next's destructive output path.
  * Directory rename is same-volume and immediate; no second multi-GiB copy is
  * committed while the build is already under memory pressure.
  */
-export function beginDashboardBuild(repoRoot) {
+export function beginDashboardBuild(repoRoot, options = {}) {
+  assertDashboardBuildOutputUnused(repoRoot, options);
   recoverInterruptedDashboardBuild(repoRoot);
   const { output } = dashboardBuildPaths(repoRoot);
   const backup = dashboardBuildBackupPath(repoRoot);
   if (fs.existsSync(backup)) removeDashboardBuildTree(backup);
   const current = availableDashboardBuild(repoRoot);
   if (current.available) {
-    fs.renameSync(output, backup);
+    renameDashboardBuildOutput(output, backup);
     return true;
   }
   if (fs.existsSync(output)) removeDashboardBuildTree(output);

@@ -118,6 +118,7 @@ provides_tools:
   - workspace_search
   - image_search
   - product_search
+  - feynman_research
   - chat_search
   - breadboard_process_status
   - artifact_import

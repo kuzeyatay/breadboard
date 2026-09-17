@@ -96,7 +96,8 @@ function promotePdf(source: string, target: string): Stats {
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL);
-    const descriptor = fs.openSync(temporary, "r");
+    // Windows requires write access to flush a file, even after copyFileSync.
+    const descriptor = fs.openSync(temporary, "r+");
     try {
       fs.fsyncSync(descriptor);
     } finally {

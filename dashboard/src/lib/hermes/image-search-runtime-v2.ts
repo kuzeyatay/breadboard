@@ -120,7 +120,7 @@ function workerResult(job: RuntimeJobSnapshot, content: unknown): Record<string,
   return content.result;
 }
 
-function imageResult(value: unknown): ImageSearchResult {
+export function imageResult(value: unknown): ImageSearchResult {
   if (!isRecord(value) || !isRecord(value.display) || !Array.isArray(value.display.items)) {
     throw new Error("Runtime returned an invalid image-search display payload.");
   }
@@ -137,6 +137,12 @@ function imageResult(value: unknown): ImageSearchResult {
         (value.nextPageStartIndex as number) < 1 ||
         (value.nextPageStartIndex as number) > 101))
   ) throw new Error("Runtime returned an invalid image-search display payload.");
+  const candidatePositions = value.candidatePositions;
+  if (candidatePositions !== undefined && (
+    !Array.isArray(candidatePositions) || candidatePositions.length !== value.display.items.length ||
+    candidatePositions.some((position, index) => !Number.isSafeInteger(position) || position < 1 || position > 100 ||
+      (index > 0 && position <= candidatePositions[index - 1]))
+  )) throw new Error("Runtime returned invalid image-search candidate positions.");
   const items = value.display.items.map((item): ImageSearchDisplayItem => {
     if (
       !isRecord(item) ||
@@ -166,6 +172,7 @@ function imageResult(value: unknown): ImageSearchResult {
       ? { nextPageStartIndex: value.nextPageStartIndex }
       : {}),
     display: { query, items },
+    ...(Array.isArray(candidatePositions) ? { candidatePositions } : {}),
   };
 }
 

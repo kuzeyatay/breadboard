@@ -21,12 +21,12 @@
   /* The same value as --chrome, deliberately: the caption strip Electron
      paints is a fixed colour, so a darker field under it draws a seam across
      the top of the scene. One black, no edge. */
-  --background: #171916;
-  --chrome: #171916;
-  --ink: #ccd2c9;
-  --ink-muted: #9da8a1;
-  --danger: #c98282;
-  --app-background: #0b0c0a;
+  --background: #181d1a;
+  --chrome: #181d1a;
+  --ink: #d2d9d0;
+  --ink-muted: #9ea9a2;
+  --danger: #d48c8b;
+  --app-background: #0f1210;
 }
 
 * {

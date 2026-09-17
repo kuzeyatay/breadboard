@@ -3,6 +3,7 @@ import path from "node:path";
 import { build } from "esbuild";
 import ts from "typescript";
 import { interactiveVisualizerConfig } from "./interactive-visualizer-config.ts";
+import { withInteractiveVisualizerWheelZoom } from "./interactive-visualizer-wheel.ts";
 import {
   INTERACTIVE_VISUALIZER_THREE_VERSION,
   type InteractiveVisualizerMode,
@@ -60,7 +61,7 @@ export interface CompiledCustomInteractiveVisualizerPackage {
   sourceHash: string;
 }
 
-const EXTERNAL_URL = /(?:https?:|wss?:|file:|ftp:|javascript:|data:)/i;
+const EXTERNAL_URL = /\b(?:https?:|wss?:|file:|ftp:|javascript:|data:)/i;
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9/_-]{0,299}$/;
 const LOCAL_STYLESHEET_LINK =
   /<link\s+rel\s*=\s*["']stylesheet["']\s+href\s*=\s*["']styles\.css["']\s*\/?>/gi;
@@ -530,7 +531,7 @@ export async function bundleCustomInteractiveVisualizer(
   api.addCleanup(()=>{cancelAnimationFrame(startupFrame);clearTimeout(overflowTimer)});
 })();`;
   const csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
-  const html = [
+  const html = withInteractiveVisualizerWheelZoom([
     "<!doctype html>",
     '<html lang="en" data-theme="light">',
     "<head>",
@@ -545,7 +546,7 @@ export async function bundleCustomInteractiveVisualizer(
     `<script>${scriptSafe(bootstrap)}</script>`,
     `<script>${scriptSafe(runner)}</script>`,
     "</body></html>",
-  ].join("");
+  ].join(""));
   if (Buffer.byteLength(html, "utf8") > interactiveVisualizerConfig().maxArtifactBytes) {
     throw new Error("The compiled custom visualizer exceeds the artifact size limit.");
   }

@@ -22,6 +22,40 @@
 }
 
 :root[reader-mode="on"] {
+  & .page > #quartz-body {
+    padding-inline-end: 1rem;
+
+    // Let long text and media shrink with the iframe instead of forcing the
+    // article beneath the assistant. Keep the book/search controls reachable.
+    & .page-header,
+    & .center,
+    & footer {
+      min-width: 0;
+      width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    @media (min-width: 801px) {
+      grid-template-columns: clamp(18rem, 22vw, 420px) minmax(0, 1fr);
+      grid-template-areas:
+        "grid-sidebar-left grid-header"
+        "grid-sidebar-left grid-center"
+        "grid-sidebar-left grid-footer";
+
+      & .sidebar.left {
+        padding-inline: 1rem;
+      }
+
+      & .sidebar.right {
+        display: none;
+      }
+    }
+
+    @media (max-width: 800px) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
   & .sidebar.left,
   & .sidebar.right {
     opacity: 0;

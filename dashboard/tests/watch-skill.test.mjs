@@ -85,6 +85,7 @@ test("Watch arguments are bounded before a process is launched", () => {
     whisper: undefined,
     noWhisper: false,
     noDedup: false,
+    processTimeoutMs: undefined,
   });
   assert.throws(
     () => validateWatchOptions({ source: "x", question: "Summarize", detail: "unbounded" }),
@@ -119,7 +120,10 @@ test("Watch confines local files and rejects private-network URLs", () => {
   }
 });
 
-test("Watch seals a local workspace video into an authenticated Runtime job", async () => {
+for (const spelling of ["ordinary", "namespaced data root", "namespaced frames"]) {
+test(`Watch seals a local workspace video into an authenticated Runtime job (${spelling})`, {
+  skip: spelling !== "ordinary" && process.platform !== "win32",
+}, async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-workspace-"));
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-runtime-"));
   const jobId = "job_watch_test";
@@ -130,9 +134,11 @@ test("Watch seals a local workspace video into an authenticated Runtime job", as
   fs.mkdirSync(frames, { recursive: true });
   const frame = path.join(frames, "frame_0001.jpg");
   fs.writeFileSync(frame, "jpeg");
+  const frameReference = spelling === "namespaced frames" ? path.toNamespacedPath(frame) : frame;
+  const configuredRoot = spelling === "namespaced data root" ? path.toNamespacedPath(dataRoot) : dataRoot;
   const report = [
     "# watch: video report",
-    `- \`${frame}\` (t=00:01, reason=selected)`,
+    `- \`${frameReference}\` (t=00:01, reason=selected)`,
     "## Transcript",
     "",
     "[00:00] hello",
@@ -211,7 +217,7 @@ test("Watch seals a local workspace video into an authenticated Runtime job", as
       conversationId: "conversation-watch",
       args: { source: clip, question: "What happens?", detail: "efficient", noWhisper: true },
       workspaceRoot: workspace,
-      env: { BREADBOARD_DATA_DIR: dataRoot },
+      env: { BREADBOARD_DATA_DIR: configuredRoot },
       control,
       timeoutMs: 10_000,
     });
@@ -221,14 +227,15 @@ test("Watch seals a local workspace video into an authenticated Runtime job", as
     assert.equal(submitted.requestPayload.sourceKind, "local");
     assert.equal(submitted.requestPayload.source, fs.realpathSync.native(clip));
     assert.match(result.report, /watch: video report/);
-    assert.deepEqual(result.framePaths, [{ path: frame, timestamp: "00:01" }]);
-    assert.equal(result.workDirectory, output);
+    assert.deepEqual(result.framePaths, [{ path: frameReference, timestamp: "00:01" }]);
+    assert.equal(result.workDirectory, path.resolve(configuredRoot, relative(output)));
     assert.match(result.chatmockWarning ?? "", /ChatMock is not configured/);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+}
 
 test("Watch has no Next-owned process or ChatMock frame fallback after cutover", () => {
   const service = source("src/lib/hermes/watch-service.ts");

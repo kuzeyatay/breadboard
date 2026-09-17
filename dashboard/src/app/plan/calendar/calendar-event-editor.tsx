@@ -27,6 +27,8 @@ export interface EventDraft {
   description: string;
   location: string;
   allDay: boolean;
+  notificationsEnabled: boolean;
+  leadReminderEnabled: boolean;
   startDate: string;
   startTime: string;
   endDate: string;
@@ -53,6 +55,8 @@ export interface EventPayload {
   description: string | null;
   location: string | null;
   allDay: boolean;
+  notificationsEnabled: boolean;
+  leadReminderEnabled: boolean;
   startsAt: string;
   endsAt: string;
   recurrence: {
@@ -73,6 +77,8 @@ export function draftToPayload(draft: EventDraft): EventPayload {
     description: draft.description.trim() || null,
     location: draft.location.trim() || null,
     allDay: draft.allDay,
+    notificationsEnabled: draft.notificationsEnabled,
+    leadReminderEnabled: draft.leadReminderEnabled,
     startsAt: `${draft.startDate}T${draft.allDay ? "00:00" : draft.startTime}`,
     endsAt: `${draft.endDate}T${draft.allDay ? "23:59" : draft.endTime}`,
     recurrence: {
@@ -350,6 +356,7 @@ export default function CalendarEventEditor({
           }}
           className="space-y-4"
         >
+          <fieldset disabled={draft.readOnly || saving} className="min-w-0 space-y-4">
           <div>
             <label className={label} htmlFor={`${fieldId}-title`}>
               Event
@@ -614,9 +621,67 @@ export default function CalendarEventEditor({
             )}
           </div>
 
+          </fieldset>
+
+          <div className="neu-inset flex items-center justify-between gap-4 rounded-lg border p-3">
+            <div>
+              <label htmlFor={`${fieldId}-notifications`} className="text-sm font-medium text-white">
+                Event notifications
+              </label>
+              <p id={`${fieldId}-notifications-help`} className="mt-1 text-xs text-gray-500">
+                {draft.notificationsEnabled
+                  ? "Receive reminders via connected Telegram or WhatsApp."
+                  : "No notifications for this event, including at the start."}
+                {draft.recurringInstance && " Applies to every occurrence."}
+              </p>
+            </div>
+            <button
+              id={`${fieldId}-notifications`}
+              type="button"
+              role="switch"
+              aria-checked={draft.notificationsEnabled}
+              aria-describedby={`${fieldId}-notifications-help`}
+              disabled={saving}
+              onClick={() => patch({ notificationsEnabled: !draft.notificationsEnabled })}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50 ${draft.notificationsEnabled ? "bg-[var(--botanical)]" : "bg-white/10"}`}
+            >
+              <span aria-hidden="true" className={`size-4 rounded-full bg-white ${draft.notificationsEnabled ? "translate-x-5" : "translate-x-1"}`} />
+            </button>
+          </div>
+
+          <div className="neu-inset flex items-center justify-between gap-4 rounded-lg border p-3">
+            <div>
+              <label htmlFor={`${fieldId}-reminder`} className="text-sm font-medium text-white">
+                Remind me 20 minutes before
+              </label>
+              <p id={`${fieldId}-reminder-help`} className="mt-1 text-xs text-gray-500">
+                {!draft.notificationsEnabled
+                  ? "Turn on event notifications to use this reminder."
+                  : draft.allDay
+                    ? "All-day events only notify when the day starts."
+                    : draft.leadReminderEnabled
+                      ? "Notify before and at the start via connected Telegram or WhatsApp."
+                      : "Notify only at the start via connected Telegram or WhatsApp."}
+                {draft.recurringInstance && " Applies to every occurrence."}
+              </p>
+            </div>
+            <button
+              id={`${fieldId}-reminder`}
+              type="button"
+              role="switch"
+              aria-checked={draft.leadReminderEnabled}
+              aria-describedby={`${fieldId}-reminder-help`}
+              disabled={saving || !draft.notificationsEnabled}
+              onClick={() => patch({ leadReminderEnabled: !draft.leadReminderEnabled })}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50 ${draft.leadReminderEnabled ? "bg-[var(--botanical)]" : "bg-white/10"}`}
+            >
+              <span aria-hidden="true" className={`size-4 rounded-full bg-white ${draft.leadReminderEnabled ? "translate-x-5" : "translate-x-1"}`} />
+            </button>
+          </div>
+
           {draft.readOnly && (
             <p className="text-xs text-gray-500">
-              This event comes from a subscribed calendar and cannot be edited here.
+              Event details come from a subscribed calendar. You can change your notifications here.
             </p>
           )}
 
@@ -654,7 +719,7 @@ export default function CalendarEventEditor({
             </button>
             <button
               type="submit"
-              disabled={saving || draft.readOnly || draft.title.trim().length === 0}
+              disabled={saving || (!draft.readOnly && draft.title.trim().length === 0)}
               className="neu-button-accent rounded-lg border px-5 py-2.5 text-sm font-medium disabled:opacity-50"
             >
               {saving

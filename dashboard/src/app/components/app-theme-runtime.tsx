@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { beginStartupLoading } from "./startup-readiness";
 import { hydrateComposerSwitches } from "@/app/components/composer-switch-preferences";
 import {
   APP_THEME_CHANGE_EVENT,
@@ -19,11 +20,13 @@ import {
   nextAppThemeTransition,
   rememberEffectiveAppTheme,
   resolveAppTheme,
+  restoreAppThemeFromShell,
   type AppTheme,
   type AppThemeSchedule,
 } from "@/lib/app-theme";
 
 interface DesktopThemeBridge {
+  getThemeState?: () => Promise<{ theme: AppTheme; schedule: AppThemeSchedule } | null>;
   setTheme?: (
     theme: AppTheme,
     schedule?: AppThemeSchedule,
@@ -81,6 +84,9 @@ export default function AppThemeRuntime() {
   useEffect(() => {
     let theme = getStoredAppTheme(window.localStorage);
     let transitionTimer: number | null = null;
+    let initialized = false;
+    let cancelled = false;
+    const finishStartup = beginStartupLoading();
 
     const clearTransitionTimer = () => {
       if (transitionTimer !== null) window.clearTimeout(transitionTimer);
@@ -92,6 +98,7 @@ export default function AppThemeRuntime() {
     // back to the foreground with iframes that may have missed a change. The
     // minute tick leaves it off, so a quiet day costs nothing but the check.
     const refreshFromPreference = (announce: boolean, reapply = false) => {
+      if (!initialized || cancelled) return;
       clearTransitionTimer();
       const now = new Date();
       // A manual pick made while following the sun stands until the next
@@ -110,7 +117,7 @@ export default function AppThemeRuntime() {
       const changed = nextTheme !== theme;
       theme = nextTheme;
       if (changed || reapply) {
-        rememberEffectiveAppTheme(theme, { animate: changed });
+        rememberEffectiveAppTheme(theme);
         synchronizeTheme(theme);
       }
       if (announce && changed) {
@@ -134,14 +141,28 @@ export default function AppThemeRuntime() {
       }
     };
 
-    refreshFromPreference(false, true);
     // The "Sunrise to sunset" switch lives on the account (see
     // lib/app-theme.ts). This runtime is in the root layout, so every page
     // brings it back, not only the ones with a composer. The request is shared
     // with the composer's own hydration when both are mounted.
-    void hydrateComposerSwitches();
+    void (async () => {
+      try {
+        const state = await desktopThemeBridge()?.getThemeState?.();
+        if (cancelled) return;
+        if (state && isAppTheme(state.theme)) restoreAppThemeFromShell(state, window.localStorage);
+      } catch {
+        // Browser mode and older shells retain this origin's preference.
+      }
+      if (cancelled) return;
+      initialized = true;
+      theme = getStoredAppTheme(window.localStorage);
+      refreshFromPreference(false, true);
+      await hydrateComposerSwitches();
+      if (!cancelled) refreshFromPreference(false, true);
+    })().finally(finishStartup);
 
     const handleThemeChange = (event: Event) => {
+      if (!initialized || cancelled) return;
       const nextTheme = (event as CustomEvent<unknown>).detail;
       if (!isAppTheme(nextTheme)) return;
       theme = nextTheme;
@@ -179,6 +200,8 @@ export default function AppThemeRuntime() {
     document.addEventListener("visibilitychange", handleModeChange);
 
     return () => {
+      cancelled = true;
+      finishStartup();
       clearTransitionTimer();
       window.removeEventListener(APP_THEME_CHANGE_EVENT, handleThemeChange);
       window.removeEventListener(APP_THEME_MODE_CHANGE_EVENT, handleModeChange);

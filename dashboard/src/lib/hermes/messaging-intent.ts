@@ -1,4 +1,5 @@
 import type { HermesSurface } from "./config.ts";
+import { requestedActions, actionMatches } from "./request-language.ts";
 
 // "Send this to my WhatsApp" has to select the send-to-my-phone skill, because a
 // skill is only in scope for a turn that invoked it — and nobody types
@@ -22,6 +23,7 @@ const SEND_TO_CHANNEL =
  */
 const CHANNEL_AS_VERB =
   /\b(?:whats\s?app|telegram)\s+(?:me|this|that|it)\b|\btext\s+me\b|\b(?:text|msg)\s+(?:this|that|it)\s+to\s+me\b|\bmessage\s+me\s+(?:this|that|it)\b/i;
+const DELIVERY_VERB = /\b(send|text|message|msg|forward|share|shoot|push|deliver|drop|post|whats\s?app|telegram)\b/i;
 
 /**
  * Reports of a send that already happened, and questions about the feature
@@ -71,8 +73,10 @@ export function messagingCommandText(input: {
     !text.startsWith("/") &&
     !NOT_A_REQUEST.test(text) &&
     (
-      SEND_TO_CHANNEL.test(text) ||
-      CHANNEL_AS_VERB.test(text) ||
+      requestedActions(text).some((action) =>
+        !action.personalIntent && actionMatches(action, DELIVERY_VERB) &&
+        (SEND_TO_CHANNEL.test(`${action.verb} ${action.target}`) ||
+         CHANNEL_AS_VERB.test(`${action.verb} ${action.target}`))) ||
       isChannelChoiceReply({ text, priorMessages: input.priorMessages })
     );
   return {

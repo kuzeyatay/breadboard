@@ -5,6 +5,8 @@ import { readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { cancelRuntimeJobByIdempotencyKey, inspectRuntimeJob, lookupRuntimeJobByIdempotencyKey, submitRuntimeJob, RuntimeJobControlError } from "@/lib/supervisor-control.ts";
 import { musicRouteError } from "@/lib/music-producer/route-error.ts";
 import { musicSetup, saveMusicSetup, claimMusicSetup } from "@/lib/music-producer/setup-state.ts";
+import { ManagedSetupExecutionError, readManagedSetupResult } from "@/lib/runtime-v2/managed-setup-job.ts";
+import { musicError } from "@/lib/music-producer/errors.ts";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 const terminal = new Set(["succeeded", "failed", "cancelled", "resource_exhausted", "interrupted", "uncertain"]);
@@ -50,7 +52,23 @@ export async function POST(request: Request) {
 export async function GET() {
   try {
     const userId = await requireUserId(), job = await current(userId);
-    return NextResponse.json(job ? { ok: true, jobId: job.jobId, state: job.state, stage: job.stage, failureCode: job.failureCode } : { ok: true, jobId: null });
+    if (!job) return NextResponse.json({ ok: true, jobId: null });
+    let state = job.state;
+    let message = job.failureMessage ? musicError(new Error(job.failureMessage)).message : null;
+    let detail = "";
+    if (job.state === "succeeded") {
+      try {
+        const result = await readManagedSetupResult(userId, job);
+        state = result.ok ? "succeeded" : "failed";
+        message = musicError(new Error(result.message)).message;
+        if (!result.ok && result.detail) detail = musicError(new Error(result.detail)).message;
+      } catch (error) {
+        if (!(error instanceof ManagedSetupExecutionError)) throw error;
+        state = "failed";
+        message = musicError(error).message;
+      }
+    }
+    return NextResponse.json({ ok: true, jobId: job.jobId, state, stage: job.stage, message, detail, failureCode: job.failureCode, cancellationRequested: job.cancellationRequested });
   }
   catch (error) {
     return musicRouteError(error);

@@ -12,6 +12,29 @@ import zipfile
 SOURCE_REVISION = "ca1e85fe9430179831e6bc6be790c332190a3866"
 MODEL_REVISION = "19671f406d603126926c1b7e2adc169acbcade22"
 MODEL_DIRS = ("acestep-v15-turbo", "vae", "Qwen3-Embedding-0.6B")
+SETUP_SPACE_BYTES = 30 * 1024**3
+
+
+def check_setup_space(root):
+    # uv uses copy mode: its expanded cache and the environment coexist. Check
+    # before downloading even the source, not only after installing PyTorch.
+    # Budget 16 GiB for weights, 12 GiB for dependencies/cache, and 2 GiB staging.
+    existing = 0
+    for name in (".venv", "uv-cache", "source"):
+        directory = direct(root, root / name)
+        if not directory.exists():
+            continue
+        for filename in directory.rglob("*"):
+            if filename.is_file():
+                direct(root, filename)
+                existing += filename.stat().st_size
+    required = max(2 * 1024**3, SETUP_SPACE_BYTES - existing)
+    free = shutil.disk_usage(root).free
+    if free < required:
+        raise RuntimeError(
+            f"Insufficient disk space for ACE-Step setup: {required / 1024**3:.1f} GiB free required, "
+            f"{free / 1024**3:.1f} GiB available. Free space before retrying setup."
+        )
 
 
 def direct(root, candidate):
@@ -26,6 +49,7 @@ def main():
     data = Path(sys.argv[1]).resolve(strict=True)
     root = direct(data, data / "runtime-v2" / "services" / "acestep")
     root.mkdir(parents=True, exist_ok=True)
+    check_setup_space(root)
     # An explicit repeat repairs missing files using the same immutable revisions.
     source = direct(data, root / "source")
     source.mkdir(exist_ok=True)

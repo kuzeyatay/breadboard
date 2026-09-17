@@ -12,7 +12,7 @@ import { resolveChatmockBaseUrl } from "./chatmock-server.ts";
 export interface ChatmockProvider {
   id: string;
   label: string;
-  kind: "chatgpt_oauth" | "openai_compatible" | "anthropic";
+  kind: "chatgpt_oauth" | "openai_compatible" | "anthropic" | "chatgpt_web";
   description: string;
   docsUrl: string | null;
   requiresApiKey: boolean;
@@ -36,6 +36,9 @@ export interface ChatmockProviderState {
   providers: ChatmockProvider[];
   defaultModel: string;
   storedDefaultModel: string | null;
+  /** A running chat's pin; follows defaultModel until a turn supplies an override. */
+  chatModel: string;
+  storedChatModel: string | null;
   chatgptModels: string[];
   externalModels: string[];
   settingsPath: string;
@@ -59,13 +62,14 @@ async function chatmockFetch(
   request: Request,
   path: string,
   init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   const { baseURL } = resolveChatmockBaseUrl(request);
   // The management API sits next to /v1, and baseURL already ends in /v1.
   const url = `${baseURL}${path}`;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
       ...init,
@@ -123,10 +127,11 @@ async function request(
   incoming: Request,
   path: string,
   init?: RequestInit,
+  timeoutMs?: number,
 ): Promise<unknown> {
   let response: Response;
   try {
-    response = await chatmockFetch(incoming, path, init);
+    response = await chatmockFetch(incoming, path, init, timeoutMs);
   } catch (error) {
     throw new ChatmockUnreachableError(error);
   }
@@ -204,6 +209,16 @@ export async function setDefaultModel(
   })) as ChatmockProviderState;
 }
 
+export async function setChatModel(
+  incoming: Request,
+  model: string | null,
+): Promise<ChatmockProviderState> {
+  return (await request(incoming, "/settings/chat-model", {
+    method: "PUT",
+    body: JSON.stringify({ model }),
+  })) as ChatmockProviderState;
+}
+
 export function providerErrorResponseInit(error: unknown): {
   status: number;
   message: string;
@@ -219,4 +234,134 @@ export function providerErrorResponseInit(error: unknown): {
     message:
       error instanceof Error ? error.message : "The provider settings could not be read.",
   };
+}
+
+// ---- OpenAI (web): the signed-in chatgpt.com tab ---------------------------
+
+/** One model the signed-in ChatGPT page offers. */
+export interface ChatgptWebModel {
+  slug: string;
+  title: string;
+  description: string;
+  tags: string[];
+}
+
+/** What ChatMock knows about the chatgpt.com sign-in, from /v1/providers/openaiweb/session. */
+export interface ChatgptWebSession {
+  signedIn: boolean;
+  email: string | null;
+  name: string | null;
+  plan: string | null;
+  checkedAt: string | null;
+  models: ChatgptWebModel[];
+  modelsAt: string | null;
+  /** Which browser holds the page: Breadboard's own, or a system Chrome/Edge. */
+  surface: "desktop" | "browser" | null;
+  pageConnected: boolean;
+  bridge: { connected: boolean; cdpPort: number | null };
+  browser: { available: boolean; executable: string | null };
+  login: { status: "awaiting" | "done" | "failed" | "cancelled"; startedAt: string; error: string | null } | null;
+  error: string | null;
+}
+
+export type ChatgptWebAction = "login" | "cancel-login" | "logout" | "sync";
+
+const CHATGPT_WEB_ACTION_PATHS: Record<ChatgptWebAction, string> = {
+  login: "/providers/openaiweb/login",
+  "cancel-login": "/providers/openaiweb/login/cancel",
+  logout: "/providers/openaiweb/logout",
+  sync: "/providers/openaiweb/sync",
+};
+
+export function isChatgptWebAction(value: unknown): value is ChatgptWebAction {
+  return typeof value === "string" && value in CHATGPT_WEB_ACTION_PATHS;
+}
+
+export async function readChatgptWebSession(
+  incoming: Request,
+  options: { refresh?: boolean } = {},
+): Promise<ChatgptWebSession> {
+  const query = options.refresh ? "?refresh=1" : "";
+  // A refresh opens the page and asks it who is signed in; give it room.
+  return (await request(
+    incoming,
+    `/providers/openaiweb/session${query}`,
+    undefined,
+    options.refresh ? 90_000 : undefined,
+  )) as ChatgptWebSession;
+}
+
+export async function runChatgptWebAction(
+  incoming: Request,
+  action: ChatgptWebAction,
+): Promise<ChatgptWebSession> {
+  return (await request(
+    incoming,
+    CHATGPT_WEB_ACTION_PATHS[action],
+    { method: "POST" },
+    90_000,
+  )) as ChatgptWebSession;
+}
+
+/** A request from ChatMock for the shell's ChatGPT tab, waiting on a page to relay it. */
+export interface ChatgptWebTabRequestRow {
+  nonce: string;
+  foreground: boolean;
+  /** Replace the page rather than reuse it; the one it holds stopped answering. */
+  reset: boolean;
+  requestedAt: string;
+}
+
+export const CHATGPT_WEB_TAB_POLL_MAX_WAIT_SECONDS = 25;
+
+export async function pollChatgptWebTabRequests(
+  incoming: Request,
+  options: { wait: number; cdpPort?: number | null },
+): Promise<{ requests: ChatgptWebTabRequestRow[] }> {
+  const wait = Math.max(0, Math.min(CHATGPT_WEB_TAB_POLL_MAX_WAIT_SECONDS, options.wait));
+  const params = new URLSearchParams({ wait: String(wait) });
+  if (options.cdpPort) params.set("cdpPort", String(options.cdpPort));
+  const payload = (await request(
+    incoming,
+    `/providers/openaiweb/tab-requests?${params.toString()}`,
+    undefined,
+    (wait + 10) * 1000,
+  )) as { requests?: unknown };
+  const rows = Array.isArray(payload?.requests) ? payload.requests : [];
+  return {
+    requests: rows.flatMap((row): ChatgptWebTabRequestRow[] => {
+      if (!row || typeof row !== "object") return [];
+      const { nonce, foreground, reset, requestedAt } = row as Record<string, unknown>;
+      if (typeof nonce !== "string" || !/^[0-9a-f]{32}$/.test(nonce)) return [];
+      return [{
+        nonce,
+        foreground: foreground === true,
+        reset: reset === true,
+        requestedAt: typeof requestedAt === "string" ? requestedAt : "",
+      }];
+    }),
+  };
+}
+
+export function isChatgptWebTabNonce(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
+}
+
+export async function answerChatgptWebTabRequest(
+  incoming: Request,
+  nonce: string,
+  answer: { cdpPort: number; targetId: string } | { error: string },
+): Promise<boolean> {
+  let response: Response;
+  try {
+    response = await chatmockFetch(incoming, `/providers/openaiweb/tab-requests/${nonce}`, {
+      method: "POST",
+      body: JSON.stringify(answer),
+    });
+  } catch (error) {
+    throw new ChatmockUnreachableError(error);
+  }
+  // 404 means the request already timed out on ChatMock's side; nothing to
+  // do about it here, and not a failure of the page that relayed it.
+  return response.ok;
 }

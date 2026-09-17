@@ -29,13 +29,11 @@ import type {
   TransferSkipReason,
 } from "./format.ts";
 
-/**
- * adm-zip builds the archive in memory, so this ceiling is about what the
- * process can hold, not about what a garden is allowed to be. A garden over it
- * is almost always carrying rebuild scratch that `gardenExportSkipReason`
- * already drops.
- */
-export const MAX_TRANSFER_BYTES = 512 * 1024 * 1024;
+export interface ArchiveWriter {
+  addFile(name: string, data: Buffer): void;
+  /** Production exports register file paths and read them only while streaming. */
+  addSourceFile?(name: string, filename: string, size: number): void;
+}
 
 export interface PackBudget {
   bytes: number;
@@ -45,18 +43,8 @@ export function createBudget(): PackBudget {
   return { bytes: 0 };
 }
 
-function spend(budget: PackBudget, bytes: number, what: string): void {
-  budget.bytes += bytes;
-  if (budget.bytes > MAX_TRANSFER_BYTES) {
-    throw new TransferError(
-      `${what} is larger than the ${Math.round(MAX_TRANSFER_BYTES / (1024 * 1024))} MB export limit.`,
-      413,
-    );
-  }
-}
-
 export function addJsonEntry(
-  zip: AdmZip,
+  zip: ArchiveWriter,
   entryName: string,
   value: unknown,
 ): void {
@@ -92,7 +80,7 @@ export function openArchive(buffer: Buffer): AdmZip {
  * backups` is never walked.
  */
 export function packDirectory(
-  zip: AdmZip,
+  zip: ArchiveWriter,
   sourceDir: string,
   prefix: string,
   budget: PackBudget,
@@ -133,17 +121,24 @@ export function packDirectory(
         continue;
       }
 
-      let data: Buffer;
+      let size: number;
       try {
-        data = fs.readFileSync(absolute);
+        if (zip.addSourceFile) {
+          size = fs.statSync(absolute).size;
+          fs.accessSync(absolute, fs.constants.R_OK);
+          zip.addSourceFile(`${prefix}${relPath}`, absolute, size);
+        } else {
+          const data = fs.readFileSync(absolute);
+          size = data.byteLength;
+          zip.addFile(`${prefix}${relPath}`, data);
+        }
       } catch {
         skipped.push({ path: relPath, reason: "unreadable" });
         continue;
       }
-      spend(budget, data.byteLength, "This export");
-      zip.addFile(`${prefix}${relPath}`, data);
+      budget.bytes += size;
       files += 1;
-      bytes += data.byteLength;
+      bytes += size;
     }
   };
 

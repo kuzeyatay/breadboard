@@ -167,6 +167,8 @@ class CouncilInput:
     # Recoverable requests must execute the exact resolved model once. They may
     # not substitute an unhealthy/missing provider or fail over after an error.
     strict_model_route: bool = False
+    # What asked for this run, for the usage ledger (usage_ledger.request_origin).
+    origin: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if not self.user_prompt:

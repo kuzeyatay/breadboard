@@ -172,6 +172,39 @@ function makeRetrievalGarden() {
 }
 
 describe("semantic retrieval", () => {
+  test("batch index updates atomically preserve the previous FTS rows on failure", async (t) => {
+    const { root, garden } = makeRetrievalGarden();
+    const database = new Database(":memory:");
+    t.after(() => { database.close(); fs.rmSync(root, { recursive: true, force: true }); });
+    await indexRetrievalGarden({ garden, database });
+    const before = database.prepare("SELECT id, content FROM semantic_chunks ORDER BY id").all();
+    const ftsBefore = database.prepare("SELECT id, content FROM semantic_chunks_fts ORDER BY id").all();
+    garden.knowledge.nodes[0].content += "\nUpdated content";
+    garden.knowledge.nodes.pop();
+    database.exec("CREATE TRIGGER reject_index_insert BEFORE INSERT ON semantic_chunks BEGIN SELECT RAISE(ABORT, 'test write failure'); END");
+    await assert.rejects(indexRetrievalGarden({ garden, database }), /test write failure/);
+    assert.deepEqual(database.prepare("SELECT id, content FROM semantic_chunks ORDER BY id").all(), before);
+    assert.deepEqual(database.prepare("SELECT id, content FROM semantic_chunks_fts ORDER BY id").all(), ftsBefore);
+    database.exec("DROP TRIGGER reject_index_insert");
+    await indexRetrievalGarden({ garden, database });
+    assert.equal(database.prepare("SELECT count(*) n FROM semantic_chunks WHERE page_rel_path = 'sources/lecture.md'").get().n, 0);
+    assert.deepEqual(database.prepare("SELECT id FROM semantic_chunks ORDER BY id").all(), database.prepare("SELECT id FROM semantic_chunks_fts ORDER BY id").all());
+  });
+
+  test("interactive retrieval embeds only the query and retains lexical evidence on failure", async (t) => {
+    const { root, garden } = makeRetrievalGarden();
+    const database = new Database(":memory:");
+    t.after(() => { database.close(); fs.rmSync(root, { recursive: true, force: true }); });
+    const calls = [];
+    const query = "membrane leakage";
+    const result = await retrieveGraphRag({ garden, gardens: [garden], database, query, indexEmbeddings: false,
+      embeddingProvider: { model: "offline", embed: async (texts) => { calls.push(texts); throw new Error("unavailable"); } } });
+    assert.deepEqual(calls, [[query]]);
+    assert.equal(result.lexicalUsed, true);
+    assert.ok(result.chunks.length);
+    assert.match(result.embeddingWarning, /unavailable/);
+  });
+
   test("chunks by headings while preserving fenced and display-math blocks", () => {
     const chunks = headingAwareChunks(`# Model
 

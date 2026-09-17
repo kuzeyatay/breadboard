@@ -298,33 +298,33 @@ body .ai-applied-tag::before {
 :root[data-theme='dark'] body .workspace,
 :root[data-theme='dark'] body .editor-scroll,
 :root[data-theme='dark'] body .start-screen {
-  background-color: #171a18;
-  color: #e4e9e6;
+  background-color: #181d1a;
+  color: #e9ede5;
 }
 
 :root[data-theme='dark'] body .ai-panel {
-  --color-bg-page: #1b1f1d;
-  --color-bg-subtle: #252b28;
-  --color-border-default: #343b37;
-  --color-border-strong: #4b554f;
-  --color-text-primary: #e8ece9;
-  --color-text-secondary: #adb7b1;
-  --color-text-tertiary: #87938c;
-  --color-btn-primary: #769187;
-  --color-btn-primary-hover: #88a397;
-  --bread-chat-user: color-mix(in srgb, #26322d 82%, #59756a);
-  --bread-chat-user-border: #4b655b;
-  --bread-composer-border: #405048;
+  --color-bg-page: #1c211e;
+  --color-bg-subtle: #262d29;
+  --color-border-default: #343d38;
+  --color-border-strong: #4a564e;
+  --color-text-primary: #e9ede5;
+  --color-text-secondary: #b0bbb3;
+  --color-text-tertiary: #8d998f;
+  --color-btn-primary: #7fa093;
+  --color-btn-primary-hover: #92b2a5;
+  --bread-chat-user: color-mix(in srgb, #273430 82%, #5e7c70);
+  --bread-chat-user-border: #4f6b60;
+  --bread-composer-border: #43554b;
   --bread-composer-shadow: rgb(0 0 0 / 42%);
   --bread-composer-highlight: rgb(255 255 255 / 5%);
-  background: #1b1f1d;
-  border-right-color: #343b37;
+  background: #1c211e;
+  border-right-color: #343d38;
   box-shadow: 4px 0 18px rgb(0 0 0 / 28%);
 }
 
 :root[data-theme='dark'] body .ai-composer,
 :root[data-theme='dark'] body .ai-input-box {
-  background: #1b1f1d;
+  background: #1c211e;
 }
 
 :root[data-theme='dark'] body .ai-input-box {
@@ -335,53 +335,53 @@ body .ai-applied-tag::before {
 }
 
 :root[data-theme='dark'] body .ai-input-box:focus-within {
-  border-color: #68877b;
+  border-color: #6f9284;
   box-shadow:
     7px 8px 18px var(--bread-composer-shadow),
     -4px -4px 14px var(--bread-composer-highlight),
     inset 1px 1px 0 rgb(255 255 255 / 4%),
-    0 0 0 1px rgb(118 145 135 / 22%);
+    0 0 0 1px rgb(127 160 147 / 24%);
 }
 
 :root[data-theme='dark'] body .ai-input-box textarea {
-  color: #eef2ef;
+  color: #edf1ec;
   caret-color: #fff;
 }
 
 :root[data-theme='dark'] body .ai-input-box textarea::placeholder {
-  color: #98a49d;
+  color: #9ba79f;
 }
 
 :root[data-theme='dark'] body .ai-input-footer .ai-send-btn,
 :root[data-theme='dark'] body .ai-input-footer .ai-send-btn.ai-stop-btn {
-  border-color: #6d8b80;
-  background: #769187;
-  color: #101512;
+  border-color: #76978a;
+  background: #7fa093;
+  color: #0f1210;
 }
 
 :root[data-theme='dark'] body .ai-input-footer .ai-send-btn:hover:not(:disabled) {
-  background: #88a397;
+  background: #92b2a5;
 }
 
 :root[data-theme='dark'] body .ai-input-footer .ai-send-btn:disabled {
-  border-color: #3d4943;
-  background: #3d4943;
-  color: #87938c;
+  border-color: #3e4a44;
+  background: #3e4a44;
+  color: #8d998f;
 }
 
 :root[data-theme='dark'] body .bread-ai-selection-context {
-  border-color: #746b3f;
-  background: #3a351f;
-  color: #e8e4cf;
+  border-color: #7a7042;
+  background: #3d3820;
+  color: #ebe7d3;
 }
 
 :root[data-theme='dark'] body .bread-ai-selection-context > span {
-  color: #b7b083;
+  color: #bcb588;
 }
 
 :root[data-theme='dark'] body .ai-work-group {
-  border-color: #343b37;
-  background: #222724;
+  border-color: #343d38;
+  background: #232a26;
   box-shadow:
     inset 1px 1px 0 rgb(255 255 255 / 4%),
     2px 3px 8px rgb(0 0 0 / 18%);
@@ -390,17 +390,31 @@ body .ai-applied-tag::before {
 :root[data-theme='dark'] body .ai-work-summary,
 :root[data-theme='dark'] body .ai-work-list,
 :root[data-theme='dark'] body .ai-applied-tag {
-  color: #adb7b1;
+  color: #b0bbb3;
 }
 
 :root[data-theme='dark'] body .ai-work-list {
-  border-top-color: #343b37;
+  border-top-color: #343d38;
 }
 
 :root[data-theme='dark'] body .ai-work-state {
-  color: #98a49d;
+  color: #9ba79f;
 }
 
 :root[data-theme='dark'] body .ai-work-summary::after {
-  border-color: #87938c;
+  border-color: #8d998f;
+}
+/* The standalone Word editor does not load the dashboard's Tailwind utilities. */
+.ai-unread-chat-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--signal-live, #2f9e5a);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--signal-live, #2f9e5a) 38%, transparent);
+}
+
+[data-theme="dark"] .ai-unread-chat-dot {
+  background: var(--signal-live, #55ca84);
 }

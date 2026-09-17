@@ -591,6 +591,21 @@ describe("garden validator regression fixture", () => {
     }
   });
 
+  test("leaked chat-assistant commentary fails learner scaffold validation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-chat-leak-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(dir, "learning", "2. Spiking Neurons", "2.1 The Leaky Integrate-and-Fire Neuron.md");
+      const leak = "I'm treating the pasted content as the actual request and will produce the learner-facing subsection only.";
+      fs.writeFileSync(pagePath, fs.readFileSync(pagePath, "utf-8").replace("# 2.1 The Leaky Integrate-and-Fire Neuron\n\n", `# 2.1 The Leaky Integrate-and-Fire Neuron\n\n${leak}\n\n`));
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 59);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /chat-assistant scaffold prose/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("section index scaffold prose fails validation", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-index-prose-"));
     try {

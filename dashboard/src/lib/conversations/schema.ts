@@ -236,11 +236,19 @@ export function ensureConversationSchema(database: Database.Database): void {
       AND (allowed_garden_ids IS NULL OR allowed_garden_ids = '' OR allowed_garden_ids = '[]');
   `);
 
+  const runtimeIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_hermes_runtime_conversation'").get() as { sql: string } | undefined;
+  if (runtimeIndex && !runtimeIndex.sql.includes('inlineTurnId')) {
+    database.exec("DROP INDEX idx_hermes_runtime_conversation");
+  }
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_sessions_conversation
       ON chat_sessions(conversation_id) WHERE conversation_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_runtime_conversation
-      ON hermes_runtime_sessions(conversation_id) WHERE conversation_id IS NOT NULL;
+      ON hermes_runtime_sessions(conversation_id) WHERE conversation_id IS NOT NULL
+      AND json_extract(runtime_metadata, '$.inlineTurnId') IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_runtime_inline_turn
+      ON hermes_runtime_sessions(conversation_id, json_extract(runtime_metadata, '$.inlineTurnId'))
+      WHERE json_extract(runtime_metadata, '$.inlineTurnId') IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_canonical
       ON chat_messages(canonical_message_id) WHERE canonical_message_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_messages_canonical
@@ -356,6 +364,9 @@ function backfillLegacyConversations(database: Database.Database): void {
     for (const runtime of runtimes) {
       // Anonymous Quartz remains deliberately outside private canonical memory.
       if (runtime.user_id === null) continue;
+      // Side runtimes intentionally share their chat's canonical conversation.
+      // They must neither claim nor displace its primary runtime on restart.
+      if (JSON.parse(runtime.runtime_metadata || "{}").inlineTurnId) continue;
 
       let conversationId = runtime.conversation_id;
       if (!conversationId && runtime.chat_session_id !== null) {
@@ -443,6 +454,11 @@ function copyLegacyMessages(
     if (bound) continue;
 
     const metadata = legacyMetadata(message);
+    const savedClientId = (JSON.parse(metadata) as { clientMessageId?: unknown }).clientMessageId;
+    const clientMessageId = typeof savedClientId === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(savedClientId)
+      ? savedClientId
+      : `legacy-${prefix}-${String(message.id)}`;
     const result = database.prepare(`
       INSERT OR IGNORE INTO conversation_messages
         (conversation_id, client_message_id, role, surface, content, status,
@@ -450,7 +466,7 @@ function copyLegacyMessages(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       conversationId,
-      `legacy-${prefix}-${String(message.id)}`,
+      clientMessageId,
       message.role,
       surface,
       String(message.content ?? ""),
@@ -467,7 +483,7 @@ function copyLegacyMessages(
       WHERE conversation_id = ? AND client_message_id = ? AND role = ?
     `).get(
       conversationId,
-      `legacy-${prefix}-${String(message.id)}`,
+      clientMessageId,
       message.role,
     ) as { id: number };
     if (prefix.startsWith("chat-")) {
@@ -497,9 +513,15 @@ function legacyStatus(message: Record<string, unknown>): "complete" | "failed" |
   return "complete";
 }
 
-function legacyMetadata(message: Record<string, unknown>): string | null {
+function legacyMetadata(message: Record<string, unknown>): string {
+  const toolCalls = parseJson(message.tool_calls);
   const metadata = {
-    toolCalls: parseJson(message.tool_calls),
+    // Compatibility saves carry structured turn metadata in tool_calls. Keep
+    // it at the canonical level too, including hidden-input flags and worker
+    // identity, so a reload cannot expose a private brief or replay its result.
+    ...(toolCalls && typeof toolCalls === "object" && !Array.isArray(toolCalls)
+      ? toolCalls : {}),
+    toolCalls,
     permissionDecisions: parseJson(message.permission_decisions),
     runtimeError: message.runtime_error ?? null,
     runtimeStatus: message.runtime_status ?? null,

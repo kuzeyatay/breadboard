@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from flask import Response, current_app, jsonify, make_response
 
+from .. import usage_ledger
 from ..ask import chatmock_ask, get_council_runtime
 from ..http import build_cors_headers
 from ..model_registry import normalize_model_name
@@ -323,6 +324,7 @@ def _build_council_input(
         max_tokens=max_tokens if isinstance(max_tokens, int) else None,
         reasoning_effort=reasoning_effort,
         reasoning_summary=reasoning_summary,
+        origin=usage_ledger.request_origin(payload),
     )
 
 
@@ -467,7 +469,52 @@ def _run_diagnostic_strings(run: CouncilRun) -> List[str]:
     return values
 
 
+def _exhausted_route_message(run: CouncilRun) -> Optional[str]:
+    """Name every route that refused for lack of credits or quota.
+
+    A direct-council request walks the requested model and then its fallbacks;
+    when each one answers 402 (provider credits) or 429 (usage limit) the
+    generic "all candidate models failed" sends the user to look at the
+    request when the account is what needs attention. The routing entries
+    carry the status code of every attempt, so the reason can be stated
+    without echoing the provider's own error body. Returns None unless every
+    failed attempt was such a refusal, so a mixed failure keeps the
+    diagnostics-driven wording below.
+    """
+    attempts = [
+        attempt
+        for attempt in run.model_attempts_snapshot()
+        if attempt.get("outcome") != "succeeded"
+    ]
+    if not attempts:
+        return None
+    reasons: List[str] = []
+    for attempt in attempts:
+        model = attempt.get("resolvedModel") or attempt.get("upstreamModel")
+        label = model if isinstance(model, str) and model.strip() else "a candidate model"
+        status = attempt.get("statusCode")
+        if status == 402:
+            reason = f"{label} needs more provider credits (HTTP 402)"
+        elif status == 429 or attempt.get("outcome") == "quota_exhausted":
+            reason = f"{label} has reached its usage limit (HTTP 429)"
+        else:
+            return None
+        if reason not in reasons:
+            reasons.append(reason)
+    listed = "; ".join(reasons[:4])
+    if len(reasons) > 4:
+        listed += f"; and {len(reasons) - 4} more"
+    return (
+        "The council could not produce an answer because every candidate model "
+        f"was out of quota or credits: {listed}. Add credits or wait for the "
+        "limit to reset, or choose a model from another provider, then try again."
+    )
+
+
 def _empty_final_answer_message(run: CouncilRun) -> str:
+    exhausted = _exhausted_route_message(run)
+    if exhausted is not None:
+        return exhausted
     diagnostics = "\n".join(_run_diagnostic_strings(run))
     if re.search(r"\bHTTP\s+429\b", diagnostics, flags=re.IGNORECASE):
         match = re.search(r"\bfor\s+([A-Za-z0-9_.:-]+)", diagnostics)
@@ -1014,6 +1061,7 @@ def maybe_handle_responses_with_council(
         reasoning_effort=reasoning_effort,
         reasoning_summary=reasoning_summary,
         strict_model_route=requested_binding is not None,
+        origin=usage_ledger.request_origin(payload),
     )
     receipt_binding, reserve_error = _reserve_recoverable_request(
         council_input,

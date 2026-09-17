@@ -93,9 +93,7 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // to scoped implementation mode.
   "github-explorer",
   // Rewording a paragraph is writing, not repository coding. Its guidance
-  // carries `npm run setup:humanizer` because that is what the model has to
-  // relay when the local service is not installed, and a manifest of shell
-  // commands reads to the classifier as implementation work — which would
+  // describes local runtime tools, but those implementation details must not
   // confine "humanize this" to scoped implementation mode.
   "humanize",
   // A goal is a commitment about when the work may stop, not work of its own.

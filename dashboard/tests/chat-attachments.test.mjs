@@ -10,10 +10,48 @@ import {
   normalizeChatMessageAttachments,
   productAttachmentPromptText,
   reusableChatAttachments,
+  unreusableChatAttachmentNames,
   visibleChatMessageText,
+  visibleChatMessageAttachments,
 } from '../src/lib/chat-attachments.ts';
 import { collectUploads } from '../src/lib/conversations/uploads.ts';
 import { parseChatAttachments } from '../src/lib/chat-attachments-request.ts';
+
+test('automatic PDF evidence stays available across storage and retry without rendering attachments', () => {
+  const context = [
+    { type: 'text', name: 'PDF reading context.txt', text: 'Page 6', context: 'pdf' },
+    { type: 'document', name: 'studyguide.pdf', blobId: `doc_${'a'.repeat(32)}`, format: 'pdf', text: 'Lecture 3', context: 'pdf' },
+    { type: 'image', name: 'Current PDF view.png', dataUrl: 'data:image/png;base64,aGVsbG8=', context: 'pdf' },
+  ];
+  const picked = { type: 'image', name: 'my-screenshot.png', dataUrl: 'data:image/png;base64,aGVsbG8=' };
+  const parsed = parseChatAttachments([...context, picked]);
+  assert.deepEqual(parsed.slice(0, 3), context);
+  const retained = normalizeChatMessageAttachments(JSON.parse(JSON.stringify(chatMessageAttachments(parsed))));
+  assert.deepEqual(retained.slice(0, 3).map(a => a.context), ['pdf', 'pdf', 'pdf']);
+  const visible = visibleChatMessageAttachments(retained, parsed.map(a => a.name));
+  assert.deepEqual(visible.attachments, [picked]);
+  assert.deepEqual(visible.attachmentNames, [picked.name]);
+  const reused = reusableChatAttachments(retained);
+  assert.equal(reused.find(a => a.type === 'document').context, 'pdf');
+  assert.equal(reused.find(a => a.name === 'Current PDF view.png').context, 'pdf');
+  assert.equal(reused.find(a => a.name === picked.name).context, undefined);
+});
+
+test('older PDF context bundles are hidden while user attachments retain their previews', () => {
+  const attachments = [
+    { type: 'file', name: 'PDF reading context.txt' },
+    { type: 'document', name: 'studyguide-annotated.pdf', format: 'pdf', blobId: `doc_${'b'.repeat(32)}` },
+    { type: 'image', name: 'Current PDF view.png', dataUrl: 'data:image/png;base64,aGVsbG8=' },
+    { type: 'file', name: 'notes.txt' },
+    { type: 'image', name: 'my-screenshot.png', dataUrl: 'data:image/png;base64,aGVsbG8=' },
+  ];
+  assert.deepEqual(visibleChatMessageAttachments(attachments, attachments.map(a => a.name)), {
+    attachments: attachments.slice(3), attachmentNames: ['notes.txt', 'my-screenshot.png'],
+  });
+  assert.deepEqual(visibleChatMessageAttachments([attachments[1]], [attachments[1].name]), {
+    attachments: [attachments[1]], attachmentNames: [attachments[1].name],
+  });
+});
 
 test('message attachments retain safe image data and stored source-file pointers', () => {
   const dataUrl = 'data:image/png;base64,aGVsbG8=';
@@ -336,4 +374,94 @@ test('videos are offered only in the Terminal, where Watch can read them', () =>
     const contents = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.doesNotMatch(contents, /allowVideo/, file);
   }
+});
+
+test('files the registry cannot name are kept whole so a retry can read them again', async () => {
+  const file = new File(['function y = erlangc(a, n)\nend\n'], 'report.tex', { type: '' });
+  const blobId = `fil_${'d'.repeat(32)}`;
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push(url);
+    if (url === '/api/extract-text') {
+      return Response.json({ type: 'text', text: 'function y = erlangc(a, n)\nend\n', name: file.name });
+    }
+    assert.equal(url, '/api/chat-attachments/files');
+    assert.equal(decodeURIComponent(init.headers['x-stored-file-filename']), 'report.tex');
+    return Response.json({ blobId, format: 'bin', sizeBytes: file.size });
+  };
+  let result;
+  try {
+    result = await extractChatAttachments([file]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(calls, ['/api/extract-text', '/api/chat-attachments/files']);
+  const [attachment] = result.attachments;
+  assert.deepEqual(attachment, {
+    type: 'text',
+    name: 'report.tex',
+    blobId,
+    format: 'bin',
+    sizeBytes: file.size,
+    text: 'function y = erlangc(a, n)\nend\n',
+  });
+
+  // The transcript keeps the pointer, and the retry gets the pointer back with
+  // an empty text for the server to fill in from the stored bytes.
+  const retained = normalizeChatMessageAttachments(
+    JSON.parse(JSON.stringify(chatMessageAttachments([attachment]))),
+  );
+  assert.deepEqual(retained, [
+    { type: 'file', name: 'report.tex', blobId, format: 'bin', sizeBytes: file.size },
+  ]);
+  assert.deepEqual(reusableChatAttachments(retained), [
+    { type: 'text', name: 'report.tex', blobId, format: 'bin', sizeBytes: file.size, text: '' },
+  ]);
+  assert.deepEqual(unreusableChatAttachmentNames(retained, ['report.tex']), []);
+});
+
+test('a server that refuses to keep an unnamed file still attaches it inline', async () => {
+  const file = new File(['x'], 'Lab_1.nb', { type: '' });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url === '/api/extract-text') return Response.json({ type: 'text', text: 'x', name: file.name });
+    return Response.json({ error: 'unsupported_file_format' }, { status: 415 });
+  };
+  let result;
+  try {
+    result = await extractChatAttachments([file]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(result, {
+    attachments: [{ type: 'text', text: 'x', name: 'Lab_1.nb', sizeBytes: 1 }],
+    errors: [],
+    warnings: [],
+  });
+});
+
+test('a retry names the files an older message cannot resend', () => {
+  const blobId = `fil_${'e'.repeat(32)}`;
+  const attachments = [
+    { type: 'text', name: 'PDF reading context.txt', context: 'pdf' },
+    { type: 'file', name: 'erlangc-2.m' },
+    { type: 'file', name: 'erlangb-4.m' },
+    { type: 'file', name: 'notes.txt', blobId, format: 'txt' },
+    { type: 'image', name: 'shot.png', dataUrl: 'data:image/png;base64,aGVsbG8=' },
+  ];
+  const names = attachments.map((attachment) => attachment.name);
+  assert.deepEqual(unreusableChatAttachmentNames(attachments, names), ['erlangc-2.m', 'erlangb-4.m']);
+  // A message that recorded names but no attachment entries at all.
+  assert.deepEqual(unreusableChatAttachmentNames(undefined, ['a.m']), ['a.m']);
+  assert.deepEqual(unreusableChatAttachmentNames([], []), []);
+});
+
+test('the garden workspace warns before a retry drops files it cannot resend', () => {
+  const workspace = readFileSync(
+    new URL('../src/app/gardens/[clusterSlug]/workspace-client.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspace, /const retryAttachments = reusableChatAttachments\(previousUser\.attachments\);\s*warnAboutUnreusableAttachments\(previousUser\);/);
+  assert.match(workspace, /const editedAttachments = reusableChatAttachments\(previousUser\.attachments\);\s*warnAboutUnreusableAttachments\(previousUser\);/);
 });

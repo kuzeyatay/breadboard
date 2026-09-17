@@ -80,7 +80,7 @@ test("shared response metadata defaults to an honest token state and can hide ab
   assert.match(responseMeta, /label = "Thinking"/);
   assert.match(responseMeta, /failed \? "Response interrupted" : "Thought"/);
   assert.match(responseMeta, /thinking-shimmer/);
-  assert.match(responseMeta, /↓ counting tokens/);
+  assert.match(responseMeta, /counting tokens/);
   assert.doesNotMatch(responseMeta, /tokens unavailable/);
   assert.match(responseMeta, /usage\?\.totalTokens \?\? totalTokens/);
   assert.match(responseMeta, /showTokenUsage = true/);
@@ -195,16 +195,17 @@ test("every external agent answers the send with a thinking row before its run e
   const session = source("../src/app/components/hermes/use-agent-session.ts");
   const previewBody = session.slice(
     session.indexOf("const previewExternalAgentTurn = useCallback"),
+    session.indexOf("const appendExternalAgentTurn = useCallback"),
   );
-  assert.match(previewBody.slice(0, 4_000), /external-thinking-\$\{clientMessageId\}/);
-  assert.match(previewBody.slice(0, 1_800), /setConnection\("streaming"\)/);
+  assert.match(previewBody, /external-thinking-\$\{clientMessageId\}/);
+  assert.match(previewBody, /setConnection\("streaming"\)/);
   assert.doesNotMatch(session, /showThinking/);
 
   // The row also has to carry the moment the person pressed send. Handed an
   // empty activity list it renders with no elapsed time at all, so the whole
   // launch round trip reads as a turn where nothing happened.
   assert.match(
-    previewBody.slice(0, 2_600),
+    previewBody,
     /setActivities\(\[\s*\{[^}]*kind: "reasoning"[^}]*startedAt: createdAt/,
   );
 

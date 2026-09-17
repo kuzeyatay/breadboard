@@ -23,6 +23,7 @@ const declarations = new Set([
   "ChatTranscript", "buildTranscriptRows", "transcriptRowKey",
   "transcriptRowHeight", "EMPTY_CHAT_ANNOTATIONS",
   "messageSelectionSourceId",
+  "hasRunningExternalAgent",
 ]);
 const statements = source.statements.filter((node) =>
   (ts.isFunctionDeclaration(node) && declarations.has(node.name?.text)) ||
@@ -39,7 +40,7 @@ function visit(node) {
 statements.forEach(visit);
 const imports = [];
 const stubs = [];
-const realComponents = new Set(["ActivityPanel", "AssistantMessageActions", "MessageActionsSlot", "AssistantResponseNotice"]);
+const realComponents = new Set(["ActivityPanel", "AssistantMessageActions", "MessageActionsSlot", "SelectableAssistantMarkdown"]);
 for (const node of source.statements) {
   if (!ts.isImportDeclaration(node) || !node.importClause || node.importClause.isTypeOnly) continue;
   const clause = node.importClause;
@@ -84,6 +85,7 @@ const noop = () => {};
 function render(overrides = {}) {
   return renderToStaticMarkup(React.createElement(ChatTranscript, {
     clusterName: "Test Garden", clusterSlug: "test", chatSessionId: 1,
+    naturalRewriteFor: noop,
     isStreaming: false, loadingChats: false,
     messages: [
       { role: "user", content: "Start research", createdAt: "2026-09-05T09:55:00Z" },
@@ -115,12 +117,17 @@ test("Garden hides response buttons throughout external-agent preparation and co
   assert.equal(actionCount(render({ delegationInFlight: true })), 0);
 });
 
-test("empty and failed launches offer recovery without answer actions", () => {
+test("empty launches stay silent and failed launches retain normal response controls", () => {
   for (const connection of ["idle", "error"]) {
     const html = render({ connection });
-    assert.equal(actionCount(html), 0);
-    assert.match(html, /assistant-response-notice/);
-    assert.match(html, />Retry<\/button>/);
+    assert.equal(actionCount(html), connection === "error" ? 1 : 0);
+    if (connection === "idle") {
+      assert.doesNotMatch(html, /assistant-response-notice|No response was returned|>Retry<\/button>/);
+    } else {
+      assert.match(html, /Response failed\./);
+      assert.match(html, /aria-label="Regenerate response"/);
+      assert.doesNotMatch(html, /assistant-response-notice|>Retry<\/button>|<summary>Details/);
+    }
   }
 });
 

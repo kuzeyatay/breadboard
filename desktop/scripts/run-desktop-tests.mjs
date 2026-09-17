@@ -10,9 +10,14 @@ const COMPILED_TESTS_ROOT = path.join(DESKTOP_ROOT, "dist-tests", "tests");
 /** Native focus and physical desktop checks must not overlap other windows. */
 export const SERIAL_SCREEN_TEST_FILES = Object.freeze([
   "tab-manager.test.js",
+  "browser-address-suggestions-integration.test.js",
+  "browser-context-menu-integration.test.js",
   "browser-downloads-popover-integration.test.js",
   "browser-fullscreen-integration.test.js",
+  "browser-menu-integration.test.js",
   "browser-picture-in-picture-integration.test.js",
+  "google-pip-extension-integration.test.js",
+  "voice-screen-context-integration.test.js",
 ]);
 
 function isDesktopTestFile(name) {

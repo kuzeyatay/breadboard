@@ -58,8 +58,6 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../career-ops/run-manager.ts")).abortRun(userId, runId),
   openexecutive: async (userId, runId) =>
     (await import("../openexecutive/run-manager.ts")).abortRun(userId, runId),
-  open_gym: async (userId, runId) =>
-    (await import("../open-gym/run-manager.ts")).abortRun(userId, runId),
   trading_agents: async (userId, runId) =>
     (await import("../tradingagents/run-manager.ts")).abortRun(userId, runId),
   vibe_trading: async (userId, runId) =>

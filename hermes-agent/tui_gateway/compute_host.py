@@ -274,11 +274,14 @@ class ComputeHost:
                 self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False})
                 return
             agent = session.get("agent")
-            if agent is not None and hasattr(agent, "interrupt"):
-                agent.interrupt()
             with session.get("history_lock", threading.Lock()):
+                session["_notifications_cancelled_at"] = time.time()
                 session["_turn_cancel_requested"] = True
                 session["queued_prompt"] = None
+            if agent is not None and hasattr(agent, "interrupt"):
+                agent.interrupt()
+            from tools.async_delegation import cancel_for_session
+            cancel_for_session(session_key=str(session.get("session_key") or ""), origin_ui_session_id=sid)
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": True, "applied_ns": now_ns()})
         except Exception as exc:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False, "message": str(exc)})
@@ -426,6 +429,8 @@ class ComputeHost:
         session = server._sessions.get(sid)
         if session is not None:
             session["transport"] = self._transport
+            session["tool_access"] = frame.get("tool_access") or {}
+            session["tool_loop_guardrails"] = frame.get("tool_loop_guardrails")
             if frame.get("cols") is not None:
                 session["cols"] = int(frame.get("cols") or 80)
             if frame.get("cwd"):
@@ -514,6 +519,8 @@ class ComputeHost:
                 "transport": self._transport,
             }
         session = server._sessions[sid]
+        session["tool_access"] = frame.get("tool_access") or {}
+        session["tool_loop_guardrails"] = frame.get("tool_loop_guardrails")
         session["transport"] = self._transport
         session["profile_home"] = profile_home or session.get("profile_home")
         if isinstance(frame.get("attached_images"), list):

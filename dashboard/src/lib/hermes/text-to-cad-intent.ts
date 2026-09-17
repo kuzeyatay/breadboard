@@ -46,6 +46,7 @@ const RECENT_CONTEXT =
 
 export interface TextToCadIntentInput {
   text: string;
+  internalContinuation?: boolean;
   surface: HermesSurface;
   authenticated: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
@@ -64,6 +65,7 @@ export function textToCadSkillForRequest(
 ): TextToCadSkill | null {
   const text = input.text.trim();
   if (
+    input.internalContinuation ||
     !input.authenticated ||
     !["dashboard_terminal", "garden_chat"].includes(input.surface) ||
     !text ||

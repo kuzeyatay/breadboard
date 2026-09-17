@@ -2,7 +2,7 @@
 
 // The God's Eye run card, and the framed globe it exists for.
 //
-// Two presentations, like openGym's: the ordinary agent card
+// Two presentations: the ordinary agent card
 // (`bb-agent-run-card` chrome, same as every other agent), and a quiet one for
 // a Super Agent delegation, where the framed view plus a sentence or two IS
 // the answer — no card chrome, no second synthesis turn.

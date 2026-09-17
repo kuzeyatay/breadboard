@@ -3,6 +3,8 @@ import "server-only";
 import type Database from "better-sqlite3";
 
 import db from "../db.ts";
+import { thoughtTopologyAutoUpdateEnabled } from "./preferences.ts";
+import type { RuntimeJobSnapshot } from "../supervisor-control.ts";
 
 export interface ThoughtTopologyRolloutState {
   id: number;
@@ -38,6 +40,27 @@ interface QueueDispatchRow extends TopologyQueueSubmission {
 
 const SUBMISSION_MARKER_PREFIX = "submitting:";
 
+/** Repair queue entries when a worker exits before it can record its result. */
+export function reconcileThoughtTopologyRuntimeJob(
+  clusterId: number,
+  snapshot: RuntimeJobSnapshot,
+  database: Database.Database = db,
+): boolean {
+  if (snapshot.jobType !== "thought-topology" || snapshot.workerKind !== "thought-topology-node" ||
+      snapshot.conversationId !== null ||
+      !["succeeded", "failed", "cancelled", "interrupted", "uncertain", "resource_exhausted"].includes(snapshot.state)) return false;
+  // A successful worker normally commits `done` itself. An orphaned success
+  // needs a content check, since its queued revision may have moved on.
+  const status = snapshot.state === "succeeded" ? "stale" : "failed";
+  return database.prepare(
+    `UPDATE thought_topology_jobs
+        SET status = ?, last_error = ?, updated_at = datetime('now')
+      WHERE cluster_id = ? AND runtime_job_id = ? AND status IN ('queued', 'running')
+        AND EXISTS (SELECT 1 FROM clusters WHERE id = ? AND slug = ? AND thought_topology_enabled = 1)`,
+  ).run(status, status === "failed" ? "Thought Topology background build stopped before completion." : null,
+    clusterId, snapshot.jobId, clusterId, snapshot.gardenId).changes > 0;
+}
+
 function submissionMarker(queueJobId: number, revision: number): string {
   return `${SUBMISSION_MARKER_PREFIX}${queueJobId}:${revision}`;
 }
@@ -72,6 +95,60 @@ export function readThoughtTopologyRolloutState(
         revision: row.thought_topology_revision,
       }
     : null;
+}
+
+/**
+ * How long the read path waits before queueing another automatic repair after
+ * each consecutive failed build, indexed by the number of failures in a row.
+ * A worker that died once (a crash, a Runtime restart) is replaced at once;
+ * the wait starts on the second identical failure. The last entry is the
+ * ceiling.
+ *
+ * A repair queued from a read (an old scoring version, a partial artifact,
+ * drifted content) reproduces the same conditions on every poll until a build
+ * succeeds. When the cause is environmental — the embedding service is down —
+ * every attempt fails identically, and without this each open page relaunched
+ * a 60–90 s worker process tree every drift-check interval, indefinitely
+ * (4,000+ failed rows for one Garden on 2026-09-10). Explicit mutations are
+ * not subject to this: they still queue at once.
+ */
+export const READ_PATH_REPAIR_BACKOFF_MS = [
+  0,
+  2 * 60_000,
+  5 * 60_000,
+  15 * 60_000,
+  60 * 60_000,
+  6 * 60 * 60_000,
+] as const;
+
+/**
+ * Milliseconds until the read path may queue another automatic repair for a
+ * Garden, or 0 when it may do so now. Only an unbroken run of `failed` rows at
+ * the head of the queue counts; any other outcome (done, stale, a live row)
+ * resets the backoff.
+ */
+export function readPathRepairDelayMs(
+  clusterId: number,
+  database: Database.Database = db,
+  now: number = Date.now(),
+): number {
+  const rows = database.prepare(
+    `SELECT status, updated_at
+       FROM thought_topology_jobs
+      WHERE cluster_id = ?
+      ORDER BY id DESC
+      LIMIT ?`,
+  ).all(clusterId, READ_PATH_REPAIR_BACKOFF_MS.length) as { status: string; updated_at: string }[];
+  let failures = 0;
+  for (const row of rows) {
+    if (row.status !== "failed") break;
+    failures += 1;
+  }
+  if (failures === 0) return 0;
+  const failedAt = Date.parse(`${rows[0].updated_at.replace(" ", "T")}Z`);
+  if (!Number.isFinite(failedAt)) return 0;
+  const delay = READ_PATH_REPAIR_BACKOFF_MS[Math.min(failures, READ_PATH_REPAIR_BACKOFF_MS.length) - 1];
+  return Math.max(0, failedAt + delay - now);
 }
 
 export function readThoughtTopologyRolloutStateById(
@@ -141,7 +218,7 @@ function releaseFailedDispatch(
               updated_at = datetime('now')
         WHERE id = ? AND status = 'running' AND runtime_job_id IS NULL`,
     ).run(newerQueue ? "stale" : "queued", message, row.queueJobId);
-  })();
+  }).immediate();
 }
 
 /**
@@ -218,11 +295,14 @@ export async function invalidateThoughtTopologyAfterMutation(
   options: {
     database?: Database.Database;
     submit?: TopologySubmitter;
+    /** Only an explicit, authorized retry may bypass the account preference. */
+    manual?: boolean;
   } = {},
 ): Promise<{ enabled: false } | { enabled: true; revision: number; queueJobId: number }> {
   const database = options.database ?? db;
   const current = readThoughtTopologyRolloutState(gardenSlug, database);
   if (!current?.enabled) return { enabled: false };
+  const automatic = thoughtTopologyAutoUpdateEnabled(current.userId, database);
 
   const queued = database.transaction(() => {
     const updated = database.prepare(
@@ -232,6 +312,10 @@ export async function invalidateThoughtTopologyAfterMutation(
     ).run(current.id, current.revision);
     if (updated.changes !== 1) return null;
     const revision = current.revision + 1;
+    // Keep invalidation visible without creating background work while paused.
+    if (!automatic && !options.manual) {
+      return { revision, queueJobId: 0, runtimeJobId: null };
+    }
     const queued = database.prepare(
       `SELECT id, runtime_job_id
          FROM thought_topology_jobs
@@ -256,7 +340,7 @@ export async function invalidateThoughtTopologyAfterMutation(
         WHERE cluster_id = ? AND revision = ? AND status = 'queued'`,
     ).get(current.id, revision) as { id: number; runtime_job_id: string | null };
     return { revision, queueJobId: row.id, runtimeJobId: row.runtime_job_id };
-  })();
+  }).immediate();
 
   if (!queued) {
     // Another mutation won the compare-and-swap. Let its queued build observe
@@ -265,7 +349,7 @@ export async function invalidateThoughtTopologyAfterMutation(
   }
 
   const submit = options.submit ?? defaultSubmitter;
-  if (!queued.runtimeJobId) {
+  if (queued.queueJobId && !queued.runtimeJobId) {
     void dispatchTopologyQueueRow({
       clusterId: current.id,
       userId: current.userId,
@@ -299,11 +383,13 @@ export async function resubmitQueuedThoughtTopologyJob(
     submit?: TopologySubmitter;
     /** Rows updated more recently than this are assumed to be in flight. */
     minimumAgeMs?: number;
+    manual?: boolean;
   } = {},
 ): Promise<boolean> {
   const database = options.database ?? db;
   const current = readThoughtTopologyRolloutState(gardenSlug, database);
   if (!current?.enabled) return false;
+  if (!options.manual && !thoughtTopologyAutoUpdateEnabled(current.userId, database)) return false;
   const row = database.prepare(
     `SELECT id, revision, status, runtime_job_id, updated_at
        FROM thought_topology_jobs

@@ -140,7 +140,6 @@ hermes-skills/approved/
 # not read by Breadboard at runtime and remain available from their upstreams.
 /harvey-labs/tasks/
 /hyperframes/packages/producer/tests/
-/openGym/media/
 /gods-eye-view/docs/media/
 /PRAXIST/examples/rocket_booster_recovery_rust/vendor/
 /pxpipe/eval/
@@ -242,3 +241,18 @@ graft/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/
+
+# ---------------------------------------------------------------------------
+# Local verification scratch
+#
+# QA screenshot runs, typecheck/test transcripts and one-off probe scripts are
+# written beside the code they verify so they are easy to read while working,
+# then discarded. They are regenerable, frequently hundreds of MB, and never
+# read by Breadboard at runtime.
+# ---------------------------------------------------------------------------
+.tmp-*
+desktop/artifacts/
+/audits/
+# Nested clone kept for reference; committing it would only leave a broken
+# gitlink in the monorepo.
+/clicky/

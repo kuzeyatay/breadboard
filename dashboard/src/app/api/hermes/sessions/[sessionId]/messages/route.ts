@@ -17,7 +17,7 @@ import {
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
-import { resolveDocumentAttachments } from "@/lib/document-attachments-server.ts";
+import { hydrateDocumentAttachments } from "@/lib/document-attachments-server.ts";
 import { retrieveDocumentAttachments } from "@/lib/colpali/retrieval.ts";
 import {
   parseConversationBranchHistory,
@@ -85,7 +85,7 @@ export async function POST(
       // that was never indexed still arrives whole.
       attachments: await retrieveDocumentAttachments(
         userId,
-        resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
+        await hydrateDocumentAttachments(userId, parseChatAttachments(body.attachments), request.signal),
         text,
         process.env,
       ),

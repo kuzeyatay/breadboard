@@ -48,9 +48,10 @@ export function saveAceStepSettings(userId: number, value: Record<string, unknow
   const resonantSlug = value.resonantSlug === undefined ? old.resonantSlug ?? "" : String(value.resonantSlug);
   if (resonantSlug && !/^[a-z0-9_-]{1,48}$/.test(resonantSlug))
     throw new Error("invalid_resonant_connection");
-  if (resonantSlug)
+  if (resonantSlug && resonantSlug !== old.resonantSlug)
     resonantBinding(userId, resonantSlug);
-  const apiKey = value.apiKey === undefined ? old.apiKey : String(value.apiKey);
+  // Never forward the previous endpoint's credential to a newly selected origin.
+  const apiKey = value.apiKey === undefined ? (externalUrl === old.externalUrl ? old.apiKey : "") : String(value.apiKey);
   if (apiKey.length > 2048 || /[\r\n]/.test(apiKey))
     throw new Error("invalid_provider_key");
   fs.mkdirSync(directory(), { recursive: true });

@@ -12,9 +12,6 @@ import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
 
-/** A Telegram chat that has been quiet this long starts a fresh Breadboard chat. */
-const DEFAULT_NEW_CHAT_AFTER_MINUTES = 360;
-
 function trimmedEnv(name: string): string {
   return process.env[name]?.trim() ?? "";
 }
@@ -51,18 +48,6 @@ export function telegramTokenFile(): string {
  */
 export function telegramEnvToken(): string {
   return trimmedEnv("BREADBOARD_TELEGRAM_BOT_TOKEN");
-}
-
-export function telegramNewChatAfterMs(): number {
-  // `Number("")` is 0, so an unset variable must be rejected before parsing —
-  // otherwise the window collapses and every message opens a brand-new chat.
-  const raw = trimmedEnv("BREADBOARD_TELEGRAM_NEW_CHAT_AFTER_MINUTES");
-  const configured = raw ? Number(raw) : Number.NaN;
-  const minutes =
-    Number.isFinite(configured) && configured >= 0
-      ? configured
-      : DEFAULT_NEW_CHAT_AFTER_MINUTES;
-  return Math.round(minutes * 60_000);
 }
 
 export interface TelegramTimings {

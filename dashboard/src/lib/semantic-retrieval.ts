@@ -32,7 +32,7 @@ export interface RetrievalGarden {
   slug: string;
   name: string;
   rootPath: string;
-  knowledge: ClusterKnowledge;
+  knowledge: Pick<ClusterKnowledge, 'nodes'>;
 }
 
 export interface RetrievalChunk {
@@ -493,14 +493,14 @@ function retrievalChunksForNode(input: {
  * ChatMock's local model, which needs neither. `BREADBOARD_EMBEDDINGS=off`
  * restores the old behaviour deliberately rather than by omission.
  */
-export function embeddingProviderFromEnv(): EmbeddingProvider | null {
+export function embeddingProviderFromEnv(timeoutMs = EMBED_TIMEOUT_MS): EmbeddingProvider | null {
   const settings = embeddingSettings();
   if (!settings.model) return null;
   return {
     model: settings.model,
     async embed(texts: string[]) {
       if (texts.length === 0) return [];
-      const { vectors } = await embedTexts(texts, settings, { timeoutMs: EMBED_TIMEOUT_MS });
+      const { vectors } = await embedTexts(texts, settings, { timeoutMs });
       return vectors;
     },
   };
@@ -579,12 +579,23 @@ export async function indexRetrievalGarden(input: {
     list.push(chunk);
     chunksByPage.set(chunk.pageRelPath, list);
   }
-  const currentPageHashes = database.prepare(
-    'SELECT page_hash FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ? LIMIT 1',
-  );
-  const deleteFts = database.prepare(
-    'DELETE FROM semantic_chunks_fts WHERE id IN (SELECT id FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ?)',
-  );
+  const currentRows = database.prepare(
+    'SELECT id, page_rel_path, page_hash FROM semantic_chunks WHERE garden_slug = ?',
+  ).all(input.garden.slug) as Array<{ id: string; page_rel_path: string; page_hash: string }>;
+  const currentPageHashes = new Map(currentRows.map((row) => [row.page_rel_path, row.page_hash]));
+  const changed = [...chunksByPage.values()].filter((page) => currentPageHashes.get(page[0].pageRelPath) !== page[0].pageHash);
+  const affectedPaths = new Set([
+    ...changed.map((page) => page[0].pageRelPath),
+    ...currentRows.filter((row) => !chunksByPage.has(row.page_rel_path)).map((row) => row.page_rel_path),
+  ]);
+  const deletedIds = new Set(currentRows.filter((row) => affectedPaths.has(row.page_rel_path)).map((row) => row.id));
+  // FTS id/garden_slug are UNINDEXED. Deleting by id for every page scans the
+  // entire corpus thousands of times, blocking every dashboard request. Find
+  // affected rowids once, then perform indexed deletes in one transaction.
+  const ftsRows = deletedIds.size ? (database.prepare(
+    'SELECT rowid, id FROM semantic_chunks_fts WHERE garden_slug = ?',
+  ).all(input.garden.slug) as Array<{ rowid: number; id: string }>).filter((row) => deletedIds.has(row.id)) : [];
+  const deleteFts = database.prepare('DELETE FROM semantic_chunks_fts WHERE rowid = ?');
   const deleteChunks = database.prepare(
     'DELETE FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ?',
   );
@@ -601,11 +612,10 @@ export async function indexRetrievalGarden(input: {
       (id, garden_slug, title, heading, content, concepts, claims, anchors)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  let changedPages = 0;
-  const writePage = database.transaction((pageChunks: Array<RetrievalChunk & { pageHash: string; conceptTerms: string[] }>) => {
-    const first = pageChunks[0];
-    deleteFts.run(first.gardenSlug, first.pageRelPath);
-    deleteChunks.run(first.gardenSlug, first.pageRelPath);
+  database.transaction(() => {
+    for (const row of ftsRows) deleteFts.run(row.rowid);
+    for (const relPath of affectedPaths) deleteChunks.run(input.garden.slug, relPath);
+    for (const pageChunks of changed) {
     for (const chunk of pageChunks) {
       insertChunk.run(
         chunk.id, chunk.gardenSlug, chunk.gardenName, chunk.pageSlug, chunk.pageRelPath,
@@ -621,25 +631,9 @@ export async function indexRetrievalGarden(input: {
         chunk.conceptTerms.join(' '), chunk.claimTexts.join(' '), chunk.evidenceAnchors.join(' '),
       );
     }
-  });
-  for (const pageChunks of chunksByPage.values()) {
-    const existing = currentPageHashes.get(
-      input.garden.slug,
-      pageChunks[0].pageRelPath,
-    ) as { page_hash?: string } | undefined;
-    if (existing?.page_hash === pageChunks[0].pageHash) continue;
-    writePage(pageChunks);
-    changedPages += 1;
-  }
-  const validPages = new Set(chunksByPage.keys());
-  const stale = database.prepare(
-    'SELECT DISTINCT page_rel_path FROM semantic_chunks WHERE garden_slug = ?',
-  ).all(input.garden.slug) as Array<{ page_rel_path: string }>;
-  for (const row of stale) {
-    if (validPages.has(row.page_rel_path)) continue;
-    deleteFts.run(input.garden.slug, row.page_rel_path);
-    deleteChunks.run(input.garden.slug, row.page_rel_path);
-  }
+    }
+  })();
+  const changedPages = changed.length;
 
   let embeddingWarning: string | undefined;
   if (input.embeddingProvider) {
@@ -730,17 +724,20 @@ export async function retrieveGraphRag(input: {
   gardens: RetrievalGarden[];
   database?: SqliteDatabase;
   embeddingProvider?: EmbeddingProvider | null;
+  /** Interactive tools use existing vectors; bulk embedding belongs off the request path. */
+  indexEmbeddings?: boolean;
+  embeddingTimeoutMs?: number;
   maxChunks?: number;
   contextBudget?: number;
 }): Promise<RetrievalResult> {
   const database = input.database ?? db;
   const provider = input.embeddingProvider === undefined
-    ? embeddingProviderFromEnv()
+    ? embeddingProviderFromEnv(input.embeddingTimeoutMs)
     : input.embeddingProvider;
   let indexedChunks = 0;
   let embeddingWarning: string | undefined;
   for (const garden of input.gardens) {
-    const indexed = await indexRetrievalGarden({ garden, database, embeddingProvider: provider });
+    const indexed = await indexRetrievalGarden({ garden, database, embeddingProvider: input.indexEmbeddings === false ? null : provider });
     indexedChunks += indexed.indexedChunks;
     if (indexed.embeddingWarning) embeddingWarning = indexed.embeddingWarning;
   }

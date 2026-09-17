@@ -240,6 +240,12 @@ test("the Learn route and workspace choose additive planning for new material", 
     executorSource,
     /status\.job\.confirmedLearningMapId === status\.confirmedLearningMapId/,
   );
+  // A cancelled generation attempt clears its confirmedLearningMapId, so the
+  // decision must also read the confirmed map's own planning job (2026-09-16).
+  assert.match(
+    executorSource,
+    /confirmedLearningMapPlannedAsUpdate\(\s*request\.gardenId,\s*status\.confirmedLearningMapId,?\s*\)/,
+  );
   assert.match(
     learnSource,
     /Insert each new unit at the pedagogically best position among the existing units; do not merely append/,

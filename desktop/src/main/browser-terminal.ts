@@ -6,6 +6,7 @@ import { capturePagePreservingVisibility } from "./capture-page";
 
 export interface BrowserTerminalAccess { port: number; token: string }
 type Target = () => WebContents | null;
+type ContextOptions = { source?: "voice"; appTarget?: Target };
 const TTL = 30 * 60_000;
 
 async function bounded<T>(operation: Promise<T>): Promise<T> {
@@ -21,18 +22,20 @@ async function bounded<T>(operation: Promise<T>): Promise<T> {
 export class BrowserTerminalBridge {
   private server: http.Server | null = null;
   private starting: Promise<number> | null = null;
-  private grants = new Map<string, { target: Target; expires: number }>();
+  private grants = new Map<string, { target: Target; expires: number; options: ContextOptions }>();
 
-  async grant(target: Target): Promise<BrowserTerminalAccess> {
+  async grant(target: Target, options: ContextOptions = {}): Promise<BrowserTerminalAccess> {
     for (const [key, grant] of this.grants) {
       if (grant.expires < Date.now() || !grant.target()) this.grants.delete(key);
     }
     if (this.grants.size >= 128) throw new Error("Too many browser sessions. Try again shortly.");
     const port = await this.start();
     const token = randomBytes(32).toString("hex");
-    this.grants.set(token, { target, expires: Date.now() + TTL });
+    this.grants.set(token, { target, expires: Date.now() + TTL, options });
     return { port, token };
   }
+
+  revoke(access: BrowserTerminalAccess): void { this.grants.delete(access.token); }
 
   private start(): Promise<number> {
     if (this.starting) return this.starting;
@@ -72,8 +75,6 @@ export class BrowserTerminalBridge {
       const token = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
       const grant = token ? this.grants.get(token) : undefined;
       if (!grant || grant.expires < Date.now()) { send(403, { error: "Browser access expired. Send a new message from the browser Terminal." }); return; }
-      const target = grant.target();
-      if (!target || target.isDestroyed()) { send(409, { error: "The linked browser page is no longer open." }); return; }
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of req) {
@@ -85,6 +86,15 @@ export class BrowserTerminalBridge {
       if (!body || !["read", "screenshot", "scroll"].includes(body.action)) {
         send(400, { error: "Use read, screenshot, or scroll." }); return;
       }
+      if (body.surface !== undefined && !["page", "app"].includes(body.surface)) {
+        send(400, { error: "Choose page or app." }); return;
+      }
+      if (body.surface === "app" && grant.options.source !== "voice") {
+        send(403, { error: "This conversation can only access its linked browser page." }); return;
+      }
+      const resolveTarget = body.surface === "app" ? grant.options.appTarget ?? grant.target : grant.target;
+      const target = resolveTarget();
+      if (!target || target.isDestroyed()) { send(409, { error: "The linked browser page is no longer open." }); return; }
       const url = target.getURL();
       if (!/^https?:\/\//i.test(url)) { send(409, { error: "Open a web page in this browser tab first." }); return; }
       let navigated = false;
@@ -101,18 +111,43 @@ export class BrowserTerminalBridge {
           window.scrollTo({top: y, behavior: 'instant'});
         })()`));
       }
-      const page = await bounded(target.executeJavaScript(`(() => ({
-        text: (document.body?.innerText || '').slice(0, 24000),
+      const readPage = (contents: WebContents) => bounded(contents.executeJavaScript(`(() => {
+        let text = document.body?.innerText || '';
+        if (${grant.options.source === "voice"}) {
+          // Voice describes the viewport, including the current end of a long
+          // Terminal conversation. Off-screen history must not consume its budget.
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const visible = []; let node, visited = 0, length = 0;
+          while ((node = walker.nextNode()) && visited++ < 20000 && length < 24000) {
+            const parent = node.parentElement;
+            if (!node.textContent.trim() || !parent || parent.closest('script,style,noscript,[hidden],[aria-hidden="true"]') || !parent.checkVisibility()) continue;
+            const range = document.createRange(); range.selectNodeContents(node);
+            const rect = range.getBoundingClientRect();
+            if (rect.bottom <= 0 || rect.top >= innerHeight || rect.right <= 0 || rect.left >= innerWidth) continue;
+            visible.push(node.textContent.trim()); length += node.textContent.length;
+          }
+          text = visible.join('\\n');
+        }
+        return {
+        text: text.slice(0, 24000),
         selection: (window.getSelection()?.toString() || '').slice(0, 8000),
         scrollY: window.scrollY, viewportHeight: innerHeight,
         pageHeight: document.documentElement.scrollHeight
-      }))()`));
+      }; })()`));
+      const page = await readPage(target);
+      // Voice sees the page and the trusted app/Terminal beside it. Only the
+      // requested surface produces image bytes, using the existing vision path.
+      const appTarget = grant.options.source === "voice" ? grant.options.appTarget?.() : null;
+      const appUrl = appTarget?.getURL();
+      const appPage = appTarget && appTarget !== target ? {
+        ...await readPage(appTarget), url: appUrl, title: appTarget.getTitle(),
+      } : undefined;
       let screenshot: { dataUrl: string; width: number; height: number } | undefined;
       if (body.action === "screenshot") {
         // A newly attached view may not have a compositor surface yet.
         const captureDeadline = Date.now() + 1_000;
         let capture = await bounded(capturePagePreservingVisibility(target));
-        while (capture.isEmpty() && Date.now() < captureDeadline && !navigated && grant.target() === target) {
+        while (capture.isEmpty() && Date.now() < captureDeadline && !navigated && resolveTarget() === target) {
           await new Promise(resolve => setTimeout(resolve, 50));
           capture = await bounded(capturePagePreservingVisibility(target));
         }
@@ -124,10 +159,13 @@ export class BrowserTerminalBridge {
         screenshot = { dataUrl: `data:image/jpeg;base64,${capture.toJPEG(80).toString("base64")}`, ...capture.getSize() };
       }
       // Never label a capture with a URL from a document it has already left.
-      if (navigated || grant.target() !== target || target.isDestroyed() || target.getURL() !== url) {
+      if (this.grants.get(token!) !== grant || navigated || resolveTarget() !== target || target.isDestroyed() || target.getURL() !== url
+        || (appTarget && (grant.options.appTarget?.() !== appTarget || appTarget.isDestroyed() || appTarget.getURL() !== appUrl))) {
         send(409, { error: "The browser navigated during capture. Read it again." }); return;
       }
-      send(200, { url, title: target.getTitle(), capturedAt: new Date().toISOString(), ...page, ...(screenshot ? { screenshot } : {}) });
+      send(200, { url, title: target.getTitle(), capturedAt: new Date().toISOString(), ...page,
+        ...(grant.options.source ? { source: grant.options.source, surface: body.surface ?? "page", app: appPage } : {}),
+        ...(screenshot ? { screenshot } : {}) });
     } catch (error) {
       send(400, { error: error instanceof Error ? error.message : "Browser capture failed." });
     } finally {

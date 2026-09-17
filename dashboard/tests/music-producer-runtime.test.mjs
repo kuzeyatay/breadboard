@@ -57,7 +57,7 @@ test("SSE replays sequenced events after the cursor and closes on a durable term
 });
 test("both surfaces retain private delegation observers, explicit launch identity and scoped source editing",()=>{
   const terminal=read('dashboard/src/app/components/hermes/agent-runtime-panel.tsx'),garden=read('dashboard/src/app/gardens/[clusterSlug]/workspace-client.tsx');
-  for(const source of [terminal,garden]){assert.match(source,/InlineMusicProducerRun/);assert.match(source,/persistedOutcome=.*externalAgentOutcome/);assert.match(source,/externalAgentCardContent\(storedMessage\)/);assert.match(source,/delegatedAgentRun &&\s+!(?:message|msg)\.openGymRun &&\s+!(?:message|msg)\.godsEyeRun/);}
+  for(const source of [terminal,garden]){assert.match(source,/InlineMusicProducerRun/);assert.match(source,/persistedOutcome=.*externalAgentOutcome/);assert.match(source,/externalAgentCardContent\(storedMessage\)/);assert.match(source,/delegatedAgentRun &&\s+!(?:message|msg)\.godsEyeRun/);}
   const launcher=read('dashboard/src/app/components/hermes/dashboard-agent-terminal.tsx');
   assert.match(launcher,/launchMusicProducerRun\(request\.brief, selected, request\)/);assert.match(launcher,/musicProducerUserMessage/);
   assert.match(garden,/case "music-producer"/);assert.match(garden,/delegatedAgentRun/);

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -15,7 +15,10 @@ const MAX_CHECKPOINT_BYTES = 8 * 1024;
 const MAX_STOP_RECORD_BYTES = 1024;
 const MAX_FAILURE_MESSAGE_BYTES = 8 * 1024;
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
-const MAX_PROGRESS_CHECKPOINTS = 512;
+// VLM parsing emits at least one progress update per PDF page, then AnyDoc,
+// extraction, persistence, and publication emit more. Keep the write budget
+// bounded while preserving live checkpoints for multi-thousand-page books.
+export const MAX_PROGRESS_CHECKPOINTS = 16_384;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const SANITIZED_RUNTIME_FAILURE_MESSAGE = "Runtime job execution failed.";
 const PUBLIC_INGEST_VISION_WARNING =
@@ -24,6 +27,16 @@ const PUBLIC_INGEST_DOCUMENT_WARNING =
   "Some document content or page previews could not be processed.";
 const PUBLIC_INGEST_MAP_WARNING =
   "Map generation failed, so the source was saved without extracted lesson topics. You can retry with Learn after upload.";
+// The one failure a person can act on without reading the runtime's private
+// output: every model route refused for quota or credits. Fixed wording, like
+// the vision warning, so the sanitized boundary still holds.
+const PUBLIC_INGEST_MODEL_QUOTA_FAILURE =
+  "The selected model and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
+const INGEST_RECOVERY_PROTOCOL_VERSION = 1;
+const INGEST_RECOVERY_MANIFEST_FILE = "recovery.json";
+const INGEST_RECOVERY_SOURCE_FILE = "source";
+const MAX_INGEST_RECOVERY_STEP_BYTES = 4 * 1024;
+const INGEST_RECOVERY_ID = /^rec_[0-9a-f]{32}$/u;
 const IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const VLM_TASKS = new Set([
@@ -45,6 +58,57 @@ const ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 
 function fail(message) {
   throw new Error(message);
+}
+
+function waitForRetryDelay(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Document ingestion was canceled."));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error("Document ingestion was canceled."));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function retryGardenMutationBusy(
+  action,
+  {
+    signal,
+    retryDelayMs = 1_000,
+    onBusy = () => {},
+    wait = waitForRetryDelay,
+  } = {},
+) {
+  if (typeof action !== "function") {
+    fail("The Garden mutation retry action is invalid.");
+  }
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1) {
+    fail("The Garden mutation retry delay is invalid.");
+  }
+  let reportedBusy = false;
+  for (;;) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Document ingestion was canceled.");
+    }
+    try {
+      return await action();
+    } catch (error) {
+      if (error?.code !== "GARDEN_MUTATION_BUSY") throw error;
+      if (!reportedBusy) {
+        reportedBusy = true;
+        onBusy(error);
+      }
+      await wait(retryDelayMs, signal);
+    }
+  }
 }
 
 function triggerTestIngestionFault(point) {
@@ -969,18 +1033,164 @@ function createProgressReporter(launch, events, isStopped) {
     tokenUsage = nextUsage;
     persist();
   };
-  const failed = (error) => {
+  const failed = (error, classification = {}) => {
     if (isStopped()) return;
     failure = {
-      error: SANITIZED_RUNTIME_FAILURE_MESSAGE,
+      error: classification.providerQuota === true
+        ? PUBLIC_INGEST_MODEL_QUOTA_FAILURE
+        : SANITIZED_RUNTIME_FAILURE_MESSAGE,
       visionError:
         error instanceof Error && error.name === "ChatmockVisionError"
           ? PUBLIC_INGEST_VISION_WARNING
           : null,
+      // Names the retained copy of this upload (see retainIngestRecovery) so
+      // the failed row can offer Resume; a bare id, never a path.
+      recoveryId:
+        typeof classification.recoveryId === "string" &&
+        INGEST_RECOVERY_ID.test(classification.recoveryId)
+          ? classification.recoveryId
+          : null,
     };
     persist(true);
   };
-  return { note, usage, failed };
+  const currentStep = () => step;
+  return { note, usage, failed, currentStep };
+}
+
+function retireIngestRecoveryQuietly(launch) {
+  try {
+    retireIngestRecovery({ launch });
+  } catch (error) {
+    console.error(
+      "[runtime-v2-ingestion-worker] The retained upload could not be retired:",
+      error,
+    );
+  }
+}
+
+export function ingestRecoveryRoot(dataRoot, gardenId) {
+  return path.join(dataRoot, "runtime", "ingest-recovery", gardenId);
+}
+
+function removeIngestRecoveryRecordsForDigest(root, sha256) {
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !INGEST_RECOVERY_ID.test(entry.name)) continue;
+    const directory = path.join(root, entry.name);
+    let manifest;
+    try {
+      manifest = JSON.parse(
+        fs.readFileSync(path.join(directory, INGEST_RECOVERY_MANIFEST_FILE), "utf8"),
+      );
+    } catch {
+      continue;
+    }
+    if (isRecord(manifest) && manifest.sha256 === sha256) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+}
+
+/**
+ * Retire any retained copy of this document once it is safely in the garden.
+ *
+ * Retention is keyed by document digest, not by job, so a person who simply
+ * uploads the same file again (rather than pressing Resume) must not be left
+ * with a stale "Upload kept" row offering to resume work that already
+ * finished. Best effort: a commit is never undone because cleanup failed.
+ */
+export function retireIngestRecovery({ launch }) {
+  const gardenId = launch.executionScope.gardenId;
+  if (typeof gardenId !== "string" || !gardenId) return;
+  removeIngestRecoveryRecordsForDigest(
+    ingestRecoveryRoot(launch.dataRoot, gardenId),
+    launch.inputBlob.sha256,
+  );
+}
+
+/**
+ * Keep a failed upload so the person can resume it from the garden instead of
+ * uploading the document again. Runtime deletes the staged blob as soon as the
+ * job is terminal, and the VLM and concept checkpoints the executor wrote are
+ * keyed by these exact bytes, so without this copy an hour of OCR is orphaned
+ * the moment concept extraction fails. The record holds the bytes, the exact
+ * request, and the public failure so the garden can list and replay it. One
+ * record per document per garden: a newer failure replaces the older copy.
+ *
+ * Returns the recovery id, or null when nothing was retained. Callers treat
+ * this as best effort: the job reports its failure either way.
+ */
+export function retainIngestRecovery({
+  launch,
+  blobPath,
+  publicMessage,
+  failureKind,
+  lastStep,
+  nowMs = Date.now(),
+}) {
+  const gardenId = launch.executionScope.gardenId;
+  if (typeof gardenId !== "string" || !gardenId) return null;
+  const root = ingestRecoveryRoot(launch.dataRoot, gardenId);
+  fs.mkdirSync(root, { recursive: true });
+  removeIngestRecoveryRecordsForDigest(root, launch.inputBlob.sha256);
+  const recoveryId = `rec_${randomBytes(16).toString("hex")}`;
+  const directory = path.join(root, recoveryId);
+  fs.mkdirSync(directory, { recursive: false });
+  try {
+    const pendingSource = path.join(directory, `${INGEST_RECOVERY_SOURCE_FILE}.pending`);
+    fs.copyFileSync(blobPath, pendingSource, fs.constants.COPYFILE_EXCL);
+    const copied = fs.statSync(pendingSource);
+    if (copied.size !== launch.inputBlob.sizeBytes) {
+      fail("The retained ingestion source size does not match the staged blob.");
+    }
+    fsyncRuntimeV2OutputFile(pendingSource);
+    fs.renameSync(pendingSource, path.join(directory, INGEST_RECOVERY_SOURCE_FILE));
+    const manifest = {
+      protocolVersion: INGEST_RECOVERY_PROTOCOL_VERSION,
+      recoveryId,
+      gardenId,
+      userId: launch.executionScope.userId,
+      filename: launch.inputBlob.displayName,
+      mediaType: launch.inputBlob.mediaType,
+      sizeBytes: launch.inputBlob.sizeBytes,
+      sha256: launch.inputBlob.sha256,
+      request: {
+        sourceLabel: launch.request.sourceLabel,
+        isHandwriting: launch.request.isHandwriting,
+        parseWithVlm: launch.request.parseWithVlm,
+        parseWithAnydoc: launch.request.parseWithAnydoc,
+        vlmTask: launch.request.vlmTask,
+        generateMap: launch.request.generateMap,
+        model: launch.request.model,
+      },
+      failedJobId: launch.identity.jobId,
+      failedAt: nowMs,
+      failure: {
+        message: publicMessage,
+        kind: failureKind === "provider-quota" ? "provider-quota" : "runtime",
+      },
+      lastStep: boundedUtf8(
+        typeof lastStep === "string" && lastStep ? lastStep : "",
+        MAX_INGEST_RECOVERY_STEP_BYTES,
+      ),
+      resumedJobId: null,
+      resumedAt: null,
+    };
+    atomicWrite(
+      path.join(directory, INGEST_RECOVERY_MANIFEST_FILE),
+      Buffer.from(`${JSON.stringify(manifest)}\n`, "utf8"),
+      false,
+    );
+    return recoveryId;
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export function serializeRuntimeV2DocumentIngestionResult({
@@ -988,15 +1198,37 @@ export function serializeRuntimeV2DocumentIngestionResult({
   completionSequence,
   value,
 }) {
-  const bytes = Buffer.from(
-    `${JSON.stringify({
-      protocolVersion: PROTOCOL_VERSION,
-      identity,
-      completionSequence,
-      result: sanitizeRuntimeV2IngestionResultWarnings(value),
-    })}\n`,
-    "utf8",
-  );
+  const encode = (result) =>
+    Buffer.from(
+      `${JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        identity,
+        completionSequence,
+        result,
+      })}\n`,
+      "utf8",
+    );
+  const durableResult = sanitizeRuntimeV2IngestionResultWarnings(value);
+  let bytes = encode(durableResult);
+  // The complete safety report is already stored on the source note and the
+  // complete topic set is already stored as garden pages. Keep these optional
+  // convenience arrays in ordinary results, but shed them in that order when a
+  // pathological document would otherwise turn a successful garden mutation
+  // into a protocol failure at the 1 MiB durable-result boundary.
+  if (
+    bytes.byteLength > MAX_RESULT_BYTES &&
+    Array.isArray(durableResult.hiddenContentFindings)
+  ) {
+    delete durableResult.hiddenContentFindings;
+    bytes = encode(durableResult);
+  }
+  if (
+    bytes.byteLength > MAX_RESULT_BYTES &&
+    Array.isArray(durableResult.topics)
+  ) {
+    delete durableResult.topics;
+    bytes = encode(durableResult);
+  }
   if (bytes.byteLength < 1 || bytes.byteLength > MAX_RESULT_BYTES) {
     fail("The durable ingestion result exceeded its bounded envelope.");
   }
@@ -1087,6 +1319,9 @@ async function runRuntimeV2DocumentIngestionWorker() {
   };
   const startedAt = Date.now();
   let progress = null;
+  // Set once the library modules load; a failure before that point predates
+  // any model call and keeps the sanitized message.
+  let isProviderQuotaOrCreditError = null;
 
   try {
     heartbeat = events.startHeartbeat();
@@ -1153,6 +1388,9 @@ async function runRuntimeV2DocumentIngestionWorker() {
     ) {
       fail("The Runtime V2 ingestion execution exports are unavailable.");
     }
+    if (typeof knowledgeModule.isProviderQuotaOrCreditError === "function") {
+      isProviderQuotaOrCreditError = knowledgeModule.isProviderQuotaOrCreditError;
+    }
     quartzPublishModule.installSealedRuntimeV2QuartzPublishExecutor(
       createSealedRuntimeV2QuartzPublishExecutor({
         identity: launch.identity,
@@ -1189,11 +1427,19 @@ async function runRuntimeV2DocumentIngestionWorker() {
         contentPath,
         launch.executionScope.gardenId,
       );
-    const recoveries = knowledgeModule.recoverKnowledgeWriteTransactions(
-      contentPath,
-      launch.executionScope.gardenId,
-      transactionRegistryRoot,
-      path.join(launch.dataRoot, "runtime", "jobs"),
+    const recoveries = await retryGardenMutationBusy(
+      () =>
+        knowledgeModule.recoverKnowledgeWriteTransactions(
+          contentPath,
+          launch.executionScope.gardenId,
+          transactionRegistryRoot,
+          path.join(launch.dataRoot, "runtime", "jobs"),
+        ),
+      {
+        signal: abortController.signal,
+        onBusy: () =>
+          progress.note("Waiting for another Garden update to finish…"),
+      },
     );
     const journalRecovery = recoveries.find(
       (recovery) => recovery.transactionId === launch.identity.jobId,
@@ -1255,6 +1501,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
       knowledgeWriteTransaction.commit();
       knowledgeWriteTransaction.seal();
       triggerTestIngestionFault("after-garden-commit");
+      retireIngestRecoveryQuietly(launch);
       events.complete(launch.resultRelativePath);
       completed = true;
       triggerTestIngestionFault("after-terminal-event");
@@ -1265,14 +1512,22 @@ async function runRuntimeV2DocumentIngestionWorker() {
         "The durable ingestion result exists without a committed garden transaction.",
       );
     }
-    knowledgeWriteTransaction = knowledgeModule.createKnowledgeWriteTransaction(
-      contentPath,
-      launch.executionScope.gardenId,
+    knowledgeWriteTransaction = await retryGardenMutationBusy(
+      () =>
+        knowledgeModule.createKnowledgeWriteTransaction(
+          contentPath,
+          launch.executionScope.gardenId,
+          {
+            registryRoot: transactionRegistryRoot,
+            transactionId: launch.identity.jobId,
+            resultPath: launch.resultPath,
+            retainCommittedJournal: true,
+          },
+        ),
       {
-        registryRoot: transactionRegistryRoot,
-        transactionId: launch.identity.jobId,
-        resultPath: launch.resultPath,
-        retainCommittedJournal: true,
+        signal: abortController.signal,
+        onBusy: () =>
+          progress.note("Waiting for another Garden update to finish…"),
       },
     );
     knowledgeWriteTransactionOutcome = "active";
@@ -1394,6 +1649,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
     atomicWrite(launch.resultPath, result, true);
     knowledgeWriteTransaction.commit();
     knowledgeWriteTransaction.seal();
+    retireIngestRecoveryQuietly(launch);
     events.complete(launch.resultRelativePath);
     completed = true;
     triggerTestIngestionFault("after-terminal-event");
@@ -1411,7 +1667,34 @@ async function runRuntimeV2DocumentIngestionWorker() {
           "Document ingestion failed and its garden rollback was incomplete.",
         )
       : error;
-    progress?.failed(failure);
+    let providerQuota = false;
+    try {
+      providerQuota = isProviderQuotaOrCreditError?.(failure) === true;
+    } catch {
+      // Classification is advisory; the sanitized message remains the default.
+    }
+    let recoveryId = null;
+    if (openedBlob) {
+      // Before the terminal event: Runtime may delete the staged blob as soon
+      // as it learns the job failed.
+      try {
+        recoveryId = retainIngestRecovery({
+          launch,
+          blobPath: openedBlob.blobPath,
+          publicMessage: providerQuota
+            ? PUBLIC_INGEST_MODEL_QUOTA_FAILURE
+            : SANITIZED_RUNTIME_FAILURE_MESSAGE,
+          failureKind: providerQuota ? "provider-quota" : "runtime",
+          lastStep: progress?.currentStep() ?? "",
+        });
+      } catch (retentionError) {
+        console.error(
+          "[runtime-v2-ingestion-worker] The failed upload could not be retained for recovery:",
+          retentionError,
+        );
+      }
+    }
+    progress?.failed(failure, { providerQuota, recoveryId });
     events.failed("INGEST_WORKER_FAILED", SANITIZED_RUNTIME_FAILURE_MESSAGE);
     process.exitCode = 1;
     console.error(

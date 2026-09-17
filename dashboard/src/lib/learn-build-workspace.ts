@@ -22,6 +22,7 @@ import type { Dirent, Stats } from "node:fs";
 import os from "node:os";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import crypto from "node:crypto";
+import { isGardenUserPath, isGardenUserOrNavigationPath } from "./garden-user-content.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import {
   isTransientFileOpenError,
@@ -47,6 +48,7 @@ export interface LearnBuildWorkspace {
   /** Fingerprint of every durable input copied from the repository. Promotion
    * is refused when it changes while generation is running. */
   durableInputFingerprint: string;
+  separateUserContent?: boolean;
 
   /** Byte-level identity captured from the authoritative source-anchor ledger
    * while this isolated workspace was seeded. Generation re-verifies it before
@@ -144,6 +146,13 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "scoped-repair.json",
   "scoped-repair.md",
   "semantic-migration.json",
+  // Derived knowledge-graph caches. The topology builder rewrites them on its
+  // own schedule; counting them made a rollback's "garden changed while Learn
+  // prepared its candidate" check fail repeatedly (telecom-1, 2026-09-16).
+  "thought-topology.json",
+  "thought-topology-cache.json",
+  "thought-topology-build-cache.json",
+  "thought-topology-build-journal.jsonl",
   "source-anchor-evidence.json",
   "source-anchor-evidence.md",
   "source-anchor-migration.json",
@@ -603,6 +612,7 @@ export function createLearnBuildWorkspace(input: {
   /** Defaults to `staging`. Production uses the real garden slug so helpers
    * receiving a content root continue to resolve `<root>/<gardenSlug>`. */
   stagingDirectoryName?: string;
+  separateUserContent?: boolean;
 }): LearnBuildWorkspace {
   const buildId = `build_${Date.now().toString(36)}_${shortHash(`${input.gardenSlug}:${input.jobId}:${input.sourceSetFingerprint}`)}`;
   const stagingDirectoryName = input.stagingDirectoryName?.trim() || "staging";
@@ -612,6 +622,7 @@ export function createLearnBuildWorkspace(input: {
   );
   const durableInputFingerprint = fingerprintDurableGardenState(
     input.repositoryGardenDir,
+    input.separateUserContent,
   );
   const resumableWorkspace = input.workspaceRoot === undefined
     ? findLatestCompatibleRetainedLearnBuildWorkspace({
@@ -640,7 +651,7 @@ export function createLearnBuildWorkspace(input: {
   try {
     if (resumableWorkspace) {
       copyTree(resumableWorkspace.stagingGardenDir, stagingGardenDir);
-      synchronizeDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+      synchronizeDurableInputs(input.repositoryGardenDir, stagingGardenDir, input.separateUserContent);
       // Acceptance is evidence about the exact candidate that produced it.
       // A resumed workspace may reuse pages and visual checkpoints, but it must
       // earn its own deterministic/critic decision before that receipt can
@@ -650,7 +661,7 @@ export function createLearnBuildWorkspace(input: {
         { force: true },
       );
     } else {
-      seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+      seedDurableInputs(input.repositoryGardenDir, stagingGardenDir, input.separateUserContent);
       if (input.mode === "update") {
         seedIncrementalGeneratedAssets(
           input.repositoryGardenDir,
@@ -658,9 +669,10 @@ export function createLearnBuildWorkspace(input: {
         );
       }
     }
-    const copiedInputFingerprint = fingerprintDurableGardenState(stagingGardenDir);
+    const copiedInputFingerprint = fingerprintDurableGardenState(stagingGardenDir, input.separateUserContent);
     const currentInputFingerprint = fingerprintDurableGardenState(
       input.repositoryGardenDir,
+      input.separateUserContent,
     );
     if (
       durableInputFingerprint !== currentInputFingerprint ||
@@ -694,6 +706,7 @@ export function createLearnBuildWorkspace(input: {
     contractFingerprint: input.contractFingerprint,
     sourceSetFingerprint: input.sourceSetFingerprint,
     durableInputFingerprint,
+    separateUserContent: input.separateUserContent === true,
     authoritativeSourceAnchorLedger,
     createdAt: new Date().toISOString(),
     lifecycle: "active",
@@ -721,7 +734,7 @@ export function createLearnBuildWorkspace(input: {
 /** Copy durable inputs (sources, config, approved non-learning files, and the
  * canonical source-extraction records) into the staging garden. The old
  * generated learning tree and every disposable projection are excluded. */
-export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir: string): {
+export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir: string, separateUserContent = false): {
   seeded: string[];
   skipped: string[];
 } {
@@ -746,7 +759,7 @@ export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir:
       );
       continue;
     }
-    if (DISPOSABLE_TOP_LEVEL.has(normalizedName)) {
+    if (DISPOSABLE_TOP_LEVEL.has(normalizedName) || (separateUserContent && isGardenUserPath(entry.name))) {
       skipped.push(entry.name);
       continue;
     }
@@ -769,6 +782,7 @@ export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir:
 function synchronizeDurableInputs(
   repositoryGardenDir: string,
   stagingGardenDir: string,
+  separateUserContent = false,
 ): void {
   const removeExactStagedEntry = (entryPath: string): void => {
     if (!pathIsWithinOrEqual(entryPath, stagingGardenDir)) {
@@ -840,7 +854,7 @@ function synchronizeDurableInputs(
       }
       continue;
     }
-    if (DISPOSABLE_TOP_LEVEL.has(normalizedName)) continue;
+    if (DISPOSABLE_TOP_LEVEL.has(normalizedName) || (separateUserContent && isGardenUserPath(entry.name))) continue;
     const source = path.join(repositoryGardenDir, entry.name);
     const destination = path.join(stagingGardenDir, entry.name);
     if (entry.isDirectory()) copyTree(source, destination);
@@ -906,13 +920,13 @@ function durableFingerprintRecordPath(relPath: string): string {
 }
 
 /** Stable content fingerprint used as the optimistic publication boundary. */
-export function fingerprintDurableGardenState(gardenDir: string): string {
+export function fingerprintDurableGardenState(gardenDir: string, separateUserContent = false): string {
   const records: string[] = [];
   const visit = (directory: string, relative = ""): void => {
     const entries = fs.readdirSync(directory, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const relPath = relative ? `${relative}/${entry.name}` : entry.name;
-      if (!durableFingerprintIncludes(relPath)) continue;
+      if (!durableFingerprintIncludes(relPath) || (separateUserContent && isGardenUserOrNavigationPath(relPath))) continue;
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         visit(absolute, relPath);
@@ -962,6 +976,71 @@ export function retainLearnBuildWorkspace(
   workspace.retentionReason = input.reason;
   workspace.retentionStage = normalizedRetentionStage(input.failureStage);
   writeWorkspaceDescriptor(workspace);
+  pruneRetainedLearnBuildWorkspaces({
+    gardenSlug: workspace.gardenSlug,
+    keepJobIds: [workspace.jobId],
+  });
+}
+
+/** Retained failed workspaces kept per garden, newest first; the rest are
+ * disposed. Each holds a full garden copy (~1 GB), and a later run only ever
+ * clones the newest compatible one, so unbounded retention just fills the
+ * disk (live 2026-09-16: eight superseded telecom-1 workspaces, 6.4 GB, and
+ * a Learn rollback died with ENOSPC). */
+export const RETAINED_LEARN_WORKSPACES_PER_GARDEN = Math.max(
+  1,
+  Number.parseInt(process.env.LEARN_RETAINED_WORKSPACES_PER_GARDEN ?? "", 10) || 2,
+);
+
+/** Dispose retained failed workspaces of one garden beyond the retention cap,
+ * oldest first. Workspaces in `keepJobIds` always survive. Returns the roots
+ * that were disposed. Never touches active (in-flight) workspaces. */
+export function pruneRetainedLearnBuildWorkspaces(input: {
+  gardenSlug: string;
+  keepJobIds?: readonly string[];
+  limit?: number;
+}): string[] {
+  const limit = Math.max(1, input.limit ?? RETAINED_LEARN_WORKSPACES_PER_GARDEN);
+  const keep = new Set(input.keepJobIds ?? []);
+  const retained: Array<{ workspace: LearnBuildWorkspace; retainedAt: number }> = [];
+  const seenRoots = new Set<string>();
+  for (const baseDir of learnWorkspaceBaseCandidates()) {
+    const gardenRoot = path.resolve(baseDir, input.gardenSlug);
+    if (!sameResolvedWorkspacePath(path.dirname(gardenRoot), baseDir)) continue;
+    let entries: Dirent[];
+    try {
+      entries = fs.readdirSync(gardenRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const workspaceRoot = path.resolve(gardenRoot, entry.name);
+      const rootKey = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
+      if (seenRoots.has(rootKey)) continue;
+      seenRoots.add(rootKey);
+      const workspace = workspaceDescriptorAt(workspaceRoot);
+      if (
+        !workspace ||
+        workspace.lifecycle !== "retained_after_failure" ||
+        workspace.gardenSlug !== input.gardenSlug
+      ) continue;
+      const retainedAt = Date.parse(workspace.retainedAt ?? workspace.createdAt);
+      retained.push({ workspace, retainedAt: Number.isFinite(retainedAt) ? retainedAt : 0 });
+    }
+  }
+  retained.sort((a, b) => b.retainedAt - a.retainedAt);
+  const disposed: string[] = [];
+  let kept = 0;
+  for (const { workspace } of retained) {
+    if (keep.has(workspace.jobId) || kept < limit) {
+      kept += 1;
+      continue;
+    }
+    disposeWorkspaceRootBestEffort(workspace.workspaceRoot);
+    disposed.push(workspace.workspaceRoot);
+  }
+  return disposed;
 }
 
 function sameResolvedWorkspacePath(left: string, right: string): boolean {

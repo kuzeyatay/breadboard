@@ -21,7 +21,7 @@ export async function POST(
 ) {
   try {
     const { gardenId } = await params;
-    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
+    const { userId, cluster } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json(
@@ -44,6 +44,7 @@ export async function POST(
     }
 
     const result = await clearAllLearnData({
+      userId,
       gardenId: cluster.slug,
       contentPath,
       confirmClearLearnData: true,

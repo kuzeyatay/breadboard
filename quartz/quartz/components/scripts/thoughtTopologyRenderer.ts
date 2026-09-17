@@ -24,6 +24,7 @@ import { Application, Circle, Container, Graphics, Text } from "pixi.js"
 import { FullSlug, SimpleSlug, resolveRelative } from "../../util/path"
 import type { D3Config } from "../Graph"
 import { TOPOLOGY_SOURCE_COLORS } from "./sourceNodeVisual"
+import { RenderSlot } from "./renderSlot"
 import {
   affinityLabel,
   boundsOf,
@@ -247,6 +248,20 @@ function isPreviewSurface(config: D3Config): boolean {
   )
 }
 
+/** Payload ids of the page Quartz is showing, so a compact plan keeps it.
+ * Payload slugs are `<garden>/<raw path>`; Quartz publishes the slugified
+ * form, optionally under a site prefix, so compare published tails. */
+function currentPageIds(payload: TopologyPayload, fullSlug: FullSlug): string[] {
+  const current = topologyNavigationSlug(fullSlug).toLocaleLowerCase()
+  if (!current) return []
+  return payload.nodes
+    .filter((node) => {
+      const published = topologyNavigationSlug(node.slug).toLocaleLowerCase()
+      return published && (current === published || current.endsWith(`/${published}`))
+    })
+    .map((node) => node.id)
+}
+
 /**
  * Render the Thought Topology map with a Filters panel. The panel lives
  * outside the Pixi scene and survives re-mounts: every settings change tears
@@ -262,22 +277,47 @@ export async function renderThoughtTopology(
 ): Promise<() => void> {
   const preview = isPreviewSurface(config)
   const isGlobalGraph = graph.classList.contains("global-graph-container")
-  const folderLabelsOnly = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"))
-  const interactive = !preview && !folderLabelsOnly
+  const compactSidebar = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"))
+  const interactive = !preview && !compactSidebar
   const settingsScope = context.scopeFolderPath
     ? `${payload.garden.slug}:folder:${context.scopeFolderPath}`
     : `${payload.garden.slug}:root`
   let settings = interactive ? readStoredSettings(settingsScope) : { ...DEFAULT_SETTINGS }
   let disposed = false
-  let mounting: Promise<void> | null = null
+  const renderer = new RenderSlot<MountResult>()
   let active: MountResult | null = null
   let recoveryTimer: number | null = null
+  let stableTimer: number | null = null
   let recoveryAttempts = 0
+  let recoveryNotice: HTMLButtonElement | null = null
   let renderPanel = () => {}
 
   const scheduleRecovery = () => {
     if (disposed || recoveryTimer !== null) return
-    const delay = Math.min(100 * 2 ** recoveryAttempts, 5_000)
+    if (stableTimer !== null) window.clearTimeout(stableTimer)
+    stableTimer = null
+    // A new context can immediately evict another one. Successful allocation
+    // is not evidence of stability, so cap this entire burst of recoveries.
+    if (recoveryAttempts >= 3) {
+      renderer.clear()
+      active = null
+      if (!recoveryNotice) {
+        recoveryNotice = element(
+          "button",
+          "thought-topology-retry thought-topology-recovery",
+          "Reload map",
+        )
+        recoveryNotice.type = "button"
+        recoveryNotice.title = "The map could not restore its graphics. Reload to try again."
+        recoveryNotice.addEventListener("click", () => {
+          recoveryAttempts = 0
+          void remount()
+        })
+        graph.append(recoveryNotice)
+      }
+      return
+    }
+    const delay = 250 * 2 ** recoveryAttempts
     recoveryAttempts += 1
     recoveryTimer = window.setTimeout(() => {
       recoveryTimer = null
@@ -287,44 +327,34 @@ export async function renderThoughtTopology(
 
   const remount = async () => {
     if (disposed) return
-    const run = async () => {
-      const previous = active
-      try {
-        const replacement = await mountThoughtTopology(
-          graph,
-          fullSlug,
-          config,
-          payload,
-          context,
-          settings,
-          scheduleRecovery,
-        )
-        if (disposed) {
-          replacement.cleanup()
-          return
-        }
+    if (recoveryTimer !== null) window.clearTimeout(recoveryTimer)
+    recoveryTimer = null
+    if (stableTimer !== null) window.clearTimeout(stableTimer)
+    stableTimer = null
+    recoveryNotice?.remove()
+    recoveryNotice = null
+    try {
+      const replacement = await renderer.replace(() =>
+        mountThoughtTopology(graph, fullSlug, config, payload, context, settings, scheduleRecovery),
+      )
+      if (replacement && !disposed) {
         active = replacement
-        previous?.cleanup()
-        recoveryAttempts = 0
+        stableTimer = window.setTimeout(() => {
+          stableTimer = null
+          recoveryAttempts = 0
+        }, 30_000)
         renderPanel()
-      } catch {
-        active = previous
-        scheduleRecovery()
       }
+    } catch {
+      active = null
+      scheduleRecovery()
     }
-    mounting = (mounting ?? Promise.resolve()).then(run, run)
-    await mounting
   }
 
-  active = await mountThoughtTopology(
-    graph,
-    fullSlug,
-    config,
-    payload,
-    context,
-    settings,
-    scheduleRecovery,
-  )
+  active =
+    (await renderer.replace(() =>
+      mountThoughtTopology(graph, fullSlug, config, payload, context, settings, scheduleRecovery),
+    )) ?? null
 
   // --- Filters panel -------------------------------------------------------
   const outer = graph.parentElement
@@ -521,8 +551,10 @@ export async function renderThoughtTopology(
   return () => {
     disposed = true
     if (recoveryTimer !== null) window.clearTimeout(recoveryTimer)
-    active?.cleanup()
+    if (stableTimer !== null) window.clearTimeout(stableTimer)
+    renderer.clear()
     active = null
+    recoveryNotice?.remove()
     panel?.remove()
   }
 }
@@ -547,10 +579,54 @@ async function mountThoughtTopology(
   settings: ThoughtTopologySettings,
   onRendererInvalidated?: () => void,
 ): Promise<MountResult> {
+  const resources: Array<() => void> = []
+  const cleanup = () => {
+    // Also release partially initialized scenes when mounting throws.
+    for (const release of resources.splice(0).reverse()) {
+      try {
+        release()
+      } catch (error) {
+        console.error(error)
+      }
+    }
+  }
+  try {
+    const mounted = await mountThoughtTopologyScene(
+      graph,
+      fullSlug,
+      config,
+      payload,
+      context,
+      settings,
+      (release) => resources.push(release),
+      onRendererInvalidated,
+    )
+    return { ...mounted, cleanup }
+  } catch (error) {
+    cleanup()
+    throw error
+  }
+}
+
+async function mountThoughtTopologyScene(
+  graph: HTMLElement,
+  fullSlug: FullSlug,
+  config: D3Config,
+  payload: TopologyPayload,
+  context: ThoughtTopologyRenderContext,
+  settings: ThoughtTopologySettings,
+  onCleanup: (release: () => void) => void,
+  onRendererInvalidated?: () => void,
+): Promise<MountResult> {
   const preview = isPreviewSurface(config)
   const isGlobalGraph = graph.classList.contains("global-graph-container")
-  const folderLabelsOnly = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"))
-  const interactive = !preview && !folderLabelsOnly
+  const compactSidebar = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"))
+  const interactive = !preview && !compactSidebar
+  // The note sidebar card is the size of the dashboard's workspace preview
+  // and gets the same compact plan and framing: Garden, folders, the
+  // strongest bridges and a handful of pages, fitted edge to edge. Planning
+  // every page and connection of a large garden into 260px drew a hairball.
+  const compact = preview || compactSidebar
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
   const gardenSlug = payload.garden.slug
   const positionScope = context.scopeFolderPath
@@ -558,7 +634,8 @@ async function mountThoughtTopology(
     : `${gardenSlug}:root`
   const storedPositions = interactive ? readStoredPositions(positionScope) : {}
   const planOptions = {
-    preview,
+    preview: compact,
+    previewKeepPageIds: compactSidebar ? currentPageIds(payload, fullSlug) : [],
     scopeFolderPath: context.scopeFolderPath,
     excludedFolderIds: settings.excludedFolderIds,
     minConnectionStrength: settings.minConnectionStrength,
@@ -684,6 +761,10 @@ async function mountThoughtTopology(
 
   // --- Pixi ----------------------------------------------------------------
   const app = new Application()
+  onCleanup(() => {
+    if (app.renderer) app.destroy({ removeView: true }, { children: true })
+    else app.stage?.destroy({ children: true })
+  })
   await app.init({
     width,
     height,
@@ -708,9 +789,8 @@ async function mountThoughtTopology(
   const linkLayer = new Container<Graphics>({ zIndex: 1 })
   const nodeLayer = new Container<Graphics>({ zIndex: 2, sortableChildren: true })
   const labelLayer = new Container<Text>({ zIndex: 5, isRenderGroup: true })
-  hierarchyLayer.visible = !folderLabelsOnly && settings.showHierarchy
-  linkLayer.visible = !folderLabelsOnly
-  nodeLayer.visible = !folderLabelsOnly
+  // The sidebar limits labels and controls, but still draws the complete map.
+  hierarchyLayer.visible = settings.showHierarchy
   world.addChild(hierarchyLayer, linkLayer, nodeLayer)
   stage.addChild(world, labelLayer)
 
@@ -737,6 +817,10 @@ async function mountThoughtTopology(
   let labelsDirty = true
   let stopAnimation = false
   const cleanups: Array<() => void> = []
+  onCleanup(() => {
+    stopAnimation = true
+    for (const cleanup of cleanups.splice(0)) cleanup()
+  })
   const inspectorRoot = interactive && outer ? element("aside", "thought-inspector") : null
   const inspectorContent = inspectorRoot ? element("div", "thought-inspector-content") : null
   const inspectorClose = inspectorRoot ? element("button", "thought-inspector-close", "×") : null
@@ -748,6 +832,7 @@ async function mountThoughtTopology(
     inspectorClose.setAttribute("aria-label", "Close node connections")
     inspectorRoot.append(inspectorClose, inspectorContent)
     outer?.append(inspectorRoot)
+    onCleanup(() => inspectorRoot.remove())
   }
   let rendererInvalidated = false
   const invalidateRenderer = () => {
@@ -981,16 +1066,16 @@ async function mountThoughtTopology(
   // Node proximity follows the rendered name, not just the dot. Full maps
   // reserve every label's complete footprint; the small preview stays compact
   // because it intentionally displays only a label budget.
-  const labelLayoutScale = preview ? 1.8 : isGlobalGraph ? 1 : 1.15
+  const labelLayoutScale = compact ? 1.8 : isGlobalGraph ? 1 : 1.15
   const clearanceById = new Map(
     views.map((view) => [
       view.node.id,
       labelClearanceRadius(
         view.node.radius,
-        (folderLabelsOnly && view.node.kind !== "folder") || !shouldShowTopologyNodeLabel(view.node)
+        (compactSidebar && view.node.kind !== "folder") || !shouldShowTopologyNodeLabel(view.node)
           ? 0
           : view.label.width,
-        (folderLabelsOnly && view.node.kind !== "folder") || !shouldShowTopologyNodeLabel(view.node)
+        (compactSidebar && view.node.kind !== "folder") || !shouldShowTopologyNodeLabel(view.node)
           ? 0
           : view.label.height,
         labelLayoutScale,
@@ -1000,7 +1085,7 @@ async function mountThoughtTopology(
   const returnTargets = new Map<string, { x: number; y: number; pin: boolean }>()
   const returningNodeIds = new Set<string>()
   let activeDragNodeId: string | null = null
-  if (!reducedMotion && !folderLabelsOnly) {
+  if (!reducedMotion && !compactSidebar) {
     for (const node of simNodes) {
       if (permanentHomeIds.has(node.id)) {
         const home = homePositions.get(node.id)
@@ -1034,7 +1119,7 @@ async function mountThoughtTopology(
   const homeYForNode = (node: SimNode) => homePositions.get(node.id)?.y ?? node.y ?? 0
   const homeXForce = forceX<SimNode>(homeXForNode).strength(isGlobalGraph ? 0.11 : 0.09)
   const homeYForce = forceY<SimNode>(homeYForNode).strength(isGlobalGraph ? 0.055 : 0.045)
-  let simulationSettled = reducedMotion || folderLabelsOnly
+  let simulationSettled = reducedMotion || compactSidebar
   let draggingNode = false
   const simulation = forceSimulation<SimNode>(simNodes)
     .force("charge", forceManyBody<SimNode>().strength(-125 * config.repelForce))
@@ -1075,8 +1160,9 @@ async function mountThoughtTopology(
       // settle finishes, but never over a view the person has already moved.
       if (viewState === "fit" && !userMovedView && !activeDragNodeId) fitView(true)
     })
-  if (folderLabelsOnly) {
-    // The sidebar is a stable folder index, not a miniature physics scene.
+  onCleanup(() => simulation.stop())
+  if (compactSidebar) {
+    // Keep the compact map at its stable, authored positions.
     simulation.stop()
   } else if (reducedMotion) {
     // Reduced motion removes the entrance animation, not the label-aware
@@ -1223,12 +1309,12 @@ async function mountThoughtTopology(
   }
 
   function currentInsets(): Insets {
-    if (preview) return { top: 10, right: 10, bottom: 10, left: 10 }
+    if (compact) return { top: 10, right: 10, bottom: 10, left: 10 }
     return { top: 14, right: 14, bottom: 14, left: 14 }
   }
 
   function blockedRects(): ClipRect[] {
-    if (preview) return []
+    if (compact) return []
     const canvasRect = graph.getBoundingClientRect()
     const rects: ClipRect[] = []
     for (const blocker of [heading, searchPanel, overlayClose, calloutRoot, inspectorRoot]) {
@@ -1247,23 +1333,20 @@ async function mountThoughtTopology(
   }
 
   function fitView(animate: boolean, useHomeLayout = false) {
-    const visiblePlanNodes = folderLabelsOnly
-      ? plan.nodes.filter((node) => node.kind === "folder")
-      : plan.nodes
     const fitNodes = useHomeLayout
-      ? visiblePlanNodes.map((node) => ({ ...node, ...(homePositions.get(node.id) ?? {}) }))
-      : visiblePlanNodes
+      ? plan.nodes.map((node) => ({ ...node, ...(homePositions.get(node.id) ?? {}) }))
+      : plan.nodes
     const gardenAnchor = useHomeLayout
       ? { ...plan.garden, ...(homePositions.get(plan.garden.id) ?? {}) }
       : plan.garden
-    const bounds = boundsOf(fitNodes, preview ? 18 : 44)
+    const bounds = boundsOf(fitNodes, compact ? 18 : 44)
     const next = fitTransform(
       bounds,
       { width, height },
       currentInsets(),
       {
-        minScale: 0.3,
-        maxScale: preview ? 1.25 : 1.35,
+        minScale: compactSidebar ? 0.01 : 0.3,
+        maxScale: compact ? 1.25 : 1.35,
       },
       { x: gardenAnchor.x, y: gardenAnchor.y },
     )
@@ -1304,17 +1387,20 @@ async function mountThoughtTopology(
   }
 
   function refreshStyles() {
+    if (hoveredEdgeId && !canHoverConnection(edgeById.get(hoveredEdgeId))) hoveredEdgeId = null
     let emphasis: Set<string> | null = null
     const selectedEdge = selectedEdgeId ? edgeById.get(selectedEdgeId) : undefined
     const hoveredEdge = hoveredEdgeId ? edgeById.get(hoveredEdgeId) : undefined
     const focusedEdge = hoveredEdge ?? selectedEdge
-    if (focusedEdge) {
+    if (inspectedNodeId) {
+      emphasis = emphasisFor(inspectedNodeId)
+    } else if (focusedEdge) {
       emphasis = new Set([focusedEdge.edge.source, focusedEdge.edge.target])
     } else if (selectedNodeId) {
       const selected = viewById.get(selectedNodeId)?.node
       emphasis = selected && selected.kind !== "garden" ? emphasisFor(selectedNodeId) : null
     }
-    if (hoveredNodeId && viewById.get(hoveredNodeId)?.node.kind !== "garden") {
+    if (!inspectedNodeId && hoveredNodeId && viewById.get(hoveredNodeId)?.node.kind !== "garden") {
       const hovered = emphasisFor(hoveredNodeId)
       emphasis = emphasis ? new Set([...emphasis, ...hovered]) : hovered
     }
@@ -1349,8 +1435,11 @@ async function mountThoughtTopology(
         (hoveredNodeId !== null && (source === hoveredNodeId || target === hoveredNodeId)) ||
         (searchQuery !== "" && (searchHits.has(source) || searchHits.has(target)))
       const withinEmphasis = emphasis ? emphasis.has(source) && emphasis.has(target) : true
-      const active =
-        selected || hovered || touchesFocus || (emphasis === null ? true : withinEmphasis)
+      const active = inspectedNodeId
+        ? source === inspectedNodeId || target === inspectedNodeId
+        : selected || hovered || touchesFocus || (emphasis === null ? true : withinEmphasis)
+      // Dimmed connections must not intercept the highlighted links at crossings.
+      view.gfx.eventMode = interactive && canHoverConnection(view) ? "static" : "none"
       view.selected = selected
       view.alphaTarget = selected
         ? 1
@@ -1507,7 +1596,7 @@ async function mountThoughtTopology(
         ) ||
         Boolean(searchQuery && searchHits.has(node.id))
       if (
-        (folderLabelsOnly && node.kind !== "folder") ||
+        (compactSidebar && node.kind !== "folder") ||
         (quietName && !inFocus && ratio < QUIET_NAME_ZOOM)
       ) {
         view.placement = null
@@ -1588,7 +1677,7 @@ async function mountThoughtTopology(
       bottom: height - 4,
     }
     const placements = placeLabels(candidates, obstacles, clip, blockedRects())
-    if (preview) {
+    if (compact) {
       // The sidebar card is too small for every name. Trim the budget tier to
       // what the zoom level deserves; placement was greedy by priority, so
       // dropping the lowest winners frees nothing else.
@@ -1605,7 +1694,7 @@ async function mountThoughtTopology(
       const placement =
         placements.get(view.node.id) ??
         ((
-          preview
+          compact
             ? labelMustStayAttached(view.node.id)
             : wanted.has(view.node.id) && !budgetTier.has(view.node.id)
         )
@@ -1782,6 +1871,16 @@ async function mountThoughtTopology(
         if (left.kind !== right.kind) return left.kind === "semantic" ? -1 : 1
         return right.edge.score - left.edge.score || left.edge.id.localeCompare(right.edge.id)
       })
+  }
+
+  function canHoverConnection(view: EdgeView | undefined): boolean {
+    return Boolean(
+      view &&
+      (view.kind !== "hierarchy" || settings.showHierarchy) &&
+      (!inspectedNodeId ||
+        view.edge.source === inspectedNodeId ||
+        view.edge.target === inspectedNodeId),
+    )
   }
 
   function inspectorNodeSummary(node: PlannedNode): string {
@@ -2029,24 +2128,29 @@ async function mountThoughtTopology(
       offsetY = normalY * 22
     }
 
-    const calloutWidth = Math.min(
-      calloutRoot.offsetWidth || 320,
-      Math.max(180, width - 2 * padding),
-    )
+    let availableWidth = width
+    let availableHeight = height
+    if (inspectedNodeId && inspectorRoot) {
+      if (inspectorRoot.offsetWidth < width - 1) availableWidth -= inspectorRoot.offsetWidth
+      else availableHeight -= inspectorRoot.offsetHeight
+    }
+    calloutRoot.style.maxWidth = `${Math.max(0, availableWidth - 2 * padding)}px`
+    const calloutWidth = calloutRoot.offsetWidth || 320
     const calloutHeight = calloutRoot.offsetHeight || 120
     let left = anchorX + offsetX
     if (offsetX < 0) left -= calloutWidth
-    if (left + calloutWidth > width - padding) left = anchorX - calloutWidth - 18
-    if (left < padding) left = Math.min(width - calloutWidth - padding, anchorX + 18)
+    if (left + calloutWidth > availableWidth - padding) left = anchorX - calloutWidth - 18
+    if (left < padding) left = anchorX + 18
+    left = Math.max(padding, Math.min(availableWidth - calloutWidth - padding, left))
     let top = anchorY + offsetY - calloutHeight * 0.22
-    top = Math.max(padding, Math.min(height - calloutHeight - padding, top))
+    top = Math.max(padding, Math.min(availableHeight - calloutHeight - padding, top))
     calloutRoot.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`
   }
 
   function syncFloatingCallout() {
     if (!calloutRoot) return
     // The right-side inspector owns the inspected node's persistent detail.
-    // Keep the floating text for transient hovers elsewhere on the board.
+    // Its highlighted connections still expose their floating text on hover.
     const hoveredNode =
       hoveredNodeId && hoveredNodeId !== inspectedNodeId ? viewById.get(hoveredNodeId) : undefined
     const hoveredEdge = hoveredEdgeId ? edgeById.get(hoveredEdgeId) : undefined
@@ -2249,6 +2353,7 @@ async function mountThoughtTopology(
     for (const view of connectionViews) {
       view.gfx
         .on("pointerover", () => {
+          if (!canHoverConnection(view)) return
           hoveredEdgeId = view.edge.id
           refreshStyles()
           syncFloatingCallout()
@@ -2261,9 +2366,9 @@ async function mountThoughtTopology(
         .on("pointertap", (event) => {
           event.stopPropagation()
           const point = world.toLocal(event.global)
-          const closest = [...connectionViews].sort(
-            (left, right) => distanceToEdge(left, point) - distanceToEdge(right, point),
-          )[0]
+          const closest = connectionViews
+            .filter(canHoverConnection)
+            .sort((left, right) => distanceToEdge(left, point) - distanceToEdge(right, point))[0]
           selectEdge(closest ?? view)
         })
     }
@@ -2525,6 +2630,10 @@ async function mountThoughtTopology(
   const handleGraphSearchCommit = () => commitSearch()
   graph.addEventListener("graph-search", handleGraphSearch)
   graph.addEventListener("graph-search-commit", handleGraphSearchCommit)
+  onCleanup(() => {
+    graph.removeEventListener("graph-search", handleGraphSearch)
+    graph.removeEventListener("graph-search-commit", handleGraphSearchCommit)
+  })
   if (graph.dataset.searchQuery) updateSearch(graph.dataset.searchQuery)
 
   // --- Context for the dashboard assistant ---------------------------------
@@ -2591,6 +2700,7 @@ async function mountThoughtTopology(
           labelsDirty = true
         })
   resizeObserver?.observe(graph)
+  onCleanup(() => resizeObserver?.disconnect())
 
   // --- Frame loop ----------------------------------------------------------
   const lerp = (current: number, target: number) =>
@@ -2642,7 +2752,12 @@ async function mountThoughtTopology(
         viewSettled: !transitioning && (simulationSettled || draggingNode),
         simulationSettled,
         calloutVisible,
-        folderLabelsOnly,
+        compactSidebar,
+        visibleLayers: {
+          nodes: nodeLayer.visible,
+          connections: linkLayer.visible,
+          hierarchy: hierarchyLayer.visible,
+        },
         transform: { k: transform.k, x: transform.x, y: transform.y },
         labels: Object.fromEntries(
           views.filter((view) => view.label.visible).map((view) => [view.node.id, view.label.text]),
@@ -2709,11 +2824,6 @@ async function mountThoughtTopology(
 
   const cleanup = () => {
     stopAnimation = true
-    simulation.stop()
-    resizeObserver?.disconnect()
-    graph.removeEventListener("graph-search", handleGraphSearch)
-    graph.removeEventListener("graph-search-commit", handleGraphSearchCommit)
-    for (const cleanup of cleanups) cleanup()
     hideCallout()
     obscureOverlayClose(false)
     inspectorRoot?.remove()
@@ -2723,8 +2833,8 @@ async function mountThoughtTopology(
         delete graphRoot.dataset.activeMode
       if (heading) heading.hidden = true
     }
-    app.destroy({ removeView: true })
   }
+  onCleanup(cleanup)
   return {
     cleanup,
     folderOptions: plan.folderOptions,

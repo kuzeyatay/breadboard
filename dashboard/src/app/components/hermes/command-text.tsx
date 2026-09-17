@@ -1,6 +1,6 @@
 /* Shared rendering for slash-command text in chat transcripts. Command tokens
-   inserted from the command hub (e.g. "/summarize-page") are shown in dark
-   blue so command invocations stand out from plain messages. URLs typed or
+   inserted from the command hub (e.g. "/summarize-page") use the theme's chat
+   blue so command invocations stay readable on every surface. URLs typed or
    pasted by the user become blue, clickable links — the plain-text counterpart
    of the autolinking react-markdown already does for assistant answers. */
 
@@ -11,7 +11,7 @@ import { linkifyChatText } from '@/lib/chat-links';
 // more leading "/token" selectors, each followed by whitespace or end of text.
 const LEADING_COMMAND_RUN = /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i;
 
-export const COMMAND_TEXT_CLASS = 'font-medium text-[#1e40af]';
+export const COMMAND_TEXT_CLASS = 'font-medium text-[var(--chat-link)]';
 
 export const CHAT_LINK_CLASS = 'chat-inline-link';
 

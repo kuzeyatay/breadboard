@@ -10,8 +10,9 @@ allowed-tools:
 # Humanize
 
 Two tools over Breadboard's local humanizer service. `humanize_text` rewrites a
-passage and tells you what survived; `humanize_status` says whether the thing is
-set up at all. The model runs on this machine and nothing leaves it.
+passage and tells you what survived; `humanize_status` prepares the local service
+and checks whether it can run. Rewriting happens on this machine; the passage
+is never sent to a hosted model.
 
 breadboard:
   category: featured
@@ -116,6 +117,18 @@ send the section as it stands rather than stripping its formatting. Long
 documents are refused above the service's ceiling; rewrite them a section at a
 time and say that is what you are doing.
 
+## Starting the rewrite
+
+When the user calls `/humanize` with a passage, call `humanize_text` directly.
+It starts the local service on demand and downloads the checkpoint on first
+use. Wait for the tool result and then return the rewrite, scores, and
+preservation report. No setup command or application restart is needed for an
+idle service or a checkpoint that has not been downloaded yet.
+
+`humanize_status` is an optional diagnostic that also starts an idle service.
+When it returns `ready`, continue with `humanize_text`; do not stop at the
+status report. The first rewrite can take several minutes.
+
 ## When it cannot run
 
 `humanize_text` returns a structured error rather than a bad rewrite. Read
@@ -125,8 +138,8 @@ result humanized.
 
 | State | What to say |
 | --- | --- |
-| `not_installed` | The model is an explicit opt-in download and has not been fetched: `npm run setup:humanizer -- --download-model`. |
-| `unavailable` | The local service is not running. It is optional: `npm run setup:humanizer`, then restart Breadboard. |
+| `not_installed` | The model could not be installed. Report the actual tool error and retry once. |
+| `unavailable` | The local service could not be started. Report the actual tool error and retry once. |
 | `disabled` | Local rewriting is switched off in this installation's settings. |
 | `busy` | One rewrite runs at a time. Wait a moment and try once more. |
 | `error` | Installed but not usable; the status summary says why. |
@@ -148,7 +161,6 @@ promise a score anywhere else.
 ## A worked call
 
 ```
-humanize_status                        → { state: "ready", device: "cuda:0", … }
 humanize_text  text: "The system represents a groundbreaking and
                       transformative step forward in the rapidly evolving
                       landscape of local knowledge software."

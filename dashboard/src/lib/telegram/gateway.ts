@@ -15,6 +15,8 @@ import {
 } from "./client.ts";
 import { telegramTimings } from "./config.ts";
 import { contactHandle, contactLabel, isGroupChat } from "./identity.ts";
+import { telegramAttachments } from "./attachments.ts";
+import type { InboundAttachment } from "../messaging-attachments/types.ts";
 
 export type TelegramGatewayState = "disconnected" | "starting" | "connected" | "error";
 
@@ -34,6 +36,8 @@ export interface TelegramInboundMessage {
   mediaType: string;
   fileName: string;
   timestamp: number;
+  attachments?: InboundAttachment[];
+  mediaGroupId?: string;
 }
 
 /** A sender the allowlist turned away, kept so the panel can offer to admit them. */
@@ -78,6 +82,7 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 interface RawMessage {
+  [key: string]: unknown;
   message_id?: number;
   date?: number;
   text?: string;
@@ -141,8 +146,9 @@ export function normalizeInbound(update: unknown): TelegramInboundMessage | null
   if ((from as { is_bot?: boolean }).is_bot) return null;
 
   const media = describeMedia(message);
+  const attachments = telegramAttachments(message);
   const body = (message.text ?? message.caption ?? "").trim();
-  if (!body && !media.hasMedia) return null;
+  if (!body && !media.hasMedia && !attachments.length) return null;
 
   const senderName = [from.first_name, from.last_name]
     .filter((part) => typeof part === "string" && part.trim())
@@ -160,9 +166,11 @@ export function normalizeInbound(update: unknown): TelegramInboundMessage | null
     senderName,
     isGroup: isGroupChat(message.chat?.type),
     body,
-    hasMedia: media.hasMedia,
+    hasMedia: media.hasMedia || attachments.length > 0,
     mediaType: media.mediaType,
     fileName: media.fileName,
+    attachments,
+    mediaGroupId: typeof message.media_group_id === "string" ? message.media_group_id : undefined,
     timestamp: Number.isFinite(message.date) ? Number(message.date) : Math.floor(Date.now() / 1000),
   };
 }
@@ -172,6 +180,7 @@ export class TelegramGateway {
   private error: string | null = null;
   private log: string[] = [];
   private queue: TelegramInboundMessage[] = [];
+  private albumUpdatedAt = new Map<string, number>();
   private blocked = new Map<string, TelegramBlockedSender>();
 
   private token: string | null = null;
@@ -239,9 +248,28 @@ export class TelegramGateway {
 
   /** Take everything received since the last drain. */
   drainMessages(): TelegramInboundMessage[] {
-    const messages = this.queue;
-    this.queue = [];
-    return messages;
+    const ready: TelegramInboundMessage[] = [];
+    const waiting: TelegramInboundMessage[] = [];
+    const albums = new Map<string, TelegramInboundMessage>();
+    for (const message of this.queue) {
+      const key = message.mediaGroupId ? `${message.chatId}:${message.mediaGroupId}` : "";
+      if (key && Date.now() - (this.albumUpdatedAt.get(key) ?? 0) < 1_200) {
+        waiting.push(message);
+        continue;
+      }
+      const album = key ? albums.get(key) : undefined;
+      if (album) {
+        album.attachments = [...(album.attachments ?? []), ...(message.attachments ?? [])];
+        album.body = [album.body, message.body].filter(Boolean).join("\n");
+      } else {
+        const copy = { ...message };
+        ready.push(copy);
+        if (key) albums.set(key, copy);
+      }
+    }
+    for (const key of albums.keys()) this.albumUpdatedAt.delete(key);
+    this.queue = waiting;
+    return ready;
   }
 
   async sendTyping(chatId: string): Promise<void> {
@@ -335,6 +363,7 @@ export class TelegramGateway {
           this.advanceOffset(updateId);
           const message = normalizeInbound(update);
           if (!message) continue;
+          if (message.mediaGroupId) this.albumUpdatedAt.set(`${message.chatId}:${message.mediaGroupId}`, Date.now());
           if (this.queue.length >= MAX_QUEUED) this.queue.shift();
           this.queue.push(message);
         }

@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
   buildServiceDefinitions,
   resolveAgencyAgentsPath,
+  resolveHermesComputerUseDriver,
   resolveHermesPython,
   resolveVoiceboxRuntime,
   serviceUrls,
@@ -74,6 +75,10 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.equal(dashboard.env["NEXTAUTH_SECRET"], config.persistent.nextAuthSecret);
   assert.equal(dashboard.env["CHATMOCK_BASE_URL"], "http://127.0.0.1:4301/v1");
   assert.equal(dashboard.env["HERMES_MODE"], "required");
+  assert.equal(
+    dashboard.env["HERMES_CUA_DRIVER_CMD"],
+    resolveHermesComputerUseDriver(paths),
+  );
   assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.binDir, "codex.exe"));
   assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
   assert.equal(
@@ -458,6 +463,10 @@ test("Hermes is a hidden-loopback supervised runtime and its endpoint is not pub
     config.persistent.hermesToolSecret,
   );
   assert.equal(hermes.env["HERMES_HOME"], paths.hermesHome);
+  assert.equal(
+    hermes.env["HERMES_CUA_DRIVER_CMD"],
+    resolveHermesComputerUseDriver(paths),
+  );
   if (!hermes.healthCheck || hermes.healthCheck.type !== "http") {
     throw new Error("Hermes should use an HTTP readiness check");
   }

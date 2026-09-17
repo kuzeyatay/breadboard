@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import {
   activityLabelForTool,
@@ -70,7 +71,7 @@ export function useLegacyAgentActivity() {
   ) => {
     if (
       ownerSignal &&
-      requestController.current?.signal !== ownerSignal
+      (ownerSignal.aborted || requestController.current?.signal !== ownerSignal)
     ) {
       return;
     }
@@ -315,39 +316,50 @@ export function useLegacyAgentActivity() {
   }, []);
 
   const abort = useCallback(async (sessionReference?: string | number | null) => {
-    requestController.current?.abort();
+    // An explicit reference belongs to the selected chat. Runtime ids can
+    // still belong to a different chat whose stream is open in this tab.
     const id =
-      runtimeSessionId.current ??
       sessionReference ??
-      pendingSessionReference.current;
+      pendingSessionReference.current ??
+      runtimeSessionId.current;
+    const ownsLocalRequest = sessionReference == null ||
+      sessionReference === pendingSessionReference.current ||
+      sessionReference === runtimeSessionId.current;
     const abortRequest = id
       ? fetch(`/api/hermes/sessions/${id}/abort`, {
           method: "POST",
-        }).catch(() => undefined)
+        }).then((response) => response.ok).catch(() => false)
       : null;
-    setPendingPermission(null);
-    runtimeRunId.current = null;
-    pendingSessionReference.current = null;
-    setConnection("idle");
-    setActivities((current) =>
-      current.map((item) =>
-        item.status === "running" || item.status === "permission_required"
-          ? {
-              ...item,
-              status: "cancelled",
-              completedAt: new Date().toISOString(),
-            }
-          : item,
-      ),
-    );
+    if (ownsLocalRequest) {
+      requestController.current?.abort();
+      requestController.current = null;
+      setPendingPermission(null);
+      setPendingClarification(null);
+      runtimeSessionId.current = null;
+      runtimeRunId.current = null;
+      pendingSessionReference.current = null;
+      setConnection("idle");
+      setActivities((current) =>
+        current.map((item) =>
+          item.status === "running" || item.status === "permission_required"
+            ? {
+                ...item,
+                status: "cancelled",
+                completedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
+    }
     // Callers that immediately replace the turn need the server-side run to be
     // closed before they dispatch its successor.
-    await abortRequest;
+    return abortRequest ? await abortRequest : true;
   }, []);
 
   const steer = useCallback(async (
     text: string,
     attachments: readonly ChatAttachment[] = [],
+    textSelection?: ChatTextSelectionReference,
   ): Promise<boolean> => {
     const sessionId = runtimeSessionId.current;
     const runId = runtimeRunId.current;
@@ -361,6 +373,7 @@ export function useLegacyAgentActivity() {
         runId,
         text: trimmed,
         attachments,
+        textSelection,
         clientRequestId: crypto.randomUUID(),
       }),
     });

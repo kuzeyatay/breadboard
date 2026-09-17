@@ -508,7 +508,7 @@ test("every path that reads an attachment's text reads a document's too", () => 
   // A consumer that matches only `type === "text"` silently ignores a document,
   // and the model is handed a message with no document in it.
   const consumers = [
-    "src/lib/agent-runtime/adapters/hermes.ts",
+    "src/lib/agent-runtime/hermes-prompt.ts",
     "src/lib/conversations/direct-turn-service.ts",
     "src/app/api/chat/route.ts",
     "src/app/api/knowledge-chat/route.ts",
@@ -533,7 +533,7 @@ test("every server entry point re-reads a document the request did not carry", (
     const source = fs.readFileSync(path.join(dashboard, relative), "utf8");
     assert.match(
       source,
-      /resolveDocumentAttachments\(/,
+      /await hydrateDocumentAttachments\(/,
       `${relative} must resolve a reused document's text from its blob`,
     );
     // The same three entry points, for the same reason: an entry point that

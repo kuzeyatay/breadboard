@@ -29,9 +29,12 @@ import {
   whatsAppReplyPrefix,
   whatsAppSessionDir,
   whatsAppTimings,
+  whatsAppMediaDirectories,
 } from "./config.ts";
 import { formatAllowedNumbers, type WhatsAppMode } from "./identity.ts";
 import { applyOutboundGuardrails } from "../guardrails/service.ts";
+import { whatsAppAttachments } from "./attachments.ts";
+import type { InboundAttachment } from "../messaging-attachments/types.ts";
 
 export type WhatsAppBridgeState =
   | "disconnected"
@@ -53,6 +56,7 @@ export interface WhatsAppInboundMessage {
   mediaType: string;
   fileName: string;
   timestamp: number;
+  attachments?: InboundAttachment[];
 }
 
 export interface WhatsAppBridgeSnapshot {
@@ -165,11 +169,15 @@ export class WhatsAppBridge {
   }
 
   private bridgeEnv(mode: WhatsAppMode, allowedNumbers: readonly string[]): NodeJS.ProcessEnv {
+    const media = whatsAppMediaDirectories();
     return {
       ...process.env,
       WHATSAPP_MODE: mode,
       WHATSAPP_ALLOWED_USERS: formatAllowedNumbers(allowedNumbers),
       WHATSAPP_REPLY_PREFIX: whatsAppReplyPrefix(),
+      HERMES_IMAGE_CACHE_DIR: media.image,
+      HERMES_DOCUMENT_CACHE_DIR: media.document,
+      HERMES_AUDIO_CACHE_DIR: media.audio,
       // Breadboard answers every message itself; the bridge must never run the
       // Hermes gateway's own pairing-code reply path.
       WHATSAPP_DM_POLICY: "open",
@@ -520,6 +528,7 @@ function text(value: unknown): string {
 
 export function normalizeInbound(entry: Record<string, unknown>): WhatsAppInboundMessage {
   const timestamp = Number(entry.timestamp);
+  const attachments = whatsAppAttachments(entry);
   return {
     messageId: text(entry.messageId),
     chatId: text(entry.chatId),
@@ -528,9 +537,10 @@ export function normalizeInbound(entry: Record<string, unknown>): WhatsAppInboun
     chatName: text(entry.chatName),
     isGroup: entry.isGroup === true,
     body: text(entry.body),
-    hasMedia: entry.hasMedia === true,
+    hasMedia: entry.hasMedia === true || attachments.length > 0,
     mediaType: text(entry.mediaType),
     fileName: text(entry.fileName),
+    attachments,
     timestamp: Number.isFinite(timestamp) ? timestamp : Math.floor(Date.now() / 1000),
   };
 }

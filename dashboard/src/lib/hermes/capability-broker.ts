@@ -24,6 +24,8 @@ import {
   AGENT_LOOP_TOOLS,
   ARTIFACT_TOOLS,
   CALENDAR_TOOLS,
+  COMPUTER_USE_TOOLS,
+  BREADBOARD_USE_TOOLS,
   GADGET_TOOLS,
   DOCUMENT_SKILL_TOOLS,
   MEMORY_TOOLS,
@@ -34,8 +36,11 @@ import {
   MANIM_TOOLS,
   MAP_TOOLS,
   IMAGE_SEARCH_TOOLS,
+  FEYNMAN_TOOLS,
   PRODUCT_SEARCH_TOOLS,
   CHAT_SEARCH_TOOLS,
+  BAMBU_TOOLS,
+  NOTIFICATION_TOOLS,
   PROCESS_STATUS_TOOLS,
   OFFICE_TOOLS,
   DOCUMENT_TOOLS,
@@ -244,8 +249,11 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...RECALL_TOOLS,
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
+      ...FEYNMAN_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
       ...CHAT_SEARCH_TOOLS,
+      ...BAMBU_TOOLS,
+      ...NOTIFICATION_TOOLS,
       ...PROCESS_STATUS_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
@@ -257,6 +265,7 @@ export const BROKERED_TOOLS: readonly string[] = [
     ...HUMANIZER_TOOLS,
       ...HUMANIZER_TOOLS,
       ...WORKSPACE_TOOLS,
+      "attachment_image",
       ...SUPER_AGENT_TOOLS,
       "shell",
       "task",
@@ -459,6 +468,7 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
       interactiveApprovals: input.interactiveApprovals !== false,
     },
   );
+  if (isolated) for (const tool of FEYNMAN_TOOLS) allowedTools[tool] = false;
   const permissionRules = buildPermissionRules(
     granted,
     authorizedRoots,
@@ -673,10 +683,10 @@ function buildToolMap(
   map.shell = false;
   // Built-in bash cannot validate cwd and command semantics strongly enough for
   // this product boundary. Genuine Terminal access goes through the audited
-  // server callback above; Garden and Quartz never receive either executor.
+  // server callback above; built-in executors remain disabled on every surface.
   map.bash = false;
-  // The dedicated Terminal is a stable execution surface, not a capability the
-  // lexical task planner has to predict. The server callback below still checks
+  // Authenticated Terminal and Garden chats can use the audited executor without
+  // the lexical task planner predicting a command. The server callback checks
   // the authenticated session, active run, command shape, roots and exact
   // approval. Keeping the tool available is what lets an unplanned but valid
   // command reach that policy: YOLO approves it automatically, while ordinary
@@ -684,8 +694,13 @@ function buildToolMap(
   // a non-actionable 403.
   map.terminal_execute_command =
     authenticated &&
-    surface === "dashboard_terminal" &&
+    (surface === "dashboard_terminal" || surface === "garden_chat") &&
     options.interactiveApprovals !== false;
+  // Desktop/browser discovery must not depend on a lexical skill match. Tool
+  // handlers retain their action approvals; phone turns can use standing YOLO.
+  for (const tool of [...COMPUTER_USE_TOOLS, ...BREADBOARD_USE_TOOLS]) {
+    map[tool] = map.terminal_execute_command;
+  }
   for (const tool of ARTIFACT_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
@@ -810,6 +825,9 @@ function buildToolMap(
   for (const tool of IMAGE_SEARCH_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  for (const tool of FEYNMAN_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // Product research is also an ordinary knowledge turn. Its route is
   // read-only and projects public product pages into Breadboard's allow-listed
   // resource contract before anything reaches the transcript.
@@ -819,8 +837,14 @@ function buildToolMap(
   // Locating a past chat is an ordinary private knowledge turn. The tool is
   // read-only and its route narrows every lookup to the signed-in user, the
   // active surface, and (for Garden Chat) the active Garden.
+  for (const tool of BAMBU_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   for (const tool of CHAT_SEARCH_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  for (const tool of NOTIFICATION_TOOLS) {
+    map[tool] = authenticated && surface === "dashboard_terminal";
   }
   // "How is the upload going?" is a question about the person's own account
   // state. The route reads job tables scoped to the signed-in user and never
@@ -890,6 +914,7 @@ function buildToolMap(
   for (const tool of WORKSPACE_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  map.attachment_image = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   // The inventory tools exist for the turn the user asked to be run that way.
   // Outside a super-agent turn they stay off, so an ordinary turn cannot pull an
   // arbitrary skill's guidance or fire one of the user's automations.
@@ -917,7 +942,7 @@ function buildToolMap(
     for (const tool of GARDEN_READ_TOOLS) map[tool] = true;
   }
   if (surface !== "dashboard_terminal") {
-    for (const tool of [...FS_READ_TOOLS, ...FS_WRITE_TOOLS, "bash", "shell", "terminal_execute_command"]) {
+    for (const tool of [...FS_READ_TOOLS, ...FS_WRITE_TOOLS, "bash", "shell"]) {
       map[tool] = false;
     }
   }
@@ -941,8 +966,11 @@ function buildToolMap(
     // Image search spends a signed-in deployment's Google API quota, and this
     // surface is the anonymous public one.
     for (const tool of IMAGE_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of FEYNMAN_TOOLS) map[tool] = false;
     for (const tool of PRODUCT_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of BAMBU_TOOLS) map[tool] = false;
     for (const tool of CHAT_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of NOTIFICATION_TOOLS) map[tool] = false;
     for (const tool of PROCESS_STATUS_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.

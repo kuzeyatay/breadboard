@@ -306,6 +306,34 @@ test("submission binds the legacy row to an exact authenticated Runtime identity
   assert.equal(JSON.stringify(submission).includes("secret"), false);
 });
 
+test("a submit that settles as a memory denial fails the row with the headroom evidence", async () => {
+  const store = fakeStore(legacyJob());
+  const control = fakeControl({
+    submit: async () => snapshot({
+      state: "resource_exhausted",
+      failureCode: "SERVICE_DEPENDENCY_RESOURCE_EXHAUSTED",
+      failureMessage: "A required Runtime service dependency could not be admitted",
+      resourceExhaustion: {
+        resource: "windows_commit",
+        requiredHeadroomMb: 7182,
+        availableHeadroomMb: 6606,
+        retryable: false,
+      },
+    }),
+  });
+  const updated = await client.startScriberrRuntimeJob({
+    store,
+    jobId: store.current().id,
+    control,
+    env: {},
+  });
+  assert.equal(updated.runtimeJobId, "job_scriberr_1");
+  assert.equal(updated.status, "failed");
+  assert.equal(updated.errorCode, "BREADBOARD_RESOURCE_EXHAUSTED");
+  assert.match(updated.errorMessage, /7\.0 GB required, 6\.5 GB available/);
+  assert.equal(updated.errorMessage.includes("interrupted"), false);
+});
+
 test("cancel persists intent and targets only the bound native job", async () => {
   const store = fakeStore(legacyJob({ runtimeJobId: "job_scriberr_1", status: "transcribing" }));
   let cancelled = null;

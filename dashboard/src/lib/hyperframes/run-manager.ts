@@ -22,11 +22,12 @@ import {
   externalRuntimeRealpath,
 } from "../external-runtime-filesystem.ts";
 import { runInstruction, writeProjectGuidance } from "./prompt.ts";
+import { ensureHyperframesToolchain } from "./setup.ts";
 import {
   hyperframesEnv,
-  resolveLauncher,
-  runtimeAvailability,
+  hyperframesTemporaryDirectory,
   writeCliShim,
+  type HyperframesLauncher,
   type HyperframesToolchain,
 } from "./runtime.ts";
 import {
@@ -328,7 +329,7 @@ function finish(run: RunState, code: number | null): void {
   refreshArtifacts(run, { force: true });
   const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
   const video = primaryVideo(run.artifacts);
-  if (code === 0) {
+  if (code === 0 && video) {
     const summary =
       run.output.join("\n\n").trim() ||
       (video
@@ -347,6 +348,7 @@ function finish(run: RunState, code: number | null): void {
   }
   const error =
     run.runtimeError ||
+    (code === 0 ? run.output.at(-1)?.trim() || "The video agent finished without rendering the requested video." : "") ||
     run.stderr.trim().split(/\r?\n/).slice(-1)[0] ||
     `The video agent exited with code ${code ?? "unknown"}`;
   run.status = "failed";
@@ -389,7 +391,7 @@ function childEnvironment(
   input: { shimDirectory?: string; baseUrl: string; apiKey: string; model: string },
 ): NodeJS.ProcessEnv {
   const home = path.join(run.workspaceRoot, ".runtime-home");
-  const temporary = path.join(run.workspaceRoot, ".runtime-temp");
+  const temporary = hyperframesTemporaryDirectory(run.workspaceRoot);
   const appData = path.join(home, "AppData", "Roaming");
   const localAppData = path.join(home, "AppData", "Local");
   const codexHome = path.join(home, ".codex");
@@ -405,8 +407,9 @@ function childEnvironment(
     XDG_CONFIG_HOME: path.join(home, ".config"),
     XDG_CACHE_HOME: path.join(home, ".cache"),
     XDG_DATA_HOME: path.join(home, ".local", "share"),
-    TEMP: temporary,
-    TMP: temporary,
+    TEMP: externalRuntimeRealpath(temporary),
+    TMP: externalRuntimeRealpath(temporary),
+    TMPDIR: externalRuntimeRealpath(temporary),
   };
   for (const key of PASSTHROUGH_ENV) {
     const value = process.env[key];
@@ -514,22 +517,18 @@ export function startRuntimeWorkerRun(input: {
   reasoningEffort: string;
   baseUrl: string;
   apiKey: string;
+  signal: AbortSignal;
+  installCli: () => Promise<{ ok: boolean; message: string; detail?: string }>;
+  prepareBrowser: (launcher: HyperframesLauncher) => Promise<string>;
   /** The chat this was launched from, so a request can refer back to it. */
   conversationContext?: string;
 }): { runId: string; status: RunStatus } {
-  const availability = runtimeAvailability();
-  if (!availability.available || !availability.toolchain.cli.found) {
-    throw new Error(availability.reason ?? "The HyperFrames toolchain is unavailable.");
-  }
   const codex = resolveCodexLauncher();
   if (!codex) {
     throw new Error(
       "The coding runtime that drives HyperFrames was not found. Install Codex or set CODEX_BIN.",
     );
   }
-  const launcher = resolveLauncher();
-  if (!launcher) throw new Error("The HyperFrames CLI was not found.");
-
   if (!RUNTIME_JOB_ID.test(input.runtimeJobId) || runs.has(input.runtimeJobId)) {
     throw new Error("HyperFrames Runtime identity is invalid.");
   }
@@ -557,14 +556,29 @@ export function startRuntimeWorkerRun(input: {
     artifacts: [],
   };
   runs.set(runId, run);
+  const isAborted = () => run.status === "aborted";
 
   void (async () => {
     try {
+      const toolchain = await ensureHyperframesToolchain(input.installCli, input.signal);
+      if (isAborted()) return;
+      const launcher = toolchain.cli;
+      if (!launcher.found) throw new Error("The HyperFrames CLI was not found after setup.");
+      if (!toolchain.browser.found) {
+        toolchain.browser = {
+          found: true,
+          path: await input.prepareBrowser(launcher),
+          source: "HyperFrames managed Chromium",
+        };
+      }
+      input.signal.throwIfAborted();
+      if (isAborted()) return;
       const workspace = await createRuntimeWorkspace({
         runtimeWorkspacePath: workspaceRoot,
         launcher,
-        toolchain: availability.toolchain,
-        environment: childEnvironment(run, availability.toolchain, {
+        toolchain,
+        signal: input.signal,
+        environment: childEnvironment(run, toolchain, {
           baseUrl: input.baseUrl,
           apiKey: input.apiKey,
           model: input.model,
@@ -595,13 +609,13 @@ export function startRuntimeWorkerRun(input: {
         cliVersion: launcher.version,
         cliSource: launcher.source,
         codexVersion: codex.version,
-        browser: availability.toolchain.browser.source || "download on first render",
+        browser: toolchain.browser.source || "download on first render",
         scaffold: workspace.scaffold,
         ...(workspace.scaffoldWarning ? { scaffoldWarning: workspace.scaffoldWarning } : {}),
         outputPath: OUTPUT_RELATIVE_PATH,
       });
       refreshArtifacts(run, { force: true });
-      spawnAgent(run, codex, availability.toolchain, {
+      spawnAgent(run, codex, toolchain, {
         projectPath: workspace.projectDirectory,
         shimDirectory,
         model: input.model,

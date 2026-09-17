@@ -33,7 +33,7 @@ import {
   stableHashText,
   THOUGHT_TOPOLOGY_SCORING,
 } from "./scoring.ts";
-import { commitThoughtTopology, readThoughtTopology, readThoughtTopologyCache } from "./storage.ts";
+import { clearThoughtTopologyBuildCache, commitThoughtTopology, openThoughtTopologyBuildCache, readThoughtTopology, readThoughtTopologyCache, thoughtTopologyHasCompleteConnections } from "./storage.ts";
 import { readThoughtTopologyRolloutStateById } from "./state.ts";
 import {
   THOUGHT_TOPOLOGY_SCHEMA_VERSION,
@@ -41,6 +41,7 @@ import {
   type ThoughtTopology,
   type ThoughtTopologyCache,
   type ThoughtTopologyCacheNode,
+  type ThoughtTopologyCacheEdge,
   type TopologyEdge,
   type TopologyEvidence,
   type TopologyFolder,
@@ -51,7 +52,18 @@ export interface ThoughtTopologyBuildDependencies {
   generator?: ModelTextGenerator | null;
   now?: () => Date;
   cacheVersions?: TopologyCacheVersions;
+  /**
+   * Wall-clock allowance, from the start of the build, for model-written
+   * summaries and explanations. Past it the remaining ones take their
+   * deterministic fallback text so the graph still publishes inside the
+   * worker's lifetime; a fallback is never cached as ready, so the next
+   * build resumes exactly where this one stopped.
+   */
+  enrichmentBudgetMs?: number;
 }
+
+/** Leaves ten minutes of a thirty-minute worker for embedding, layout, and verification. */
+export const DEFAULT_ENRICHMENT_BUDGET_MS = 20 * 60_000;
 
 export interface ThoughtTopologyBuildResult {
   status: "built" | "stale" | "skipped";
@@ -182,7 +194,7 @@ function addedNodeIds(
   previous: ThoughtTopology | null | undefined,
   projection: GardenProjection,
 ): Set<string> | null {
-  if (!previous || projection.nodes.length <= previous.nodes.length) return null;
+  if (!previous || !thoughtTopologyHasCompleteConnections(previous) || projection.nodes.length <= previous.nodes.length) return null;
   const nextNodes = new Map(projection.nodes.map((node) => [node.id, node]));
   const oldFolders = new Map(previous.folders.map((folder) => [folder.id, folder]));
   const nextFolders = new Map(projection.folders.map((folder) => [folder.id, folder]));
@@ -233,6 +245,7 @@ async function embedChangedNodes(
   embed: ThoughtTopologyBuildDependencies["embed"],
   signal?: AbortSignal,
   onProgress?: (fraction: number) => void,
+  saveNode?: (node: ThoughtTopologyCacheNode) => void,
 ): Promise<{ records: Record<string, ThoughtTopologyCacheNode>; available: boolean; model: string; dimension: number }> {
   const records: Record<string, ThoughtTopologyCacheNode> = {};
   const changed: ProjectedTopologyNode[] = [];
@@ -302,15 +315,27 @@ async function embedChangedNodes(
       // Small batches: ChatMock embeds long pages at roughly one per second
       // on the CPU, and each batch must finish inside the adapter's budget.
       for (let offset = 0; offset < requests.length; offset += EMBED_BATCH_SIZE) {
+        signal?.throwIfAborted();
         const batch = requests.slice(offset, offset + EMBED_BATCH_SIZE);
         const response = await embed(batch.map((request) => request.text), signal);
         if (canonicalEmbeddingModel(response.model) !== versions.embeddingModel || response.vectors.length !== batch.length || response.vectors.some((vector) => vector.length !== response.dimension)) {
           throw new Error("embedding_identity_mismatch");
         }
         batch.forEach((request, index) => request.assign(response.vectors[index], response.dimension));
+        // Save successful vectors even if a later batch fails or is cancelled.
+        // Only changed records are journaled, without rewriting the full cache.
+        const changedNodes = new Set<string>();
+        for (let index = offset; index < offset + batch.length; index += 1) {
+          changedNodes.add(index < changed.length ? changed[index].id : pendingSections[index - changed.length].nodeId);
+        }
+        for (const id of changedNodes) saveNode?.(records[id]);
         onProgress?.(Math.min(1, (offset + batch.length) / requests.length));
       }
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
+      // Say why: a build that silently degrades to lexical scoring and is then
+      // refused for a Garden that had a semantic map looks like an outage.
+      console.warn(`[thought-topology] embedding batch failed; scoring without vectors: ${error instanceof Error ? error.message : String(error)}`);
       // One incomplete vector space is worse than deterministic degradation, so
       // nothing embedded in this run may score. Vectors reused from the cache
       // stay: they are still valid, and keeping them means the next successful
@@ -346,12 +371,25 @@ export async function buildThoughtTopologyFromProjection(input: {
   dependencies?: ThoughtTopologyBuildDependencies;
   contentFingerprint?: string;
   onProgress?: (percent: number) => void;
+  saveNode?: (node: ThoughtTopologyCacheNode) => void;
+  saveEdge?: (edge: ThoughtTopologyCacheEdge) => void;
 }): Promise<{ topology: ThoughtTopology; cache: ThoughtTopologyCache }> {
   const dependencies = input.dependencies ?? {};
   const versions = dependencies.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS;
   const generator = dependencies.generator === undefined
-    ? createDefaultTopologyGenerator(versions.summaryModel)
+    ? createDefaultTopologyGenerator(versions.summaryModel, input.signal)
     : dependencies.generator ?? undefined;
+  const clock = () => (dependencies.now?.() ?? new Date()).getTime();
+  const enrichmentDeadline = clock() + (dependencies.enrichmentBudgetMs ?? DEFAULT_ENRICHMENT_BUDGET_MS);
+  let enrichmentSkipped = 0;
+  // Once the budget is spent the model is no longer consulted; the fallback
+  // text is deterministic and instant, so the rest of the build is bounded.
+  const enrichmentGenerator = () => {
+    if (!generator) return undefined;
+    if (clock() <= enrichmentDeadline) return generator;
+    enrichmentSkipped += 1;
+    return undefined;
+  };
   const embed = dependencies.embed ?? ((texts, signal) => new GBrainClient().embed(texts, signal));
   const embedding = await embedChangedNodes(
     input.projection.nodes,
@@ -360,6 +398,7 @@ export async function buildThoughtTopologyFromProjection(input: {
     embed,
     input.signal,
     (fraction) => input.onProgress?.(20 + Math.floor(fraction * 35)),
+    input.saveNode,
   );
   input.onProgress?.(55);
   const positions = positionNodes(input.projection, input.oldCache);
@@ -377,8 +416,14 @@ export async function buildThoughtTopologyFromProjection(input: {
     return old?.summaryHash !== hashes.summaryHash || old.summary.state !== "ready";
   });
   const modelSummarised = changedForSummary.filter((node) => !documentNodeSummary(node));
-  const summaries = await mapWithConcurrency(modelSummarised, 3, (node) =>
-    enrichNodeSummary({ title: node.title, semanticText: node.semanticText, generator, model: versions.summaryModel }));
+  const summaries = await mapWithConcurrency(modelSummarised, 3, async (node) => {
+    const summary = await enrichNodeSummary({ title: node.title, semanticText: node.semanticText, generator: enrichmentGenerator(), model: versions.summaryModel });
+    input.signal?.throwIfAborted();
+    embedding.records[node.id].summary = summary;
+    embedding.records[node.id].summaryHash = nodeCacheHashes(node.contentHash, versions).summaryHash;
+    input.saveNode?.(embedding.records[node.id]);
+    return summary;
+  }, input.signal);
   input.onProgress?.(68);
   const summaryByNode = new Map(modelSummarised.map((node, index) => [node.id, summaries[index]]));
   for (const node of changedForSummary) {
@@ -394,9 +439,12 @@ export async function buildThoughtTopologyFromProjection(input: {
     }
     node.embedding = embedding.records[node.id].embedding;
     node.sections = embedding.records[node.id].sections?.map((section) => ({ label: section.label, embedding: section.embedding }));
+    input.saveNode?.(embedding.records[node.id]);
   }
 
-  const additions = addedNodeIds(input.previousTopology, input.projection);
+  const additions = input.previousTopology && topologyMatchesVersions(input.previousTopology, versions)
+    ? addedNodeIds(input.previousTopology, input.projection)
+    : null;
   const candidates = scoreAffinityPairs(input.projection.nodes, embedding.available);
   // The scale the pair scores live on: centred cosine for a Garden with
   // enough pages, raw cosine for a tiny one (see `embeddingCentering`).
@@ -423,7 +471,7 @@ export async function buildThoughtTopologyFromProjection(input: {
     const left = byId.get(candidate.source);
     const right = byId.get(candidate.target);
     if (!left || !right) return [];
-    const evidence = edgeEvidence(left, right, candidate.origin, candidate.sections);
+    const evidence = candidate.evidence ?? edgeEvidence(left, right, candidate.origin, candidate.sections);
     const pairHash = topologyPairHash(embedding.records[left.id].embeddingHash, embedding.records[right.id].embeddingHash, versions);
     const explanationHash = edgeExplanationHash(pairHash, evidence, versions);
     return [{ candidate, left, right, evidence, pairHash, explanationHash, old: input.oldCache?.edges[pairHash] }];
@@ -436,6 +484,10 @@ export async function buildThoughtTopologyFromProjection(input: {
   // it until every selected connection has an explanation. Concurrency keeps
   // large Gardens moving without exposing a half-enriched graph.
   let completedExplanations = 0;
+  const reportExplanations = () => input.onProgress?.(
+    68 + Math.floor(((edgeInputs.length - changedEdges.length + completedExplanations) / Math.max(1, edgeInputs.length)) * 14),
+  );
+  reportExplanations();
   const edgeEnrichments = await mapWithConcurrency(changedEdges, 3, async (edge) => {
     const enrichment = await enrichEdgeExplanation({
       sourceTitle: edge.left.title,
@@ -446,16 +498,28 @@ export async function buildThoughtTopologyFromProjection(input: {
       components: edge.candidate.components,
       score: edge.candidate.score,
       threshold,
-      generator,
+      origin: edge.candidate.origin,
+      evidence: edge.evidence,
+      generator: enrichmentGenerator(),
       model: versions.summaryModel,
     });
+    input.signal?.throwIfAborted();
+    input.saveEdge?.({
+      pairHash: edge.pairHash,
+      explanationHash: edge.explanationHash,
+      explanation: enrichment.explanation,
+      relationType: enrichment.relationType,
+      direction: enrichment.direction,
+      score: edge.candidate.score,
+    });
     completedExplanations += 1;
-    input.onProgress?.(
-      68 + Math.floor((completedExplanations / Math.max(1, changedEdges.length)) * 14),
-    );
+    reportExplanations();
     return enrichment;
-  });
+  }, input.signal);
   input.onProgress?.(82);
+  if (enrichmentSkipped > 0) {
+    console.warn(`[thought-topology] enrichment budget spent for ${input.gardenId}; ${enrichmentSkipped} summaries/explanations published with fallback text and left for the next build`);
+  }
   const enrichmentByHash = new Map(changedEdges.map((edge, index) => [edge.explanationHash, edgeEnrichments[index]]));
   let edges: TopologyEdge[] = edgeInputs.map((edge) => {
     const enrichment = enrichmentByHash.get(edge.explanationHash);
@@ -516,6 +580,7 @@ export async function buildThoughtTopologyFromProjection(input: {
 
   const folderPositions = new Map(input.projection.folders.map((folder) => [folder.id, { x: folder.x, y: folder.y }]));
   for (const [folderIndex, folder] of input.projection.folders.entries()) {
+    input.signal?.throwIfAborted();
     const childTitles = input.projection.nodes.filter((node) => node.folderId === folder.id).map((node) => node.title);
     const semanticText = `${folder.title}. Pages: ${childTitles.join(", ") || "none"}.`;
     const contentHash = stableHashText("folder-summary", semanticText);
@@ -523,7 +588,7 @@ export async function buildThoughtTopologyFromProjection(input: {
     const old = input.oldCache?.nodes[`meta:${folder.id}`];
     const summary = old?.summaryHash === hashes.summaryHash && old.summary.state === "ready"
       ? old.summary
-      : await enrichNodeSummary({ title: folder.title, semanticText, generator, model: versions.summaryModel });
+      : await enrichNodeSummary({ title: folder.title, semanticText, generator: enrichmentGenerator(), model: versions.summaryModel });
     folder.summary = summary;
     embedding.records[`meta:${folder.id}`] = {
       id: `meta:${folder.id}`,
@@ -539,6 +604,8 @@ export async function buildThoughtTopologyFromProjection(input: {
       summary,
       ...folderPositions.get(folder.id),
     };
+    input.signal?.throwIfAborted();
+    input.saveNode?.(embedding.records[`meta:${folder.id}`]);
     input.onProgress?.(
       82 + Math.floor(((folderIndex + 1) / Math.max(1, input.projection.folders.length)) * 12),
     );
@@ -549,7 +616,7 @@ export async function buildThoughtTopologyFromProjection(input: {
   const oldGarden = input.oldCache?.nodes["meta:garden"];
   const gardenSummary = oldGarden?.summaryHash === gardenHashes.summaryHash && oldGarden.summary.state === "ready"
     ? oldGarden.summary
-    : await enrichNodeSummary({ title: input.gardenTitle, semanticText: gardenSemanticText, generator, model: versions.summaryModel });
+    : await enrichNodeSummary({ title: input.gardenTitle, semanticText: gardenSemanticText, generator: enrichmentGenerator(), model: versions.summaryModel });
   input.onProgress?.(96);
   embedding.records["meta:garden"] = {
     id: "meta:garden",
@@ -566,6 +633,8 @@ export async function buildThoughtTopologyFromProjection(input: {
     x: 0,
     y: 0,
   };
+  input.signal?.throwIfAborted();
+  input.saveNode?.(embedding.records["meta:garden"]);
 
   const generatedAt = (dependencies.now?.() ?? new Date()).toISOString();
   const degraded = !embedding.available ||
@@ -648,6 +717,7 @@ export async function buildThoughtTopologyInRuntimeWorker(input: {
       });
     }
     input.onProgress?.(100);
+    clearThoughtTopologyBuildCache(gardenDir);
     return {
       status: "built",
       clusterId: input.clusterId,
@@ -670,17 +740,21 @@ export async function buildThoughtTopologyInRuntimeWorker(input: {
     return keepExistingTopology();
   }
   input.onProgress?.(18);
+  input.signal?.throwIfAborted();
+  const recovery = openThoughtTopologyBuildCache(gardenDir, oldCache);
   const built = await buildThoughtTopologyFromProjection({
     clusterId: input.clusterId,
     gardenId: input.gardenId,
     gardenTitle: before.title,
     projection,
-    oldCache,
+    oldCache: recovery.cache,
     previousTopology: previous,
     signal: input.signal,
     dependencies: input.dependencies,
     contentFingerprint,
     onProgress: input.onProgress,
+    saveNode: recovery.node,
+    saveEdge: recovery.edge,
   });
   if (input.signal?.aborted) throw input.signal.reason ?? new DOMException("Aborted", "AbortError");
 
@@ -709,6 +783,7 @@ export async function buildThoughtTopologyInRuntimeWorker(input: {
     throw new Error("Embedding service unavailable; the previous semantic Thought Topology was kept.");
   }
   commitThoughtTopology(gardenDir, built.cache, built.topology);
+  clearThoughtTopologyBuildCache(gardenDir);
   input.onProgress?.(100);
   return {
     status: "built",

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useStartupLoading } from "@/app/components/startup-readiness";
 import { notifyPlanChanged, subscribePlanChanges } from "@/lib/plan/client-sync";
 import type { PlanBoard, PlanColumn, PlanProjectSummary, PlanTask, UpdateTaskInput } from "@/lib/plan/types";
 
@@ -16,6 +17,7 @@ export function useNotepadTasks(ownerKey: string) {
   const [columns, setColumns] = useState<PlanColumn[]>([]);
   const [tasks, setTasks] = useState<PlanTask[]>([]);
   const [loading, setLoading] = useState(true);
+  useStartupLoading(loading);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ message: string; retry: () => void } | null>(null);
   const selection = useRef<number | null>(null);

@@ -4,6 +4,8 @@ import type { Block } from '@genoffice/docx-engine'
 import { AiComposer, AiTypingIndicator, Markdown } from '@genoffice/ui'
 import type { AiSettings } from '../../shared/ipc'
 import { executeTool } from './tools'
+import { useDocumentAssistantHistory } from '@/app/components/use-document-assistant-history'
+import type { DocumentAssistantChatEntry as ChatEntry } from '@/lib/document-assistant-history-types'
 
 interface NumIds {
   bullet: string | null
@@ -21,16 +23,6 @@ interface AiPanelProps {
   onExpand?: () => void
   onCollapse?: () => void
   filePath?: string | null
-}
-
-type ChatRole = 'user' | 'assistant'
-
-interface ChatEntry {
-  id: string
-  role: ChatRole
-  text: string
-  activities?: string[]
-  error?: string
 }
 
 interface AiAction {
@@ -129,11 +121,12 @@ function readStoredChat(): ChatEntry[] {
         return [{
           id: typeof item.id === 'string' ? item.id : messageId(),
           role: item.role,
-          text: item.text.slice(0, 6_000),
+          text: item.text.slice(0, 100_000),
           activities: Array.isArray(item.activities)
-            ? item.activities.filter((activity): activity is string => typeof activity === 'string').slice(0, 12)
+            ? item.activities.filter((activity): activity is string => typeof activity === 'string').slice(0, 100)
             : undefined,
           error: typeof item.error === 'string' ? item.error.slice(0, 1_000) : undefined,
+          revision: typeof item.revision === 'string' ? item.revision : undefined,
         }]
       })
       .slice(-MAX_CHAT_ENTRIES)
@@ -289,6 +282,7 @@ export function AiPanel({
   const [input, setInput] = useState('')
   const [chat, setChat] = useState<ChatEntry[]>(readStoredChat)
   const [busy, setBusy] = useState(false)
+  const historyError = useDocumentAssistantHistory({ artifactId: artifactIdFromLocation(), kind: 'word', chat, setChat, busy })
   const [selectionPreview, setSelectionPreview] = useState(() => selectedText(editor))
   const controllerRef = useRef<AbortController | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
@@ -328,7 +322,7 @@ export function AiPanel({
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(chatStorageKey(), JSON.stringify(chat.slice(-MAX_CHAT_ENTRIES)))
+    try { localStorage.setItem(chatStorageKey(), JSON.stringify(chat.slice(-MAX_CHAT_ENTRIES))) } catch { /* The shared history remains available. */ }
     const frame = window.requestAnimationFrame(() => {
       if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
     })
@@ -431,13 +425,14 @@ export function AiPanel({
   return (
     <aside className="ai-panel" style={{ width: '100%' }} aria-label="Bread document chat">
       <div ref={logRef} className="ai-chat" aria-live="polite">
+        {historyError ? <div role="status" className="ai-msg-error">{historyError}</div> : null}
         {chat.length === 0 ? (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">
               {docEmpty ? 'Create this Word document with Bread' : 'Edit this Word document with Bread'}
             </div>
             <div className="ai-chat-empty-body">
-              Ask questions or request edits here. The conversation and document stay in this editor.
+              Ask questions or request edits here. This conversation is also available in Terminal history.
             </div>
           </div>
         ) : null}

@@ -27,7 +27,6 @@ const WIRED = [
   { agent: "agent-reach", file: "src/lib/agent-reach/run-manager.ts", seam: /promptWithContext\(run\.task/ },
   { agent: "career-ops", file: "src/lib/career-ops/run-manager.ts", seam: /promptWithContext\(request\.task \|\| run\.task/ },
   { agent: "openexecutive", file: "src/lib/openexecutive/run-manager.ts", seam: /conversationContext: input\.conversationContext/ },
-  { agent: "open-gym", file: "src/lib/open-gym/run-manager.ts", seam: /promptWithContext\(run\.task, input\.conversationContext\)/ },
   { agent: "deep-tutor", file: "src/lib/deep-tutor/run-manager.ts", seam: /contextSection\(run\.conversationContext\)/ },
   { agent: "get-doc", file: "src/lib/get-doc/run-manager.ts", seam: /promptWithContext\(request\.query/ },
   { agent: "openplanter", file: "src/lib/openplanter/run-manager.ts", seam: /promptWithContext\(input\.task/ },
@@ -78,7 +77,7 @@ test("every runtime agent with a prompt reads the chat it was launched from", ()
 test("the launch routes hand the conversation to their run manager", () => {
   const routes = [
     "music-producer",
-    "agent-reach", "career-ops", "openexecutive", "open-gym", "deep-tutor", "get-doc", "openplanter",
+    "agent-reach", "career-ops", "openexecutive", "deep-tutor", "get-doc", "openplanter",
     "openscience", "openwork", "legal", "deer-flow", "inbox-zero",
     "hyperframes", "openmontage", "vibe-trading", "stock-analyst",
     "socials-manager", "resource2skill", "video-use", "meeting-notes",

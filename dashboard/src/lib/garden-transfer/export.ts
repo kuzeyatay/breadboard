@@ -6,7 +6,8 @@
  * an export route that honoured "readable" would quietly route around it.
  */
 
-import AdmZip from "adm-zip";
+import type { Readable } from "node:stream";
+import { StreamingArchive } from "./stream-archive.ts";
 
 import db from "../db.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
@@ -61,7 +62,7 @@ export interface TransferDownload {
   kind: TransferKind;
   filename: string;
   mimeType: string;
-  buffer: Buffer;
+  stream: Readable;
   /** What went in, so a caller can tell the user rather than guess. */
   summary: {
     gardens: number;
@@ -130,7 +131,7 @@ function gardenManifest(
  * content was never written still exports, as an empty one.
  */
 function packGarden(
-  zip: AdmZip,
+  zip: StreamingArchive,
   row: ClusterRow,
   folder: string,
   prefix: string,
@@ -148,7 +149,7 @@ export function exportGardenArchive(
   slug: string,
 ): TransferDownload {
   const row = ownedGarden(userId, slug);
-  const zip = new AdmZip();
+  const zip = new StreamingArchive();
   const budget = createBudget();
 
   const manifest = packGarden(
@@ -165,7 +166,7 @@ export function exportGardenArchive(
     kind: "garden",
     filename: transferFileName("garden", row.name),
     mimeType: TRANSFER_FILE_FORMATS.garden.mimeType,
-    buffer: zip.toBuffer(),
+    stream: zip.stream(),
     summary: {
       gardens: 1,
       files: manifest.content.files,
@@ -197,7 +198,7 @@ export function exportClusterArchive(
     throw new TransferError("Cluster not found.", 404);
   }
 
-  const zip = new AdmZip();
+  const zip = new StreamingArchive();
   const budget = createBudget();
   const entries: ClusterGardenEntry[] = [];
   const directories = new Set<string>();
@@ -250,7 +251,7 @@ export function exportClusterArchive(
     kind: "cluster",
     filename: transferFileName("cluster", manifest.label),
     mimeType: TRANSFER_FILE_FORMATS.cluster.mimeType,
-    buffer: zip.toBuffer(),
+    stream: zip.stream(),
     summary: { gardens: entries.length, files, bytes, skipped },
   };
 }

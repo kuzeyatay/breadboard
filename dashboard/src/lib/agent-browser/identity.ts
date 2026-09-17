@@ -15,7 +15,7 @@ export function agentBrowserUserMessage(task: string): string {
 export function agentBrowserStartFailure(code: unknown): string {
   switch (code) {
     case "sign_in_window_open":
-      return "Close the browser sign-in window on your profile page first — a run needs that browser to itself.";
+      return "Close the external browser sign-in window first — a run needs that browser to itself.";
     case "runtime_unavailable":
       return "Agent Browser is not installed on this computer.";
     case "agent_disabled":

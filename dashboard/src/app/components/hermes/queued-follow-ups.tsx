@@ -20,12 +20,16 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { ChatAttachment } from "@/lib/chat-attachments.ts";
+import type { ChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
+import { QuotedChatSelection } from "../chat-text-selection-ui";
 
 export interface QueuedFollowUp {
   id: string;
   text: string;
   /** Files are part of the queued message, not leftovers in the composer. */
   attachments: ChatAttachment[];
+  /** The excerpt belongs to this message through queueing, editing and steering. */
+  textSelection?: ChatTextSelectionReference;
   /**
    * Conversation the message was queued in; null while the chat is a draft
    * with no id yet. Queued messages only render and flush in their own
@@ -34,6 +38,14 @@ export interface QueuedFollowUp {
    * draft became, so it matches wherever the queue drains.
    */
   conversationKey: string | null;
+}
+
+interface DeletedFollowUp {
+  item: QueuedFollowUp;
+  conversationKey: string | null;
+  index: number;
+  previousId?: string;
+  nextId?: string;
 }
 
 export function reorderQueuedFollowUps(
@@ -90,16 +102,19 @@ interface Options {
   onSteer?: (
     text: string,
     attachments: readonly ChatAttachment[],
+    textSelection?: ChatTextSelectionReference,
   ) => Promise<boolean>;
   /** Remove a queued message and restore all of it to this surface's composer. */
   onRestoreDraft: (
     text: string,
     attachments: readonly ChatAttachment[],
+    textSelection?: ChatTextSelectionReference,
   ) => void;
   /** Send one queued message as an ordinary follow-up once the run settles. */
   onSendQueued: (
     text: string,
     attachments: readonly ChatAttachment[],
+    textSelection?: ChatTextSelectionReference,
   ) => Promise<void>;
 }
 
@@ -116,10 +131,13 @@ export function useQueuedFollowUps({
   queueFollowUp: (
     text: string,
     attachments?: readonly ChatAttachment[],
+    textSelection?: ChatTextSelectionReference,
   ) => void;
   headerContent: ReactNode | undefined;
 } {
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
+  const [deletedFollowUps, setDeletedFollowUps] = useState<DeletedFollowUp[]>([]);
+  const queueRef = useRef<HTMLDivElement>(null);
   const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
   const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
   const [draggedQueuedId, setDraggedQueuedId] = useState<string | null>(null);
@@ -177,6 +195,11 @@ export function useQueuedFollowUps({
       item.conversationKey === null ||
       item.conversationKey === conversationKey,
   );
+  // Use the conversation at deletion time, including for untagged draft
+  // messages, so undo cannot recover another chat's deleted input here.
+  const lastDeleted = deletedFollowUps.findLast(
+    (entry) => entry.conversationKey === conversationKey,
+  );
 
   useEffect(() => {
     if (!previewImage) return;
@@ -198,7 +221,7 @@ export function useQueuedFollowUps({
       current.filter((item) => item.id !== next.id),
     );
     setSendingQueuedId(next.id);
-    void onSendQueued(next.text, next.attachments).finally(() =>
+    void onSendQueued(next.text, next.attachments, next.textSelection).finally(() =>
       setSendingQueuedId(null),
     );
   }, [
@@ -213,6 +236,7 @@ export function useQueuedFollowUps({
   function queueFollowUp(
     text: string,
     attachments: readonly ChatAttachment[] = [],
+    textSelection?: ChatTextSelectionReference,
   ) {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
@@ -222,6 +246,7 @@ export function useQueuedFollowUps({
         id: crypto.randomUUID(),
         text: trimmed,
         attachments: [...attachments],
+        ...(textSelection ? { textSelection: { ...textSelection } } : {}),
         conversationKey,
       },
     ]);
@@ -254,10 +279,6 @@ export function useQueuedFollowUps({
 
   async function applyQueuedSteer(item: QueuedFollowUp) {
     if (applyingSteerId) return;
-    if (item.attachments.length > 0) {
-      showSteerNote(item.id, "Messages with attachments send as a follow-up when the turn finishes.");
-      return;
-    }
     if (!onSteer || !steerableRunActive || stopping) {
       showSteerNote(item.id, steerUnavailableReason());
       return;
@@ -265,7 +286,7 @@ export function useQueuedFollowUps({
     setApplyingSteerId(item.id);
     setSteerNote(null);
     try {
-      if (await onSteer(item.text, item.attachments)) {
+      if (await onSteer(item.text, item.attachments, item.textSelection)) {
         setQueuedFollowUps((current) =>
           current.filter((candidate) => candidate.id !== item.id),
         );
@@ -298,7 +319,49 @@ export function useQueuedFollowUps({
       current.filter((candidate) => candidate.id !== item.id),
     );
     setSteerNote((current) => (current?.id === item.id ? null : current));
-    onRestoreDraft(item.text, item.attachments);
+    onRestoreDraft(item.text, item.attachments, item.textSelection);
+  }
+
+  function deleteQueuedFollowUp(item: QueuedFollowUp) {
+    const index = queuedFollowUps.findIndex((candidate) => candidate.id === item.id);
+    if (index < 0 || applyingSteerId === item.id) return;
+    setDeletedFollowUps((current) => [
+      ...current,
+      {
+        item,
+        conversationKey,
+        index,
+        previousId: queuedFollowUps[index - 1]?.id,
+        nextId: queuedFollowUps[index + 1]?.id,
+      },
+    ]);
+    setQueuedFollowUps((current) =>
+      current.filter((candidate) => candidate.id !== item.id),
+    );
+    setSteerNote((current) => (current?.id === item.id ? null : current));
+    // The delete button is about to disappear. Keep keyboard focus in this
+    // queue, even when its final row is removed, so Ctrl+Z reaches its undo.
+    queueRef.current?.focus({ preventScroll: true });
+  }
+
+  function undoQueuedDeletion() {
+    if (!lastDeleted) return;
+    setDeletedFollowUps((current) => current.filter((entry) => entry !== lastDeleted));
+    setQueuedFollowUps((current) => {
+      if (current.some((item) => item.id === lastDeleted.item.id)) return current;
+      const nextIndex = current.findIndex((item) => item.id === lastDeleted.nextId);
+      const previousIndex = current.findIndex((item) => item.id === lastDeleted.previousId);
+      // Anchor to a surviving neighbour if earlier messages have already sent.
+      const index = nextIndex >= 0
+        ? nextIndex
+        : previousIndex >= 0
+          ? previousIndex + 1
+          : Math.min(lastDeleted.index, current.length);
+      const next = [...current];
+      next.splice(index, 0, lastDeleted.item);
+      return next;
+    });
+    queueRef.current?.focus({ preventScroll: true });
   }
 
   function moveQueuedFollowUp(itemId: string, offset: -1 | 1) {
@@ -355,11 +418,29 @@ export function useQueuedFollowUps({
       : null;
 
   const headerContent =
-    visibleQueued.length > 0 ? (
+    visibleQueued.length > 0 || lastDeleted ? (
       <>
-        <div className="space-y-0.5 py-0.5">
+        <div
+          ref={queueRef}
+          tabIndex={-1}
+          role="group"
+          aria-label="Queued messages"
+          data-queue-empty={visibleQueued.length === 0 ? "" : undefined}
+          className="space-y-0.5 py-0.5 outline-none empty:py-0"
+          onKeyDown={(event) => {
+            if (
+              event.defaultPrevented || event.nativeEvent.isComposing ||
+              event.repeat || event.altKey || event.shiftKey ||
+              !(event.ctrlKey || event.metaKey) ||
+              event.key.toLowerCase() !== "z" || !lastDeleted
+            ) return;
+            event.preventDefault();
+            event.stopPropagation();
+            undoQueuedDeletion();
+          }}
+        >
           {visibleQueued.map((item, index) => {
-            const canSteerNow = Boolean(onSteer) && steerableRunActive && !stopping && item.attachments.length === 0;
+            const canSteerNow = Boolean(onSteer) && steerableRunActive && !stopping;
             const images = item.attachments.filter(
               (
                 attachment,
@@ -377,7 +458,12 @@ export function useQueuedFollowUps({
                   ? `${images.length} images`
                   : fileNames.join(", "));
             return (
-          <div key={item.id} className="space-y-0.5">
+          <div key={item.id} data-queued-message={item.id} className={item.textSelection ? "my-1 space-y-0.5 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] pt-2" : "space-y-0.5"}>
+            {item.textSelection ? (
+              <div className="px-3">
+                <QuotedChatSelection selection={item.textSelection} />
+              </div>
+            ) : null}
             <div
               onDragOver={(event) => {
                 if (!draggedQueuedId || draggedQueuedId === item.id) return;
@@ -476,9 +562,7 @@ export function useQueuedFollowUps({
                     title={
                       canSteerNow
                         ? "Steer the active response"
-                        : item.attachments.length > 0
-                          ? "Messages with attachments send when the turn finishes"
-                          : steerUnavailableReason()
+                        : steerUnavailableReason()
                     }
                   >
                     <svg
@@ -501,15 +585,11 @@ export function useQueuedFollowUps({
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      setQueuedFollowUps((current) =>
-                        current.filter((candidate) => candidate.id !== item.id),
-                      )
-                    }
+                    onClick={() => deleteQueuedFollowUp(item)}
                     disabled={applyingSteerId === item.id}
                     className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
                     aria-label={`Delete queued message: ${itemDescription}`}
-                    title="Delete queued message"
+                    title="Delete queued message (Ctrl+Z to undo)"
                   >
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />

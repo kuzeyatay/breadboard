@@ -5,10 +5,34 @@ import fs from "fs"
 import { glob } from "../../util/glob"
 import { Argv } from "../../util/ctx"
 import { QuartzConfig } from "../../cfg"
+import { isScopedBuild } from "../../util/scope"
 
 const filesToCopy = async (argv: Argv, cfg: QuartzConfig) => {
   // glob all non MD files in content folder and copy it over
-  return await glob("**", argv.directory, ["**/*.md", ...cfg.configuration.ignorePatterns])
+  const scope = argv.scope ?? []
+  const pattern = isScopedBuild(scope) ? scope.map((root) => `${root}/**`) : "**"
+  return await glob(pattern, argv.directory, ["**/*.md", ...cfg.configuration.ignorePatterns])
+}
+
+// Garden assets (page scans, source PDFs) run to gigabytes and never change
+// after they are written, so link them into the output instead of copying.
+// Volumes without hard links (exFAT, network shares) fall back to a copy; a
+// link that fails once is not retried for the rest of the build.
+let hardLinksUnavailable = false
+
+async function placeFile(src: FilePath, dest: FilePath) {
+  if (!hardLinksUnavailable) {
+    try {
+      await fs.promises.rm(dest, { force: true })
+      await fs.promises.link(src, dest)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code
+      if (code === "ENOENT") throw error
+      hardLinksUnavailable = true
+    }
+  }
+  await fs.promises.copyFile(src, dest)
 }
 
 export const copyFile = async (argv: Argv, fp: FilePath) => {
@@ -22,7 +46,7 @@ export const copyFile = async (argv: Argv, fp: FilePath) => {
   await fs.promises.mkdir(dir, { recursive: true })
 
   try {
-    await fs.promises.copyFile(src, dest)
+    await placeFile(src, dest)
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code
     // A garden can change while a full publish is copying assets. If an asset
@@ -38,7 +62,7 @@ export const copyFile = async (argv: Argv, fp: FilePath) => {
       await new Promise((resolve) => setTimeout(resolve, 250))
       try {
         await fs.promises.mkdir(dir, { recursive: true })
-        await fs.promises.copyFile(src, dest)
+        await placeFile(src, dest)
         return dest
       } catch (retryError) {
         console.warn(

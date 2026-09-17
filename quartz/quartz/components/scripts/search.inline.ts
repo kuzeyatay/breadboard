@@ -2,6 +2,7 @@ import FlexSearch, { DefaultDocumentSearchResults } from "flexsearch"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
 import { registerEscapeHandler, removeAllChildren } from "./util"
 import { FullSlug, normalizeRelativeURLs, resolveRelative } from "../../util/path"
+import { scopeSearchEntries, searchScope } from "./searchScope"
 
 interface Item {
   id: number
@@ -61,30 +62,38 @@ const encoder = (str: string): string[] => {
   return tokens
 }
 
-let index = new FlexSearch.Document<Item>({
-  encode: encoder,
-  document: {
-    id: "id",
-    tag: "tags",
-    index: [
-      {
-        field: "title",
-        tokenize: "forward",
-      },
-      {
-        field: "content",
-        tokenize: "forward",
-      },
-      {
-        field: "tags",
-        tokenize: "forward",
-      },
-    ],
-  },
-})
+function createSearchIndex() {
+  return new FlexSearch.Document<Item>({
+    encode: encoder,
+    document: {
+      id: "id",
+      tag: "tags",
+      index: [
+        {
+          field: "title",
+          tokenize: "forward",
+        },
+        {
+          // Prefixes for every word in every document dominate the renderer
+          // heap in larger libraries. Exact content tokens keep full-text
+          // search useful while titles and tags retain prefix matching.
+          field: "content",
+          tokenize: "strict",
+        },
+        {
+          field: "tags",
+          tokenize: "forward",
+        },
+      ],
+    },
+  })
+}
+
+let index = createSearchIndex()
 
 const p = new DOMParser()
-const fetchContentCache: Map<FullSlug, Element[]> = new Map()
+const fetchContentCache: Map<FullSlug, string[]> = new Map()
+const maxPreviewCacheEntries = 24
 const contextWindowWords = 30
 const numSearchResults = 8
 const numTagResults = 5
@@ -146,10 +155,10 @@ function highlight(searchTerm: string, text: string, trim?: boolean) {
   }`
 }
 
-function highlightHTML(searchTerm: string, el: HTMLElement) {
+function highlightHTML(searchTerm: string, content: string) {
   const p = new DOMParser()
   const tokenizedTerms = tokenizeTerm(searchTerm)
-  const html = p.parseFromString(el.innerHTML, "text/html")
+  const html = p.parseFromString(content, "text/html")
 
   const createHighlightSpan = (text: string) => {
     const span = document.createElement("span")
@@ -187,7 +196,10 @@ function highlightHTML(searchTerm: string, el: HTMLElement) {
   return html.body
 }
 
-async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: ContentIndex) {
+const searchSetups = new WeakMap<Element, AbortController>()
+const boundSearchCleanup = new WeakSet<Element>()
+
+function setupSearch(searchElement: Element, currentSlug: FullSlug, data: ContentIndex) {
   const container = searchElement.querySelector(".search-container") as HTMLElement
   if (!container) return
 
@@ -201,6 +213,23 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
 
   const searchLayout = searchElement.querySelector(".search-layout") as HTMLElement
   if (!searchLayout) return
+
+  searchSetups.get(searchElement)?.abort()
+  const controller = new AbortController()
+  const { signal } = controller
+  searchSetups.set(searchElement, controller)
+  if (!boundSearchCleanup.has(searchElement)) {
+    boundSearchCleanup.add(searchElement)
+    window.addCleanup(() => {
+      searchSetups.get(searchElement)?.abort()
+      searchSetups.delete(searchElement)
+      boundSearchCleanup.delete(searchElement)
+    })
+  }
+
+  // setupSearch can run again after a soft navigation. Do not retain or append
+  // another results/preview tree when the search component itself is reused.
+  searchLayout.replaceChildren()
 
   const idDataMap = Object.keys(data) as FullSlug[]
   const appendLayout = (el: HTMLElement) => {
@@ -349,11 +378,6 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
       ${htmlTags}
       <p class="card-description">${content}</p>
     `
-    itemTile.addEventListener("click", (event) => {
-      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
-      hideSearch()
-    })
-
     const handler = (event: MouseEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
       hideSearch()
@@ -365,10 +389,8 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
       await displayPreview(target)
     }
 
-    itemTile.addEventListener("mouseenter", onMouseEnter)
-    window.addCleanup(() => itemTile.removeEventListener("mouseenter", onMouseEnter))
-    itemTile.addEventListener("click", handler)
-    window.addCleanup(() => itemTile.removeEventListener("click", handler))
+    itemTile.addEventListener("mouseenter", onMouseEnter, { signal })
+    itemTile.addEventListener("click", handler, { signal })
 
     return itemTile
   }
@@ -396,9 +418,13 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     }
   }
 
-  async function fetchContent(slug: FullSlug): Promise<Element[]> {
-    if (fetchContentCache.has(slug)) {
-      return fetchContentCache.get(slug) as Element[]
+  async function fetchContent(slug: FullSlug): Promise<string[]> {
+    const cached = fetchContentCache.get(slug)
+    if (cached) {
+      // Refresh insertion order so eviction behaves as a small LRU cache.
+      fetchContentCache.delete(slug)
+      fetchContentCache.set(slug, cached)
+      return cached
     }
 
     const targetUrl = resolveUrl(slug).toString()
@@ -410,10 +436,17 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
         }
         const html = p.parseFromString(contents ?? "", "text/html")
         normalizeRelativeURLs(html, targetUrl)
-        return [...html.getElementsByClassName("popover-hint")]
+        // Cache inert strings rather than nodes from a detached parsed document.
+        return [...html.getElementsByClassName("popover-hint")].map(
+          (element) => (element as HTMLElement).innerHTML,
+        )
       })
 
     fetchContentCache.set(slug, contents)
+    if (fetchContentCache.size > maxPreviewCacheEntries) {
+      const oldest = fetchContentCache.keys().next().value as FullSlug | undefined
+      if (oldest !== undefined) fetchContentCache.delete(oldest)
+    }
     return contents
   }
 
@@ -421,8 +454,9 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     if (!searchLayout || !enablePreview || !el || !preview) return
     const slug = el.id as FullSlug
     const innerDiv = await fetchContent(slug).then((contents) =>
-      contents.flatMap((el) => [...highlightHTML(currentSearchTerm, el as HTMLElement).children]),
+      contents.flatMap((content) => [...highlightHTML(currentSearchTerm, content).children]),
     )
+    if (signal.aborted) return
     previewInner = document.createElement("div")
     previewInner.classList.add("preview-inner")
     previewInner.append(...innerDiv)
@@ -493,15 +527,12 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     await displayResults(finalResults)
   }
 
-  document.addEventListener("keydown", shortcutHandler)
-  window.addCleanup(() => document.removeEventListener("keydown", shortcutHandler))
-  searchButton.addEventListener("click", () => showSearch("basic"))
-  window.addCleanup(() => searchButton.removeEventListener("click", () => showSearch("basic")))
-  searchBar.addEventListener("input", onType)
-  window.addCleanup(() => searchBar.removeEventListener("input", onType))
+  const showBasicSearch = () => showSearch("basic")
+  document.addEventListener("keydown", shortcutHandler, { signal })
+  searchButton.addEventListener("click", showBasicSearch, { signal })
+  searchBar.addEventListener("input", onType, { signal })
 
-  registerEscapeHandler(container, hideSearch)
-  await fillDocument(data)
+  registerEscapeHandler(container, hideSearch, signal)
 }
 
 /**
@@ -509,32 +540,75 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
  * @param index index to fill
  * @param data data to fill index with
  */
-let indexPopulated = false
-async function fillDocument(data: ContentIndex) {
-  if (indexPopulated) return
-  let id = 0
-  const promises: Array<Promise<unknown>> = []
-  for (const [slug, fileData] of Object.entries<ContentDetails>(data)) {
-    promises.push(
-      index.addAsync(id++, {
-        id,
-        slug: slug as FullSlug,
-        title: fileData.title,
-        content: fileData.content,
-        tags: fileData.tags,
-      }),
-    )
-  }
+let indexedScope: string | null = null
+let indexBuildGeneration = 0
+let indexBuild: { scope: string; generation: number; promise: Promise<void> } | undefined
+const indexBatchSize = 16
 
-  await Promise.all(promises)
-  indexPopulated = true
+async function fillDocument(entries: Array<[FullSlug, ContentDetails]>, scope: string) {
+  if (indexedScope === scope) {
+    // A later navigation may have started a build for another scope. Returning
+    // to the live scope invalidates that build before it can replace the index.
+    if (indexBuild && indexBuild.scope !== scope) {
+      indexBuildGeneration++
+      indexBuild = undefined
+    }
+    return
+  }
+  if (indexBuild?.scope === scope) return indexBuild.promise
+
+  const generation = ++indexBuildGeneration
+  const nextIndex = createSearchIndex()
+  const build = async () => {
+    for (let start = 0; start < entries.length; start += indexBatchSize) {
+      const batch = entries.slice(start, start + indexBatchSize)
+      await Promise.all(
+        batch.map(([slug, fileData], offset) => {
+          const id = start + offset
+          return nextIndex.addAsync(id, {
+            id,
+            slug,
+            title: fileData.title,
+            content: fileData.content,
+            tags: fileData.tags,
+          })
+        }),
+      )
+    }
+
+    if (generation !== indexBuildGeneration) {
+      await nextIndex.destroy()
+      return
+    }
+
+    const previousIndex = index
+    index = nextIndex
+    indexedScope = scope
+    fetchContentCache.clear()
+    await previousIndex.destroy()
+  }
+  const promise = build().finally(() => {
+    if (indexBuild?.generation === generation) indexBuild = undefined
+  })
+  indexBuild = { scope, generation, promise }
+  return promise
 }
 
+let searchNavigationGeneration = 0
 document.addEventListener("nav", async (e: CustomEventMap["nav"]) => {
+  const generation = ++searchNavigationGeneration
   const currentSlug = e.detail.url
   const data = await fetchData
+  if (generation !== searchNavigationGeneration) return
+
+  const entries = scopeSearchEntries<ContentDetails>(data, currentSlug)
+  const scopedData = Object.fromEntries(entries) as ContentIndex
+  const scope = searchScope(currentSlug) ?? "*"
+  await fillDocument(entries, scope)
+  if (generation !== searchNavigationGeneration) return
+
   const searchElement = document.getElementsByClassName("search")
   for (const element of searchElement) {
-    await setupSearch(element, currentSlug, data)
+    setupSearch(element, currentSlug, scopedData)
   }
 })

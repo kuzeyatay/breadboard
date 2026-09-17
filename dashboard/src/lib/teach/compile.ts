@@ -13,8 +13,8 @@ import "server-only";
 // be edited or removed on its own -- the workflow is the thing the user has, and
 // this is how that thing runs.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 
 import { ensureDirectory, workflowCompiledDirectory } from "./artifacts.ts";
 import { teachLog } from "./redaction.ts";

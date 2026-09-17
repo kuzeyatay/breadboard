@@ -286,6 +286,7 @@ test("an expired started planning receipt is durably sealed before a fresh reque
     redispatchCount: 0,
     redispatchAllowed: false,
     attemptCount: 0,
+    startedAt: "2030-01-01T00:00:10.000Z",
     maxStartedAgeMs: 1_000,
   };
 
@@ -296,18 +297,6 @@ test("an expired started planning receipt is durably sealed before a fresh reque
     }),
     null,
     "a live receipt must remain a duplicate-dispatch fence",
-  );
-  assert.equal(
-    recordExpiredStartedPlanningReceiptBoundary(database, {
-      ...observation,
-      dispatchGeneration: 2,
-      dispatchCount: 2,
-      redispatchCount: 1,
-      attemptCount: 1,
-      observedAt: "2030-01-01T00:00:12.000Z",
-    }),
-    null,
-    "planning has no independent generation-two checkpoint proof",
   );
   const boundary = recordExpiredStartedPlanningReceiptBoundary(database, {
     ...observation,
@@ -345,6 +334,57 @@ test("an expired started planning receipt is durably sealed before a fresh reque
   database.close();
 });
 
+test("an expired claimed planning redispatch is sealed from its durable generation-two timestamp", () => {
+  const database = fixtureDatabase();
+  insertJob(database, { id: "job-generation-two" });
+  createStartedPlanningCheckpoint(database, {
+    requestId: "lrq_expired_planning_redispatch",
+    jobId: "job-generation-two",
+    gardenId: "fixture-garden",
+    stageKey: "source_map:source_map:cycle:0",
+    semanticAttempt: 0,
+    requestHash: "c".repeat(64),
+    now: "2030-01-01T00:00:10.000Z",
+  });
+  const observation = {
+    originRequestId: "lrq_expired_planning_redispatch",
+    receiptRequestId: "lrq_expired_planning_redispatch",
+    requestHash: "c".repeat(64),
+    dispatchGeneration: 2,
+    dispatchCount: 2,
+    redispatchCount: 1,
+    redispatchAllowed: false,
+    attemptCount: 1,
+    startedAt: "2030-01-01T00:00:20.000Z",
+    maxStartedAgeMs: 1_000,
+  };
+
+  assert.equal(
+    recordExpiredStartedPlanningReceiptBoundary(database, {
+      ...observation,
+      startedAt: "2030-01-01T00:01:00.001Z",
+      observedAt: "2030-01-01T00:01:01.001Z",
+    }),
+    null,
+    "a claim timestamp outside the recovered origin job cannot authorize a retry",
+  );
+  const boundary = recordExpiredStartedPlanningReceiptBoundary(database, {
+    ...observation,
+    observedAt: "2030-01-01T00:00:21.000Z",
+  });
+  assert.equal(boundary?.dispatch_count, 2);
+  assert.equal(boundary?.redispatch_count, 1);
+  assert.equal(boundary?.attempt_count, 1);
+  assert.equal(
+    hasExactExpiredStartedPlanningReceiptBoundary(
+      database,
+      "lrq_expired_planning_redispatch",
+    ),
+    true,
+  );
+  database.close();
+});
+
 test("planning resolver persists an exact expired-started boundary before authorizing a fresh request", () => {
   const resolverStart = learnSource.indexOf("async function resolvePriorPlanningResult");
   const resolverEnd = learnSource.indexOf("function sourceMapPlanProblems", resolverStart);
@@ -360,6 +400,31 @@ test("planning resolver persists an exact expired-started boundary before author
   assert.ok(persist > started);
   assert.ok(fresh > persist);
   assert.ok(returnNull > fresh);
+});
+
+test("mismatched started receipts are expired before request-hash uniqueness is resolved", () => {
+  const omitStart = learnSource.indexOf(
+    "async function omitTerminallySettledMismatchedPlanningReceipts",
+  );
+  const omitEnd = learnSource.indexOf("async function resolveCompletedPlanningReceipt", omitStart);
+  const omit = learnSource.slice(omitStart, omitEnd);
+  const resolverStart = learnSource.indexOf("async function resolvePriorPlanningResult", omitEnd);
+  const resolverEnd = learnSource.indexOf("function sourceMapPlanProblems", resolverStart);
+  const resolver = learnSource.slice(resolverStart, resolverEnd);
+  const started = omit.indexOf('lookup.code === "request_started"');
+  const wait = omit.indexOf("Date.now() < expiresAt", started);
+  const persist = omit.indexOf("recordExpiredStartedPlanningReceiptBoundary", wait);
+  const markedMismatch = omit.indexOf("mismatchedRequestHash: true", persist);
+  const omitCandidate = omit.indexOf("continue", markedMismatch);
+  const uniqueness = resolver.indexOf("resolveUniquePlanningCandidate");
+
+  assert.ok(omitStart >= 0);
+  assert.ok(started >= 0);
+  assert.ok(wait > started);
+  assert.ok(persist > wait);
+  assert.ok(markedMismatch > persist);
+  assert.ok(omitCandidate > markedMismatch);
+  assert.ok(uniqueness >= 0);
 });
 
 test("checkpoint schema upgrades the pre-result-origin table without losing rows", () => {
@@ -1180,7 +1245,7 @@ test("legacy recovered initial-invalid then repair-valid stays behind the real v
   const nonemptyIndex = validatedLoop.indexOf("assertNonemptyPlanningCandidate(result, stageLabel)");
   const validatorIndex = validatedLoop.indexOf("let problems = validate(result.parsed)");
   const repairIndex = validatedLoop.indexOf(
-    "result = await dispatchAfterDurablePlanningIssuance",
+    "const repairResult = await dispatchAfterDurablePlanningIssuance",
     validatorIndex,
   );
   assert.ok(nonemptyIndex >= 0 && nonemptyIndex < validatorIndex && validatorIndex < repairIndex);

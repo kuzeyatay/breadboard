@@ -23,6 +23,16 @@ import { modelTransportFailureEvidence } from "./http-502-retry.ts";
 import { breadSystemPrompt } from "./assistant-identity.ts";
 import { cropPng, resizePngToMaxDimension } from "./png-crop.ts";
 import {
+  figureCropReviewCacheKey,
+  figureCropReviewReceiptMatches,
+  isFigureCropVisualType,
+  reviewFigureCropsOnPage,
+  tightFigureCropBBox,
+  type FigureCropCandidate,
+  type FigureCropReviewOutcome,
+  type FigureCropReviewReceipt,
+} from "./source-visual-crop-review.ts";
+import {
   publishExternalCacheFileAtomically,
   readFileSyncWithRetry,
 } from "./resilient-fs.ts";
@@ -78,6 +88,15 @@ export interface SourceVisual {
   assignedPageId?: string;
   assignedSectionId?: string;
   skipReason?: string;
+  /** Model check of a figure, graph, diagram, or table crop against its page. */
+  cropReview?: SourceVisualCropReview;
+}
+
+export interface SourceVisualCropReview {
+  status: "approved" | "corrected";
+  reason: string;
+  /** The detector's original box when the review replaced it. */
+  detectorBBox?: SourceVisualBBox;
 }
 
 const LEDGER_RELATIVE_PATH = path.join(".breadboard", "source-visuals.json");
@@ -97,7 +116,14 @@ export const DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS =
   MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS;
 const DEFAULT_SOURCE_MODEL_HTTP_502_RETRY_BASE_DELAY_MS = 2_000;
 const SOURCE_MODEL_HTTP_502_RETRY_MAX_DELAY_MS = 30_000;
+function _envMs(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
 const SOURCE_VISUAL_DETECTION_MAX_TRANSIENT_FAILURES = 5;
+const FIGURE_CROP_REVIEW_TIMEOUT_MS = _envMs("SOURCE_VISUAL_CROP_REVIEW_TIMEOUT_MS", 10 * 60 * 1000);
+const FIGURE_CROP_REVIEW_MAX_TRANSIENT_FAILURES = 3;
 const SOURCE_VISUAL_DETECTION_MAX_SEMANTIC_ATTEMPTS = 3;
 const DETECTOR_VERSION = 3;
 const DETECTION_IMAGE_MAX_DIMENSION = 768;
@@ -404,6 +430,8 @@ interface SourceVisualScanEntry {
   detectorVersion: number;
   fingerprint: string;
   detections: SourceVisualDetection[];
+  /** Review of this page's figure crops, keyed to the page and its detections. */
+  figureCropReview?: FigureCropReviewReceipt;
   /**
    * Accepted whole-page recovery evidence. This lives with the incremental
    * scan cache (which intentionally survives failed Learn staging rollback),
@@ -545,6 +573,35 @@ const TYPE_LETTER: Record<SourceVisualType, string> = {
   equation: "E",
   full_page_fallback: "P",
 };
+
+function figureCropCandidates(detections: readonly SourceVisualDetection[]): FigureCropCandidate[] {
+  return detections.flatMap((detection, detectionIndex) =>
+    isFigureCropVisualType(detection.type) && detection.bbox
+      ? [{ detectionIndex, type: detection.type, caption: detection.caption, bbox: detection.bbox }]
+      : []);
+}
+
+function scanEntryReplaysFormulaRecovery(entry: SourceVisualScanEntry | undefined): boolean {
+  return Boolean(
+    entry?.formulaArtifactRecovery ||
+    entry?.formulaArtifactTopologyRecovery ||
+    entry?.formulaArtifactTopologyCandidateRepair ||
+    entry?.formulaArtifactTopologyConsensusRepair,
+  );
+}
+
+/** True when the page has no figure crops or its saved review still applies. */
+function figureCropReviewIsCurrent(
+  entry: SourceVisualScanEntry | undefined,
+  model: string,
+  fingerprint: string,
+): boolean {
+  if (!entry || !Array.isArray(entry.detections)) return true;
+  const candidates = figureCropCandidates(entry.detections);
+  if (candidates.length === 0) return true;
+  const cacheKey = figureCropReviewCacheKey({ model, pageFingerprint: fingerprint, candidates });
+  return figureCropReviewReceiptMatches(entry.figureCropReview, cacheKey, candidates);
+}
 
 function expandedCropBBox(
   bbox: SourceVisualBBox,
@@ -12576,6 +12633,7 @@ function parseDetectionsWithNarrowFallbacks(
   detections: SourceVisualDetection[];
   repairedCaptionCount: number;
   repairedBBoxCount: number;
+  omittedInvalidBBoxCount: number;
 } {
   if (typeof raw !== "string" || !raw.trim()) {
     throw new SourceVisualDetectionProtocolError("response was empty or missing");
@@ -12658,10 +12716,32 @@ function parseDetectionsWithNarrowFallbacks(
     }
     return nextRecord;
   });
+  let omittedInvalidBBoxCount = 0;
+  const retained = repaired.filter((item) => {
+    try {
+      validateDetectionRecords([item]);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof SourceVisualDetectionProtocolError &&
+        /bbox must be a positive rectangle fully inside the page/u.test(error.message)
+      ) {
+        // After the detector has exhausted its bounded semantic retries, an
+        // out-of-page crop is not trustworthy enough to clamp arbitrarily.
+        // Omit only that optional visual artifact and preserve every valid
+        // detection; the canonical source page text remains available to
+        // Learn and no fabricated geometry enters the durable visual ledger.
+        omittedInvalidBBoxCount += 1;
+        return false;
+      }
+      throw error;
+    }
+  });
   return {
-    detections: validateDetectionRecords(repaired),
+    detections: validateDetectionRecords(retained),
     repairedCaptionCount,
     repairedBBoxCount,
+    omittedInvalidBBoxCount,
   };
 }
 
@@ -12740,6 +12820,15 @@ async function detectVisualsOnPage(
               }${pageNumber ? ` on page ${pageNumber}` : ""}.`,
             );
           }
+          if (repaired.omittedInvalidBBoxCount > 0) {
+            options.onProgress?.(
+              `Source visual scan omitted ${repaired.omittedInvalidBBoxCount} detection${
+                repaired.omittedInvalidBBoxCount === 1 ? "" : "s"
+              } with invalid out-of-page geometry${
+                pageNumber ? ` on page ${pageNumber}` : ""
+              } after bounded retries.`,
+            );
+          }
           return repaired.detections;
         }
         throw error;
@@ -12765,6 +12854,12 @@ export interface ExtractSourceVisualsOptions {
   model: string;
   contentPath: string;
   gardenSlug: string;
+  /**
+   * Check every figure, graph, diagram, and table crop against its page before
+   * it can reach a lesson. Planning turns this on; generation keeps the crops
+   * its confirmed Learning Map was bound to.
+   */
+  reviewFigureCrops?: boolean;
   /** Basename slug of the source note (e.g. "2510-27379v1"). */
   sourceId: string;
   /** 1-based index of the source within the garden, for S{n} ids. */
@@ -12875,6 +12970,7 @@ export async function extractSourceVisuals(
     sourceIndex,
     pageImageUrls,
     force = false,
+    reviewFigureCrops = false,
     checkpoint,
     onProgress,
     maxPages,
@@ -13270,6 +13366,11 @@ export async function extractSourceVisuals(
       Boolean(cachedBeforePageRead) &&
       cachedBeforePageRead?.fingerprint === fingerprint &&
       existingOnPage.length > 0 &&
+      (
+        !reviewFigureCrops ||
+        scanEntryReplaysFormulaRecovery(cachedBeforePageRead) ||
+        figureCropReviewIsCurrent(cachedBeforePageRead, model, fingerprint)
+      ) &&
       !needsEquationTextUpgrade &&
       !needsRecoveryRehydration &&
       !needsTopologyRecoveryRehydration &&
@@ -13342,10 +13443,15 @@ export async function extractSourceVisuals(
           { checkpoint, onProgress },
           pageNumber,
         );
+        // A fresh scan of an unchanged page keeps its saved crop review when
+        // the detections came back the same; the receipt's cache key rechecks
+        // that below before it is applied.
+        const priorReview = sourceCache[pageUrl]?.figureCropReview;
         sourceCache[pageUrl] = {
           detectorVersion: DETECTOR_VERSION,
           fingerprint,
           detections,
+          ...(priorReview ? { figureCropReview: priorReview } : {}),
         };
         // Cache successful empty results too. This file is intentionally not a
         // rollback output, so Stop/Retry never pays for completed pages again.
@@ -13356,6 +13462,82 @@ export async function extractSourceVisuals(
         // its exact identity so the caller cannot mistake transport ambiguity
         // for semantic evidence or replay the same page request.
         throw error;
+      }
+    }
+
+    // Figure crops are compared with their page before a lesson can embed
+    // them. A page replaying a signed formula-recovery receipt keeps its exact
+    // geometry; its equations are covered by the source-formula review.
+    let figureCropOutcomes: Map<number, FigureCropReviewOutcome> | null = null;
+    const pageReplaysSignedFormulaRecovery =
+      reusableRecoveryScan ||
+      reusableTopologyRecoveryScan ||
+      reusableTopologyCandidateRepairScan ||
+      reusableTopologyConsensusRepairScan;
+    // A saved review always applies, whether or not this run may request new
+    // ones: planning bound its Learning Map to the reviewed ledger (corrected
+    // boxes, rejected crops dropped), and generation replays the same cached
+    // detections without the review flag. Live 2026-09-16: generation
+    // re-added two crops the review had rejected, the artifact inventory hash
+    // no longer matched the confirmed map, and no lesson was written.
+    const figureCandidates = !pageReplaysSignedFormulaRecovery
+      ? figureCropCandidates(detections)
+      : [];
+    if (figureCandidates.length > 0) {
+      const cacheKey = figureCropReviewCacheKey({
+        model,
+        pageFingerprint: fingerprint,
+        candidates: figureCandidates,
+      });
+      const entry = sourceCache[pageUrl];
+      let receipt = entry && figureCropReviewReceiptMatches(entry.figureCropReview, cacheKey, figureCandidates)
+        ? entry.figureCropReview
+        : undefined;
+      if (!receipt && !reviewFigureCrops) {
+        // No saved review and this run may not request one: keep the plain
+        // detector crops, as before the review existed.
+      } else if (!receipt) {
+        onProgress?.(`Checking figure crops on page ${pageNumber || "?"} against the page...`);
+        receipt = await reviewFigureCropsOnPage({
+          model,
+          pageImage: pngBuffer,
+          pageFingerprint: fingerprint,
+          pageNumber,
+          candidates: figureCandidates,
+          checkpoint,
+          complete: async ({ system, content, stageLabel }) => {
+            const response = await createSourceModelCompletionWithHttp502Retry({
+              client,
+              request: {
+                model,
+                messages: [
+                  { role: "system", content: system },
+                  { role: "user", content },
+                ],
+              },
+              // A review carries the full page plus every crop at high detail;
+              // through the web page that runs well past the detector's 3 min.
+              // Live 2026-09-15: each attempt timed out at 3 min while ChatMock
+              // finished the same answer shortly after, eight retries in a row.
+              timeoutMs: FIGURE_CROP_REVIEW_TIMEOUT_MS,
+              checkpoint,
+              onProgress,
+              stageLabel,
+              // A page whose review never completes keeps its detector crops
+              // (finalize warns they are unreviewed) rather than stalling the run.
+              fallbackAfterFailures: FIGURE_CROP_REVIEW_MAX_TRANSIENT_FAILURES,
+              fallbackContent: "",
+            });
+            return response.choices[0]?.message?.content ?? "";
+          },
+        });
+        if (entry) {
+          entry.figureCropReview = receipt;
+          saveSourceVisualScanCache(contentPath, gardenSlug, scanCache);
+        }
+      }
+      if (receipt) {
+        figureCropOutcomes = new Map(receipt.outcomes.map((outcome) => [outcome.detectionIndex, outcome]));
       }
     }
 
@@ -13399,7 +13581,11 @@ export async function extractSourceVisuals(
     const existingById = new Map(existingOnPage.map((visual) => [visual.sourceVisualId, visual]));
 
     for (let detectionIndex = 0; detectionIndex < detections.length; detectionIndex += 1) {
-      const detection = detections[detectionIndex]!;
+      const detectedVisual = detections[detectionIndex]!;
+      const figureCropOutcome = figureCropOutcomes?.get(detectionIndex);
+      const detection = figureCropOutcome?.status === "corrected" && figureCropOutcome.bbox
+        ? { ...detectedVisual, bbox: figureCropOutcome.bbox }
+        : detectedVisual;
       const recoverySlot = recoverySlots?.[detectionIndex];
       const topologyRecoverySlot = topologyRecoverySlots?.[detectionIndex];
       const topologyCandidateRepairSlot = topologyCandidateRepairSlots?.[detectionIndex];
@@ -13417,6 +13603,14 @@ export async function extractSourceVisuals(
         topologyCandidateRepairSlot?.sourceVisualId ??
         topologyConsensusRepairSlot?.sourceVisualId ??
         nextId(pageNumber, detection.type);
+      if (figureCropOutcome?.status === "rejected") {
+        // The id stays allocated so later visuals on this page keep theirs;
+        // a crop that never matched its page is not offered to any lesson.
+        onProgress?.(
+          `Left out ${sourceVisualId}: its crop did not match the page (${figureCropOutcome.reason.slice(0, 160)}).`,
+        );
+        continue;
+      }
       const prior = existingById.get(sourceVisualId);
       const replacement = recoverySlot?.replacement;
       const activeTopologySlot = topologyRecoverySlot?.activeSlot;
@@ -13526,10 +13720,26 @@ export async function extractSourceVisuals(
           ? { skipReason: prior.skipReason }
           : {}),
         ...(preservesAcceptedReview ? { formulaReview: prior!.formulaReview } : {}),
+        ...(figureCropOutcome && (figureCropOutcome.status === "approved" || figureCropOutcome.status === "corrected")
+          ? {
+            cropReview: {
+              status: figureCropOutcome.status as "approved" | "corrected",
+              reason: figureCropOutcome.reason,
+              ...(figureCropOutcome.status === "corrected" && detectedVisual.bbox
+                ? { detectorBBox: { ...detectedVisual.bbox } }
+                : {}),
+            },
+          }
+          : {}),
       };
 
       if (detection.bbox) {
-        const cropped = cropPng(pngBuffer, expandedCropBBox(detection.bbox, detection.type));
+        const cropped = cropPng(
+          pngBuffer,
+          figureCropOutcome && figureCropOutcome.status !== "unreviewed" && isFigureCropVisualType(detection.type)
+            ? tightFigureCropBBox(detection.bbox, detection.type)
+            : expandedCropBBox(detection.bbox, detection.type),
+        );
         if (cropped) {
           if (recoverySlot || topologyRecoverySlot || topologyCandidateRepairSlot || topologyConsensusRepairSlot) {
             const cropSha256 = sha256(cropped);
@@ -13575,7 +13785,7 @@ export async function extractSourceVisuals(
             fs.mkdirSync(cropDir, { recursive: true });
             const fileName = `${slugify(
               `${sourceId}-page-${pageNumber}-${detection.type}-${sourceVisualId.split(".").pop()}-${detection.caption.slice(0, 48)}`,
-            )}.png`;
+            )}${figureCropOutcome && figureCropOutcome.status !== "unreviewed" ? `-r${sha256(cropped).slice(0, 10)}` : ""}.png`;
             const cropPath = path.join(cropDir, fileName);
             try {
               fs.writeFileSync(cropPath, cropped);

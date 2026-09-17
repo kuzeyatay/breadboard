@@ -90,6 +90,58 @@ def parse_rate_limit_headers(headers: Mapping[str, Any]) -> Optional[RateLimitSn
         return None
 
 
+#: A Codex plan meters two rolling windows. The short one is five hours; the
+#: long one is a week. A window whose length the headers do not report is told
+#: apart by how far away its reset is: nothing shorter than a week resets more
+#: than five hours out.
+SHORT_WINDOW_SECONDS = 5 * 60 * 60
+LONG_WINDOW_SECONDS = 7 * 24 * 60 * 60
+
+
+def _window_is_long(window: RateLimitWindow) -> bool:
+    if window.window_minutes:
+        return window.window_minutes * 60 > SHORT_WINDOW_SECONDS
+    return (window.resets_in_seconds or 0) > SHORT_WINDOW_SECONDS
+
+
+def _window_is_spent(window: Optional[RateLimitWindow]) -> bool:
+    return window is not None and (window.used_percent or 0) >= 100
+
+
+def spent_window_message(
+    resets_in_seconds: Optional[int],
+    snapshot: Optional[RateLimitSnapshot] = None,
+) -> Optional[str]:
+    """Which of the plan's two windows a 429 means, as a sentence, or None.
+
+    "The usage limit has been reached" alone reads as "you used it all up just
+    now", and the reader then looks at the wrong number: the five-hour window,
+    which is usually nearly empty when the weekly one closes. Naming the window
+    is what makes a three-day reset on a lightly used account make sense.
+
+    The headers say which window is spent when they are present; otherwise a
+    reset more than five hours away can only be the weekly window. A short
+    reset without headers is ambiguous — the week can end within the hour — so
+    that case stays unnamed rather than guessed.
+    """
+    spent = [
+        window
+        for window in ((snapshot.primary, snapshot.secondary) if snapshot else ())
+        if _window_is_spent(window)
+    ]
+    if spent:
+        long_spent = any(_window_is_long(window) for window in spent)
+        short_spent = any(not _window_is_long(window) for window in spent)
+        if long_spent and short_spent:
+            return "Both the 5-hour and the weekly Codex usage limits have been reached"
+        if long_spent:
+            return "The weekly Codex usage limit has been reached"
+        return "The 5-hour Codex usage limit has been reached"
+    if resets_in_seconds is not None and resets_in_seconds > SHORT_WINDOW_SECONDS:
+        return "The weekly Codex usage limit has been reached"
+    return None
+
+
 def _limits_path() -> str:
     home = get_home_dir()
     return os.path.join(home, _LIMITS_FILENAME)

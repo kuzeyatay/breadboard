@@ -258,6 +258,22 @@ async function chatmockSearch(
   // A search that cited nothing is treated as an empty result rather than as a
   // document: uncited text from a reasoning model is exactly what this agent
   // must not learn from.
+  //
+  // Neither is a search that was never run. Only ChatMock's ChatGPT upstream
+  // executes the `web_search` tool; when `default` is exhausted ChatMock
+  // fails over to an external provider (stamped in `X-ChatMock-Provider`),
+  // which ignores the tool and answers from memory — and a model asked to cite
+  // sources will invent plausible URLs, which pass the citation check above.
+  // A live run learned six "findings" about the wrong paper from three
+  // fabricated nature.com links that way. The absence of the header is the
+  // ChatGPT route, which sets none.
+  const provider = response.headers.get('x-chatmock-provider');
+  if (provider && provider.toLowerCase() !== 'chatgpt') {
+    console.warn(
+      `[search] ChatMock served the search from ${provider}, which has no web tool; its citations are not trusted.`,
+    );
+    return { contents: [], urls: [], ...(usage ? { usage } : {}) };
+  }
   const urls = extractUrls(content, limit);
   if (!content || urls.length === 0) {
     return { contents: [], urls: [], ...(usage ? { usage } : {}) };

@@ -10,19 +10,19 @@
 //   - ffmpeg/ffprobe, which the renderer encodes with;
 //   - a Chromium, which the renderer captures frames from.
 //
-// None of the three are bundled. Each resolves from an explicit environment
-// variable first, then from something already on this machine (a built clone, a
-// Breadboard-managed npm install, Agent Reach's portable tools, an installed
-// Chrome or Edge), so a working install needs no admin rights and no second
-// copy of anything.
+// Explicit paths take priority. The worker prepares a missing CLI and a
+// compatible headless browser in durable data storage; media encoding reuses
+// Breadboard's bundled tools, Agent Reach, or PATH.
 
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { createHash } from "node:crypto";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 import {
   externalRuntimeAccess,
   externalRuntimeFilesystem as fs,
   externalRuntimePathExists,
   externalRuntimeReadUtf8,
+  externalRuntimeRealpath,
   externalRuntimeStat,
 } from "../external-runtime-filesystem.ts";
 
@@ -86,12 +86,6 @@ function executableFile(candidate: string | null): candidate is string {
   }
 }
 
-function firstExisting(candidates: readonly (string | null)[]): string | null {
-  return candidates.find((candidate): candidate is string =>
-    executableFile(candidate),
-  ) ?? null;
-}
-
 /** The cloned repository — the source of truth for the skills. */
 export function resolveHyperframesRoot(
   env: NodeJS.ProcessEnv = process.env,
@@ -135,6 +129,12 @@ export function workspaceRoot(env: NodeJS.ProcessEnv = process.env): string {
   );
 }
 
+/** Chromium adds long profile names, so temp cannot be nested under a job attempt. */
+export function hyperframesTemporaryDirectory(workspace: string, dataRoot = dashboardDataDir()): string {
+  const identity = createHash("sha256").update(path.resolve(workspace)).digest("hex").slice(0, 24);
+  return path.join(dataRoot, "runtime-v2", "temp", `hyperframes-${identity}`);
+}
+
 function packageVersion(entry: string): string {
   let directory = path.dirname(path.resolve(entry));
   for (let depth = 0; depth < 8; depth += 1) {
@@ -165,8 +165,9 @@ function nodeLauncher(
 ): HyperframesLauncher | null {
   if (!regularFile(entry)) return null;
   return {
-    command: process.execPath,
-    baseArgs: [entry],
+    command: externalRuntimeRealpath(process.execPath),
+    // Node's main-module loader cannot consume Rust's Windows namespace prefix.
+    baseArgs: [externalRuntimeRealpath(entry)],
     version: packageVersion(entry),
     source,
   };
@@ -269,6 +270,14 @@ function resolveFfmpegPiece(
   if (explicit && executableFile(explicit)) {
     return { found: true, path: explicit, source: "configured" };
   }
+  const bundled = configured(base === "ffmpeg" ? env.FFMPEG_PATH : env.FFPROBE_PATH);
+  if (bundled && executableFile(bundled)) {
+    return { found: true, path: bundled, source: "Breadboard media tools" };
+  }
+  const desktop = path.join(repositoryRoot(), "desktop", "resources", "bin", executableName(base));
+  if (executableFile(desktop)) {
+    return { found: true, path: desktop, source: "Breadboard media tools" };
+  }
   const shared = path.join(
     repositoryRoot(),
     "agent-reach",
@@ -276,7 +285,7 @@ function resolveFfmpegPiece(
     "bin",
     executableName(base),
   );
-  if (externalRuntimePathExists(shared)) {
+  if (executableFile(shared)) {
     return { found: true, path: shared, source: "agent-reach tools" };
   }
   const onPath = findOnPath(base, env);
@@ -284,40 +293,15 @@ function resolveFfmpegPiece(
   return { found: false, path: "", source: "" };
 }
 
-const WINDOWS_BROWSERS = [
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-];
-
-const UNIX_BROWSERS = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-];
-
 /**
- * The Chromium the renderer captures frames from. An installed browser is
- * preferred over a Puppeteer download for the same reason Agent Browser prefers
- * the system Edge: it is already here, already patched, and costs no gigabyte.
+ * Only pin a browser when explicitly configured. The CLI owns its compatible
+ * headless Chromium cache and download. Forcing system Edge here bypasses that
+ * resolver and can fail under desktop policies or lack rendering features.
  */
 export function resolveBrowser(env: NodeJS.ProcessEnv = process.env): ToolchainPiece {
   const explicit = configured(env.HYPERFRAMES_BROWSER_PATH);
   if (explicit && executableFile(explicit)) {
     return { found: true, path: explicit, source: "configured" };
-  }
-  const installed = firstExisting(
-    process.platform === "win32" ? WINDOWS_BROWSERS : UNIX_BROWSERS,
-  );
-  if (installed) {
-    return {
-      found: true,
-      path: installed,
-      source: /msedge|Microsoft Edge/i.test(installed) ? "system Edge" : "system Chrome",
-    };
   }
   return { found: false, path: "", source: "" };
 }
@@ -335,7 +319,7 @@ export function resolveToolchain(
 }
 
 /**
- * A run can start once the CLI and ffmpeg are resolvable. The browser is
+ * A run can start once the CLI, ffmpeg, and ffprobe are resolvable. The browser is
  * reported but never blocking: the CLI downloads a pinned chrome-headless-shell
  * on first render when it finds nothing, whereas it has no install path for
  * ffmpeg at all. Each piece is reported separately because each has a different
@@ -349,6 +333,7 @@ export function runtimeAvailability(
   const missing: string[] = [];
   if (!toolchain.cli.found) missing.push("cli");
   if (!toolchain.ffmpeg.found) missing.push("ffmpeg");
+  if (!toolchain.ffprobe.found) missing.push("ffprobe");
 
   if (!root) {
     return {
@@ -367,7 +352,9 @@ export function runtimeAvailability(
       root,
       toolchain,
       missing,
-      reason: `The video toolchain is incomplete: ${missing.join(", ")} not found. Open the HyperFrames setup panel to install what is missing.`,
+      reason: missing.length === 1 && missing[0] === "cli"
+        ? "The HyperFrames CLI will be installed automatically on the first video run."
+        : `The video toolchain is incomplete: ${missing.join(", ")} not found. Open the HyperFrames setup panel to check what is missing.`,
     };
   }
   return { available: true, cloned: true, root, toolchain, missing: [], reason: undefined };
@@ -391,6 +378,7 @@ export function hyperframesEnv(
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const prefixes = [
     ...extraPathPrefixes,
+    toolchain.cli.found ? path.dirname(toolchain.cli.command) : "",
     toolchain.ffmpeg.found ? path.dirname(toolchain.ffmpeg.path) : "",
     toolchain.ffprobe.found ? path.dirname(toolchain.ffprobe.path) : "",
   ].filter((dir, index, all) => dir && all.indexOf(dir) === index);
@@ -405,7 +393,12 @@ export function hyperframesEnv(
     ...(toolchain.ffmpeg.found ? { HYPERFRAMES_FFMPEG_PATH: toolchain.ffmpeg.path } : {}),
     ...(toolchain.ffprobe.found ? { HYPERFRAMES_FFPROBE_PATH: toolchain.ffprobe.path } : {}),
     ...(toolchain.browser.found ? { HYPERFRAMES_BROWSER_PATH: toolchain.browser.path } : {}),
-    [pathKey]: [...prefixes, env[pathKey] ?? ""].filter(Boolean).join(path.delimiter),
+    [pathKey]: [...prefixes, ...(env[pathKey] ?? "").split(path.delimiter)]
+      .filter(Boolean)
+      .map((entry) => process.platform !== "win32" ? entry
+        : entry.startsWith("\\\\?\\UNC\\") ? `\\\\${entry.slice(8)}`
+          : entry.replace(/^\\\\\?\\(?=[A-Za-z]:\\)/u, ""))
+      .join(path.delimiter),
   };
 }
 

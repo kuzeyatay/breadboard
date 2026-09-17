@@ -270,6 +270,7 @@ function resolvedImageUrl(rawUrl: string, baseUrl: URL): URL | null {
 async function readBoundedImage(response: Response, maxImageBytes: number): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length") ?? "");
   if (Number.isFinite(declared) && declared > maxImageBytes) {
+    await response.body?.cancel();
     throw new Error("Embedded image is too large");
   }
   if (!response.body) {
@@ -360,13 +361,14 @@ function detectedImage(
   return null;
 }
 
-async function fetchImageBytes({
+export async function fetchImageBytes({
   initialUrl,
   pageUrl,
   fetchImpl,
   assertPublicHostImpl,
   maxImageBytes,
   timeoutMs,
+  signal,
 }: {
   initialUrl: URL;
   pageUrl: string;
@@ -374,6 +376,7 @@ async function fetchImageBytes({
   assertPublicHostImpl: (hostname: string) => Promise<void>;
   maxImageBytes: number;
   timeoutMs: number;
+  signal?: AbortSignal;
 }): Promise<CapturedImageBytes> {
   let current = initialUrl;
   const controller = new AbortController();
@@ -381,8 +384,10 @@ async function fetchImageBytes({
     () => controller.abort(),
     Math.max(1, Math.min(IMAGE_FETCH_TIMEOUT_MS, timeoutMs)),
   );
+  const effectiveSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      effectiveSignal.throwIfAborted();
       if (
         (current.protocol !== "http:" && current.protocol !== "https:") ||
         current.username ||
@@ -391,10 +396,11 @@ async function fetchImageBytes({
         throw new Error("Embedded image URL is not a public HTTP address");
       }
       await assertPublicHostImpl(current.hostname);
+      effectiveSignal.throwIfAborted();
       const response = await fetchImpl(current, {
         cache: "no-store",
         redirect: "manual",
-        signal: controller.signal,
+        signal: effectiveSignal,
         headers: {
           Accept: "image/avif,image/webp,image/svg+xml,image/*,*/*;q=0.5",
           Referer: (() => {
@@ -409,11 +415,15 @@ async function fetchImageBytes({
       });
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
+        await response.body?.cancel();
         if (!location) throw new Error("Embedded image redirected without a target");
         current = new URL(location, current);
         continue;
       }
-      if (!response.ok) throw new Error(`Embedded image returned ${response.status}`);
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`Embedded image returned ${response.status}`);
+      }
       const detected = detectedImage(
         await readBoundedImage(response, maxImageBytes),
         response.headers.get("content-type") ?? "",

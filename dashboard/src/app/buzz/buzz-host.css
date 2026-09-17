@@ -134,7 +134,7 @@ html[data-breadboard-desktop="true"]:has(.buzz-root.dark) {
 }
 
 html[data-breadboard-desktop="true"][data-theme="dark"]:has(.buzz-root) {
-  --buzz-caption-end: #171916;
+  --buzz-caption-end: #181d1a;
 }
 
 html[data-breadboard-desktop="true"]:has(.buzz-root) {

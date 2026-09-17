@@ -4,7 +4,9 @@ import { speechRequest } from "@/lib/speech/request-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import VoiceSampleRecorder from "@/app/components/voice-sample-recorder";
 import SettingsCloudSpeech from "@/app/components/settings-cloud-speech";
-import type { SpeechCredentialStatus } from "@/lib/speech/providers";
+import SettingsElevenLabsSpeech from "@/app/components/settings-elevenlabs-speech";
+import SettingsWebSpeech from "@/app/components/settings-web-speech";
+import { SPEECH_PROVIDERS, type SpeechProvider, type ElevenLabsSpeechModel, type SpeechCredentialStatus } from "@/lib/speech/providers";
 import { calibrationPassage } from "@/lib/speech/calibration";
 import { decodedRecordingAsWav } from "@/lib/speech/live-dictation";
 import { playSpeechBlob, stopSpeechPlayback, playSubscriptionText } from "@/lib/speech/playback";
@@ -15,10 +17,15 @@ import {
   speechErrorMessage,
 } from "@/lib/speech/prepare-client";
 import { nextSpeechStep, requiredModelName, voiceProfileReady } from "@/lib/speech/voice-model";
+import SettingsSpeechPronunciations from './settings-speech-pronunciations';
+import { responseTextForSpeech } from '@/lib/speech/response-text';
 
 type SpeechSettings = {
-  speechProvider: "local" | "chatgpt";
+  pronunciations: string;
+  speechProvider: SpeechProvider;
   openaiVoice: string;
+  elevenlabsVoiceId: string;
+  elevenlabsModel: ElevenLabsSpeechModel;
   enabled: boolean;
   profileId: string | null;
   language: string;
@@ -52,6 +59,8 @@ type ModelStatus = {
 
 type SpeechStatus = {
   cloud: SpeechCredentialStatus;
+  elevenlabs?: SpeechCredentialStatus;
+  web?: SpeechCredentialStatus;
   available: boolean;
   error?: string;
   settings: SpeechSettings;
@@ -277,7 +286,7 @@ export default function SettingsSpeech() {
   const modelsDownloading = Boolean(status?.models.some((model) => model.downloading));
 
   useEffect(() => {
-    if (!status || status.available || status.settings.speechProvider === "chatgpt") return;
+    if (!status || status.available || status.settings.speechProvider !== "local") return;
     const timer = window.setTimeout(() => void load(), installActive ? 2_000 : 5_000);
     return () => window.clearTimeout(timer);
   }, [installActive, load, status]);
@@ -348,25 +357,26 @@ export default function SettingsSpeech() {
 
   async function previewVoice(profileId?: string) {
     const target = profileId ?? draft?.profileId ?? null;
-    if (!target && draft?.speechProvider !== "chatgpt") return;
+    if (!target && draft?.speechProvider === "local") return;
     setWorking("preview");
     setNotice(null);
     try {
       // Speaking is gated on both the voice and the master switch, so make the
       // preview mean "use this voice" rather than fail with a 409.
       if (target !== draft?.profileId || !draft?.enabled) {
-        const saved = await updateSettings(draft?.speechProvider === "chatgpt"
+        const saved = await updateSettings(draft?.speechProvider !== "local"
           ? { enabled: true } : { profileId: target, enabled: true });
         if (!saved) throw new Error("Save the speech preferences before previewing a voice.");
       }
-      if (await playSubscriptionText(previewText, (error) => {
+      const spoken = await responseTextForSpeech(previewText);
+      if (await playSubscriptionText(spoken, (error) => {
         setWorking(null);
         if (error) setNotice(error.message);
       })) { setWorking("playing"); return; }
       const response = await speechRequest("/api/speech/synthesize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: previewText }),
+        body: JSON.stringify({ text: spoken }),
       });
       if (!response.ok) throw new Error(await apiError(response));
       await playSpeechBlob(await response.blob(), () => setWorking(null));
@@ -653,13 +663,13 @@ export default function SettingsSpeech() {
     <div className="space-y-4">
       <section className="space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
         <h3 className="text-sm font-medium text-[var(--ink-heading)]">Speech provider</h3>
-        <div role="group" aria-label="Speech provider" className="flex gap-2">
-          {(["local", "chatgpt"] as const).map((provider) => (
+        <div role="group" aria-label="Speech provider" className="flex flex-wrap gap-2">
+          {SPEECH_PROVIDERS.map((provider) => (
             <button key={provider} type="button" aria-pressed={draft.speechProvider === provider}
               className={draft.speechProvider === provider ? primaryButton : secondaryButton}
               disabled={saveState === "saving" || Boolean(working)}
               onClick={() => void updateSettings({ speechProvider: provider })}>
-              {provider === "local" ? "Local" : "ChatGPT subscription"}
+              {provider === "local" ? "Local" : provider === "chatgpt" ? "ChatGPT subscription" : provider === "openaiweb" ? "OpenAI (web)" : "ElevenLabs"}
             </button>
           ))}
         </div>
@@ -667,6 +677,19 @@ export default function SettingsSpeech() {
       </section>
       {draft.speechProvider === "chatgpt" ? (
         <SettingsCloudSpeech cloud={status?.cloud} voice={draft.openaiVoice} enabled={draft.enabled}
+          language={draft.transcriptionLanguage} readingLanguage={draft.language} languages={LANGUAGES}
+          busy={saveState === "saving" || Boolean(working)} previewText={previewText}
+          onPreviewText={setPreviewText} onPreview={() => void previewVoice()}
+          onUpdate={(patch) => { void updateSettings(patch); }} onCredentialsChanged={load} />
+      ) : draft.speechProvider === "openaiweb" ? (
+        <SettingsWebSpeech web={status?.web} voice={draft.openaiVoice} enabled={draft.enabled}
+          language={draft.transcriptionLanguage} languages={LANGUAGES}
+          busy={saveState === "saving" || Boolean(working)} previewText={previewText}
+          onPreviewText={setPreviewText} onPreview={() => void previewVoice()}
+          onUpdate={(patch) => { void updateSettings(patch); }} onCredentialsChanged={load} />
+      ) : draft.speechProvider === "elevenlabs" ? (
+        <SettingsElevenLabsSpeech credentials={status?.elevenlabs} voiceId={draft.elevenlabsVoiceId || ""}
+          model={draft.elevenlabsModel || "eleven_flash_v2_5"} enabled={draft.enabled}
           language={draft.transcriptionLanguage} languages={LANGUAGES}
           busy={saveState === "saving" || Boolean(working)} previewText={previewText}
           onPreviewText={setPreviewText} onPreview={() => void previewVoice()}
@@ -1126,6 +1149,10 @@ export default function SettingsSpeech() {
       ) : null}
 
       </>}
+
+      <SettingsSpeechPronunciations
+        value={status?.settings.pronunciations || ''} busy={saveState === 'saving' || Boolean(working)}
+        onSave={async pronunciations => Boolean(await updateSettings({ pronunciations }))} />
 
       {notice ? <p role="status" className="rounded-xl bg-[var(--paper-strong)] px-3 py-2 text-xs leading-5 text-[var(--ink)]">{notice}</p> : null}
     </div>

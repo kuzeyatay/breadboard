@@ -9,14 +9,16 @@ export const dynamic = "force-dynamic";
 
 /** Download one garden as a `.garden` file. */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ gardenSlug: string }> },
 ) {
   try {
     const userId = await requireUserId();
     const { gardenSlug } = await params;
-    return transferDownloadResponse(exportGardenArchive(userId, gardenSlug));
+    return transferDownloadResponse(exportGardenArchive(userId, gardenSlug), request.method === "HEAD");
   } catch (error) {
     return transferErrorResponse(error);
   }
 }
+
+export const HEAD = GET;

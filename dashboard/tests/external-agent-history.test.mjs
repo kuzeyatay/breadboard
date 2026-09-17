@@ -870,6 +870,11 @@ test("a background terminal event uses runtime time instead of the later chat re
     store.presentConversationMessage(finished).metadata.responseDurationMs,
     runtimeDurationMs,
   );
+  assert.equal(
+    store.presentConversationMessage(finished).metadata.responseCompletedAt,
+    new Date(startedAt + runtimeDurationMs).toISOString(),
+    "reopening the chat later must not move its completion time",
+  );
 });
 
 test("legacy Max Research timing is repaired without changing its saved failure", () => {

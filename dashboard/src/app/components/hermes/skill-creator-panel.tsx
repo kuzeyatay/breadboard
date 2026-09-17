@@ -153,7 +153,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
       <section className="p-3" aria-label="Skill created">
         <button type="button" onClick={onBack} className="text-xs font-medium text-[var(--botanical)]">← Back to skills</button>
         <h3 className="mt-3 text-sm font-semibold text-[var(--ink-heading)]">Skill installed</h3>
-        <p className="mt-2 text-xs text-[var(--ink)]">The approved revision is in the command registry. Type <span className="font-mono font-medium text-[#1e40af]">/{installedToken}</span> in the composer, or pick it from the capability palette.</p>
+        <p className="mt-2 text-xs text-[var(--ink)]">The approved revision is in the command registry. Type <span className="font-mono font-medium text-[var(--chat-link)]">/{installedToken}</span> in the composer, or pick it from the capability palette.</p>
         <button
           type="button"
           onClick={() => { setInstalledToken(null); setReport(null); setName(""); setDescription(""); setInstructions(""); setReferences([]); setIntent(""); setMessage(null); setShowIssues(false); }}

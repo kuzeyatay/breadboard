@@ -203,7 +203,7 @@ test("the public-chats switch stays on the header of the list it filters", () =>
   assert.match(workspace, /setViewPublicChats\(\(value\) => !value\)/);
 });
 
-test("each rail keeps its own unread dots, so two rails cannot erase each other", () => {
+test("legacy rail storage remains isolated but live rails use the shared account inbox", () => {
   const store = new Map();
   const storage = {
     getItem: (key) => store.get(key) ?? null,
@@ -219,6 +219,6 @@ test("each rail keeps its own unread dots, so two rails cannot erase each other"
   assert.deepEqual([...readUnreadChats(storage, "aurora")], ["17"]);
   assert.deepEqual([...readUnreadChats(storage, "other-garden")], []);
 
-  assert.match(workspace, /readUnreadChats\(window\.localStorage, clusterSlug\)/);
-  assert.match(workspace, /writeUnreadChats\(window\.localStorage, unreadChats, clusterSlug\)/);
+  assert.match(workspace, /useUnreadChats\(clusterSlug\)/);
+  assert.doesNotMatch(workspace, /readUnreadChats|writeUnreadChats|nextUnreadChats/);
 });

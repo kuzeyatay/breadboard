@@ -532,6 +532,33 @@ test("a video link is Watch's subject, not a web-evidence debt", () => {
   );
 });
 
+test("a published source the user names but did not supply owes live web evidence", () => {
+  // The regression: conversation 467 asked "can you actually read those
+  // papers and then report back" after a /bullshit-detector turn. No URL,
+  // no live-information word, so the planner voted no, the decider never
+  // ran, and the model's "I cannot access papers" answer — with web_search
+  // and web_extract available and used two minutes earlier — drew no
+  // shortfall notice. Reading a paper the user has not pasted means opening it.
+  const insist = plan("can you actually read those papers and then report back");
+  assert.equal(insist.requiresWebEvidence, true);
+  assert.ok(insist.requiredCapabilities.includes("web_research"));
+  assert.equal(plan("read those papers and report back").requiresWebEvidence, true);
+  assert.equal(plan("can you read the studies behind it").requiresWebEvidence, true);
+  assert.equal(plan("open those sources and check them").requiresWebEvidence, true);
+
+  // Supplied material is the documents signal's business, not the web's.
+  assert.equal(plan("read the attached paper and summarize it").requiresWebEvidence, false);
+  assert.equal(plan("summarize this pdf").requiresWebEvidence, false);
+  assert.equal(plan("read C:\Users\me\paper.pdf").requiresWebEvidence, false);
+
+  // "source" in code and "references" in a codebase are not publications.
+  assert.equal(plan("review the source code in src/lib").requiresWebEvidence, false);
+  assert.equal(plan("find references to foo in the codebase").requiresWebEvidence, false);
+
+  // The noun alone, with no request to open anything, arms nothing.
+  assert.equal(plan("what is a paper trail").requiresWebEvidence, false);
+});
+
 test("resources are extracted for paths, urls and target formats", () => {
   const p = plan("Convert C:\\Users\\me\\notes\\draft.md to PDF and email it, see https://example.com/spec");
   const kinds = new Set(p.requiredResources.map((r) => r.kind));

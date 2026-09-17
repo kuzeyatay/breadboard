@@ -24,6 +24,9 @@ from __future__ import annotations
 import os
 import re
 import threading
+import tempfile
+from urllib.parse import quote
+from urllib.request import urlopen
 from typing import Any, Callable, Protocol
 
 from . import (
@@ -34,6 +37,10 @@ from . import (
 )
 
 Device = str  # "auto" | "cuda" | "cpu"
+MODEL_FILES = (
+    "config.json", "generation_config.json", "merges.txt", "model.safetensors",
+    "special_tokens_map.json", "tokenizer_config.json", "tokenizer.json", "vocab.json",
+)
 
 
 class ModelError(RuntimeError):
@@ -91,21 +98,72 @@ def hub_cache_directory() -> str:
     return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
 
 
-def model_is_installed(model_id: str) -> bool:
+def installed_model_cache(model_id: str, revision: str = DEFAULT_MODEL_REVISION) -> str | None:
+    """Find a complete pinned checkpoint, including the pre-Runtime-V2 cache."""
+    folder = "models--" + model_id.replace("/", "--")
+    caches = [
+        hub_cache_directory(),
+        os.path.join(os.path.expanduser("~"), ".breadboard", "humanizer", "models", "hub"),
+    ]
+    for cache in dict.fromkeys(caches):
+        snapshot = os.path.join(cache, folder, "snapshots", revision)
+        required = MODEL_FILES
+        if all(os.path.isfile(os.path.join(snapshot, name)) and os.path.getsize(os.path.join(snapshot, name)) > 0
+               for name in required):
+            return cache
+    return None
+
+
+def model_is_installed(model_id: str, revision: str = DEFAULT_MODEL_REVISION) -> bool:
     """A path check, never a network call.
 
     "Not installed" is a first-class health state, and answering it must not
     take a round trip to huggingface.co on a machine that is offline by choice.
     """
-    folder = "models--" + model_id.replace("/", "--")
-    snapshots = os.path.join(hub_cache_directory(), folder, "snapshots")
-    if not os.path.isdir(snapshots):
-        return False
-    for entry in os.listdir(snapshots):
-        candidate = os.path.join(snapshots, entry)
-        if os.path.isfile(os.path.join(candidate, "config.json")):
-            return True
-    return False
+    return installed_model_cache(model_id, revision) is not None
+
+
+def ensure_model_installed(model_id: str, revision: str) -> str:
+    """First use installs model files only; answer text never leaves the service."""
+    installed = installed_model_cache(model_id, revision)
+    if installed is not None:
+        return installed
+    cache = hub_cache_directory()
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", model_id) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ModelError("Automatic installation requires a pinned model revision.")
+    snapshot = os.path.join(cache, "models--" + model_id.replace("/", "--"), "snapshots", revision)
+    try:
+        os.makedirs(snapshot, exist_ok=True)
+        # A separate, bounded download path keeps HF_HUB_OFFLINE in force for
+        # inference. Only these pinned data files are fetched, never Python or
+        # pickle weights. Temporary files cannot make a partial install ready.
+        for name in MODEL_FILES:
+            destination = os.path.join(snapshot, name)
+            if os.path.isfile(destination) and os.path.getsize(destination) > 0:
+                continue
+            url = f"https://huggingface.co/{quote(model_id, safe='/')}/resolve/{revision}/{name}"
+            temporary = None
+            try:
+                with urlopen(url, timeout=60) as response, tempfile.NamedTemporaryFile(
+                    dir=snapshot, suffix=".partial", delete=False,
+                ) as output:
+                    temporary = output.name
+                    expected = response.headers.get("Content-Length")
+                    size = 0
+                    while chunk := response.read(1024 * 1024):
+                        output.write(chunk)
+                        size += len(chunk)
+                    if not size or (expected is not None and size != int(expected)):
+                        raise ModelError("Incomplete model file download.")
+                os.replace(temporary, destination)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+    except Exception as error:
+        raise ModelError("The local rewriting model could not be installed. Check the connection and available disk space.") from error
+    if installed_model_cache(model_id, revision) is None:
+        raise ModelError("The local rewriting model download is incomplete.")
+    return cache
 
 
 def resolve_device(requested: Device) -> tuple[str, str]:
@@ -182,7 +240,7 @@ class BartHumanizer:
         return self._load_error
 
     def installed(self) -> bool:
-        return model_is_installed(self.model_id)
+        return model_is_installed(self.model_id, self.model_revision)
 
     def probe(self) -> dict[str, str]:
         """What is installed, without loading a model."""
@@ -220,12 +278,8 @@ class BartHumanizer:
             if self._model is not None:
                 self._touch()
                 return
-            if not self.installed():
-                raise ModelNotInstalledError(
-                    "the humanizer model is not downloaded on this machine"
-                )
-
             try:
+                cache = ensure_model_installed(self.model_id, self.model_revision)
                 import torch
                 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -238,12 +292,15 @@ class BartHumanizer:
                 self._tokenizer = AutoTokenizer.from_pretrained(
                     self.model_id,
                     revision=self.model_revision,
+                    cache_dir=cache,
                     local_files_only=True,
                     trust_remote_code=False,
                 )
                 self._model = AutoModelForSeq2SeqLM.from_pretrained(
                     self.model_id,
                     revision=self.model_revision,
+                    cache_dir=cache,
+                    use_safetensors=True,
                     dtype=torch_dtype,
                     local_files_only=True,
                     trust_remote_code=False,

@@ -522,7 +522,7 @@ test("settings supports both a focus-trapped modal and an inline popover", () =>
   assert.match(dialog, /role="dialog"/);
   assert.match(dialog, /presentation\?: "modal" \| "popover"/);
   assert.match(dialog, /aria-modal=\{presentation === "modal" \? "true" : undefined\}/);
-  assert.match(dialog, /if \(presentation === "popover"\) return panel/);
+  assert.match(dialog, /if \(presentation === "popover"\) return anchorRef/);
   assert.match(dialog, /event\.key === "Escape"/);
   assert.match(dialog, /document\.body\.style\.overflow = "hidden"/);
   assert.match(dialog, /previouslyFocused\?\.focus\(\)/);
@@ -554,10 +554,10 @@ test("a second ChatGPT account can be added, listed, and removed", () => {
   assert.match(accountPanel, /\/api\/chatmock\/accounts\?key=\$\{encodeURIComponent\(key\)\}/);
   assert.match(accountPanel, /chronologicalChatgptRows\.map/);
   assert.match(accountPanel, /"Add another"/);
-  // An account on cooldown is signed in but not answering; saying so is the
-  // difference between a useful sibling and an apparently idle duplicate.
-  assert.match(accountPanel, /function restingLabel/);
-  assert.match(accountPanel, /row\.cooldownReason/);
+  // An account on cooldown is signed in but not answering. The amber dot
+  // says so; no "Resting for ..." line under the address.
+  assert.doesNotMatch(accountPanel, /restingLabel|Resting /);
+  assert.doesNotMatch(accountPanel, /row\.cooldownReason/);
 });
 
 test("accounts from the same provider share one chronological group", () => {
@@ -594,9 +594,12 @@ test("memory inspection includes every saved chat across surfaces, even without 
   assert.equal(inspection.listConversationMemoryStates(1, 10).length, 10);
 });
 
-test("provider actions live in the provider header, not on an account row", () => {
-  // The old page-level picker and refresh controls are gone. Switch and Add
-  // another share the provider's row; only Sign out belongs to an account.
+test("adding lives in the provider header; switching and signing out on the account row", () => {
+  // The old page-level picker and refresh controls are gone. Add another sits
+  // on the provider's row. Switch sits on each account that is signed in but
+  // not the one serving, and makes it so without OAuth; Sign out stays on the
+  // account it removes. Only a single-account vendor keeps Switch in its
+  // header, where it can only mean "sign in as someone else".
   assert.doesNotMatch(accountPanel, /onOpenProviders/);
   assert.doesNotMatch(accountPanel, /aria-expanded=\{adding\}/);
   assert.doesNotMatch(accountPanel, /Add an account/);
@@ -606,19 +609,36 @@ test("provider actions live in the provider header, not on an account row", () =
     accountPanel,
     /startSubscriptionLogin\(provider\.id, provider\.vendorLabel, null\)/,
   );
-  assert.match(accountPanel, /const switchAccount = accounts\[accounts\.length - 1\]/);
 
   const openai = accountPanel.indexOf(">OpenAI</p>");
-  const openaiSwitch = accountPanel.indexOf(': "Switch"', openai);
-  const openaiAdd = accountPanel.indexOf(': "Add another"', openaiSwitch);
+  const openaiAdd = accountPanel.indexOf(': "Add another"', openai);
   const openaiAccounts = accountPanel.indexOf('<ul className="divide-y', openaiAdd);
-  assert.ok(openai < openaiSwitch && openaiSwitch < openaiAdd && openaiAdd < openaiAccounts);
+  const openaiSwitch = accountPanel.indexOf(': "Switch"', openaiAccounts);
+  const openaiSignOut = accountPanel.indexOf("Sign out\n", openaiSwitch);
+  assert.ok(openai < openaiAdd && openaiAdd < openaiAccounts);
+  assert.ok(openaiAccounts < openaiSwitch && openaiSwitch < openaiSignOut);
+  // No Switch between the OpenAI header and its account list.
+  assert.equal(accountPanel.slice(openai, openaiAccounts).includes(': "Switch"'), false);
+  // Every row that is not serving offers Switch — the resting primary too,
+  // since choosing it clears the cooldown.
+  assert.match(accountPanel, /\{!row\.active && !confirming \? \(/);
+  assert.match(accountPanel, /void activateChatgptAccount\(row\.key, label\)/);
 
   const provider = accountPanel.indexOf("const switchAccount = accounts[accounts.length - 1]");
-  const providerSwitch = accountPanel.indexOf(': "Switch"', provider);
-  const providerAdd = accountPanel.indexOf(': "Add another"', providerSwitch);
+  const headerSwitch = accountPanel.indexOf("{supportsMultiple ? null : (", provider);
+  const providerAdd = accountPanel.indexOf(': "Add another"', headerSwitch);
   const providerAccounts = accountPanel.indexOf('<ul className="divide-y', providerAdd);
-  assert.ok(provider < providerSwitch && providerSwitch < providerAdd && providerAdd < providerAccounts);
+  const providerSwitch = accountPanel.indexOf(': "Switch"', providerAccounts);
+  const providerSignOut = accountPanel.indexOf("Sign out\n", providerSwitch);
+  assert.ok(provider < headerSwitch && headerSwitch < providerAdd && providerAdd < providerAccounts);
+  assert.ok(providerAccounts < providerSwitch && providerSwitch < providerSignOut);
+  assert.match(accountPanel, /const canSwitch = !subscription\.active \|\| activeCount > 1/);
+  assert.match(accountPanel, /method: "PATCH"/);
+
+  // Only the serving account is green; a signed-in sibling is amber.
+  assert.match(accountPanel, /state=\{row\.active \? "active" : "standby"\}/);
+  assert.match(accountPanel, /state=\{subscription\.active \? "active" : "standby"\}/);
+  assert.match(accountPanel, /standby: \{ label: "Connected, not active", className: "bg-\[var\(--standby\)\]" \}/);
 });
 
 test("the memory panel shows the summary and per-chat memory, and nothing else", () => {

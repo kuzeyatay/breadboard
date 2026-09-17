@@ -223,3 +223,38 @@ test("Terminal worker enforces the command-specific wall-clock ceiling", async (
   assert.notEqual(result.exitCode, 0);
   assert.ok(result.elapsedMs < 10_000, `elapsed ${result.elapsedMs}ms`);
 });
+
+test("Terminal worker exposes suppressed PowerShell scan errors even when the shell exits zero", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const current = fixture(t, {
+    command: String.raw`$ErrorActionPreference='SilentlyContinue'; 'folder' -split '\'; function R($h,$m){'ok'}; R @{} 30`,
+    workspaceRoot: dashboardRoot,
+    maxRuntimeMs: 10_000,
+  });
+  const run = await runWorker(current);
+  assert.equal(run.exit.code, 0, run.stderr);
+  const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8")).result;
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stderr, /PowerShell diagnostics/);
+  assert.match(result.stderr, /Illegal|positional parameter/);
+});
+
+test("Terminal worker preserves usable partial output and silent successful commands", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  for (const [script, expected] of [
+    ["$ErrorActionPreference='SilentlyContinue'; Get-Item -LiteralPath './missing-scan-fixture'; Write-Output 'scanned accessible files'", "scanned accessible files"],
+    ["$scanTotal = 42", ""],
+    ["try { throw 'handled failure' } catch { $recovered = $true }", ""],
+    ["Write-Output 'before explicit exit'; exit 7", "before explicit exit"],
+  ]) {
+    const current = fixture(t, { command: script, workspaceRoot: dashboardRoot, maxRuntimeMs: 10_000 });
+    const run = await runWorker(current);
+    assert.equal(run.exit.code, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8")).result;
+    assert.equal(result.stdout.trim(), expected);
+    assert.equal(result.exitCode, script.includes("exit 7") ? 7 : 0);
+  }
+});

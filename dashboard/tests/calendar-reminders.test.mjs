@@ -4,6 +4,8 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 
@@ -74,6 +76,28 @@ test("the lead reminder records the minute it was meant for, not the minute it f
   assert.equal(start.dueAt, "2026-08-31T09:00");
 });
 
+test("switching off the advance reminder still notifies at the start", () => {
+  const event = occurrence({ leadReminderEnabled: false });
+  assert.deepEqual(dueReminders([event], "2026-08-31T08:40"), []);
+  assert.deepEqual(dueReminders([event], "2026-08-31T08:45"), []);
+  assert.deepEqual(dueReminders([event], "2026-08-31T09:00").map(item => item.kind), ["start"]);
+  assert.deepEqual(dueReminders([event], "2026-08-31T09:05").map(item => item.kind), ["start"]);
+});
+
+test("turning off event notifications suppresses lead, start, late, and all-day notices", () => {
+  for (const leadReminderEnabled of [true, false]) {
+    const event = occurrence({ notificationsEnabled: false, leadReminderEnabled });
+    for (const now of ["08:40", "08:45", "09:00", "09:05"]) {
+      assert.deepEqual(dueReminders([event], `2026-08-31T${now}`), []);
+    }
+  }
+  const allDay = occurrence({
+    notificationsEnabled: false, allDay: true,
+    start: "2026-08-31T00:00", end: "2026-08-31T23:59",
+  });
+  assert.deepEqual(dueReminders([allDay], "2026-08-31T00:00"), []);
+});
+
 test("an all-day event is announced once, when its day begins", () => {
   const holiday = occurrence({
     allDay: true,
@@ -118,11 +142,15 @@ test("the read window covers everything that could be due", () => {
 
 // ------------------------------------------------------------------ the text
 
-test("the message is written for a phone: one block per reminder, no markdown", () => {
+test("the lead carries details while the start notice is headline-only", () => {
   const now = "2026-08-31T09:00";
   const due = dueReminders(
     [
-      occurrence({ eventId: 1, location: "Room 4" }),
+      occurrence({
+        eventId: 1,
+        location: "Room 4",
+        description: "Bring the weekly notes.",
+      }),
       occurrence({
         eventId: 2,
         title: "Dentist",
@@ -137,17 +165,34 @@ test("the message is written for a phone: one block per reminder, no markdown", 
     text,
     [
       "▶️ Starting now: Standup",
-      "09:00 – 09:30",
-      "📍 Room 4",
       "",
       "⏰ In 20 minutes: Dentist",
       "09:20 – 10:00",
     ].join("\n"),
   );
   assert.doesNotMatch(text, /[*#_`]/, "nothing that WhatsApp would show as asterisks");
+
+  const lead = formatReminderMessage(
+    dueReminders(
+      [occurrence({ description: "Bring the weekly notes." })],
+      "2026-08-31T08:40",
+    ),
+    "2026-08-31T08:40",
+  );
+  assert.match(lead, /09:00 – 09:30/);
+  assert.match(lead, /Bring the weekly notes\./);
+
+  const start = formatReminderMessage(
+    dueReminders(
+      [occurrence({ description: "Bring the weekly notes.", location: "Room 4" })],
+      "2026-08-31T09:00",
+    ),
+    "2026-08-31T09:00",
+  );
+  assert.equal(start, "▶️ Starting now: Standup");
 });
 
-test("an all-day event and an event on another day say so", () => {
+test("start notices stay headline-only for all-day and overnight events", () => {
   const now = "2026-09-01T00:00";
   const text = formatReminderMessage(
     dueReminders(
@@ -170,8 +215,7 @@ test("an all-day event and an event on another day say so", () => {
     ),
     now,
   );
-  assert.match(text, /📅 Today: Conference\nAll day · until Thu 3 Sep/);
-  assert.match(text, /▶️ Starting now: Night shift\n00:00 – Wed 2 Sep 06:00/);
+  assert.equal(text, "📅 Today: Conference\n\n▶️ Starting now: Night shift");
 });
 
 test("an untitled event still reads as one", () => {
@@ -303,6 +347,47 @@ test("a channel that cannot send keeps its reminders for the next tick", async (
   assert.deepEqual(sent.map((message) => message.channel), ["whatsapp", "telegram"]);
 });
 
+test("a saved off switch skips both channels before the event, then sends each start once", async () => {
+  const { deps, store, sent } = fakeDeps();
+  const [event] = store.listEvents(1);
+  store.updateEvent(1, event.id, { leadReminderEnabled: false });
+  const lead = await runCalendarReminders({ now: at("2026-08-31T08:40"), deps });
+  assert.equal(lead.delivered, 0);
+  assert.equal(sent.length, 0);
+  const start = await runCalendarReminders({ now: at("2026-08-31T09:00"), deps });
+  assert.equal(start.delivered, 2);
+  assert.deepEqual(sent.map(item => item.channel), ["whatsapp", "telegram"]);
+  assert.ok(sent.every(item => item.text.includes("Starting now: Standup")));
+  assert.equal((await runCalendarReminders({ now: at("2026-08-31T09:01"), deps })).delivered, 0);
+  store.updateEvent(1, event.id, { leadReminderEnabled: true });
+  assert.equal((await runCalendarReminders({ now: at("2026-09-01T08:40"), deps })).delivered, 2);
+});
+
+test("muting an event sends neither channel anything; unmuting restores its saved reminder timing", async () => {
+  const { deps, store, sent } = fakeDeps();
+  const [event] = store.listEvents(1);
+  store.updateEvent(1, event.id, { notificationsEnabled: false, leadReminderEnabled: false });
+  for (const now of ["08:40", "09:00", "09:05"]) {
+    assert.equal((await runCalendarReminders({ now: at(`2026-08-31T${now}`), deps })).delivered, 0);
+  }
+  assert.equal(sent.length, 0);
+  store.updateEvent(1, event.id, { notificationsEnabled: true });
+  assert.equal((await runCalendarReminders({ now: at("2026-09-01T08:40"), deps })).delivered, 0);
+  assert.equal((await runCalendarReminders({ now: at("2026-09-01T09:00"), deps })).delivered, 2);
+  assert.deepEqual(sent.map(item => item.channel), ["whatsapp", "telegram"]);
+  assert.ok(sent.every(item => item.text.includes("Starting now: Standup")));
+});
+
+test("muting after an advance reminder prevents the start notice without muting other events", async () => {
+  const { deps, store, sent } = fakeDeps();
+  const [event] = store.listEvents(1);
+  assert.equal((await runCalendarReminders({ now: at("2026-08-31T08:40"), deps })).delivered, 2);
+  store.updateEvent(1, event.id, { notificationsEnabled: false });
+  store.createEvent(1, { calendarId: event.calendarId, title: "Dentist", startsAt: event.startsAt, endsAt: event.endsAt });
+  assert.equal((await runCalendarReminders({ now: at("2026-08-31T09:00"), deps })).delivered, 2);
+  assert.ok(sent.slice(2).every(item => item.text.includes("Dentist") && !item.text.includes("Standup")));
+});
+
 test("no enabled channel means the calendar is not even read", async () => {
   let reads = 0;
   const { deps } = fakeDeps({
@@ -360,4 +445,57 @@ test("the destination is the owner's own thread and nothing a caller can choose"
   assert.match(service, /recordDeliveredOwnerMessage\(\{/);
   assert.match(service, /appendConversationAssistantMessage\(\{/);
   assert.match(service, /store\.bindConversation\(input\.target\.chatId, conversation\.id\)/);
+});
+
+
+test("identical reminder blocks are shown once without hiding different times or locations", () => {
+  const now = "2026-08-31T08:40";
+  const events = [occurrence(), occurrence({ eventId: 2 }),
+    occurrence({ eventId: 3, location: "Room 4" }),
+    occurrence({ eventId: 4, start: "2026-08-31T08:55", end: "2026-08-31T09:25" })];
+  const text = formatReminderMessage(dueReminders(events, now), now);
+  assert.equal(text.split("⏰").length - 1, 3);
+  assert.match(text, /Room 4/);
+  assert.match(text, /08:55/);
+});
+
+test("overlapping reminder ticks reserve each delivery before awaiting the transport", async () => {
+  const { deps, sent } = fakeDeps();
+  const gate = Promise.withResolvers(), started = Promise.withResolvers();
+  deps.send = async (recipient, text) => {
+    sent.push({ channel: recipient.channel, text });
+    if (recipient.channel === "whatsapp") { started.resolve(); await gate.promise; }
+  };
+  const first = runCalendarReminders({ now: at("2026-08-31T08:40"), deps });
+  await started.promise;
+  const second = runCalendarReminders({ now: at("2026-08-31T08:40"), deps });
+  await new Promise(resolve => setImmediate(resolve));
+  const concurrentWhatsAppSends = sent.filter(message => message.channel === "whatsapp").length;
+  gate.resolve();
+  await Promise.all([first, second]);
+  assert.equal(concurrentWhatsAppSends, 1);
+  assert.deepEqual(sent.map(message => message.channel).sort(), ["telegram", "whatsapp"]);
+});
+
+
+test("reminder claims survive a new database connection without expiring a slow send", t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-reminder-claims-"));
+  const firstDb = new Database(path.join(directory, "ledger.db"));
+  const secondDb = new Database(path.join(directory, "ledger.db"));
+  t.after(() => {
+    firstDb.close(); secondDb.close();
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(directory).startsWith("breadboard-reminder-claims-"));
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  const first = new CalendarReminderLedger(firstDb), second = new CalendarReminderLedger(secondDb);
+  const due = dueReminders([occurrence(), occurrence()], "2026-08-31T08:40");
+  assert.equal(first.claim(1, "telegram", due).length, 1, "duplicate candidates share a reservation");
+  firstDb.prepare("UPDATE calendar_reminder_claims SET created_at = datetime('now', '-30 minutes')").run();
+  assert.deepEqual(second.claim(1, "telegram", due), [], "a slow or uncertain send cannot be reclaimed");
+  first.release(1, "telegram", due);
+  assert.equal(second.claim(1, "telegram", due).length, 1, "a failed send can be retried");
+  second.markSent(1, "telegram", due);
+  assert.deepEqual(first.claim(1, "telegram", due), [], "successful sends remain delivered");
+  assert.equal(firstDb.prepare("SELECT COUNT(*) AS count FROM calendar_reminder_claims").get().count, 0);
 });

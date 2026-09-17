@@ -9,6 +9,7 @@ import AttachmentPreviewDialog, {
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
 import {
   chatAttachmentHref,
+  visibleChatMessageAttachments,
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
 import {
@@ -54,10 +55,14 @@ function isPastedScreenshotName(name: string): boolean {
 }
 
 export default function ChatMessageAttachments({
-  attachments = [],
-  attachmentNames = [],
+  attachments: allAttachments,
+  attachmentNames: allAttachmentNames,
   sourceAttachments = [],
 }: Props) {
+  const { attachments, attachmentNames } = useMemo(
+    () => visibleChatMessageAttachments(allAttachments, allAttachmentNames),
+    [allAttachments, allAttachmentNames],
+  );
   const [openImageIndex, setOpenImageIndex] = useState<number | null>(null);
   const images = useMemo(
     () => attachments.filter(
@@ -158,10 +163,10 @@ export default function ChatMessageAttachments({
 
   return (
     <>
-      <div className="flex max-w-full flex-col items-end gap-1.5">
+      <div className="flex min-w-0 max-w-full flex-col items-end gap-1.5">
         {images.length ? (
           <div
-            className={`grid max-w-full gap-2 ${
+            className={`grid min-w-0 max-w-[min(42rem,72vw,100%)] gap-2 ${
               images.length > 1 ? "grid-cols-2" : "grid-cols-1"
             }`}
           >
@@ -181,7 +186,7 @@ export default function ChatMessageAttachments({
                   alt={attachment.name}
                   className={
                     images.length === 1
-                      ? "block max-h-80 w-auto max-w-[min(42rem,72vw)] rounded-[18px] object-contain"
+                      ? "block max-h-80 w-auto max-w-full rounded-[18px] object-contain"
                       : "h-40 w-56 max-w-full rounded-[18px] object-cover"
                   }
                 />

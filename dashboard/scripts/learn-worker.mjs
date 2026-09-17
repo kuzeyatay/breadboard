@@ -359,6 +359,8 @@ async function execute(rawRequest) {
     `learn-${request.operation}`,
   );
   try {
+    const { installLearnVisualizationWorker } = await import("../src/lib/learn-visualization-worker.ts");
+    installLearnVisualizationWorker();
     const { executeAdmittedLearnOperation } = await import(
       "../src/lib/learn-operation-executor.ts"
     );

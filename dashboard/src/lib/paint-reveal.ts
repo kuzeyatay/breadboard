@@ -6,6 +6,7 @@
 
 const GRID_SIZE = 7;
 const MAX_SAMPLE_WIDTH = 520;
+const WATERCOLOR_PAPER = "#fbf8f2";
 
 interface RawMark {
   nx: number;
@@ -279,7 +280,6 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-const PAPER = "#fbf8f2";
 const FADE_FRAMES = 42; // ~0.7s for a new mark to fade in
 const INCOMING_CAP = 90; // max marks fading in at once (bounds per-frame cost)
 
@@ -297,6 +297,8 @@ export class PaintReveal {
   private ctx: CanvasRenderingContext2D;
   private wash: HTMLCanvasElement;
   private wctx: CanvasRenderingContext2D;
+  private darkMode = false;
+  private pigmentFrame: HTMLCanvasElement | null = null;
   private noise: Noise3;
   private marks: RawMark[] = [];
   private sampleW = 0;
@@ -322,14 +324,15 @@ export class PaintReveal {
     if (!wctx) throw new Error("no 2d context");
     this.wctx = wctx;
     this.noise = makeNoise();
-    this.paper();
+    this.clearWash();
     this.render();
   }
 
-  private paper() {
+  private clearWash() {
     this.wctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.wctx.fillStyle = PAPER;
-    this.wctx.fillRect(0, 0, this.wash.width, this.wash.height);
+    // Keep pigment separate from the paper so the CSS theme can change the
+    // background immediately without repainting or resetting reveal progress.
+    this.wctx.clearRect(0, 0, this.wash.width, this.wash.height);
   }
 
   /** Draw one mark (deterministic shape via seeded RNG) at a given opacity. */
@@ -344,7 +347,7 @@ export class PaintReveal {
 
   /** Instantly (re)paint the first `count` marks into the wash — used on resize. */
   private repaint(count: number) {
-    this.paper();
+    this.clearWash();
     for (let i = 0; i < count; i += 1) this.drawMark(this.wctx, i, 1);
     this.painted = count;
   }
@@ -357,6 +360,39 @@ export class PaintReveal {
       const f = item.age / FADE_FRAMES;
       this.drawMark(this.ctx, item.index, f * f * (3 - 2 * f)); // smoothstep fade-in
     }
+
+    if (this.darkMode) {
+      // Watercolor needs a light substrate. Give only the revealed pigment a
+      // paper backing, using its own alpha so unpainted areas stay transparent
+      // and the growing edges remain soft against the dark page.
+      const frame = (this.pigmentFrame ??= document.createElement("canvas"));
+      if (frame.width !== this.canvas.width) frame.width = this.canvas.width;
+      if (frame.height !== this.canvas.height) frame.height = this.canvas.height;
+      const frameContext = frame.getContext("2d");
+      if (!frameContext) return;
+      frameContext.clearRect(0, 0, frame.width, frame.height);
+      frameContext.drawImage(this.canvas, 0, 0);
+
+      this.ctx.save();
+      this.ctx.globalCompositeOperation = "source-atop";
+      this.ctx.fillStyle = WATERCOLOR_PAPER;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      this.ctx.globalCompositeOperation = "source-over";
+      this.ctx.drawImage(frame, 0, 0);
+      this.ctx.restore();
+    }
+  }
+
+  /** Re-composite existing paint immediately, without restarting its reveal. */
+  setDarkMode(darkMode: boolean): void {
+    if (this.destroyed || this.darkMode === darkMode) return;
+    this.darkMode = darkMode;
+    if (!darkMode && this.pigmentFrame) {
+      this.pigmentFrame.width = 0;
+      this.pigmentFrame.height = 0;
+      this.pigmentFrame = null;
+    }
+    this.render();
   }
 
   private startAnimation() {
@@ -408,7 +444,7 @@ export class PaintReveal {
       this.layout = computeLayout(this.sampleW, this.sampleH, w, h);
       this.repaint(this.painted);
     } else {
-      this.paper();
+      this.clearWash();
     }
     this.render();
     if (this.painted < this.target) this.startAnimation();
@@ -429,7 +465,7 @@ export class PaintReveal {
     this.target = 0;
     this.targetFraction = 0;
     this.incoming = [];
-    this.paper();
+    this.clearWash();
     this.render();
   }
 
@@ -461,11 +497,16 @@ export class PaintReveal {
     this.target = 0;
     this.targetFraction = 0;
     // Resizing a canvas to zero releases its native drawing buffer. Clearing
-    // only the RAF leaves both the visible and off-screen RGBA allocations
+    // only the RAF leaves the visible and off-screen RGBA allocations
     // resident until a later garbage collection, which is especially costly
     // on repeated route navigation at high-DPI fullscreen sizes.
     this.wash.width = 0;
     this.wash.height = 0;
+    if (this.pigmentFrame) {
+      this.pigmentFrame.width = 0;
+      this.pigmentFrame.height = 0;
+      this.pigmentFrame = null;
+    }
     this.canvas.width = 0;
     this.canvas.height = 0;
   }

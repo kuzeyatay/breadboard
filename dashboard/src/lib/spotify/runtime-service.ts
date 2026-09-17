@@ -168,7 +168,7 @@ async function readEnvelope(response: Response): Promise<ServiceEnvelope> {
 }
 
 async function request(
-  route: "/v1/ensure" | "/v1/release" | "/v1/status",
+  route: "/v1/ensure" | "/v1/release" | "/v1/status" | "/v1/control",
   body: Record<string, unknown>,
   env: NodeJS.ProcessEnv,
 ): Promise<unknown> {
@@ -329,4 +329,43 @@ export async function readSpotifyPlaybackRuntimeStatus(
           : "Breadboard could not start its protected-audio browser.",
     };
   }
+}
+
+export type SpotifyLocalControlResult = { handled: false } | {
+  handled: true;
+  trackUri: string;
+  positionMs: number;
+  isPlaying: boolean;
+};
+
+export async function controlSpotifyPlaybackRuntime(input: {
+  userId: number;
+  deviceId: string;
+  action: "pause" | "resume" | "next" | "previous" | "seek";
+  positionMs?: number;
+  env?: NodeJS.ProcessEnv;
+}): Promise<SpotifyLocalControlResult> {
+  const env = input.env ?? process.env;
+  if (!spotifyPlaybackRuntimeManaged(env)) return { handled: false };
+  let result;
+  try {
+    result = await request("/v1/control", {
+      userId: positiveUserId(input.userId), deviceId: input.deviceId,
+      action: input.action, positionMs: input.action === "seek" ? Math.round(input.positionMs ?? 0) : null,
+    }, env);
+  } catch (error) {
+    // An older service has not dispatched anything; use the existing Web API
+    // path until the desktop restarts. Dispatched failures must not be retried.
+    if (error instanceof SpotifyPlaybackRuntimeError && error.code === "route_not_found") return { handled: false };
+    throw error;
+  }
+  if (result && typeof result === "object") {
+    const value = result as Record<string, unknown>;
+    if (value.handled === false) return { handled: false };
+    if (value.handled === true && typeof value.trackUri === "string" && /^spotify:track:[A-Za-z0-9]{10,64}$/u.test(value.trackUri) &&
+      Number.isSafeInteger(value.positionMs) && Number(value.positionMs) >= 0 && typeof value.isPlaying === "boolean") {
+      return { handled: true, trackUri: value.trackUri, positionMs: Number(value.positionMs), isPlaying: value.isPlaying };
+    }
+  }
+  throw new SpotifyPlaybackRuntimeError("invalid_response");
 }

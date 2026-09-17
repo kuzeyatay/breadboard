@@ -29,6 +29,9 @@ import { PROVIDER_ID } from "./contract.ts";
 import { preparedService } from "./runtime-worker-service.ts";
 import { runInstruction, sessionTitle, type PromptOptions } from "./prompt.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
+import { eventSessionId, sessionIsIdle, type ServerEvent } from "./session-events.ts";
+import { finalResearchAnswer, isResearchAssistant } from "./messages.ts";
+import { appendReferencedDeliverables } from "./deliverable-text.ts";
 
 export interface OpenscienceEvent {
   sequenceNumber: number;
@@ -329,11 +332,6 @@ function usageFrom(messages: readonly MessageRecord[]): ChatTokenUsage | undefin
   };
 }
 
-interface ServerEvent {
-  type?: string;
-  properties?: Record<string, unknown>;
-}
-
 function partOf(event: ServerEvent): Record<string, unknown> | null {
   const part = event.properties?.part;
   return part && typeof part === "object" ? (part as Record<string, unknown>) : null;
@@ -403,13 +401,13 @@ async function followSession(
           continue;
         }
         const properties = event.properties ?? {};
-        if (properties.sessionID && properties.sessionID !== run.sessionId) continue;
+        if (eventSessionId(event) !== run.sessionId) continue;
         lastActivity = Date.now();
 
         if (event.type === "message.updated") {
           const info = properties.info as Record<string, unknown> | undefined;
           if (typeof info?.id === "string" && typeof info.role === "string") {
-            run.messageRoles.set(info.id, info.role);
+            run.messageRoles.set(info.id, isResearchAssistant(info) ? "assistant" : "internal");
           }
           continue;
         }
@@ -521,7 +519,7 @@ async function followSession(
           return;
         }
 
-        if (event.type === "session.idle") return;
+        if (sessionIsIdle(event)) return;
       }
       if (buffer.length > MAX_UPSTREAM_FRAME_CHARS) {
         throw new Error("The OpenScience event stream exceeded its frame bound.");
@@ -597,7 +595,7 @@ async function execute(run: RunState): Promise<void> {
       model: run.model,
       variant: run.variant,
       text: promptWithContext(
-        runInstruction(run.task, run.options),
+        runInstruction(run.task, run.options, `run-artifacts/${run.runId}`),
         run.conversationContext,
       ),
       signal: run.abort.signal,
@@ -614,17 +612,10 @@ async function execute(run: RunState): Promise<void> {
     run.usage = usageFrom(messages) ?? run.usage;
     collectDeliverables(run);
 
-    // The streamed text is the answer; the transcript is only consulted when
-    // nothing streamed, which is how a turn that failed upstream is caught.
-    const streamed = answerText(run);
-    const assistant = messages.filter((message) => message.info?.role === "assistant");
-    const transcript = assistant
-      .flatMap((message) => message.parts ?? [])
-      .filter((part) => part.type === "text" && part.text)
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim();
-    const content = streamed || transcript;
+    // The final transcript distinguishes findings from tool commentary and
+    // compaction handoffs, which may contain stale "in progress" assertions.
+    const assistant = messages.filter((message) => isResearchAssistant(message.info));
+    const content = finalResearchAnswer(messages);
 
     if (!content) {
       // An empty answer is never a success. The runtime leaves the assistant
@@ -642,7 +633,7 @@ async function execute(run: RunState): Promise<void> {
       return;
     }
 
-    finish(run, "completed", content);
+    finish(run, "completed", appendReferencedDeliverables(content, run.workspace, run.deliverables));
   } catch (error) {
     if (run.aborted) {
       finish(run, "aborted", answerText(run) || "The run was stopped.");

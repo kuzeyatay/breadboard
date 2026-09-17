@@ -158,6 +158,8 @@ Latency is the elapsed time between stimulus and decision.
     assert.match(system, /KaTeX/);
     assert.match(system, /===PAGE===/);
     assert.match(system, /breadboard-visual/);
+    assert.match(system, /Any expectedWordRange, including one from an existing plan, is advisory/);
+    assert.match(user, /expectedWordRange \(advisory estimate only\): 700-1100/);
     assert.match(user, /Learning Unit Contract/);
     assert.match(user, /S1\.P6\.E2/);
     assert.match(user, /Validation errors to fix/);
@@ -170,6 +172,13 @@ Latency is the elapsed time between stimulus and decision.
     assert.match(user, /Exact source text/);
     assert.match(user, /Current page markdown/);
     assert.match(user, /L = t_d - t_s/);
+  });
+
+  test("repair of a legacy unit without a length estimate does not invent a word target", () => {
+    const request = fakeRequest();
+    request.learningUnitContract.expectedWordRange = [0, 0];
+    const { user } = buildModelRepairPrompt(request);
+    assert.match(user, /expectedWordRange \(advisory estimate only\): not estimated/);
   });
 
   test("parses the ===PAGE=== envelope plus optional visual specs and complete model-authored Zettel patch", () => {

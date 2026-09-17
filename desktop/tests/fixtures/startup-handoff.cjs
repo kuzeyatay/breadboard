@@ -23,10 +23,10 @@ app.whenReady().then(async () => {
     requestAnimationFrame(frame);
   `);
   const pagePath = path.join(dir, "page.html");
-  fs.writeFileSync(pagePath, '<!doctype html><html><body style="margin:0;background:#e5c979;min-height:100vh">Workspace</body></html>');
+  fs.writeFileSync(pagePath, '<!doctype html><html data-breadboard-startup="loading"><body style="margin:0;background:#e5c979;min-height:100vh">Workspace<script>window.finishWidgets = () => document.documentElement.dataset.breadboardStartup = "ready";</script></body></html>');
   const pageUrl = pathToFileURL(pagePath).toString();
   const otherDisplay = screen.getAllDisplays().find(display => display.id !== screen.getPrimaryDisplay().id);
-  const modes = ["resize", "maximize", "fullscreen", "premaximized",
+  const modes = ["resize", "maximize", "fullscreen", "premaximized", "offscreen",
     ...(otherDisplay ? ["move-maximize", "move-fullscreen"] : [])];
   for (const mode of modes) {
     const manager = new WindowManager({
@@ -39,9 +39,14 @@ app.whenReady().then(async () => {
     if (mode === "premaximized") startup.maximize();
     await sleep(300);
     const showing = manager.showDashboard(pageUrl);
-    await manager.waitForDashboardPaint();
     const dashboard = BrowserWindow.getAllWindows().find(window => window !== startup);
     assert.ok(dashboard);
+    let ready = false;
+    const readiness = manager.waitForDashboardPaint().then(() => { ready = true; });
+    await sleep(300);
+    assert.equal(ready, false, "even a launch without a saved session waits for widgets");
+    await dashboard.webContents.executeJavaScript("window.finishWidgets()");
+    await readiness;
     const revealed = [];
     let expectedBounds;
     let expectedSize;
@@ -65,11 +70,19 @@ app.whenReady().then(async () => {
       startup.setBounds({ x: otherDisplay.bounds.x + 80, y: otherDisplay.bounds.y + 80, width: 1000, height: 680 });
     }
     if (mode === "resize") startup.setBounds({ x: 110, y: 90, width: 1200, height: 800 });
+    if (mode === "offscreen") startup.setBounds({ x: -20480, y: -20480, width: 1000, height: 680 });
     if (mode.endsWith("maximize")) startup.maximize();
     if (mode.endsWith("fullscreen")) startup.setFullScreen(true);
     manager.markStartupContinued();
     await showing;
     await sleep(300);
+    if (mode === "offscreen") {
+      const bounds = dashboard.getBounds();
+      assert.ok(screen.getAllDisplays().some(({workArea}) =>
+        bounds.x < workArea.x + workArea.width && bounds.x + bounds.width > workArea.x &&
+        bounds.y < workArea.y + workArea.height && bounds.y + bounds.height > workArea.y),
+      "the revealed window must intersect a connected display");
+    }
     assert.equal(revealed.length, 1, mode);
     assert.deepEqual(revealed[0].painted, revealed[0].native, mode + ": the first visible frame must already fill the window");
     assert.deepEqual(visibleResizes, [], mode + ": geometry must settle before the window becomes visible");

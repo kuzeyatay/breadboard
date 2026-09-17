@@ -187,7 +187,7 @@ FolderPdfExport.css = `
   border: 1px solid var(--lightgray);
   border-radius: 10px;
   background: var(--light);
-  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.32);
+  box-shadow: none;
   overflow: hidden;
 }
 

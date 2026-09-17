@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
+import { refreshGoogleCalendars } from "@/lib/calendar/google-service.ts";
 import { readEventPatch } from "@/lib/calendar/payload.ts";
 import { CalendarError } from "@/lib/calendar/store.ts";
 import { rememberEventPeople } from "@/lib/contacts/calendar-capture.ts";
@@ -31,13 +32,14 @@ export async function GET(request: Request) {
       .filter((value) => Number.isInteger(value) && value > 0);
 
     const store = getCalendarStore();
+    const sync = await refreshGoogleCalendars(userId, { from, to });
     const occurrences = store.occurrencesInRange(userId, from, to, { calendarIds });
     const events = store.listEventsByIds(
       userId,
       occurrences.map((occurrence) => occurrence.eventId),
     );
 
-    return NextResponse.json({ occurrences, events });
+    return NextResponse.json({ occurrences, events, syncError: sync.error });
   } catch (error) {
     return apiErrorResponse(error);
   }

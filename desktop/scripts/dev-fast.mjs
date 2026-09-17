@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
 import {
+  assertDashboardBuildOutputUnused,
   availableDashboardBuild,
   recoverInterruptedDashboardBuild,
   refreshStandaloneDashboardAssets,
@@ -51,6 +52,17 @@ if (!dashboardLease.acquired) {
   process.exit(2);
 }
 process.once("exit", () => releaseDashboardBuildLease(repoRoot, dashboardLease.record));
+
+// The leases above track launchers. A desktop outlives a launcher whose
+// terminal was closed, and recovery/rotation below would move the served
+// build out from under it, so look for whatever is running out of the output.
+try {
+  assertDashboardBuildOutputUnused(repoRoot);
+} catch (error) {
+  if (error?.code !== "BREADBOARD_DASHBOARD_OUTPUT_IN_USE") throw error;
+  process.stderr.write(`[desktop] ${error.message}\n`);
+  process.exit(2);
+}
 
 recoverInterruptedDashboardBuild(repoRoot);
 const forceRebuild = process.argv.includes("--rebuild");

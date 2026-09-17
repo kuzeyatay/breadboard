@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import Link from 'next/link';
+import { RefreshCw } from 'lucide-react';
 import LinkContextMenu from './link-context-menu';
 import RailDivider from './hermes/rail-divider';
 import ThoughtTopologyLoadingDots from './thought-topology-loading-dots';
@@ -65,6 +66,8 @@ interface TopologyFreshnessResponse {
   enabled?: boolean;
   mode?: string;
   stale?: boolean;
+  autoUpdate?: boolean;
+  retryAvailable?: boolean;
   topology?: {
     sourceRevision?: string;
     build?: {
@@ -215,12 +218,32 @@ function KnowledgeGraph({
   const [publishedRevision, setPublishedRevision] = useState('pending');
   const [serverPreviewCurrent, setServerPreviewCurrent] = useState(false);
   const [previewUpdateLabel, setPreviewUpdateLabel] = useState<string | null>(null);
+  const [topologyRetryAvailable, setTopologyRetryAvailable] = useState(false);
+  const [topologyRetryBusy, setTopologyRetryBusy] = useState(false);
+  const [topologyRetryError, setTopologyRetryError] = useState<string | null>(null);
+  const refreshTopologyRef = useRef<() => Promise<void>>(async () => {});
   const [previewState, setPreviewState] = useState<PreviewState>({
     url: '',
     status: 'loading',
   });
   const graph = data ?? emptyResponse;
   const loading = data === null;
+  async function retryTopology() {
+    if (topologyRetryBusy) return;
+    setTopologyRetryBusy(true);
+    setTopologyRetryError(null);
+    try {
+      const response = await fetch(`/api/thought-topology?clusterSlug=${encodeURIComponent(clusterSlug)}`, {
+        method: 'POST',
+      });
+      if (!response.ok) throw new Error('Thought Topology update failed.');
+      await refreshTopologyRef.current();
+    } catch {
+      setTopologyRetryError('Could not update the map. Please try again.');
+    } finally {
+      setTopologyRetryBusy(false);
+    }
+  }
   const previewFreshnessReady =
     gardenRevision !== '' &&
     topologyRevision !== 'pending' &&
@@ -344,6 +367,8 @@ function KnowledgeGraph({
     setPublishedRevision('pending');
     setServerPreviewCurrent(false);
     setPreviewUpdateLabel(null);
+    setTopologyRetryAvailable(false);
+    setTopologyRetryError(null);
 
     const checkFreshness = async () => {
       if (disposed || inFlight) return;
@@ -385,7 +410,8 @@ function KnowledgeGraph({
             topologyRevisionRef.current = revision;
             setTopologyRevision(revision);
           }
-          setServerPreviewCurrent(topologyIsCurrent(payload, observedGardenRevision));
+          setServerPreviewCurrent(payload.autoUpdate === false || topologyIsCurrent(payload, observedGardenRevision));
+          setTopologyRetryAvailable(payload.retryAvailable === true);
           const progress = payload.status?.state === 'building'
             ? Math.max(0, Math.min(99, Math.floor(payload.status.progress ?? 0)))
             : null;
@@ -420,6 +446,7 @@ function KnowledgeGraph({
     const checkWhenVisible = () => {
       if (document.visibilityState === 'visible') void checkFreshness();
     };
+    refreshTopologyRef.current = checkFreshness;
     void checkFreshness();
     const timer = window.setInterval(checkFreshness, MAP_PREVIEW_FRESHNESS_POLL_MS);
     window.addEventListener('focus', checkFreshness);
@@ -580,7 +607,20 @@ function KnowledgeGraph({
                 </span>
               </Link>
             </LinkContextMenu>
+            {topologyRetryAvailable && (
+              <button
+                type="button"
+                onClick={retryTopology}
+                disabled={topologyRetryBusy}
+                aria-label="Retry Thought Topology update"
+                title="Update Thought Topology"
+                className="absolute left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-gray-950/85 text-gray-400 transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-50"
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
           </div>
+          {topologyRetryError && <p role="alert" className="mt-1 text-xs text-red-400">{topologyRetryError}</p>}
         </div>
 
         {/* Source tree */}

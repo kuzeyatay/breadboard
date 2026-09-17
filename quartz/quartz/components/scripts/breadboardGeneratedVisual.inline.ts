@@ -1,5 +1,7 @@
 // @ts-ignore -- Quartz's inline compiler resolves ?raw imports as source text.
 import sandboxRuntime from "./generatedVisualSandbox.inline.js?raw"
+import { withInteractiveVisualizerWheelZoom } from "../../../../dashboard/src/lib/hermes/interactive-visualizer-wheel"
+import { generatedVisualDashboardBaseUrl } from "./generatedVisualHost"
 
 type Dict = Record<string, unknown>
 
@@ -9,6 +11,7 @@ interface GeneratedManifestSummary {
   title: string
   description: string
   previousVersion?: number
+  detached?: boolean
 }
 
 const INIT = "breadboard-generated-visual:init"
@@ -31,19 +34,7 @@ function element<K extends keyof HTMLElementTagNameMap>(
 }
 
 function dashboardBaseUrl(): string {
-  try {
-    const current = new URL(window.location.href)
-    if (/^garden\./i.test(current.hostname)) return current.origin.replace("//garden.", "//")
-    if (
-      /^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(current.hostname) ||
-      current.port === "8081"
-    ) {
-      return `${current.protocol}//${current.hostname}:3000`
-    }
-    return current.origin
-  } catch {
-    return ""
-  }
+  return generatedVisualDashboardBaseUrl(window.location.href, document.referrer, window.location.ancestorOrigins?.[0])
 }
 
 function pageLocation(): { gardenId: string; pageSlug: string } {
@@ -86,6 +77,7 @@ async function mutateVisual(
   status: HTMLElement,
   buttons: HTMLButtonElement[],
 ): Promise<void> {
+  if (manifest.detached) return
   const base = dashboardBaseUrl()
   const { gardenId, pageSlug } = pageLocation()
   if (!base || !gardenId) {
@@ -165,12 +157,18 @@ function hydrate(code: HTMLElement): HTMLElement {
   card.setAttribute("aria-label", `${manifest.title} interactive visualization`)
 
   const frame = element("iframe", "bgv-frame") as HTMLIFrameElement
+  const nativeRuntime =
+    isRecord(definition) && isRecord(definition.nativeRuntime) ? definition.nativeRuntime : null
+  const nativeProtocol = "breadboard:interactive-visualizer:v1"
   const language = currentLanguage()
   frame.title = manifest.title
   frame.sandbox.add("allow-scripts")
   frame.referrerPolicy = "no-referrer"
   frame.loading = "lazy"
-  frame.srcdoc = sandboxDocument(language)
+  frame.srcdoc =
+    nativeRuntime && typeof nativeRuntime.html === "string"
+      ? withInteractiveVisualizerWheelZoom(nativeRuntime.html)
+      : sandboxDocument(language)
   card.appendChild(frame)
 
   const footer = element("footer", "bgv-meta")
@@ -182,8 +180,8 @@ function hydrate(code: HTMLElement): HTMLElement {
   ) as HTMLButtonElement
   regenerate.type = "button"
   const buttons = [regenerate]
-  actions.appendChild(regenerate)
-  if (Number.isInteger(manifest.previousVersion) && Number(manifest.previousVersion) > 0) {
+  if (!manifest.detached) actions.appendChild(regenerate)
+  if (!manifest.detached && Number.isInteger(manifest.previousVersion) && Number(manifest.previousVersion) > 0) {
     const rollback = element(
       "button",
       "bgv-action",
@@ -209,6 +207,23 @@ function hydrate(code: HTMLElement): HTMLElement {
   card.appendChild(footer)
 
   const listener = (event: MessageEvent) => {
+    if (
+      nativeRuntime &&
+      event.source === frame.contentWindow &&
+      isRecord(event.data) &&
+      event.data.protocol === nativeProtocol &&
+      event.data.channel === "standalone"
+    ) {
+      if (
+        (event.data.type === "ready" || event.data.type === "resize") &&
+        typeof event.data.height === "number"
+      ) {
+        frame.style.height = `${Math.max(300, Math.min(4800, event.data.height + 4))}px`
+      }
+      if (event.data.type === "error")
+        status.textContent = manifest.detached ? "The visualization could not start." : "The visualization could not start. Regenerate to repair it."
+      return
+    }
     if (event.source !== frame.contentWindow || !isRecord(event.data) || event.data.type !== EVENT)
       return
     if (event.data.event === "ready") {
@@ -228,7 +243,12 @@ function hydrate(code: HTMLElement): HTMLElement {
   const forwardTheme = (event?: CustomEvent<{ theme?: unknown }>) => {
     const eventTheme = event?.detail?.theme
     const theme = eventTheme === "dark" || eventTheme === "light" ? eventTheme : currentTheme()
-    frame.contentWindow?.postMessage({ type: THEME, theme }, "*")
+    frame.contentWindow?.postMessage(
+      nativeRuntime
+        ? { protocol: nativeProtocol, channel: "standalone", type: "host-theme", theme }
+        : { type: THEME, theme },
+      "*",
+    )
   }
   document.addEventListener("themechange", forwardTheme as EventListener)
   window.addCleanup(() =>
@@ -237,6 +257,19 @@ function hydrate(code: HTMLElement): HTMLElement {
   frame.addEventListener(
     "load",
     () => {
+      if (nativeRuntime) {
+        forwardTheme()
+        frame.contentWindow?.postMessage(
+          {
+            protocol: nativeProtocol,
+            channel: "standalone",
+            type: "host-presentation",
+            presentation: "inline",
+          },
+          "*",
+        )
+        return
+      }
       frame.contentWindow?.postMessage(
         { type: INIT, definition, theme: currentTheme(), language },
         "*",
@@ -244,6 +277,13 @@ function hydrate(code: HTMLElement): HTMLElement {
     },
     { once: true },
   )
+  window.addCleanup(() => {
+    if (nativeRuntime)
+      frame.contentWindow?.postMessage(
+        { protocol: nativeProtocol, channel: "standalone", type: "host-dispose" },
+        "*",
+      )
+  })
   return card
 }
 

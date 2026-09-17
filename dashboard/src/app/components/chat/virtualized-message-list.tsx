@@ -19,9 +19,11 @@
 //     measured for the first time.
 
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   type CSSProperties,
   type ReactNode,
@@ -36,6 +38,19 @@ import type { ChatVirtualBridge } from "@/app/components/use-chat-auto-scroll";
 /** Layout effects are the point here, but this file also renders on the server. */
 const useIsomorphicLayoutEffect =
   typeof document !== "undefined" ? useLayoutEffect : useEffect;
+
+function MessageContent<T>({ item, index, renderItem }: {
+  item: T;
+  index: number;
+  renderItem: (item: T, index: number) => ReactNode;
+}) {
+  return renderItem(item, index);
+}
+
+// Scrolling changes the row's position, not its markdown, tools or attachments.
+// Keep that content across virtualizer updates. A new item or render closure
+// still refreshes it, including edits and state owned by the transcript surface.
+const MemoizedMessageContent = memo(MessageContent) as typeof MessageContent;
 
 export type VirtualizedMessageListProps<T> = {
   /** The rows to draw. Anything a surface hides must be filtered out first. */
@@ -82,24 +97,38 @@ export default function VirtualizedMessageList<T>({
 }: VirtualizedMessageListProps<T>) {
   const count = items.length;
 
-  // The virtualizer holds onto the option callbacks it was constructed with, so
-  // everything it calls per index reads the current render's data through refs.
+  // Deferred DOM work reads the current list. Option callbacks retain snapshots:
+  // setOptions reads the previous list while comparing a retry's replacement.
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const getItemKeyRef = useRef(getItemKey);
-  getItemKeyRef.current = getItemKey;
-  const estimateSizeRef = useRef(estimateSize);
-  estimateSizeRef.current = estimateSize;
+  const estimateItemSize = useCallback(
+    (index: number) => estimateSize(items[index], index),
+    [estimateSize, items],
+  );
+  const previousKeysRef = useRef<readonly (string | number)[]>([]);
+  const itemKeys = useMemo(() => {
+    const keys = items.map(getItemKey);
+    const previous = previousKeysRef.current;
+    if (keys.length === previous.length && keys.every((key, index) => key === previous[index])) {
+      return previous;
+    }
+    previousKeysRef.current = keys;
+    return keys;
+  }, [getItemKey, items]);
+  // TanStack invalidates *all* offsets when getItemKey changes identity. A new
+  // token supplies a new items array, but not new row identities. Preserve the
+  // callback in that case so it does not re-estimate the entire unseen history.
+  // Capture the key array rather than reading a ref: old lazy measurements must
+  // still resolve old keys when a retry removes rows or history is reordered.
+  const itemKey = useCallback((index: number) => itemKeys[index], [itemKeys]);
 
   const releaseTimerRef = useRef<number | null>(null);
 
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) =>
-      estimateSizeRef.current(itemsRef.current[index] as T, index),
-    getItemKey: (index) =>
-      getItemKeyRef.current(itemsRef.current[index] as T, index),
+    estimateSize: estimateItemSize,
+    getItemKey: itemKey,
     overscan,
     gap,
     // Chat reads from the bottom: a row that grows keeps its foot under the
@@ -126,6 +155,14 @@ export default function VirtualizedMessageList<T>({
       elementScroll(offset, options, instance);
     },
   });
+
+  // Keep the visible content in place even while reading upward. Cached rows
+  // can reflow when they remount (markdown, tools, fonts); TanStack's default
+  // skips those corrections during backward scrolling, which drops sections
+  // out from under the reader. A row spanning the viewport changes below its
+  // top, so only rows entirely above it should move the scroll position.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    item.end <= (instance.scrollOffset ?? 0);
 
   // A row is measured from its ref callback, which React runs inside the commit
   // phase. On a list anchored to its end, a first measurement that differs from
@@ -166,7 +203,7 @@ export default function VirtualizedMessageList<T>({
   const measureFirstSize = useCallback(
     (row: HTMLElement) => {
       const index = Number(row.getAttribute("data-index"));
-      if (!Number.isInteger(index) || index < 0) return;
+      if (!Number.isInteger(index) || index < 0 || index >= itemsRef.current.length) return;
       if (virtualizer.itemSizeCache.has(virtualizer.options.getItemKey(index))) {
         return;
       }
@@ -222,6 +259,7 @@ export default function VirtualizedMessageList<T>({
     const corrections: Array<[number, number]> = [];
     for (const row of rows) {
       if (!row.isConnected) {
+        rowObserverRef.current?.unobserve(row);
         rows.delete(row);
         continue;
       }
@@ -464,7 +502,7 @@ export default function VirtualizedMessageList<T>({
               transform: `translateY(${virtualRow.start}px)`,
             }}
           >
-            {renderItem(item, virtualRow.index)}
+            <MemoizedMessageContent item={item} index={virtualRow.index} renderItem={renderItem} />
           </div>
         );
       })}

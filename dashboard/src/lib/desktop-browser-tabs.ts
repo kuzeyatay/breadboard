@@ -14,20 +14,30 @@
  * `target="_blank"` links.
  */
 
+import { beginInteraction } from "./performance/client.ts";
+import type { InteractionHandle } from "./performance/interaction-trace.ts";
+
 export interface DesktopTabView {
+  find?: { matches: number; activeMatchOrdinal: number };
+  groupId?: string;
   id: number;
   /** Optional when connected to an older desktop shell. */
   anchored?: boolean;
   title: string;
   url: string;
   loading: boolean;
+  /** A Learn worker is running in this garden workspace. */
+  learnActive?: boolean;
   browser?: {
     private?: boolean;
     address: string;
+    /** The native document can cover home. Optional for older desktop shells. */
+    pageReady?: boolean;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
     downloadsOpen?: boolean;
+    extensionsOpen?: boolean;
     terminalWidth: number;
     zoomPercent?: number;
     translation?: { status: "original" | "translating" | "translated" | "error"; language: string; translated: number; error?: string };
@@ -42,6 +52,8 @@ export interface DesktopTabView {
 }
 
 export interface DesktopTabsState {
+  groups?: DesktopTabGroup[];
+  savedGroups?: Array<DesktopTabGroup & { tabCount: number }>;
   windowFocused?: boolean;
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
@@ -59,11 +71,29 @@ export interface DesktopBrowserExtension {
   id: string;
   name: string;
   version: string;
+  iconUrl?: string;
+  action?: { title: string; badge: string; menus: Array<{id: string; title: string; checked?: boolean}> };
+}
+
+export const TAB_GROUP_COLORS = {
+  blue: "#85c5ff", purple: "#dca8ff", cyan: "#59dbe5", orange: "#ffb870",
+  yellow: "#f6d45f", pink: "#ffadd6", green: "#87dc93", gray: "#b7c2cd", red: "#ff9baa",
+} as const;
+
+export interface DesktopTabGroup {
+  id: string;
+  name: string;
+  color: keyof typeof TAB_GROUP_COLORS;
+  collapsed: boolean;
 }
 
 export type DesktopTabsCommand =
+  | { type: "navigation-check"; url: string }
+  | { type: "notification-targets"; urls: string[] }
+  | { type: "notification-open"; urls: string[] }
+  | { type: "learn-activity"; gardenId: string; active: boolean }
   | { type: "voice-overlay"; open: boolean }
-  | { type: "voice-open" }
+  | { type: "voice-open"; conversationKey?: string }
   | { type: "browser-notifications-enabled"; enabled: boolean }
   | { type: "browser-notification-permission"; origin: string; permission: "default" | "granted" | "denied" }
   | { type: "browser-translation-language"; language: string }
@@ -77,7 +107,15 @@ export type DesktopTabsCommand =
   | { type: "activate"; id: number }
   | { type: "close"; id?: number }
   | { type: "anchor"; id: number }
-  | { type: "move"; id: number; index: number }
+  | { type: "tab-menu"; id: number; x: number; y: number }
+  | { type: "move"; id: number; index: number; groupId?: string | null }
+  | { type: "group-move"; groupId: string; index: number }
+  | { type: "group-tabs"; id: number; targetId: number }
+  | { type: "group-update"; groupId: string; name?: string; color?: DesktopTabGroup["color"]; collapsed?: boolean }
+  | { type: "group-action"; groupId: string; action: "new-tab" | "ungroup" | "delete" | "copy-links" | "save-close" | "restore" | "delete-saved" | "new-window" }
+  | { type: "group-menu"; groupId?: string; x: number; y: number }
+  | { type: "group-menu-resize"; height: number }
+  | { type: "group-menu-close" }
   | { type: "reopen" }
   | { type: "back" }
   | { type: "forward" }
@@ -93,9 +131,14 @@ export type DesktopTabsCommand =
   | { type: "browser-downloads-resize"; height: number }
   | { type: "browser-downloads-close" }
   | { type: "browser-downloads-show-all" }
+  | { type: "browser-extensions-popover"; x: number; y: number }
+  | { type: "browser-extensions-resize"; height: number }
+  | { type: "browser-extensions-close" }
+  | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
+  | { type: "browser-extension-action"; id: string; menuId?: string }
   | { type: "browser-extension-reload"; id: string }
   | { type: "browser-extension-remove"; id: string };
 
@@ -106,6 +149,9 @@ export interface DesktopTabsBridge {
 }
 
 interface DesktopNavigationBridge {
+  getBrowserSignIns?: () => Promise<DesktopBrowserSignInsState>;
+  openBrowserSignIn?: (url?: string) => Promise<boolean>;
+  resetBrowserSignIns?: () => Promise<boolean>;
   getBrowserNavigation?: () => Promise<boolean>;
   setBrowserNavigation?: (enabled: boolean) => Promise<boolean>;
   getBrowserBookmarks?: (ownerKey: string) => Promise<DesktopBrowserBookmark[] | null>;
@@ -120,6 +166,51 @@ interface DesktopNavigationBridge {
   browserHistoryCommand?: (command: DesktopBrowserHistoryCommand) => Promise<boolean>;
   onBrowserHistoryChanged?: (listener: () => void) => () => void;
   setBrowserRecentSearches?: (ownerKey: string, searches: string[]) => Promise<boolean>;
+  chatgptWebTab?: (request: { foreground: boolean; reset?: boolean }) => Promise<DesktopChatgptWebTabResult>;
+}
+
+/** The shell answering a request for its ChatGPT tab: where CDP can find it, or why not. */
+export type DesktopChatgptWebTabResult =
+  | { ok: true; cdpPort: number; targetId: string }
+  | { ok: false; error: string };
+
+/**
+ * Ask the shell for the built-in browser tab it lends to ChatMock's
+ * "OpenAI (web)" provider. Null where there is no shell, or an older one.
+ * `reset` asks for a replacement page, which is how ChatMock recovers from
+ * one that has stopped answering DevTools.
+ */
+export function requestChatgptWebTabInDesktop(
+  foreground: boolean,
+  reset = false,
+): Promise<DesktopChatgptWebTabResult> | null {
+  const desktop = bridge();
+  if (typeof desktop?.chatgptWebTab !== "function") return null;
+  return desktop.chatgptWebTab({ foreground, reset }).catch((error: unknown) => ({
+    ok: false as const,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+}
+
+/** Whether this page can relay ChatGPT tab requests at all. */
+export function chatgptWebTabRelayAvailable(): boolean {
+  return typeof bridge()?.chatgptWebTab === "function";
+}
+
+export interface DesktopBrowserSignInsState {
+  sites: string[];
+  openPages: number;
+}
+
+/** The persistent session used by Breadboard's browser and desktop browser agents. */
+export function browserSignInsControl() {
+  const desktop = bridge();
+  if (!desktop?.getBrowserSignIns || !desktop.openBrowserSignIn || !desktop.resetBrowserSignIns) return null;
+  return {
+    read: () => desktop.getBrowserSignIns!(),
+    open: (url?: string) => desktop.openBrowserSignIn!(url),
+    reset: () => desktop.resetBrowserSignIns!(),
+  };
 }
 
 export interface DesktopBrowserBookmark {
@@ -199,7 +290,41 @@ export function openInDesktopTab(
 export function sendDesktopTabsCommand(command: DesktopTabsCommand): Promise<boolean> {
   const desktop = desktopTabsBridge();
   if (!desktop) return Promise.resolve(false);
-  return desktop.tabs(command).then((ok) => ok === true, () => false);
+  // `tab-input-to-visible` is measured from the click or key press through to
+  // the state update that actually puts this tab in front, not to the shell
+  // acknowledging the command.
+  const interaction =
+    command.type === "activate" ? beginTabActivation(command.id) : null;
+  return desktop.tabs(command).then(
+    (ok) => {
+      if (interaction && ok !== true) endTabActivation(command.type === "activate" ? command.id : -1, "failed");
+      return ok === true;
+    },
+    () => {
+      if (interaction) endTabActivation(command.type === "activate" ? command.id : -1, "failed");
+      return false;
+    },
+  );
+}
+
+/** Activations still waiting for the state update that shows their tab. */
+const pendingActivations = new Map<number, InteractionHandle>();
+
+function beginTabActivation(id: number): InteractionHandle {
+  // A second click on the same tab replaces the first: only the latest
+  // activation is the one the person is waiting on.
+  pendingActivations.get(id)?.end("cancelled");
+  const interaction = beginInteraction("tab-input-to-visible");
+  interaction.mark("command-sent");
+  pendingActivations.set(id, interaction);
+  return interaction;
+}
+
+function endTabActivation(id: number, outcome: "usable" | "failed"): void {
+  const interaction = pendingActivations.get(id);
+  if (!interaction) return;
+  pendingActivations.delete(id);
+  interaction.end(outcome);
 }
 
 /**
@@ -228,16 +353,44 @@ export function openBrowserAgentRunInDesktop(
 
 type Listener = () => void;
 
-let snapshot: DesktopTabsState | null = null;
+type TabsSnapshotWindow = Window & {
+  __breadboardTabsSnapshot?: { bridge: DesktopTabsBridge; state: DesktopTabsState };
+};
+
+function cachedTabsSnapshot(): DesktopTabsState | null {
+  if (typeof window === "undefined") return null;
+  const cached = (window as TabsSnapshotWindow).__breadboardTabsSnapshot;
+  return cached?.bridge === desktopTabsBridge() ? cached?.state ?? null : null;
+}
+
+// Fast Refresh can replace this module while the window and preload stay alive.
+// Keep the last shell snapshot in this document so that replacement never
+// empties the caption strip while its asynchronous state read is pending.
+// Binding it to the bridge prevents reuse by another window or shell session.
+let snapshot: DesktopTabsState | null = cachedTabsSnapshot();
 let detach: (() => void) | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempts = 0;
 let connectionGeneration = 0;
 let pushedStateRevision = 0;
+let stateReadRevision = 0;
 const listeners = new Set<Listener>();
+const pendingReads = new Set<() => void>();
 
-function publish(next: DesktopTabsState | null): void {
+function publish(next: DesktopTabsState): void {
   snapshot = next;
+  // The tab the person asked for is now the active one in the state every
+  // strip renders from, and the shell has attached its view.
+  if (pendingActivations.size > 0) {
+    for (const id of [...pendingActivations.keys()]) {
+      if (id === next.activeId) endTabActivation(id, "usable");
+      else if (!next.tabs.some((tab) => tab.id === id)) endTabActivation(id, "failed");
+    }
+  }
+  const desktop = desktopTabsBridge();
+  if (desktop) (window as TabsSnapshotWindow).__breadboardTabsSnapshot = { bridge: desktop, state: next };
+  retryAttempts = 0;
+  clearBridgeRetry();
   for (const listener of listeners) listener();
 }
 
@@ -248,12 +401,37 @@ function clearBridgeRetry(): void {
 }
 
 function scheduleBridgeRetry(): void {
-  if (retryTimer || listeners.size === 0 || retryAttempts >= 28) return;
-  retryAttempts += 1;
+  if (retryTimer || listeners.size === 0) return;
+  // Stop probing ordinary browsers, but let an existing desktop shell recover
+  // from an outage longer than the initial burst of retries.
+  if (retryAttempts >= 28 && !bridge()) return;
+  const delay = retryAttempts >= 28 ? 5_000 : 180;
+  retryAttempts = Math.min(retryAttempts + 1, 28);
   retryTimer = setTimeout(() => {
     retryTimer = null;
-    connectDesktopTabsBridge();
-  }, 180);
+    // An existing push subscription does not mean the failed read recovered.
+    if (detach) void refreshDesktopTabsState();
+    else connectDesktopTabsBridge();
+  }, delay);
+}
+
+function readTabsState(desktop: DesktopTabsBridge): Promise<DesktopTabsState> {
+  return new Promise((resolve, reject) => {
+    const cancel = () => finish(new Error("Tab state read interrupted"));
+    const timer = setTimeout(() => finish(new Error("Tab state read timed out")), 2_000);
+    const finish = (error: unknown, state?: DesktopTabsState) => {
+      clearTimeout(timer);
+      pendingReads.delete(cancel);
+      if (state === undefined) reject(error);
+      else resolve(state);
+    };
+    pendingReads.add(cancel);
+    try {
+      desktop.getTabsState().then(state => finish(null, state), error => finish(error));
+    } catch (error) {
+      finish(error);
+    }
+  });
 }
 
 function connectDesktopTabsBridge(): void {
@@ -265,9 +443,7 @@ function connectDesktopTabsBridge(): void {
   }
 
   clearBridgeRetry();
-  retryAttempts = 0;
   const generation = ++connectionGeneration;
-  const revisionBeforeRead = pushedStateRevision;
   try {
     detach = desktop.onTabsState((state) => {
       if (generation !== connectionGeneration) return;
@@ -280,25 +456,7 @@ function connectDesktopTabsBridge(): void {
     return;
   }
 
-  void desktop.getTabsState().then(
-    (state) => {
-      if (generation !== connectionGeneration) return;
-      // Do not let a slower initial read overwrite a newer pushed update.
-      if (pushedStateRevision === revisionBeforeRead) publish(state);
-    },
-    () => {
-      if (generation !== connectionGeneration) return;
-      const unsubscribe = detach;
-      detach = null;
-      connectionGeneration += 1;
-      try {
-        unsubscribe?.();
-      } catch {
-        // A bridge disappearing during a renderer reload is expected.
-      }
-      scheduleBridgeRetry();
-    },
-  );
+  void refreshDesktopTabsState();
 }
 
 /**
@@ -317,6 +475,7 @@ export function subscribeDesktopTabs(listener: Listener): () => void {
       const unsubscribe = detach;
       detach = null;
       connectionGeneration += 1;
+      for (const cancel of pendingReads) cancel();
       try {
         unsubscribe?.();
       } catch {
@@ -342,11 +501,19 @@ export async function refreshDesktopTabsState(): Promise<boolean> {
     connectDesktopTabsBridge();
     return false;
   }
+  const generation = connectionGeneration;
+  const revisionBeforeRead = pushedStateRevision;
+  const readRevision = ++stateReadRevision;
   try {
-    publish(await desktop.getTabsState());
+    const state = await readTabsState(desktop);
+    // Refreshes race tab selection, close, and renderer reconnection just like
+    // the initial read. An obsolete reply must never resurrect their old strip.
+    if (generation === connectionGeneration && readRevision === stateReadRevision &&
+        pushedStateRevision === revisionBeforeRead) publish(state);
     return true;
   } catch {
-    scheduleBridgeRetry();
+    if (generation === connectionGeneration && readRevision === stateReadRevision &&
+        pushedStateRevision === revisionBeforeRead) scheduleBridgeRetry();
     return false;
   }
 }
@@ -438,6 +605,7 @@ export type DesktopTabKind =
   | "gardens"
   | "lessons"
   | "workspace"
+  | "pdf"
   | "timer"
   | "browser"
   | "new"
@@ -463,6 +631,7 @@ const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   artifacts: { label: "Artifacts", kind: "page" },
   attachments: { label: "Attachments", kind: "page" },
   "genoffice-docs": { label: "Documents", kind: "page" },
+  pdf: { label: "PDF", kind: "pdf" },
 };
 
 function humanize(segment: string): string {
@@ -490,11 +659,17 @@ export function describeTabUrl(url: string): { label: string; kind: DesktopTabKi
   } catch {
     return { label: "New tab", kind: "new" };
   }
-  const [first = "", second] = segments;
+  const [first = "", second, third, fourth] = segments;
+  if (second && third === "pdf" && (first === "artifacts" || first === "attachments")) {
+    return { label: "PDF", kind: "pdf" };
+  }
   if (first === "garden" && second) {
     return { label: humanize(second), kind: "lessons" };
   }
   if (first === "gardens" && second) {
+    if (third === "pdf" && fourth) {
+      return { label: humanize(fourth), kind: "pdf" };
+    }
     return { label: humanize(second), kind: "workspace" };
   }
   const known = ROUTE_LABELS[first];

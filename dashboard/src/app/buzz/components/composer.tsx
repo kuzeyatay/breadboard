@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
+import { useTheme } from "@/app/buzz/lib/theme";
+import MetalSendButton from "@/app/components/effects/metal-send-button";
 import { Button } from "@/app/buzz/ui/button";
 import { EmojiPicker } from "./emoji-picker";
 import {
@@ -49,6 +51,7 @@ export function Composer({
   autoFocus?: boolean;
   onSend: (body: string) => void;
 }) {
+  const { isDark } = useTheme();
   const [value, setValue] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState(0);
@@ -388,6 +391,13 @@ export function Composer({
               </Tooltip>
             </div>
 
+            <MetalSendButton
+              variant="circle"
+              disabled={disabled || value.trim() === ""}
+              // Buzz keeps its own light/dark preference, independent of the
+              // app theme the effect would otherwise resolve.
+              theme={isDark ? "dark" : "light"}
+            >
             <Button
               aria-label="Send message"
               className="rounded-full"
@@ -399,6 +409,7 @@ export function Composer({
             >
               <ArrowUp aria-hidden />
             </Button>
+            </MetalSendButton>
           </div>
         </div>
       </div>

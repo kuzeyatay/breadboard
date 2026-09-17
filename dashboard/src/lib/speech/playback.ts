@@ -45,28 +45,66 @@ function finishSpeechPlayback(error?: Error): void {
 
 /** Start cloud audio directly from the remote track, without waiting for a blob. */
 export async function playSubscriptionText(text: string, onFinished: (error?: Error) => void, signal?: AbortSignal): Promise<boolean> {
-  if (!await subscriptionSelected(signal)) return false;
   stopSpeechPlayback();
-  const release = holdForegroundAudio();
   const operation = new AbortController();
   const joined = signal ? AbortSignal.any([signal, operation.signal]) : operation.signal;
-  const voice = await connectSubscriptionVoice({ signal: joined }).catch(error => { release(); throw error; });
+  let voice: Awaited<ReturnType<typeof connectSubscriptionVoice>> | undefined;
+  let release: (() => void) | undefined;
   let finished = false;
-  const finish = (error?: Error) => {
+  const finish = (error?: Error, notify = true) => {
     if (finished) return;
     finished = true;
-    release();
+    signal?.removeEventListener('abort', stop);
+    release?.();
     if (activeSubscriptionStop === stop) activeSubscriptionStop = null;
-    void voice.close();
-    onFinished(error);
+    if (voice) void (voice.release?.(!error && !joined.aborted) ?? voice.close());
+    if (notify) onFinished(error);
   };
-  const stop = () => { operation.abort(); finish(); };
+  const stop = () => {
+    if (finished) return;
+    try { voice?.stopSpeaking?.(); }
+    finally { operation.abort(); finish(); }
+  };
+  // Own cancellation before the first await. A superseded connection must
+  // never become audible later or take ownership from its replacement.
   activeSubscriptionStop = stop;
-  void voice.speak(text).then(() => finish(), error => finish(joined.aborted ? undefined : error instanceof Error ? error : new Error("Subscription speech failed.")));
+  signal?.addEventListener('abort', stop, { once: true });
+  if (joined.aborted) { stop(); return true; }
+  try {
+    const selected = await subscriptionSelected(joined);
+    if (finished || joined.aborted) return true;
+    if (!selected) { finish(undefined, false); return false; }
+    release = holdForegroundAudio();
+    voice = await connectSubscriptionVoice({ signal: joined });
+    if (finished || joined.aborted) { await voice.close(); return true; }
+  } catch (error) {
+    if (finished || joined.aborted) return true;
+    finish(undefined, false);
+    throw error;
+  }
+  void (async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await voice!.speak(text); return; }
+      catch (error) {
+        // Retry only when nothing heard would be repeated: a silent start, or a
+        // live reading that strayed and says where to resume. Never replay
+        // completed passages or an ambiguous POST.
+        const meta = error && typeof error === 'object' ? error as { resumeAt?: unknown; safeToRetry?: unknown } : {};
+        const resumeAt = typeof meta.resumeAt === 'number' ? meta.resumeAt : undefined;
+        const silentStart = attempt === 0 && meta.safeToRetry === true;
+        if (attempt > 1 || joined.aborted || (resumeAt === undefined && !silentStart)) throw error;
+        await voice!.close();
+        joined.throwIfAborted();
+        if (resumeAt !== undefined) { text = text.slice(resumeAt); if (!text.trim()) return; }
+        voice = await connectSubscriptionVoice({ signal: joined });
+        if (joined.aborted) { await voice.close(); joined.throwIfAborted(); }
+      }
+    }
+  })().then(() => finish(), error => finish(joined.aborted ? undefined : error instanceof Error ? error : new Error("Subscription speech failed.")));
   return true;
 }
 
-export async function playSpeechBlob(blob: Blob, onFinished: (error?: Error) => void): Promise<void> {
+export async function playSpeechBlob(blob: Blob, onFinished: (error?: Error) => void, onProgress?: (progress: number) => void): Promise<void> {
   stopSpeechPlayback();
   releaseClapPlayback = holdForegroundAudio();
   const url = URL.createObjectURL(blob);
@@ -78,10 +116,21 @@ export async function playSpeechBlob(blob: Blob, onFinished: (error?: Error) => 
     if (activeAudio !== audio) return;
     finishSpeechPlayback(error);
   };
-  audio.addEventListener("ended", () => finish(), { once: true });
+  const reportProgress = () => {
+    if (activeAudio === audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+      onProgress?.(Math.min(1, audio.currentTime / audio.duration));
+    }
+  };
+  audio.addEventListener("timeupdate", reportProgress);
+  audio.addEventListener("durationchange", reportProgress);
+  audio.addEventListener("ended", () => {
+    if (activeAudio === audio) onProgress?.(1);
+    finish();
+  }, { once: true });
   audio.addEventListener("error", () => finish(new Error('The selected voice audio could not play.')), { once: true });
   try {
     await audio.play();
+    reportProgress();
   } catch (error) {
     finish(error instanceof Error ? error : new Error('Voice playback failed.'));
     throw error;

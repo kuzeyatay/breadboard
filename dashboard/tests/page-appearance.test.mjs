@@ -73,14 +73,14 @@ test("the app theme always paints, even if an old page override is still on the 
   globalThis.window = { localStorage: storage };
   globalThis.document = { documentElement: { dataset: { theme: "light", pageTheme: "dark" } }, visibilityState: "hidden" };
   try {
-    rememberEffectiveAppTheme("light", { animate: false });
+    rememberEffectiveAppTheme("light");
     assert.equal(document.documentElement.dataset.theme, "light");
     assert.equal(storage.getItem("breadboard:theme"), "light");
-    rememberEffectiveAppTheme("dark", { animate: false, persist: false });
+    rememberEffectiveAppTheme("dark", { persist: false });
     assert.equal(document.documentElement.dataset.theme, "dark");
     assert.equal(storage.getItem("breadboard:theme"), "light");
     delete document.documentElement.dataset.pageTheme;
-    rememberEffectiveAppTheme("light", { animate: false, persist: false });
+    rememberEffectiveAppTheme("light", { persist: false });
     assert.equal(document.documentElement.dataset.theme, "light");
   } finally {
     globalThis.window = oldWindow;

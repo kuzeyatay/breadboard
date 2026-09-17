@@ -176,6 +176,7 @@ test("Quartz keeps mutation-call parity while submitting exact user-global autho
       concurrency: 3,
       timeoutMs: 12_000,
       buildEnvironment: {},
+      scope: [],
     });
     assert.deepEqual(state.outputs, [
       {
@@ -183,6 +184,22 @@ test("Quartz keeps mutation-call parity while submitting exact user-global autho
         jobId: state.job.jobId,
         outputKind: "result",
       },
+    ]);
+
+    // A scoped publication rebuilds those roots plus the library landing pages.
+    const scopedState = freshState();
+    await quartz.publishQuartzAfterMutation("update note in math-1", {
+      userId: 91,
+      requireSuccess: true,
+      topologyImpact: "none",
+      scope: ["math-1"],
+    });
+    assert.equal(scopedState.submissions.length, 1);
+    assert.deepEqual(scopedState.submissions[0].submission.requestPayload.scope, [
+      "math-1",
+      "private-library",
+      "public-library",
+      "organization-library",
     ]);
   } finally {
     if (previous.autoPublish === undefined) delete process.env.QUARTZ_AUTO_PUBLISH;

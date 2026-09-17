@@ -98,6 +98,7 @@ before(async () => {
       resizeObservers.push(this);
     }
     observe() {}
+    unobserve() {}
     disconnect() {}
     trigger() {
       this.callback([], this);
@@ -201,6 +202,38 @@ async function scrollTo(scroller, state, top) {
     await new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
   });
 }
+
+test("long-chat rail measurements query mounted rows once rather than searching for every message", { skip }, async () => {
+  const React = require("react");
+  const { act } = React;
+  const { createRoot } = require("react-dom/client");
+  const state = { scrollTop: 0 };
+  const scroller = makeScroller(state);
+  const list = scroller.querySelector("[data-chat-virtual-list]");
+  let queries = 0;
+  const querySelector = list.querySelector.bind(list);
+  const querySelectorAll = list.querySelectorAll.bind(list);
+  list.querySelector = (...args) => { queries += 1; return querySelector(...args); };
+  list.querySelectorAll = (...args) => { queries += 1; return querySelectorAll(...args); };
+  const root = createRoot(document.getElementById("root"));
+  try {
+    await act(async () => {
+      root.render(React.createElement(R, {
+        items: Array.from({ length: 1_000 }, (_, index) => ({ rowIndex: index * 2, label: `Question ${index}` })),
+        scrollRef: { current: scroller },
+        bridge: { ...BRIDGE, getRowStart: index => index * 100 },
+        surface: "rail-performance",
+      }));
+    });
+    await act(async () => { await new Promise(resolve => window.requestAnimationFrame(resolve)); });
+    queries = 0;
+    await scrollTo(scroller, state, 3_200);
+    assert.ok(queries < 20, `one scroll performed ${queries} DOM queries for 1,000 questions`);
+  } finally {
+    await act(async () => { root.unmount(); });
+    scroller.remove();
+  }
+});
 
 test("the highlight follows the reader through a very long answer", { skip }, async () => {
   const React = require("react");

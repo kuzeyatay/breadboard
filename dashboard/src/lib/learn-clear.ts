@@ -10,6 +10,7 @@
 import type { Dirent } from "node:fs";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { isGardenUserPath } from "./garden-user-content.ts";
 
 export interface LearnFilesystemClearResult {
   /** Garden-relative files or directory roots that were removed. */
@@ -213,6 +214,7 @@ function frontmatterArray(raw: string, key: string): string[] {
 }
 
 function generatedByLearn(frontmatterRaw: string): boolean {
+  if (frontmatterScalar(frontmatterRaw, "garden_copy") === "true") return false;
   const generatedBy = frontmatterScalar(frontmatterRaw, "generatedBy") ??
     frontmatterScalar(frontmatterRaw, "generated_by");
   if (generatedBy && /^(?:learn|learn_button|breadboard_learn)$/i.test(generatedBy.replace(/[ -]+/g, "_"))) {
@@ -317,8 +319,9 @@ function learningTreeDirectories(gardenDir: string): string[] {
   }
 }
 
-function discoverRemovedPages(gardenDir: string): { ownership: RemovedPageOwnership; learningRoots: string[] } {
+function discoverRemovedPages(gardenDir: string): { ownership: RemovedPageOwnership; learningRoots: string[]; preservedVisualIds: Set<string> } {
   const ownership = newRemovedPageOwnership();
+  const preservedVisualIds = new Set<string>();
   const learningRoots = learningTreeDirectories(gardenDir);
   for (const root of learningRoots) walkMarkdown(path.join(gardenDir, root), (file) => recordRemovedMarkdown(gardenDir, file, ownership));
 
@@ -342,14 +345,18 @@ function discoverRemovedPages(gardenDir: string): { ownership: RemovedPageOwners
       try {
         const markdown = fs.readFileSync(absolute, "utf8");
         const raw = frontmatter(markdown);
-        if (raw && generatedByLearn(raw)) recordRemovedMarkdown(gardenDir, absolute, ownership);
+        // Location defines ownership, even for old copies and moved lessons
+        // whose frontmatter still describes the original Learn generation.
+        const userOwned = isGardenUserPath(gardenRelativePath(gardenDir, absolute));
+        if (raw && generatedByLearn(raw) && !userOwned) recordRemovedMarkdown(gardenDir, absolute, ownership);
+        else for (const id of visualIdsFromMarkdown(markdown, raw ?? "")) preservedVisualIds.add(id);
       } catch {
         // An unreadable ordinary file is not safe to classify or remove.
       }
     }
   };
   walkOutside(gardenDir, 0);
-  return { ownership, learningRoots };
+  return { ownership, learningRoots, preservedVisualIds };
 }
 
 function normalizeOwnerPath(value: string): string {
@@ -641,13 +648,13 @@ export function clearGeneratedLearnState(gardenDir: string): LearnFilesystemClea
 
   const removedPaths = new Set<string>();
   const modifiedPaths = new Set<string>();
-  const { ownership, learningRoots } = discoverRemovedPages(root);
+  const { ownership, learningRoots, preservedVisualIds } = discoverRemovedPages(root);
 
   const indexPath = pathInsideGarden(root, ".breadboard/visual-index.json");
   const visualIndex = readJson(indexPath);
   const evidence: VisualOwnershipEvidence = {
     learning: new Set(ownership.visualIds),
-    nonLearning: new Set(),
+    nonLearning: preservedVisualIds,
   };
   collectVisualIndexEvidence(visualIndex, root, ownership, evidence);
   const visualsDir = pathInsideGarden(root, ".breadboard/visuals");

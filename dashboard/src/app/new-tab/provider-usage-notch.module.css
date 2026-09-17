@@ -1,0 +1,165 @@
+/* Codenotch's measured silhouette and palette. See CODENOTCH-LICENSE.txt. */
+/* Cards are portaled, so each surface owns the same theme tokens. */
+.dock, .card {
+  --notch-surface: #000;
+  --notch-ink: #fff;
+  --notch-muted: #909090;
+  --notch-status: #a3a3a3;
+  --notch-control: #111;
+  --notch-control-ink: #bcbcbc;
+  --notch-control-border: #404040;
+  --notch-track: #303030;
+  --notch-loading: #b8b8b8;
+  color-scheme: dark;
+}
+
+:global(html[data-theme="dark"]) .dock,
+:global(html[data-theme="dark"]) .card {
+  --notch-surface: #fff;
+  --notch-ink: #171717;
+  --notch-muted: #626262;
+  --notch-status: #626262;
+  --notch-control: #f3f3f3;
+  --notch-control-ink: #404040;
+  --notch-control-border: #d5d5d5;
+  --notch-track: #e4e4e4;
+  --notch-loading: #b8b8b8;
+  color-scheme: light;
+}
+
+.dock {
+  position: absolute;
+  z-index: 12;
+  right: 0;
+  top: clamp(170px, 36%, 360px);
+  width: 60px;
+  transform: translateY(-50%);
+  color: var(--notch-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 22px 0 18px;
+  border-radius: 24px 0 0 24px;
+  background: var(--notch-surface);
+}
+
+/* Inverse corners grow into the edge, just like the reference frame. */
+.body::before, .body::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  pointer-events: none;
+}
+.body::before { bottom: 100%; background: radial-gradient(circle at 0 0, transparent 31.5px, var(--notch-surface) 32px); }
+.body::after { top: 100%; background: radial-gradient(circle at 0 100%, transparent 31.5px, var(--notch-surface) 32px); }
+
+.provider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  width: 50px;
+  padding: 0;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  color: var(--notch-ink);
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.provider:focus-visible { outline: 2px solid var(--notch-ink); outline-offset: 5px; }
+.anchor { display: block; }
+.ring { position: relative; display: grid; place-items: center; width: 36px; height: 36px; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+.ringTrack, .refreshArc { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ringProgress { stroke: var(--usage-color); transition: stroke-dashoffset 280ms cubic-bezier(0.23, 1, 0.32, 1), stroke 180ms ease, opacity 180ms ease; }
+.glyph { width: 16px; height: 16px; flex-shrink: 0; }
+.refreshArc { color: var(--notch-loading); opacity: 0.65; animation: spin 1s linear infinite; }
+.staleDot { position: absolute; right: 0; top: 0; width: 6px; height: 6px; border-radius: 50%; background: #f2b85b; box-shadow: 0 0 0 2px var(--notch-surface); }
+.percent { position: relative; display: block; min-width: 4ch; height: 18px; overflow: hidden; font-size: 14px; font-weight: 400; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
+.numberSizer { visibility: hidden; }
+.number { position: absolute; inset: 0; }
+.provider:active .ring { transform: scale(0.95); }
+
+.card {
+  z-index: 80;
+  width: min(240px, calc(100vw - 84px));
+  max-height: var(--radix-popover-content-available-height);
+  padding: 12px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 20px;
+  background: var(--notch-surface);
+  color: var(--notch-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 10px;
+  line-height: 1.3;
+  box-shadow: 0 12px 22px rgb(0 0 0 / 38%), 0 3px 6px rgb(0 0 0 / 18%);
+  transform-origin: var(--radix-popover-content-transform-origin);
+  outline: none;
+}
+.cardHeader { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.cardHeader .glyph { width: 18px; height: 18px; }
+.cardHeader h2 { flex: 1; margin: 0; color: var(--notch-ink); font: inherit; font-size: 13px; font-weight: 450; letter-spacing: -0.3px; }
+.refresh { display: grid; place-items: center; width: 24px; height: 24px; margin: -3px -3px -3px 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--notch-muted); cursor: pointer; transition: color 160ms ease, transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+.refresh:disabled { color: var(--notch-loading); cursor: progress; }
+.refresh:active { transform: scale(0.94); }
+.refresh:focus-visible, .retry:focus-visible { outline: 2px solid var(--notch-ink); outline-offset: 2px; }
+.spinning { animation: spin 1s linear infinite; }
+.windows { display: flex; flex-direction: column; gap: 9px; max-height: min(320px, 50vh); overflow: auto; scrollbar-width: thin; }
+.windowHeading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.windowHeading > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.windowHeading > span:last-child { flex-shrink: 0; color: var(--notch-muted); text-align: right; }
+.bar { height: 5px; overflow: hidden; border-radius: 8px; background: var(--notch-track); }
+.bar > span { display: block; width: 100%; height: 100%; border-radius: inherit; transform-origin: left; transition: transform 280ms cubic-bezier(0.23, 1, 0.32, 1), background-color 180ms ease; }
+.remaining { margin: 6px 0 0; font-size: 10px; }
+.status { margin: 8px 0 0; color: var(--notch-status); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.tail { fill: var(--notch-surface); }
+.retry { margin-top: 10px; padding: 5px 9px; border: 1px solid var(--notch-control-border); border-radius: 7px; background: var(--notch-control); color: var(--notch-ink); font: inherit; cursor: pointer; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (hover: hover) and (pointer: fine) {
+  .provider:hover .ring { transform: scale(1.055); }
+  .provider:active .ring { transform: scale(0.95); }
+  .refresh:not(:disabled):hover { color: var(--notch-ink); }
+}
+@media (max-width: 700px), (max-height: 650px) {
+  .dock { width: 52px; }
+  .body { gap: 18px; padding: 18px 0 16px; border-radius: 22px 0 0 22px; }
+  .body::before, .body::after { width: 28px; height: 28px; }
+  .body::before { background: radial-gradient(circle at 0 0, transparent 27.5px, var(--notch-surface) 28px); }
+  .body::after { background: radial-gradient(circle at 0 100%, transparent 27.5px, var(--notch-surface) 28px); }
+  .provider { width: 44px; gap: 6px; }
+  .ring { width: 32px; height: 32px; }
+  .glyph { width: 14px; height: 14px; }
+  .percent { font-size: 13px; }
+}
+@media (max-height: 430px) {
+  .dock { top: 50%; }
+  .body { gap: 8px; padding-block: 10px; }
+  .ring { width: 28px; height: 28px; }
+  .provider { gap: 2px; }
+  .percent { height: 16px; line-height: 16px; }
+}
+@media (pointer: coarse) {
+  .refresh { width: 32px; height: 32px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring, .ringProgress, .bar > span, .refresh { transition: opacity 120ms ease; }
+  .provider:hover .ring, .provider:active .ring, .refresh:active { transform: none; }
+  .refreshArc, .spinning { animation: none; }
+}
+@media (prefers-contrast: more) {
+  .card { outline: 1px solid var(--notch-muted); }
+  .status, .windowHeading > span:last-child { color: var(--notch-ink); }
+}

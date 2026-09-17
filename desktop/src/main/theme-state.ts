@@ -6,7 +6,7 @@ import type { BreadboardWindowTheme } from "./window-options";
 
 export const WINDOW_THEME_STATE_FILE = "window-theme.json";
 
-interface WindowThemeState {
+export interface WindowThemeState {
   /** The theme the dashboard last painted. */
   theme: BreadboardWindowTheme;
   /** How the dashboard was choosing it at the time. */
@@ -36,12 +36,15 @@ export function isWindowThemeSchedule(
     mode?: unknown;
     sunriseMinutes?: unknown;
     sunsetMinutes?: unknown;
+    overrideUntil?: unknown;
   };
   if (candidate.mode === "manual") return true;
   return (
     candidate.mode === "sun" &&
     isMinuteOfDay(candidate.sunriseMinutes) &&
-    isMinuteOfDay(candidate.sunsetMinutes)
+    isMinuteOfDay(candidate.sunsetMinutes) &&
+    (candidate.overrideUntil === undefined ||
+      (typeof candidate.overrideUntil === "number" && Number.isFinite(candidate.overrideUntil) && candidate.overrideUntil > 0))
   );
 }
 
@@ -68,6 +71,7 @@ export function themeForWindowSchedule(
   now: Date,
 ): BreadboardWindowTheme | null {
   if (schedule.mode !== "sun") return null;
+  if (schedule.overrideUntil && now.getTime() < schedule.overrideUntil) return null;
   const minute = now.getHours() * 60 + now.getMinutes();
   const { sunriseMinutes, sunsetMinutes } = schedule;
   const daylight =
@@ -90,8 +94,13 @@ export function readLastWindowTheme(
   configDir: string,
   now: Date = new Date(),
 ): BreadboardWindowTheme {
+  return readLaunchThemeState(configDir, now).theme;
+}
+
+/** Restore the preference before any renderer can write its initial defaults. */
+export function readLaunchThemeState(configDir: string, now: Date = new Date()): WindowThemeState {
   const state = readWindowThemeState(configDir);
-  return themeForWindowSchedule(state.schedule, now) ?? state.theme;
+  return { ...state, theme: themeForWindowSchedule(state.schedule, now) ?? state.theme };
 }
 
 /**

@@ -376,7 +376,7 @@ test("the response menu saves the spoken reading as a keepable .mp3", () => {
   assert.match(actions, /breadboard-dictation-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}\.mp3/);
   // The reading is the same text the speaker button plays, not the raw
   // Markdown: fences and link syntax are not words anybody wants read out.
-  assert.match(actions, /responseTextForSpeech\(content\)/);
+  assert.match(actions, /await responseTextForSpeech\(content, \{ signal: controller.signal \}\)/);
   // Synthesis of a long answer takes as long as saying it, so the wait is
   // visible in the menu and a second press cancels it.
   assert.match(actions, /Preparing dictation…/);
@@ -542,7 +542,7 @@ test("the speech panel leads with the one thing left to do", () => {
 
   assert.match(speechSettings, /nextSpeechStep\(\{/);
   // Choosing a voice or previewing must not fail on the master switch.
-  assert.match(speechSettings, /await updateSettings\(draft\?\.speechProvider === "chatgpt"\s*\? \{ enabled: true \} : \{ profileId: target, enabled: true \}\)/);
+  assert.match(speechSettings, /await updateSettings\(draft\?\.speechProvider !== "local"\s*\? \{ enabled: true \} : \{ profileId: target, enabled: true \}\)/);
   // Preferences save on change; there is no submit step to forget.
   assert.doesNotMatch(speechSettings, /Save dictation/);
 });

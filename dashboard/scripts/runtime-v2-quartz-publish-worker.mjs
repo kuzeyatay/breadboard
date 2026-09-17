@@ -141,16 +141,21 @@ function resolveDataPath(dataRoot, relativePath) {
 }
 
 function validateRequest(value) {
+  // `scope` arrived after the first publishers shipped; a dashboard built
+  // before it still submits the bare request and gets a full-site build.
+  const requestKeys = [
+    "operation",
+    "reasons",
+    "concurrency",
+    "timeoutMs",
+    "buildEnvironment",
+  ];
+  const scoped = isRecord(value) && Object.hasOwn(value, "scope");
   if (
-    !hasExactKeys(value, [
-      "operation",
-      "reasons",
-      "concurrency",
-      "timeoutMs",
-      "buildEnvironment",
-    ]) ||
+    !hasExactKeys(value, scoped ? [...requestKeys, "scope"] : requestKeys) ||
     value.operation !== "publish" ||
     !Array.isArray(value.reasons) ||
+    (scoped && !Array.isArray(value.scope)) ||
     !isRecord(value.buildEnvironment)
   ) {
     fail("The Quartz publication request is invalid.");
@@ -433,6 +438,7 @@ async function runRuntimeV2QuartzPublishWorker() {
       concurrency: launch.request.concurrency,
       timeoutMs: launch.request.timeoutMs,
       buildEnvironment: launch.request.buildEnvironment,
+      scope: launch.request.scope ?? [],
     });
     await new Promise((resolve) => setImmediate(resolve));
     if (stop.requested()) return;

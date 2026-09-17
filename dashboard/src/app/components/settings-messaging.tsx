@@ -12,6 +12,7 @@ import { useState } from "react";
 
 import SettingsTelegram, { PaperPlaneIcon, useTelegramStatus } from "./settings-telegram";
 import SettingsWhatsApp, { MessageBubbleIcon, useWhatsAppStatus } from "./settings-whatsapp";
+import SettingsMessagingNotifications from "./settings-messaging-notifications";
 
 type Service = "whatsapp" | "telegram";
 
@@ -81,6 +82,12 @@ export default function SettingsMessaging() {
         Messages sent to a linked app open a real Breadboard chat — same memory, same
         capabilities — that you can reopen and continue by hand in the Terminal.
       </p>
+
+      <SettingsMessagingNotifications
+        key={service}
+        channel={service}
+        connected={(service === "whatsapp" ? whatsApp.status?.state : telegram.status?.state) === "connected"}
+      />
 
       {service === "whatsapp" ? (
         <SettingsWhatsApp status={whatsApp.status} refresh={whatsApp.refresh} />

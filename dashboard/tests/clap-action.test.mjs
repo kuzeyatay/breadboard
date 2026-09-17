@@ -89,6 +89,53 @@ test('named music, random search and transport controls use their own operations
   }
 });
 
+test('a player that reconnects during song lookup receives the clap action on its new device', async () => {
+  let deviceId = 'old-breadboard-device';
+  const { calls, services } = musicFixture({
+    engine: async () => ({ ready: true, deviceId }),
+    search: async () => {
+      deviceId = 'new-breadboard-device';
+      return [{ uri: 'spotify:track:1234567890a', name: 'Shoot to Thrill' }];
+    },
+  });
+  await executeClapMusic({ kind: 'music', operation: 'play', query: 'shoot the thrill by ac/dc' }, services);
+  assert.equal(calls.at(-1).query.device_id, 'new-breadboard-device');
+});
+
+test('a rejected stale device is retried once on the newly registered Breadboard player', async () => {
+  let registrations = 0;
+  const attempts = [];
+  const { services } = musicFixture({
+    engine: async () => ({ ready: true, deviceId: ++registrations === 1 ? 'old-device' : 'new-device' }),
+    api: async input => {
+      attempts.push(input);
+      if (attempts.length === 1) throw Object.assign(new Error('Device disappeared'), { code: 'spotify_device_unavailable' });
+    },
+  });
+  await executeClapMusic({ kind: 'music', operation: 'play', query: 'AC/DC' }, services);
+  assert.deepEqual(attempts.map(input => input.query.device_id), ['old-device', 'new-device']);
+  assert.deepEqual(attempts[0].body, attempts[1].body, 'recovery keeps the selected song');
+});
+
+test('playback recovery never replays uncertain failures or loops on an unavailable device', async () => {
+  for (const code of ['spotify_device_unavailable', 'provider_request_failed', 'spotify_rate_limited']) {
+    let attempts = 0;
+    const failure = Object.assign(new Error('Playback failed'), { code });
+    const { services } = musicFixture({ api: async () => { attempts++; throw failure; } });
+    await assert.rejects(executeClapMusic({ kind: 'music', operation: 'next' }, services), error => error === failure);
+    assert.equal(attempts, 1);
+  }
+  let attempts = 0;
+  let registrations = 0;
+  const failure = Object.assign(new Error('Still unavailable'), { code: 'spotify_device_unavailable' });
+  const { services } = musicFixture({
+    engine: async () => ({ ready: true, deviceId: `device-${++registrations}` }),
+    api: async () => { attempts++; throw failure; },
+  });
+  await assert.rejects(executeClapMusic({ kind: 'music', operation: 'next' }, services), error => error === failure);
+  assert.equal(attempts, 2);
+});
+
 test('missing music connections, unavailable devices and empty libraries never pretend to play', async () => {
   for (const [override, error] of [
     [{ connected: () => false }, /Connect Spotify/],

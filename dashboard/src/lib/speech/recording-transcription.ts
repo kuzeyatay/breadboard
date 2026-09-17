@@ -31,6 +31,8 @@ import {
 } from "./recording-upload.ts";
 import { voiceboxFetch, voiceboxResponseError } from "./voicebox-client.ts";
 import type { SpeechProvider } from "./providers.ts";
+import { transcribeElevenLabsAudio } from "./elevenlabs.ts";
+import { transcribeWebAudio } from "./web-speech.ts";
 
 const MODEL_DOWNLOAD_RETRY_MS = 2_000;
 const MODEL_DOWNLOAD_WAIT_MS = 10 * 60_000;
@@ -190,6 +192,18 @@ export async function transcribeStoredRecording({
     for (const [index, part] of parts.entries()) {
       if (signal.aborted) throw new RouteError(499, "The transcription was cancelled.");
       onEvent({ stage: "transcribing", part: index + 1, parts: parts.length });
+      if (speechProvider === "elevenlabs") {
+        const file = await fs.openAsBlob(part);
+        const result = await transcribeElevenLabsAudio(runtimeScope.userId, file, path.basename(part), language, signal);
+        transcripts.push(result.text);
+        continue;
+      }
+      if (speechProvider === "openaiweb") {
+        const file = await fs.openAsBlob(part);
+        const result = await transcribeWebAudio(runtimeScope.userId, file, path.basename(part), language, signal);
+        transcripts.push(result.text);
+        continue;
+      }
       if (speechProvider !== "local") throw new RouteError(409, "Subscription recordings require the browser audio connection.");
       transcripts.push(
         await transcribePart(part, model, language, signal, () => {

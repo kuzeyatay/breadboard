@@ -7,10 +7,12 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CODEX_WINDOWS_RUNTIME_FILES } from "./codex-runtime-files.mjs";
 
 import { SOURCE_COMMIT_RECEIPT_NAME } from "./pinned-source-checkout.mjs";
 import { findNestedDashboardRuntimeDuplicates } from "./packaged-dashboard-input.mjs";
 import { voiceboxArtifactReceiptProblems } from "./voicebox-artifact-receipt.mjs";
+import { PINNED_CUA_DRIVER_RUNTIME } from "./cua-driver-runtime-artifact.mjs";
 import { PINNED_VLM_OCR_RUNTIME } from "./vlm-ocr-runtime-artifact.mjs";
 import {
   PATENT_DISCLOSURE_REQUIRED_FILES,
@@ -447,8 +449,8 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeSha256: "227E429CEEFA8C3D9F37AF5BAB72689D4DD1C09C25C693CF28144F1054D560E5",
     pythonRuntimeFileCount: 34,
     pythonLicenseSha256: "59688D8633CE27B1D8220F223B9520C4E039E4BA6CCCEB345793A74FD5C155B9",
-    sourceGitTree: "347738d7d0e2777d29fa5c53ed954baaa8e3e04e",
-    sourceSha256: "1AB986E95F77763929C6BEFC001C83985D2D547C532F5F04C3815EA3650E0CF5",
+    sourceGitTree: "d60ab616237fb3d32dbbdd2d0a14c5cc9b448b19",
+    sourceSha256: "2C3C10077FE1E82FDD0FA83AA38A9146E6C28D412C2A2AEAE6A373D8CE27DB15",
     sourceFileCount: 8,
     pyprojectSha256: "D4CE90C6D505D706A5A68D1DA1EE3C7F92E7B8D6A68D15A579A67BA483D2E5A7",
     requirementsSha256: "D1E773C7578D36CB1A9AF6DF0581B20C0E6A7BE3BCA288894EBE617344412559",
@@ -978,8 +980,13 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
     bootstrap: ["app-root:dashboard/scripts/runtime-v2-spotify-playback-service.mjs"],
     externalBoundary: ["installed Edge or Chrome, Spotify Premium account, and Spotify network access"],
   },
+  "bambu-printer": {
+    dataRoot: "writable-state",
+    bootstrap: ["app-root:dashboard/scripts/runtime-v2-bambu-service.mjs", "app-root:dashboard/scripts/bambu-lan-adapter.mjs"],
+    externalBoundary: ["user-configured Bambu LAN printer, supported firmware/Developer Mode, and explicit print approval"],
+  },
   cliproxy: { dataRoot: "none", bootstrap: ["runtime-root:bin/cliproxy-runtime-artifact.json"] },
-  quartz: { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-quartz-static-service.mjs"] },
+  quartz: { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-quartz-static-service.mjs", "app-root:dashboard/scripts/quartz-canonical-reader-bridge.mjs"] },
   "ui-tars": { dataRoot: "none", bootstrap: ["app-root:ui-tars-adapter/package.json"] },
   cad: { dataRoot: "none", bootstrap: ["app-root:cad-service/runtime-artifact.json"] },
   "solidworks-mcp": {
@@ -2350,6 +2357,51 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
     });
   }
 
+  const cuaDriverRoot = path.join(binRoot, "cua-driver");
+  requireExactJsonReceipt(
+    path.join(cuaDriverRoot, "runtime-artifact.json"),
+    `${label} Hermes Computer Use immutable runtime receipt`,
+    PINNED_CUA_DRIVER_RUNTIME,
+  );
+  for (const expected of PINNED_CUA_DRIVER_RUNTIME.files) {
+    const artifact = path.join(cuaDriverRoot, expected.name);
+    requireDirectFile(artifact, `${label} Hermes Computer Use ${expected.name}`);
+    if (fs.existsSync(artifact)) {
+      hashChecks.push({
+        filePath: artifact,
+        expectedHash: expected.sha256,
+        expectedSize: expected.size,
+        label: `${label} Hermes Computer Use ${expected.name}`,
+      });
+    }
+  }
+  for (const expected of PINNED_CUA_DRIVER_RUNTIME.notices) {
+    const artifact = path.join(resources, "licenses", expected.name);
+    requireDirectFile(artifact, `${label} Hermes Computer Use ${expected.name}`);
+    if (fs.existsSync(artifact)) {
+      hashChecks.push({
+        filePath: artifact,
+        expectedHash: expected.sha256,
+        expectedSize: expected.size,
+        label: `${label} Hermes Computer Use ${expected.name}`,
+      });
+    }
+  }
+  const cuaDriver = path.join(cuaDriverRoot, "cua-driver.exe");
+  if (fs.existsSync(cuaDriver)) {
+    const version = spawnSync(cuaDriver, ["--version"], {
+      cwd: cuaDriverRoot,
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    const output = `${version.stdout ?? ""}\n${version.stderr ?? ""}`.trim();
+    if (version.status !== 0 || !output.includes(`cua-driver ${PINNED_CUA_DRIVER_RUNTIME.version}`)) {
+      problems.push(`${label} Hermes Computer Use version smoke failed: ${output || "no output"}`);
+    }
+  }
+
   const vlmOcrRoot = path.join(binRoot, "vlm-ocr");
   const vlmOcrRuntime = path.join(vlmOcrRoot, "runtime");
   const vlmOcrModels = path.join(vlmOcrRoot, "models");
@@ -2543,10 +2595,15 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
 
 function checkResourcesRoot(resources, binRoot, label) {
   const node = path.join(resources, "runtimes", "node", "node.exe");
+  requireFile(
+    path.join(resources, "runtimes", "node", "node_modules", "npm", "bin", "npm-cli.js"),
+    `${label} npm for managed tool setup`,
+  );
   const bun = path.join(resources, "runtimes", "bun", "bun.exe");
   const python = path.join(resources, "runtimes", "python", "python.exe");
   const dashboard = path.join(resources, "app-services", "dashboard-standalone", "dashboard");
   requireFile(node, `${label} bundled Node`);
+  for (const name of CODEX_WINDOWS_RUNTIME_FILES) requireFile(path.join(binRoot, name), `${label} Codex runtime ${name}`);
   requireFile(bun, `${label} bundled Bun`);
   requireDirectFile(python, `${label} bundled Python`);
   if (fs.existsSync(python)) {
@@ -2653,6 +2710,8 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-local-mcp-broker-service.mjs",
     "runtime-v2-inbox-zero-service.mjs",
     "runtime-v2-spotify-playback-service.mjs",
+    "runtime-v2-bambu-service.mjs",
+    "bambu-lan-adapter.mjs",
     "runtime-v2-solidworks-mcp-service.mjs",
     "runtime-v2-audio-analyzer-worker.mjs",
     "runtime-v2-image-search-worker.mjs",
@@ -2662,6 +2721,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-quartz-publish-worker.mjs",
     "runtime-v2-quartz-publish-executor.mjs",
     "runtime-v2-quartz-static-service.mjs",
+    "quartz-canonical-reader-bridge.mjs",
     "runtime-v2-managed-python-service.mjs",
     "runtime-v2-managed-setup-worker.mjs",
     "runtime-v2-managed-setup-executor.mjs",
@@ -2684,7 +2744,6 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-cinema-agent-worker-core.mjs",
     "runtime-v2-cinema-agent-adapters.mjs",
     "runtime-v2-shorts-worker.mjs",
-    "runtime-v2-open-gym-worker.mjs",
     "runtime-v2-agent-reach-setup-worker.mjs",
     "runtime-v2-agent-reach-setup-executor.mjs",
     "runtime-v2-agent-reach-configure.py",
@@ -3166,14 +3225,6 @@ function checkResourcesRoot(resources, binRoot, label) {
   requireFile(
     path.join(dashboard, "worker-src", "lib", "markdown-render", "theme.ts"),
     `${label} Office artifact theme source`,
-  );
-  requireFile(
-    path.join(resources, "app-services", "openGym", "frontend", "src", "lib", "exercises-data.js"),
-    `${label} openGym exercise catalogue`,
-  );
-  requireFile(
-    path.join(resources, "app-services", "openGym", "LICENSE"),
-    `${label} openGym license`,
   );
   for (const relative of [
     ["main.py"],
@@ -5217,6 +5268,12 @@ function checkResourcesRoot(resources, binRoot, label) {
     path.join(resources, "app-services", "quartz-template", "node_modules", "preact", "package.json"),
     `${label} Quartz node_modules`,
   );
+  for (const name of ["text-highlight-client.ts", "text-highlight-types.ts"]) {
+    requireFile(
+      path.join(resources, "app-services", "quartz-template", "quartz", "components", "scripts", name),
+      `${label} Quartz highlight persistence ${name}`,
+    );
+  }
   forbidMatches(
     path.join(resources, "app-services"),
     (name) => /\.(db|db-shm|db-wal)$/.test(name),

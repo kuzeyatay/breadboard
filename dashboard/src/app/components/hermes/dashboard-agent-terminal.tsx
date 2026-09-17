@@ -1,5 +1,7 @@
 "use client";
 
+import { watchLegacyDocumentAssistantHistory } from "@/lib/document-assistant-history-client";
+
 // The dashboard terminal keeps the original Breadboard dock, history sidebar,
 // and paper styling while the selected agent adapter owns the runtime,
 // streaming events, permissions, tools, persistence, and skill review.
@@ -42,13 +44,7 @@ import {
   deleteChatSession,
   UnreadChatDot,
 } from "./history-client";
-import {
-  chatActivityById,
-  nextUnreadChats,
-  readUnreadChats,
-  sameChatIds,
-  writeUnreadChats,
-} from "@/lib/conversations/unread";
+import { useUnreadChats } from "@/lib/conversations/unread-client";
 import { recordLastOpenedChat } from "@/lib/conversations/last-opened";
 import {
   chatDraftKey,
@@ -151,12 +147,6 @@ import {
   openExecutiveUserMessage,
   taskFromOpenExecutiveCommand,
 } from "@/lib/openexecutive/identity.ts";
-import {
-  OPEN_GYM_AGENT_ID,
-  openGymUserMessage,
-  taskFromOpenGymCommand,
-} from "@/lib/open-gym/identity.ts";
-import { shouldRouteOpenGymFromSuperAgent } from "@/lib/open-gym/routing-client.ts";
 import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
@@ -370,6 +360,8 @@ interface Props {
   drawerSidebarExpanded?: boolean;
   /** A browser text selection can arrive after mount and seed the composer. */
   initialDraft?: string | null;
+  /** The website currently displayed beside the browser Terminal. */
+  viewingWebsite?: string | null;
 }
 
 interface RuntimeHistorySession {
@@ -690,6 +682,7 @@ export default function DashboardAgentTerminal({
   presentation = "dock",
   drawerSidebarExpanded = false,
   initialDraft = null,
+  viewingWebsite = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
     status: "checking",
@@ -780,6 +773,7 @@ export default function DashboardAgentTerminal({
         presentation={presentation}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
+        viewingWebsite={viewingWebsite}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -805,6 +799,7 @@ export default function DashboardAgentTerminal({
         presentation={presentation}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
+        viewingWebsite={viewingWebsite}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -822,6 +817,7 @@ export default function DashboardAgentTerminal({
         presentation={presentation}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
+        viewingWebsite={viewingWebsite}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -851,6 +847,7 @@ function RuntimeTerminal({
   presentation = "dock",
   drawerSidebarExpanded = false,
   initialDraft = null,
+  viewingWebsite = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
   onConversationEngaged,
@@ -948,26 +945,6 @@ function RuntimeTerminal({
   // chatting. Remember it across the render that mounts the textarea so focus
   // can follow the dock open instead of remaining on the header.
   const focusComposerAfterOpenRef = useRef(false);
-  const {
-    model: selectedModel,
-    setModel: setSelectedModel,
-    reasoningEffort: selectedReasoningEffort,
-    setReasoningEffort,
-    intelligenceModes: selectedIntelligenceModes,
-  } = useAssistantIntelligence();
-  // A model picked while this answer is active is a setting for the next
-  // answer. Keep every callback in the current run on the intelligence pair it
-  // started with, including delegated/external-agent continuations.
-  const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
-    model: string;
-    reasoningEffort: typeof selectedReasoningEffort;
-    intelligenceModes: typeof selectedIntelligenceModes;
-  } | null>(null);
-  const model = activeAnswerIntelligence?.model ?? selectedModel;
-  const reasoningEffort =
-    activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
-  const intelligenceModes =
-    activeAnswerIntelligence?.intelligenceModes ?? selectedIntelligenceModes;
   const { models } = useAssistantModels({ eager: true });
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -975,17 +952,7 @@ function RuntimeTerminal({
   // Destructive questions are asked in the app's own sheet rather than the
   // shell's dialog; `confirmDialog` is rendered at the foot of the dock.
   const { confirm, confirmDialog } = useConfirmDialog();
-  // Chats whose run finished while the user was somewhere else. Restored from
-  // localStorage in an effect rather than in the initial state, so the first
-  // render matches the server's.
-  const [unreadChats, setUnreadChats] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-  // Activity as of the previous refresh. The dot is raised on the edge from
-  // running to finished, so a list that arrives already-finished — a reload,
-  // a first paint — marks nothing.
-  const chatActivity = useRef<ReadonlyMap<string, boolean>>(new Map());
-  const unreadRestored = useRef(false);
+  const { unreadChats, forgetUnreadChats } = useUnreadChats();
   // Bumped when a rename/pin/highlight/delete starts and again when it
   // settles. A poll response carrying an older epoch overlapped a local
   // mutation, so its snapshot may predate it — showing it would revert the
@@ -1196,7 +1163,6 @@ function RuntimeTerminal({
   const [launchingMusicProducerRun, setLaunchingMusicProducerRun] = useState(false);
   const [launchingCareerOpsRun, setLaunchingCareerOpsRun] = useState(false);
   const [launchingOpenExecutiveRun, setLaunchingOpenExecutiveRun] = useState(false);
-  const [launchingOpenGymRun, setLaunchingOpenGymRun] = useState(false);
   const [launchingTradingAgentsRun, setLaunchingTradingAgentsRun] =
     useState(false);
   const [launchingVibeTradingRun, setLaunchingVibeTradingRun] = useState(false);
@@ -1237,8 +1203,6 @@ function RuntimeTerminal({
   const deepResearchDispatchingRef = useRef(false);
   const socialsManagerDispatchingRef = useRef(false);
   const hardwareDispatchingRef = useRef(false);
-  const openGymDispatchingRef = useRef(false);
-  const openGymRoutingRef = useRef(false);
   const cadDispatchingRef = useRef(false);
   const hyperframesDispatchingRef = useRef(false);
   const resource2SkillDispatchingRef = useRef(false);
@@ -1383,6 +1347,26 @@ function RuntimeTerminal({
     [temporaryChat, drawerPresentation],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
+  const {
+    model: selectedModel,
+    setModel: setSelectedModel,
+    reasoningEffort: selectedReasoningEffort,
+    setReasoningEffort,
+    intelligenceModes: selectedIntelligenceModes,
+  } = useAssistantIntelligence({ scope: "dashboard_terminal", sessionId: session.sessionId, createdSessionId: session.createdSessionId, persist: !temporaryChat, shared: true });
+  // A model picked while this answer is active is a setting for the next
+  // answer. Keep every callback in the current run on the intelligence pair it
+  // started with, including delegated/external-agent continuations.
+  const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
+    model: string;
+    reasoningEffort: typeof selectedReasoningEffort;
+    intelligenceModes: typeof selectedIntelligenceModes;
+  } | null>(null);
+  const model = activeAnswerIntelligence?.model ?? selectedModel;
+  const reasoningEffort =
+    activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
+  const intelligenceModes =
+    activeAnswerIntelligence?.intelligenceModes ?? selectedIntelligenceModes;
   useEffect(() => {
     if (session.sessionId || session.messages.length > 0) {
       onConversationEngaged();
@@ -1602,7 +1586,6 @@ function RuntimeTerminal({
     launchingMusicProducerRun ||
     launchingCareerOpsRun ||
     launchingOpenExecutiveRun ||
-    launchingOpenGymRun ||
     launchingTradingAgentsRun ||
     launchingVibeTradingRun ||
     launchingStockAnalystRun ||
@@ -1649,6 +1632,10 @@ function RuntimeTerminal({
     session.messages.length === 0 &&
     !currentChatActive;
   const isPublic = scope === "public";
+
+  useEffect(() => {
+    if (!isPublic) return watchLegacyDocumentAssistantHistory();
+  }, [isPublic]);
   const sendNotificationReply = session.send;
 
   useEffect(() => {
@@ -1965,50 +1952,6 @@ function RuntimeTerminal({
     );
     return () => setActiveChatNotificationTarget(null);
   }, [viewingChatId]);
-
-  useEffect(() => {
-    setUnreadChats(readUnreadChats(window.localStorage));
-  }, []);
-
-  // One pass per refresh of the rail: raise the dot on every chat that stopped
-  // running out of sight, and take it off the one being read. The previous
-  // activity map is read before it is replaced — a state updater runs during
-  // the next render, by which time the ref would already hold this snapshot.
-  useEffect(() => {
-    const previousActive = chatActivity.current;
-    chatActivity.current = chatActivityById(history);
-    setUnreadChats((current) => {
-      const next = nextUnreadChats({
-        unread: current,
-        previousActive,
-        chats: history,
-        viewingChatId,
-      });
-      return sameChatIds(current, next) ? current : next;
-    });
-  }, [history, viewingChatId]);
-
-  useEffect(() => {
-    if (!unreadRestored.current) {
-      // The first commit carries the empty starting value rather than anything
-      // that happened, and the restore above has not landed yet: writing it
-      // would erase the dots this browser was still holding.
-      unreadRestored.current = true;
-      return;
-    }
-    writeUnreadChats(window.localStorage, unreadChats);
-  }, [unreadChats]);
-
-  // Deleting a chat takes its dot with it. The pass above cannot be relied on
-  // for this: it deliberately leaves the set alone when the list arrives empty,
-  // which is exactly what deleting the last chat produces.
-  const forgetUnreadChats = useCallback((ids: Iterable<string>) => {
-    setUnreadChats((current) => {
-      const next = new Set(current);
-      for (const id of ids) next.delete(id);
-      return sameChatIds(current, next) ? current : next;
-    });
-  }, []);
 
   // Selecting Agent TARS resolves the browser-operator agent to run against.
   // The runtime, workspace, and secrets stay server-side; we only need its id.
@@ -3630,7 +3573,7 @@ const selectCareerOps = useCallback(async () => {
   );
 
   const launchMusicProducerRun = useCallback(
-    async (task: string, agentOverride?: { id: string; name: string }, delegation?: AgentLaunchRequestPayload) => {
+    async (task: string, agentOverride?: { id: string; name: string }, delegation?: AgentLaunchRequestPayload, options: { branchGroupId?: string } = {}) => {
       const selectedAgent = agentOverride ?? musicProducerAgent;
       if (!selectedAgent || launchingMusicProducerRun) return;
       setLaunchingMusicProducerRun(true);
@@ -3639,6 +3582,7 @@ const selectCareerOps = useCallback(async () => {
       clientMessageId = session.previewExternalAgentTurn({
         clientMessageId,
         userContent,
+        branchGroupId: options.branchGroupId,
       });
       let runStarted = false;
       try {
@@ -3656,6 +3600,7 @@ const selectCareerOps = useCallback(async () => {
             reasoningEffort,
             conversationPublicId,
             clientMessageId,
+            branchGroupId: options.branchGroupId,
             delegatedAgentRun: Boolean(delegation?.workerClientMessageId),
             internalAgentContinuation: Boolean(delegation?.workerClientMessageId),
             attachToExistingTurn: Boolean(delegation && !delegation.workerClientMessageId),
@@ -3674,6 +3619,7 @@ const selectCareerOps = useCallback(async () => {
           clientMessageId,
           userContent,
           run: { kind: "music_producer", runId: String(data.run.runId), task },
+          branchGroupId: options.branchGroupId,
         });
       } catch (cause) {
         if (runStarted) {
@@ -3693,6 +3639,7 @@ const selectCareerOps = useCallback(async () => {
             userContent,
             assistantContent,
             outcome: "failed",
+            branchGroupId: options.branchGroupId,
           });
         } catch (persistenceError) {
           setAttachmentStatus(
@@ -3706,6 +3653,19 @@ const selectCareerOps = useCallback(async () => {
       }
     },
     [musicProducerAgent, launchingMusicProducerRun, model, reasoningEffort, session],
+  );
+  const routeMusicProducerCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const task = taskFromMusicProducerCommand(text);
+      if (task === null) return false;
+      if (launchingMusicProducerRun) return true;
+      void (async () => {
+        const selected = musicProducerAgent ?? (await selectMusicProducer());
+        if (selected && task) await launchMusicProducerRun(task, selected, undefined, options);
+      })();
+      return true;
+    },
+    [launchingMusicProducerRun, musicProducerAgent, selectMusicProducer, launchMusicProducerRun],
   );
 const launchCareerOpsRun = useCallback(
     async (task: string, agentOverride?: { id: string; name: string }) => {
@@ -4671,94 +4631,6 @@ const launchCareerOpsRun = useCallback(
       return true;
     },
     [launchHardwareBlueprintRun],
-  );
-
-  /** openGym is command-carried and available with the dashboard at startup. */
-  const launchOpenGymRun = useCallback(
-    async (
-      task: string,
-      options: { branchGroupId?: string; userContent?: string; quiet?: boolean } = {},
-    ) => {
-      if (openGymDispatchingRef.current) return;
-      openGymDispatchingRef.current = true;
-      setLaunchingOpenGymRun(true);
-      const normalizedTask = task.trim();
-      const requestedClientMessageId = crypto.randomUUID();
-      let clientMessageId = requestedClientMessageId;
-      const userContent =
-        options.userContent?.trim() || openGymUserMessage(normalizedTask);
-      clientMessageId = session.previewExternalAgentTurn({
-        clientMessageId,
-        userContent,
-        branchGroupId: options.branchGroupId,
-      });
-      const launchPersistence = session.externalAgentTurnPersistence(clientMessageId);
-      let runStarted = false;
-      try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
-        const response = await fetch("/api/open-gym/runs", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            task: normalizedTask,
-            model,
-            reasoningEffort,
-            conversationPublicId,
-            clientMessageId,
-            ...launchPersistence,
-            branchGroupId: options.branchGroupId,
-          }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data?.run?.runId) {
-          throw new Error(typeof data?.error === "string" ? data.error : "The openGym run could not start.");
-        }
-        runStarted = true;
-        await session.appendExternalAgentTurn({
-          clientMessageId,
-          userContent,
-          run: {
-            kind: "open_gym",
-            runId: String(data.run.runId),
-            task: normalizedTask,
-            ...(options.quiet === true ? { quiet: true } : {}),
-          },
-          branchGroupId: options.branchGroupId,
-        });
-      } catch (cause) {
-        if (runStarted) {
-          setAttachmentStatus(cause instanceof Error ? cause.message : "openGym started, but its chat turn could not be saved.");
-          return;
-        }
-        const assistantContent = `openGym could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
-        try {
-          await session.appendExternalAgentTurn({
-            clientMessageId,
-            userContent,
-            assistantContent,
-            outcome: "failed",
-            branchGroupId: options.branchGroupId,
-          });
-        } catch (persistenceError) {
-          setAttachmentStatus(persistenceError instanceof Error ? persistenceError.message : "The openGym turn could not be saved.");
-        }
-      } finally {
-        openGymDispatchingRef.current = false;
-        setLaunchingOpenGymRun(false);
-      }
-    },
-    [model, reasoningEffort, session],
-  );
-
-  const routeOpenGymCommand = useCallback(
-    (text: string, options: { branchGroupId?: string } = {}): boolean => {
-      const task = taskFromOpenGymCommand(text);
-      if (task === null) return false;
-      setAttachmentStatus("");
-      if (task && !openGymDispatchingRef.current) void launchOpenGymRun(task, options);
-      return true;
-    },
-    [launchOpenGymRun],
   );
 
   /**
@@ -5812,8 +5684,8 @@ const launchCareerOpsRun = useCallback(
    */
   const routeMaxResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
-      // Under Super Agent the model owns the turn and delegates Max Research
-      // privately. Only the explicit slash command bypasses that orchestration.
+      // Only a typed slash command bypasses Super Agent. Natural-language
+      // requests remain Super Agent turns so any delegation stays private.
       const invocation = maxResearchInvocation(text, isSuperAgentEnabled());
       if (!invocation) return false;
       setAttachmentStatus("");
@@ -6599,7 +6471,7 @@ const launchCareerOpsRun = useCallback(
       // Nothing may be dispatched into a chat that is still arriving -- not a
       // Hermes turn and not one of the runtime-agent launches below, which bind
       // their run to whichever conversation is selected when they start.
-      if (session.loadingSession || openGymRoutingRef.current) return;
+      if (session.loadingSession) return;
       const text = (textOverride ?? input).trim();
       // Only the composer calls this with no override, so this is the one place
       // that knows a human is speaking: it ends whatever hand-off chain was
@@ -7041,7 +6913,6 @@ const careerOpsTask = taskFromCareerOpsCommand(text);
       }
       if (
         routeSocialsManagerCommand(text) ||
-        routeOpenGymCommand(text) ||
         routeGodsEyeCommand(text) ||
         routeHardwareBlueprintCommand(text) ||
         routeParametricCadCommand(text) ||
@@ -7238,33 +7109,6 @@ if (careerOpsAgent) {
         void launchVideoUseRun(text, editableVideo, { userContent: text });
         return;
       }
-      // Exercise presentation is an output contract, not a model preference.
-      // In Super Agent mode, resolve likely form/program prompts against the
-      // registered catalogue before Hermes sees them. A match launches the
-      // quiet openGym result directly, so no model response can replace it with
-      // prose. Explicit agent selections and attachments have already been
-      // handled above and therefore retain their normal routing.
-      if (
-        isSuperAgentEnabled() &&
-        text &&
-        chatAttachments.length === 0 &&
-        !runtimeUnavailable &&
-        !busy
-      ) {
-        openGymRoutingRef.current = true;
-        let routeToOpenGym = false;
-        try {
-          routeToOpenGym = await shouldRouteOpenGymFromSuperAgent(text);
-        } finally {
-          openGymRoutingRef.current = false;
-        }
-        if (routeToOpenGym) {
-          setInput("");
-          setAttachmentStatus("");
-          await launchOpenGymRun(text, { userContent: text, quiet: true });
-          return;
-        }
-      }
       if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy)
         return;
       const pendingAttachments = chatAttachments;
@@ -7316,7 +7160,6 @@ if (careerOpsAgent) {
       browserAgent,
       agentBrowserAgent,
       launchVideoUseRun,
-      launchOpenGymRun,
       launchingVideoUseRun,
       videoUseSource,
       videoUseTarget,
@@ -7392,7 +7235,6 @@ if (careerOpsAgent) {
       routeDeepResearchCommand,
       routeMaxResearchCommand,
       routeSocialsManagerCommand,
-      routeOpenGymCommand,
       routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
@@ -7629,9 +7471,6 @@ if (careerOpsAgent) {
           }
           return;
         }
-        case "open-gym":
-          await launchOpenGymRun(request.brief, { quiet: true });
-          return;
         case "trading-agent": {
           const parsed = tradingAgentsRequestFromBrief(request.brief);
           if (!parsed.ok) {
@@ -7760,12 +7599,7 @@ if (careerOpsAgent) {
     scopeKey: session.sessionId ?? null,
     ready: launchReady,
     onLaunched: (request) => {
-      // openGym owns the self-contained guidance-and-animation answer. Treating
-      // it like a private worker would create a second Super Agent "Thinking"
-      // turn as soon as it completes, replacing that answer with redundant
-      // prose synthesis.
       if (
-        request.agentId === OPEN_GYM_AGENT_ID ||
         request.agentId === GODS_EYE_AGENT_ID
       ) {
         awaitedLaunchesRef.current.delete(
@@ -7859,11 +7693,6 @@ if (careerOpsAgent) {
       // and delivers this hand-back. Starting a second browser continuation
       // would duplicate the answer and turn a transport detail into a toast.
       if (message.deliveryChannel === "telegram") {
-        continuedDelegatedTurnsRef.current.add(continuationKey);
-        awaitedLaunchesRef.current.delete(continuationKey);
-        continue;
-      }
-      if (message.openGymRun) {
         continuedDelegatedTurnsRef.current.add(continuationKey);
         awaitedLaunchesRef.current.delete(continuationKey);
         continue;
@@ -8006,21 +7835,25 @@ if (careerOpsAgent) {
     async (
       text: string,
       attachments: readonly ChatAttachment[],
+      textSelection?: ChatTextSelectionReference,
     ): Promise<boolean> => {
       const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       if (!trimmed || runtimeUnavailable) return false;
-      return session.steer(trimmed, attachments);
+      return session.steer(trimmed, attachments, textSelection);
     },
     [runtimeUnavailable, session],
   );
 
   const sendQueued = useCallback(
-    async (text: string, attachments: readonly ChatAttachment[]) => {
+    async (text: string, attachments: readonly ChatAttachment[], textSelection?: ChatTextSelectionReference) => {
       const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       if (!trimmed || runtimeUnavailable) return;
+      if (textSelection) {
+        await session.send(trimmed, { model, reasoningEffort, attachments: [...attachments], textSelection });
+        return;
+      }
       if (
         routeSocialsManagerCommand(trimmed) ||
-        routeOpenGymCommand(trimmed) ||
         routeGodsEyeCommand(trimmed) ||
         routeHardwareBlueprintCommand(trimmed) ||
         routeParametricCadCommand(trimmed) ||
@@ -8059,7 +7892,6 @@ if (careerOpsAgent) {
       reasoningEffort,
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
-      routeOpenGymCommand,
       routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
@@ -8106,17 +7938,6 @@ if (careerOpsAgent) {
           );
           return;
         }
-        const presentationOwned = session.messages.some(
-          (message) =>
-            message.role === "assistant" &&
-            message.clientMessageId === clientMessageId &&
-            Boolean(message.openGymRun),
-        );
-        if (presentationOwned) {
-          continuedDelegatedTurnsRef.current.add(clientMessageId);
-          awaitedLaunchesRef.current.delete(clientMessageId);
-          return;
-        }
         if (result.outcome === "aborted") {
           continuedDelegatedTurnsRef.current.add(clientMessageId);
           awaitedLaunchesRef.current.delete(clientMessageId);
@@ -8155,22 +7976,26 @@ if (careerOpsAgent) {
 
   const handleStopRequested = useCallback(
     (externalClientMessageIds: string[]) => {
-      for (const clientMessageId of externalClientMessageIds) {
+      for (const clientMessageId of new Set([
+        ...externalClientMessageIds,
+        ...awaitedLaunchesRef.current.keys(),
+      ])) {
         continuedDelegatedTurnsRef.current.add(clientMessageId);
         awaitedLaunchesRef.current.delete(clientMessageId);
       }
       setPendingLaunchContinuations([]);
+      agentLaunchQueue.reset();
       if (awaitedLaunchesRef.current.size === 0) launchHopsRef.current = 0;
     },
-    [],
+    [agentLaunchQueue.reset],
   );
 
   const editMessage = useCallback(
     (messageIndex: number, text: string, branchGroupId: string) => {
       if (runtimeUnavailable) return;
+      if (routeMusicProducerCommand(text, { branchGroupId })) return;
       if (
         routeSocialsManagerCommand(text, { branchGroupId }) ||
-        routeOpenGymCommand(text, { branchGroupId }) ||
         routeGodsEyeCommand(text, { branchGroupId }) ||
         routeHardwareBlueprintCommand(text, { branchGroupId }) ||
         routeParametricCadCommand(text, { branchGroupId }) ||
@@ -8209,8 +8034,8 @@ if (careerOpsAgent) {
       model,
       reasoningEffort,
       routeDeepResearchCommand,
+      routeMusicProducerCommand,
       routeSocialsManagerCommand,
-      routeOpenGymCommand,
       routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
@@ -8353,9 +8178,9 @@ if (careerOpsAgent) {
       if (runtimeUnavailable) return;
       const previousUser = session.messages[userMessageIndex];
       if (previousUser) {
+        if (routeMusicProducerCommand(previousUser.content, { branchGroupId })) return;
         if (
           routeSocialsManagerCommand(previousUser.content, { branchGroupId }) ||
-          routeOpenGymCommand(previousUser.content, { branchGroupId }) ||
           routeGodsEyeCommand(previousUser.content, { branchGroupId }) ||
           routeHardwareBlueprintCommand(previousUser.content, {
             branchGroupId,
@@ -8411,12 +8236,12 @@ if (careerOpsAgent) {
     [
       launchVideoUseRun,
       videoUseTarget,
+      routeMusicProducerCommand,
       model,
       reasoningEffort,
       routeDeepResearchCommand,
       routeMaxResearchCommand,
       routeSocialsManagerCommand,
-      routeOpenGymCommand,
       routeGodsEyeCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
@@ -9274,9 +9099,8 @@ if (careerOpsAgent) {
               style={{ animationDelay: headerClosing ? "0ms" : "40ms" }}
               className={`${headerItemAnim} flex min-w-0 items-center gap-2`}
             >
-              {/* One dot, one job: Terminal connectivity. Optional knowledge
-                  retrieval has its own status surface and must not make a
-                  working Terminal look disconnected. */}
+              {/* Green always means an unread response. Connection failures
+                  keep their separate red status and reconnect action. */}
               {!runtimeOnline ? (
                 <span
                   role="status"
@@ -9284,20 +9108,16 @@ if (careerOpsAgent) {
                   title="Agent runtime unavailable"
                   className="h-2 w-2 shrink-0 rounded-full bg-[#B65B5B]"
                 />
-              ) : (
+              ) : null}
+              {unreadCount > 0 ? (
                 <UnreadChatDot
                   multiple={unreadCount > 1}
-                  label={
-                    unreadCount > 0 ? unreadLabel : "Agent runtime is available"
-                  }
+                  label={unreadLabel}
                 />
-              )}
+              ) : null}
               <p className="truncate text-sm font-semibold text-[var(--terminal-bar-ink)]">
                 Terminal
               </p>
-              {!runtimeOnline && unreadCount > 1 ? (
-                <UnreadChatDot multiple label={unreadLabel} />
-              ) : null}
               {!runtimeOnline ? (
                 <button
                   type="button"
@@ -9552,13 +9372,26 @@ if (careerOpsAgent) {
                 composerTextareaRef={composerTextareaRef}
                 onSubmit={submit}
                 beforeComposer={
-                  agentLaunchQueue.pending ? (
-                    <AgentLaunchPrompt
-                      request={agentLaunchQueue.pending}
-                      waiting={agentLaunchQueue.waiting}
-                      onConfirm={agentLaunchQueue.confirm}
-                      onDismiss={agentLaunchQueue.dismiss}
-                    />
+                  agentLaunchQueue.pending || (drawerPresentation && viewingWebsite) ? (
+                    <>
+                      {agentLaunchQueue.pending ? (
+                        <AgentLaunchPrompt
+                          request={agentLaunchQueue.pending}
+                          waiting={agentLaunchQueue.waiting}
+                          onConfirm={agentLaunchQueue.confirm}
+                          onDismiss={agentLaunchQueue.dismiss}
+                        />
+                      ) : null}
+                      {drawerPresentation && viewingWebsite ? (
+                        <div
+                          className="mb-1 flex min-w-0 items-center gap-1 px-3 text-[11px] leading-5 text-[#6B7971]"
+                          title={viewingWebsite}
+                        >
+                          <span className="shrink-0">Viewing</span>
+                          <span className="truncate">{viewingWebsite}</span>
+                        </div>
+                      ) : null}
+                    </>
                   ) : null
                 }
                 onRunWorkflow={runWorkflowAutomation}
@@ -9707,7 +9540,6 @@ onSelectCareerOps={() => void selectCareerOps()}
                   setOpenExecutiveAgent(null);
                   setAttachmentStatus("");
                 }}
-                onSelectOpenGym={() => {}}
                 onClearMusicProducer={() => {
                   setMusicProducerAgent(null);
                   setAttachmentStatus("");

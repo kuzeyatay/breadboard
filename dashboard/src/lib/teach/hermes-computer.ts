@@ -6,13 +6,13 @@ import "server-only";
 // Hermes (`CuaDriverBackend`) and therefore follows its Windows/macOS/Linux
 // behavior and cua-driver compatibility fixes.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
-  spawn,
-  spawnSync,
-  type ChildProcessWithoutNullStreams,
-} from "node:child_process";
+  externalRuntimeSpawn as spawn,
+  externalRuntimeSpawnSync as spawnSync,
+} from "../external-runtime-process.ts";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { repositoryRoot } from "../runtime-paths.ts";
 import { teachLog, teachWarn } from "./redaction.ts";
@@ -370,9 +370,19 @@ if backend is not None:
 
 function firstExisting(candidates: string[]): string | null {
   for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
+    if (candidate && externalRuntimePathExists(candidate)) return candidate;
   }
   return null;
+}
+
+function managedCuaDriverCommand(): string | null {
+  const executable = process.platform === "win32" ? "cua-driver.exe" : "cua-driver";
+  const root = repositoryRoot();
+  return firstExisting([
+    process.env.HERMES_CUA_DRIVER_CMD?.trim() ?? "",
+    path.join(root, "desktop", "resources", "bin", "cua-driver", executable),
+    path.join(root, "..", "bin", "cua-driver", executable),
+  ]);
 }
 
 function helperEnvironment(appDirectory: string): NodeJS.ProcessEnv {
@@ -409,6 +419,8 @@ function helperEnvironment(appDirectory: string): NodeJS.ProcessEnv {
   }
   const hermesHome = process.env.BREADBOARD_HERMES_HOME?.trim();
   if (hermesHome) env.HERMES_HOME = hermesHome;
+  const cuaDriver = managedCuaDriverCommand();
+  if (cuaDriver) env.HERMES_CUA_DRIVER_CMD = cuaDriver;
   env.PYTHONPATH = appDirectory;
   env.PYTHONIOENCODING = "utf-8";
   // Breadboard does not opt users into cua-driver telemetry.
@@ -482,7 +494,7 @@ export class HermesComputerBackend implements WorkflowComputerBackend {
       availabilityCache = { key: cacheKey, checkedAt: Date.now(), value };
       return value;
     };
-    if (!fs.existsSync(runtime.appDirectory)) {
+    if (!externalRuntimePathExists(runtime.appDirectory)) {
       return remember({ available: false, reason: "The Hermes Agent runtime is not installed." });
     }
     const checked = spawnSync(runtime.python, ["-u", "-c", WORKER_SOURCE, "--check"], {
@@ -504,6 +516,12 @@ export class HermesComputerBackend implements WorkflowComputerBackend {
     const reason = typeof response?.reason === "string"
       ? response.reason
       : (checked.stderr || "Hermes computer use is unavailable on this machine.").trim();
+    if (/cua-driver is not installed/iu.test(reason)) {
+      return remember({
+        available: false,
+        reason: "Breadboard's managed Hermes Computer Use driver is missing. Restart Breadboard; if the problem persists, repair or reinstall the app.",
+      });
+    }
     return remember({ available: false, reason });
   }
 

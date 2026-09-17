@@ -205,7 +205,9 @@ test("Google image-search credentials are encrypted and scoped to one profile", 
 
 test("a nonsense query is refused before any process is involved", async () => {
   await assert.rejects(() => searchImages({ query: "   " }), /non-empty query/);
-  await assert.rejects(() => searchImages({ query: "cat", count: 40 }), /between 1 and 10/);
+  for (const count of [0, 6, 40, 1.5, "2", null]) {
+    await assert.rejects(() => searchImages({ query: "cat", count }), /between 1 and 5/);
+  }
 });
 
 test("Google image search is a fenced disposable Runtime job with sealed credentials", () => {
@@ -377,4 +379,18 @@ test("ordinary fenced code still renders as a code block", () => {
   const html = renderMessage("```js\nconsole.log(1)\n```");
   assert.ok(html.includes("chat-code-block"));
   assert.ok(!html.includes("chat-image-results"));
+});
+
+test("one selected picture uses a single column", () => {
+  const html = renderMessage('```image-results\n' + JSON.stringify({ ...RESULTS, items: [RESULTS.items[0]] }) + '\n```');
+  assert.match(html, /max-w-lg columns-1/);
+  assert.equal((html.match(/<button[^>]*cursor-zoom-in/g) ?? []).length, 1);
+});
+
+test("the whole answer shares a five-image budget across fences and nested blocks", () => {
+  const items = Array.from({ length: 8 }, (_, index) => ({ ...RESULTS.items[0], image: `https://example.com/${index}.jpg` }));
+  const block = (rows) => '```image-results\n' + JSON.stringify({ query: 'pictures', items: rows }) + '\n```';
+  const html = renderMessage(block(items.slice(0, 3)) + '\n\n' + block(items).split('\n').map(line => '> ' + line).join('\n'));
+  assert.equal((html.match(/<button[^>]*cursor-zoom-in/g) ?? []).length, 5);
+  assert.ok(!html.includes('https://example.com/5.jpg'));
 });

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import SpeechDictationButton from "@/app/components/speech-dictation-button";
+import MetalSendButton from "@/app/components/effects/metal-send-button";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useAssistantModels } from "@/app/components/use-assistant-models";
@@ -615,6 +616,11 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
               textareaRef={inputRef}
               placement="below"
             />
+            <MetalSendButton
+              variant="circle"
+              className="shrink-0"
+              disabled={saving || !text.trim() || !cronValid}
+            >
             <button
               type="button"
               onClick={() => void create()}
@@ -626,6 +632,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 19.5v-15m0 0-6 6m6-6 6 6" />
               </svg>
             </button>
+            </MetalSendButton>
           </div>
 
           {text.trim() ? (

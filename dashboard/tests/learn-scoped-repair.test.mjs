@@ -22,6 +22,7 @@ import {
   verifyScopedFileMutationPolicy,
 } from "../src/lib/garden-build/scoped-files.ts";
 import { applyGardenBuildTransaction } from "../src/lib/garden-build/transactions.ts";
+import { canonicalCouncilJsonV1 } from "../src/lib/council-request-hash.ts";
 import { IMPLEMENTED_VISUAL_TYPES } from "../src/lib/visual-spec.ts";
 import {
   exactScopedModelRepairResponse,
@@ -419,5 +420,90 @@ describe("loop policy, UI, and regression scope", () => {
     assert.equal(scope.explicitlyExcludedPageIds.length, 18);
     assert.equal(scope.requiredProjectionRebuilds.includes("navigation"), true);
     assert.equal(scope.requiredProjectionRebuilds.includes("visual_index"), true);
+  });
+});
+
+describe("page prose repairs", () => {
+  test("the model packet carries the complete page body, not an excerpt", () => {
+    const state = canonicalState(2);
+    const longBody = `# Unit 1\n\nI'm using the pasted run contract directly.\n\n${"Lesson sentence about trunking. ".repeat(400)}\n\nFinal paragraph that must survive.`;
+    state.pages["page:U1"].body = longBody;
+    const problem = issue("scaffold_prose", { pageId: "page:U1", unitId: "U1" }, {}, "model");
+    const scope = buildLearnRepairScope(state, [problem], { gardenId: "garden", mode: "repair" });
+    const packet = scopedRepairHandlerForIssue(problem).buildModelPacket(problem, state, scope);
+    assert.ok(longBody.length > 6000);
+    assert.equal(packet.page.body, longBody);
+    assert.equal("excerpt" in packet.page, false);
+  });
+
+  test("the model packet hashes as a Council request when imported fields are undefined", () => {
+    const state = canonicalState(2);
+    state.units.U1.role = undefined;
+    state.units.U1.learningQuestion = undefined;
+    const problem = issue("scaffold_prose", { pageId: "page:U1", unitId: "U1", sectionId: undefined }, { note: undefined }, "model");
+    const scope = buildLearnRepairScope(state, [problem], { gardenId: "garden", mode: "repair" });
+    const packet = scopedRepairHandlerForIssue(problem).buildModelPacket(problem, state, scope);
+    assert.doesNotThrow(() => canonicalCouncilJsonV1(packet));
+    assert.deepEqual(packet, JSON.parse(JSON.stringify(packet)));
+    assert.equal(packet.page.body, state.pages["page:U1"].body);
+  });
+
+  test("a page body rewrite that drops a large part of the lesson is rejected", () => {
+    const state = canonicalState(2);
+    const lesson = "Lesson sentence about trunking. ".repeat(400);
+    state.pages["page:U1"].body = `I'm using the pasted run contract directly.\n\n${lesson}`;
+    const problem = issue("scaffold_prose", { pageId: "page:U1", unitId: "U1" }, {}, "model");
+    const scope = buildLearnRepairScope(state, [problem], { gardenId: "garden", mode: "repair" });
+    const truncated = verifyScopedRepairDecision(problem, { operations: [{ type: "set_page_body", pageId: "page:U1", body: lesson.slice(0, 6000), justification: "removed commentary" }] }, state, scope);
+    assert.equal(truncated.valid, false);
+    assert.match(truncated.reason, /complete page/);
+    const repaired = verifyScopedRepairDecision(problem, { operations: [{ type: "set_page_body", pageId: "page:U1", body: lesson, justification: "removed commentary" }] }, state, scope);
+    assert.equal(repaired.valid, true);
+  });
+});
+
+describe("durable repair result", () => {
+  test("the job result summary stays small and carries no page bodies", async () => {
+    const { summarizeLearnScopedRepairResult } = await import("../src/lib/learn-scoped-repair.ts");
+    const body = "Lesson sentence about trunking. ".repeat(12000);
+    const pages = Array.from({ length: 9 }, (_, index) => `page:U${index + 1}`);
+    const result = {
+      scope: { pageIds: pages },
+      policy: { allowedFiles: pages.map((page) => `learning/${page}.md`) },
+      transaction: {
+        repairId: "repair:fixture",
+        scope: { pageIds: pages },
+        fingerprintBefore: "a",
+        fileFingerprintsBefore: Object.fromEntries(pages.map((page) => [page, "f".repeat(64)])),
+        operations: pages.map((pageId) => ({ type: "set_page_body", pageId, body, justification: "removed commentary" })),
+        modelCalls: 9,
+        verifiedModelDecisions: 9,
+        rejectedModelDecisions: 0,
+        blockersBefore: pages.map((page) => `scaffold_prose:${page}`),
+        blockersAfter: [],
+        committed: true,
+        rolledBack: false,
+        reason: "committed",
+      },
+      selectedIssues: pages.map((page) => ({ issueId: `scaffold_prose:${page}`, evidence: { body } })),
+      finalIssues: [],
+      files: { passed: true, changedFiles: pages.map((page) => `learning/${page}.md`), unauthorizedChanges: [], requiredUnchangedViolations: [], sourceFileChanges: [] },
+      pageIdentity: { passed: true },
+      accepted: true,
+      publishReady: true,
+      promotion: { promoted: true, destination: "garden", attempts: 1, reason: "promoted" },
+      reportJsonPath: ".breadboard/scoped-repair.json",
+      reportMarkdownPath: ".breadboard/scoped-repair.md",
+    };
+    assert.ok(JSON.stringify(result).length > 1024 * 1024, "fixture reproduces the oversized result");
+    const summary = summarizeLearnScopedRepairResult(result);
+    const serialized = JSON.stringify(summary);
+    assert.ok(serialized.length < 8 * 1024, `summary is ${serialized.length} bytes`);
+    assert.doesNotMatch(serialized, /Lesson sentence about trunking/);
+    assert.equal(summary.committed, true);
+    assert.equal(summary.promoted, true);
+    assert.deepEqual(summary.operationTypes, pages.map(() => "set_page_body"));
+    assert.equal(summary.blockersBefore, 9);
+    assert.equal(summary.blockersAfter, 0);
   });
 });

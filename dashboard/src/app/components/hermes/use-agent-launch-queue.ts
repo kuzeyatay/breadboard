@@ -23,10 +23,7 @@ import {
   parseAgentLaunchRequest,
   type AgentLaunchRequestPayload,
 } from "@/lib/hermes/agent-launch.ts";
-import {
-  claimUnscopedAgentLaunchRequests,
-  type AgentLaunchScopeKey,
-} from "./agent-launch-scope.ts";
+import type { AgentLaunchScopeKey } from "./agent-launch-scope.ts";
 
 export {
   MAX_AGENT_LAUNCH_HOPS,
@@ -59,11 +56,11 @@ export interface AgentLaunchQueue {
   /** How many more are queued behind it. */
   waiting: number;
   /** Feed every stream event here; true means it was a launch request. */
-  handleEvent: (value: unknown) => boolean;
+  handleEvent: (value: unknown, originScopeKey?: AgentLaunchScopeKey) => boolean;
   confirm: () => void;
   dismiss: () => void;
-  /** Drop everything — a new user message supersedes an unanswered launch. */
-  reset: () => void;
+  /** Drop all launches, or just those owned by the supplied conversation. */
+  reset: (scopeKey?: AgentLaunchScopeKey) => void;
 }
 
 interface ScopedAgentLaunchRequest {
@@ -87,24 +84,22 @@ export function useAgentLaunchQueue(
   const submitRef = useRef(submit);
   const launchedRef = useRef(onLaunched);
   const dismissedRef = useRef(onDismissed);
+  const currentScopeRef = useRef(scopeKey);
+  currentScopeRef.current = scopeKey;
   useEffect(() => {
     submitRef.current = submit;
     launchedRef.current = onLaunched;
     dismissedRef.current = onDismissed;
   });
 
-  useEffect(() => {
-    // A renderer can restore messages one paint before it restores their
-    // session id. Older builds queued that launch under `null`, marked it seen,
-    // and filtered it out forever when the real scope appeared. Claiming it
-    // here also repairs such an item during Fast Refresh.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- this migrates queued external events when their durable scope arrives
-    setQueue((current) => claimUnscopedAgentLaunchRequests(current, scopeKey));
-  }, [scopeKey]);
-
-  const handleEvent = useCallback((value: unknown): boolean => {
+  const handleEvent = useCallback((value: unknown, originScopeKey = scopeKey): boolean => {
     const request = parseAgentLaunchRequest(value);
     if (!request) return false;
+    // A stream started on the blank composer can outlive chat creation and
+    // navigation. Its caller must supply the reserved chat id; the next chat
+    // selected is never evidence of ownership. Leave unowned events unseen so
+    // a restored transcript can deliver them again with its actual scope.
+    if (originScopeKey === null) return true;
     // A request rebuilt from a finished turn's evidence and the live request
     // the stream delivered for the same turn and agent are one hand-off.
     const originKey = request.originClientMessageId
@@ -114,11 +109,12 @@ export function useAgentLaunchQueue(
     if (originKey && seenRef.current.has(originKey)) return true;
     seenRef.current.add(request.requestId);
     if (originKey) seenRef.current.add(originKey);
-    setQueue((current) => [...current, { request, scopeKey }]);
+    setQueue((current) => [...current, { request, scopeKey: originScopeKey }]);
     return true;
   }, [scopeKey]);
 
-  const launch = useCallback((request: AgentLaunchRequestPayload) => {
+  const launch = useCallback((request: AgentLaunchRequestPayload, originScopeKey: AgentLaunchScopeKey) => {
+    if (originScopeKey === null || currentScopeRef.current !== originScopeKey) return;
     setQueue((current) =>
       current.filter((item) => item.request.requestId !== request.requestId),
     );
@@ -135,14 +131,14 @@ export function useAgentLaunchQueue(
   useEffect(() => {
     if (!head || !ready || (head.requiresApproval && !yoloMode)) return;
     const timer = window.setTimeout(() => {
-      if (!head.requiresApproval || isYoloModeEnabled()) launch(head);
+      if (!head.requiresApproval || isYoloModeEnabled()) launch(head, scopeKey);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [head, launch, ready, yoloMode]);
+  }, [head, launch, ready, scopeKey, yoloMode]);
 
   const confirm = useCallback(() => {
-    if (head) launch(head);
-  }, [head, launch]);
+    if (head) launch(head, scopeKey);
+  }, [head, launch, scopeKey]);
 
   const dismiss = useCallback(() => {
     if (!head) return;
@@ -152,7 +148,9 @@ export function useAgentLaunchQueue(
     dismissedRef.current?.(head);
   }, [head]);
 
-  const reset = useCallback(() => setQueue([]), []);
+  const reset = useCallback((scope?: AgentLaunchScopeKey) => {
+    setQueue((current) => scope === undefined ? [] : current.filter((item) => item.scopeKey !== scope));
+  }, []);
 
   return {
     queued: Boolean(head),

@@ -20,6 +20,7 @@
 
 import type { Dirent } from "node:fs";
 import crypto from "node:crypto";
+import { collectGardenUserVisualIds, isGardenUserPath } from "./garden-user-content.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
@@ -47,7 +48,7 @@ import {
   type ZettelNote,
 } from "./learning-unit-contract.ts";
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment, stripMarkdownFrontmatter } from "./learn-utils.ts";
+import { chatAssistantLeakMatches, formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment, stripMarkdownFrontmatter } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, projectSourceCoverage, reconcileFinalGardenState } from "./final-garden-state.ts";
 import { assertFormulaAssignmentCompatible, buildFormulaIdentityRegistry, legacyFormulaFamily } from "./formula-identity.ts";
 import { deriveUnitFormulaRequirement, validateFormulaAssignment } from "./formula-assignment.ts";
@@ -1036,6 +1037,7 @@ function listMarkdown(dir: string, relDir: string, out: Array<{ abs: string; rel
   }
   for (const entry of entries) {
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+    if (isGardenUserPath(rel)) continue;
     if (entry.isDirectory()) {
       if (entry.name === ".breadboard" && !opts.includeDotBreadboard) continue;
       if (entry.name === ".breadboard" && /backups/.test(rel)) continue;
@@ -1571,12 +1573,14 @@ export function visualizationPlanPlacementProblems(input: {
       return;
     }
     const targetHeading = String(opportunity.targetHeading ?? "").trim();
-    const expectedAnchor =
-      `learning-unit:${opportunity.learningUnitId}:after-introduction`;
+    const expectedAnchors = new Set([
+      `learning-unit:${opportunity.learningUnitId}:after-introduction`,
+      `learning-unit:${opportunity.learningUnitId}:interactive-visual`,
+    ]);
     if (!targetHeading) {
       problems.push(`${opportunity.id}: visualization-plan targetHeading is empty`);
     }
-    if (opportunity.insertionAnchor !== expectedAnchor) {
+    if (!expectedAnchors.has(String(opportunity.insertionAnchor ?? ""))) {
       problems.push(`${opportunity.id}: visualization-plan insertionAnchor is not the exact mechanical unit anchor`);
     }
     const page = pageByRel.get(normalizedTargetPage);
@@ -2440,7 +2444,7 @@ function cleanExportTree(gardenDir: string, report: FinalizeReport): void {
     return;
   }
   for (const entry of entries) {
-    if (allowedTop.has(entry.name)) continue;
+    if (allowedTop.has(entry.name) || isGardenUserPath(entry.name)) continue;
     const abs = path.join(gardenDir, entry.name);
 
     // Internal/ concept graph → relocate under .breadboard so it never ships as
@@ -2688,7 +2692,7 @@ function fallbackUnitForPage(page: LearnerPage): LearningUnitContract {
       connectedTo: [],
     })),
     mustNotRepeat: [],
-    expectedWordRange: [700, 1100],
+    expectedWordRange: [0, 0],
   };
 }
 
@@ -2764,6 +2768,7 @@ function repairRequiredChanges(type: UnitRepairFailureType, problem: string): st
       return [
         "Rewrite only the opening 2-4 paragraphs so this page continues from prior units instead of restarting the global motivation.",
         "Remove repair-scaffold phrases and replace them with finished learner-facing textbook prose.",
+        "Delete chat-assistant commentary (first-person notes about the pasted request, dossier, or contract) and document wrapper lines such as `:::writing{...}` and its closing `:::`, wherever they appear on the page.",
         "Keep required source anchors, formulas, tables, figures, visual blocks, and contract-backed Zettelkasten handles in place.",
       ];
     case "section_index_prose":
@@ -3904,6 +3909,17 @@ function validationReportAccepted(gardenDir: string): boolean {
   return /^Accepted:\s+yes\s*$/m.test(readFileSyncWithRetry(reportPath, "utf-8"));
 }
 
+/** Re-audit an edited, completed garden without rewriting its prose or plans. */
+export function refreshFinalArtifactValidationReport(
+  input: Omit<Parameters<typeof verifyFinalArtifactNoMutation>[0], "updateRepairReport">,
+): void {
+  const report = emptyFinalizeReport();
+  writeFinalizeValidationReport({ ...input, report });
+  if (report.criticalProblems.length > 0) {
+    throw new Error(report.criticalProblems.join("; "));
+  }
+}
+
 export function verifyFinalArtifactNoMutation({
   gardenDir,
   gardenSlug,
@@ -4035,6 +4051,9 @@ function classifyFinalCheck(name: string): { type: FinalRepairIssueType; repairM
   if (n.includes("formula metadata noise")) return { type: "formula_metadata_noise", repairMode: "deterministic_then_chatmock" };
   if (n.includes("formula")) return { type: "formula_grounding", repairMode: "deterministic_then_chatmock" };
   if (n.includes("source text concept") || n.includes("source anchor") || n.includes("source-anchor")) return { type: "source_anchor_missing", repairMode: "deterministic_then_chatmock" };
+  // Leaked scaffold or chat-assistant prose on a learner page is fixed by a
+  // model page repair; the issue adapter types it scaffold_prose from its message.
+  if (n.includes("scaffold prose")) return { type: "structural_integrity", repairMode: "chatmock" };
   if (n.includes("visual")) return { type: "visual_grounding", repairMode: "deterministic_then_chatmock" };
   if (n.includes("section")) return { type: "section_semantics", repairMode: "deterministic" };
   if (n.includes("zettelkasten")) return { type: "zettelkasten_handle", repairMode: "deterministic_then_chatmock" };
@@ -6022,6 +6041,12 @@ function learnerFacingScaffoldProseProblems(pages: LearnerPage[]): string[] {
     for (const { label, pattern } of LEARNER_SCAFFOLD_PROSE_PATTERNS) {
       if (pattern.test(prose)) problems.push(`${page.rel}: contains repair scaffold prose "${label}"`);
     }
+    // One problem per page listing every leaked line: the final audit keeps
+    // one issue per page, so separate problems left a repair seeing only one.
+    const leaks = chatAssistantLeakMatches(page.body);
+    if (leaks.length > 0) {
+      problems.push(`${page.rel}: contains chat-assistant scaffold prose ${leaks.map((leak) => JSON.stringify(leak)).join(", ")}`);
+    }
     if (/\bsnns\b/.test(prose)) problems.push(`${page.rel}: uses lowercase acronym "snns"`);
     if (/\bSNNs\s+learns\b/i.test(prose)) problems.push(`${page.rel}: contains grammar error "SNNs learns"`);
   }
@@ -6417,6 +6442,14 @@ function cropQualityFindings(gardenDir: string, visual: LedgerVisual): CropQuali
     if (x <= edge || y <= edge || x + width >= 1 - edge || y + height >= 1 - edge) {
       warnings.push(`${id}: detection bbox touches page edge and may be clipped`);
     }
+  }
+  if (
+    visual.usageStatus === "assigned" &&
+    cropStatus === "embedded" &&
+    String(visual.type ?? "") !== "equation" &&
+    !asObject(visual.cropReview).status
+  ) {
+    warnings.push(`${id}: embedded crop was never checked against its source page`);
   }
   return { problems, warnings };
 }
@@ -7538,6 +7571,7 @@ function contractPageSourceAnchorSynchronizationProblems(
 
 function finalVisualSpecs(gardenDir: string, learnerPages: LearnerPage[]): Array<{ pageRel: string; id: string; anchorIds: string[] }> {
   const specs: Array<{ pageRel: string; id: string; anchorIds: string[] }> = [];
+  const userVisualIds = collectGardenUserVisualIds(gardenDir);
   for (const page of learnerPages) {
     for (const spec of embeddedVisualSpecs(page.body)) {
       specs.push({ pageRel: page.rel, id: String(spec.id ?? "").trim(), anchorIds: visualSpecAnchorIds(spec) });
@@ -7559,7 +7593,7 @@ function finalVisualSpecs(gardenDir: string, learnerPages: LearnerPage[]): Array
       if (!name.endsWith(".json")) continue;
       const spec = readJson<Record<string, unknown>>(path.join(visualDir, name), {});
       const id = String(spec.id ?? name.replace(/\.json$/i, "")).trim();
-      if (!id || specs.some((existing) => existing.id === id)) continue;
+      if (!id || userVisualIds.has(id) || specs.some((existing) => existing.id === id)) continue;
       specs.push({ pageRel: `.breadboard/visuals/${name}`, id, anchorIds: visualSpecAnchorIds(spec) });
     }
   }
@@ -8775,13 +8809,13 @@ function collectFinalizeChecks({
   );
 
   // Export tree.
-  const allowed = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
+  const allowed = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard", "notepad"]);
   const treeProblems: string[] = [];
   for (const entry of fs.readdirSync(gardenDir)) {
-    if (!allowed.has(entry)) treeProblems.push(`unexpected top-level: ${entry}`);
+    if (!allowed.has(entry) && !isGardenUserPath(entry)) treeProblems.push(`unexpected top-level: ${entry}`);
   }
   if (!fs.existsSync(path.join(gardenDir, "sources", "_index.md"))) treeProblems.push("sources/_index.md missing");
-  push("exported tree only _index.md/Concepts/learning/sources/assets/.breadboard", treeProblems);
+  push("exported tree only _index.md/Concepts/learning/sources/assets/.breadboard/notepad", treeProblems);
 
   push("semantic navigation links point to the expected page family", semanticNavigationProblems(gardenDir));
   push("Semantic Navigation Number Matching", semanticNavigationNumberProblems(gardenDir));
@@ -9267,7 +9301,7 @@ function runCriticalGate({
   // Dirty tree.
   const allowed = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
   for (const entry of fs.readdirSync(gardenDir)) {
-    if (!allowed.has(entry)) problems.push(`dirty top-level export entry: ${entry}`);
+    if (!allowed.has(entry) && !isGardenUserPath(entry)) problems.push(`dirty top-level export entry: ${entry}`);
   }
 
   // Source pages must never be typed as learner pages; learner pages must live

@@ -11,6 +11,8 @@ export interface ChatTokenUsage {
   contextLimitTokens?: number;
   responseDurationMs?: number;
   estimated?: boolean;
+  /** Some phases did not report usage; these counters are only the recorded portion. */
+  partial?: boolean;
 }
 
 export interface ChatTokenUsageSummary {
@@ -185,6 +187,7 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
     ...(contextLimitTokens !== undefined ? { contextLimitTokens } : {}),
     ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
     ...(estimated ? { estimated: true } : {}),
+    ...(record.partial === true ? { partial: true } : {}),
   };
 }
 

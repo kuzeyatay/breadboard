@@ -1,3 +1,4 @@
+import { hermesPromptText } from "../src/lib/agent-runtime/hermes-prompt.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { HermesRuntimeAdapter } from "../src/lib/agent-runtime/adapters/hermes.ts";
@@ -24,13 +25,13 @@ test("every Breadboard Hermes session permanently includes real web lookup", asy
     title: "Web invariant",
   });
   const create = requests.find((request) => request.method === "session.create");
-  assert.deepEqual(create.params.enabled_toolsets, [
+  for (const toolset of [
     "breadboard",
     "web",
     "tokenjuice",
     "delegation",
     "clarify",
-  ]);
+  ]) assert.ok(create.params.enabled_toolsets.includes(toolset));
   const capabilities = await adapter.listCapabilities();
   assert.ok(capabilities.tools.includes("web_search"));
   assert.ok(capabilities.tools.includes("web_extract"));
@@ -137,22 +138,32 @@ test("Hermes receives the Breadboard PowerShell execution contract", async () =>
   }
 });
 
-test("the picked model becomes what ChatMock's `default` sentinel resolves to", async () => {
+test("the picked model becomes what ChatMock's `chat` sentinel resolves to", async () => {
   const requests = [];
   const chatmockCalls = [];
   const originalFetch = globalThis.fetch;
-  // The stored background model disagrees with the picker, which is exactly the
+  // The stored chat model disagrees with the picker, which is exactly the
   // drift that used to run the turn on ChatGPT while the chat showed Claude.
-  let storedDefaultModel = "gpt-5.6-sol";
+  // The background model (`default`) belongs to the profile page and must
+  // come through untouched: a chat pick used to overwrite it, which is how
+  // one Gemini conversation moved every Learn revision onto Gemini.
+  let storedChatModel = "gpt-5.6-sol";
+  const storedDefaultModel = "gpt-5.6-sol";
   globalThis.fetch = async (url, init) => {
     chatmockCalls.push({ url: String(url), method: init?.method ?? "GET" });
-    if (String(url).endsWith("/settings/default-model")) {
-      storedDefaultModel = JSON.parse(init.body).model;
+    if (String(url).endsWith("/settings/chat-model")) {
+      if (init?.method === "PUT") storedChatModel = JSON.parse(init.body).model;
       return new Response(JSON.stringify({
+        chatModel: storedChatModel,
+        storedChatModel,
         defaultModel: storedDefaultModel,
-        storedDefaultModel,
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
+    assert.notEqual(
+      String(url),
+      "http://127.0.0.1:8765/v1/settings/default-model",
+      "a chat turn must never write the background model",
+    );
     assert.equal(String(url), "http://127.0.0.1:8765/v1/settings/model-health");
     return new Response(JSON.stringify({
       preferredModel: storedDefaultModel,
@@ -181,13 +192,13 @@ test("the picked model becomes what ChatMock's `default` sentinel resolves to", 
       surface: "dashboard_terminal",
       sessionKey: "resolved-identity-test",
       filesystemMode: "restricted",
-      model: "default",
+      model: "chat",
     });
     await adapter.startRun({
       ...session,
       agentName: session.agentName,
       text: "what model are you?",
-      model: { providerID: "chatmock", modelID: "default" },
+      model: { providerID: "chatmock", modelID: "chat" },
       modelIdentity: { modelID: "cliproxy/claude-opus-5" },
       messageId: "msg_identity",
     });
@@ -196,9 +207,10 @@ test("the picked model becomes what ChatMock's `default` sentinel resolves to", 
     // sentinel Hermes was given can only expand to the model that was picked.
     assert.deepEqual(
       chatmockCalls.filter((call) => call.method === "PUT"),
-      [{ url: "http://127.0.0.1:8765/v1/settings/default-model", method: "PUT" }],
+      [{ url: "http://127.0.0.1:8765/v1/settings/chat-model", method: "PUT" }],
     );
-    assert.equal(storedDefaultModel, "cliproxy/claude-opus-5");
+    assert.equal(storedChatModel, "cliproxy/claude-opus-5");
+    assert.equal(storedDefaultModel, "gpt-5.6-sol");
 
     const submit = requests.find((entry) => entry.method === "prompt.submit");
     assert.match(submit.params.system_prompt, /Model: cliproxy\/claude-opus-5/);
@@ -605,17 +617,18 @@ test("Hermes preserves an interrupted recovered turn as failed", async () => {
     instruction: "please visualize spherical coordinates",
   })[Symbol.asyncIterator]();
   const recovered = [];
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     recovered.push((await events.next()).value);
   }
   await events.return();
 
   assert.deepEqual(
     recovered.map((event) => event.type),
-    ["assistant.delta", "assistant.completed", "session.status"],
+    ["error", "assistant.delta", "assistant.completed", "session.status"],
   );
-  assert.match(recovered[0].payload.text, /interrupted/i);
-  assert.equal(recovered[2].payload.status, "failed");
+  assert.equal(recovered[0].payload.code, "interrupted_tool_turn");
+  assert.match(recovered[1].payload.text, /interrupted/i);
+  assert.equal(recovered[3].payload.status, "failed");
 });
 
 test("a terminal tool journal does not duplicate lifecycle frames already seen live", async () => {
@@ -1107,4 +1120,39 @@ test("switching models sends the model id alone, not a provider flag", async () 
   assert.equal(configSet.params.value, "cliproxy/claude-opus-5");
   // The switch must not swallow the turn: the prompt still goes out.
   assert.ok(requests.some((request) => request.method === "prompt.submit"));
+});
+
+
+test("attachment recovery matches the submitted prompt in both live and restarted adapters", async () => {
+  const attachments = [{type: "document", name: "scan.pdf", blobId: "doc_0123456789abcdef0123456789abcdef", format: "pdf", text: "[[Page 1]]\nThe actual handwritten notes."}];
+  const instruction = "Continue these notes";
+  const persistedPrompt = hermesPromptText(instruction, attachments);
+  let submittedPrompt;
+  const fakeClient = {
+    async request(method, params) {
+      if (method === "session.create") return {session_id: "live-pdf", stored_session_id: "stored-pdf"};
+      if (method === "prompt.submit") submittedPrompt = params.text;
+      if (method === "session.turn_result") {
+        assert.equal(params.expected_user_text, submittedPrompt);
+        return {state: "completed", turn_id: params.turn_id, payload: {text: "Recovered notes.", status: "complete"}};
+      }
+      return {status: "streaming"};
+    },
+    async *events() { /* Clean closure also needs durable recovery. */ },
+    clearSession() {},
+  };
+  const config = {baseUrl: "http://127.0.0.1:9119", sessionToken: "test", requestTimeoutMs: 5000};
+  const adapter = new HermesRuntimeAdapter(config);
+  adapter.client = fakeClient;
+  const session = await adapter.createSession({surface: "dashboard_terminal", sessionKey: "attachment-recovery"});
+  await adapter.startRun({...session, text: instruction, attachments, messageId: "msg_pdf"});
+  assert.equal(submittedPrompt, persistedPrompt);
+  for (const restarted of [false, true]) {
+    const target = restarted ? new HermesRuntimeAdapter(config) : adapter;
+    target.client = fakeClient;
+    const events = [];
+    for await (const event of target.streamSession({...session, messageId: "msg_pdf", instruction: restarted ? persistedPrompt : instruction, submitted: true})) events.push(event);
+    assert.equal(events.find(event => event.type === "assistant.delta").payload.text, "Recovered notes.");
+    assert.equal(events.at(-1).payload.status, "idle");
+  }
 });

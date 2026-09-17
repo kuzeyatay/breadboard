@@ -35,14 +35,15 @@ export function sessionTitle(task: string): string {
  * The turn as the runtime receives it: the goal, then the two things about its
  * surroundings it cannot infer.
  */
-export function runInstruction(task: string, options: PromptOptions): string {
+export function runInstruction(task: string, options: PromptOptions, outputDirectory?: string): string {
   const notes: string[] = [];
   notes.push(
-    "Your reply is delivered straight into a chat, so end with the finding itself — what you did, what came out, and what it means — rather than a note that the work is on disk.",
+    "Your final reply is delivered straight into a chat without intermediate notes or file contents. Make it self-contained: state the checked inputs and assumptions, actual numerical results with units, material corrections and limitations, and source URLs supporting empirical claims. Include the finding itself, not only a note that the work is on disk. Preserve this final-delivery requirement across compaction.",
   );
   if (options.deliverFiles) {
     notes.push(
-      "Leave the scripts, data and figures you produce in the workspace under clear filenames; they are collected and attached to this answer.",
+      `Leave the scripts, data and figures you produce ${outputDirectory ? `under the fresh workspace directory ${outputDirectory}` : "in the workspace under clear filenames"}; they are collected and attached to this answer. Cite the workspace-relative report paths in your final reply.`,
+      "Use the supplied question and current evidence as your inputs. Existing workspace files are prior work, not a current draft or dataset, unless this request explicitly identifies them. Do not silently audit an old plan in place of the current evidence. If a necessary input is missing, state that limitation or use a clearly labeled illustrative scenario.",
     );
   }
   if (options.harness === "plan") {

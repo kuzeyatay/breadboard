@@ -61,6 +61,7 @@ const UPLOAD_STAGES: Array<{ status: VideoTranscriptionStatus; label: string }> 
   { status: "formatting_markdown", label: "Formatting transcript" },
   { status: "writing_source", label: "Writing source" },
   { status: "indexing_source", label: "Indexing source" },
+  { status: "analyzing_visuals", label: "Analyzing what the video shows" },
   { status: "completed", label: "Complete" },
 ];
 
@@ -71,6 +72,7 @@ const YOUTUBE_STAGES: Array<{ status: VideoTranscriptionStatus; label: string }>
   { status: "formatting_markdown", label: "Formatting transcript" },
   { status: "writing_source", label: "Writing source" },
   { status: "indexing_source", label: "Indexing source" },
+  { status: "analyzing_visuals", label: "Analyzing what the video shows" },
   { status: "completed", label: "Complete" },
 ];
 

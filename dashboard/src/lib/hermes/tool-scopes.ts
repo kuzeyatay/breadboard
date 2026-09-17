@@ -252,6 +252,7 @@ export const WORLDMONITOR_TOOLS = [
 // takes a query and returns links plus display metadata, so like the world
 // monitor there is no user-owned state behind it to change.
 export const IMAGE_SEARCH_TOOLS = ["image_search"] as const;
+export const FEYNMAN_TOOLS = ["feynman_research"] as const;
 
 // Sourced product discovery. This is a read over public product pages; the
 // route returns a versioned Breadboard UI resource as data, never component
@@ -262,6 +263,12 @@ export const PRODUCT_SEARCH_TOOLS = ["product_search"] as const;
 // applies the active surface (and active Garden on Garden Chat), excludes
 // temporary conversations, and returns navigation-only UI resources.
 export const CHAT_SEARCH_TOOLS = ["chat_search"] as const;
+
+// A printer tool can prepare a review, never authorize physical execution.
+export const BAMBU_TOOLS = ["bambu_print_prepare"] as const;
+
+// The account-wide pending inbox, read on request from Voice or the Terminal.
+export const NOTIFICATION_TOOLS = ["notifications_read"] as const;
 
 // What Breadboard is doing for the signed-in person right now: document
 // uploads, Learn runs, transcriptions, agent runs, schedules and the rest.
@@ -487,8 +494,10 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...MESSAGING_TOOLS,
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
+      ...FEYNMAN_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
       ...CHAT_SEARCH_TOOLS,
+      ...BAMBU_TOOLS,
       ...PROCESS_STATUS_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
@@ -502,9 +511,11 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...COMPUTER_USE_TOOLS,
       ...BREADBOARD_USE_TOOLS,
       ...WORKSPACE_TOOLS,
+      "attachment_image",
       ...SUPER_AGENT_TOOLS,
       ...gbrain,
       ...recall,
+      "terminal_execute_command",
       "mcp_call",
     ];
   }
@@ -532,9 +543,12 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...MESSAGING_TOOLS,
     ...WORLDMONITOR_TOOLS,
     ...IMAGE_SEARCH_TOOLS,
+    ...FEYNMAN_TOOLS,
     ...PRODUCT_SEARCH_TOOLS,
     ...CHAT_SEARCH_TOOLS,
+      ...BAMBU_TOOLS,
     ...PROCESS_STATUS_TOOLS,
+    ...NOTIFICATION_TOOLS,
     ...MAP_TOOLS,
     ...SPOTIFY_TOOLS,
     ...CALENDAR_TOOLS,
@@ -546,6 +560,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...COMPUTER_USE_TOOLS,
     ...BREADBOARD_USE_TOOLS,
     ...WORKSPACE_TOOLS,
+      "attachment_image",
     ...SUPER_AGENT_TOOLS,
     ...gbrain,
     ...recall,

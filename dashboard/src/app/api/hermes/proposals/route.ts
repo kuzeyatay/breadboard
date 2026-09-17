@@ -51,8 +51,12 @@ export async function GET(request: Request) {
       if (!isOwner) return [];
 
       const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      const content = row.kind === "page_revision"
+        ? (typeof payload.patchOrReplacement === "string" ? payload.patchOrReplacement : "")
+        : (typeof payload.content === "string" ? payload.content : "");
       return [{
         id: row.id,
+        assistantMessageId: row.assistant_message_id == null ? null : `msg_${row.assistant_message_id}`,
         kind: row.kind,
         gardenId: row.garden_id,
         gardenName: row.garden_name ?? row.garden_id,
@@ -60,7 +64,8 @@ export async function GET(request: Request) {
         folder: typeof payload.folder === "string" ? payload.folder : "",
         pageSlug: row.page_slug,
         rationale: row.rationale,
-        characters: typeof payload.content === "string" ? payload.content.length : 0,
+        content,
+        characters: content.length,
         createdAt: row.created_at,
       }];
     });

@@ -29,10 +29,10 @@ test("a run that ends without findings is not reported as a finding", () => {
     "every run-owning participant has to pass through it, so it belongs at the one collect point",
   );
   assert.match(participants, /const MINIMUM_USEFUL_OUTPUT = \d+;/);
-  assert.match(
+  assert.doesNotMatch(
     participants,
     /if \(result\.participant === "aris"\) return result;/,
-    "ARIS contributes method rather than retrieval and is deliberately short",
+    "ARIS must now return a substantive critique instead of unexecuted guidance",
   );
   assert.match(
     participants,
@@ -81,7 +81,7 @@ test("the retrieval participants are the ones held to a findings bar", async () 
   const { RETRIEVAL_PARTICIPANTS } = await import("../src/lib/max-research/plan.ts");
   assert.deepEqual(
     [...RETRIEVAL_PARTICIPANTS].sort(),
-    ["agent_reach", "deep_research", "get_doc", "openscience", "praxist"],
+    ["agent_reach", "deep_research", "feynman", "get_doc", "openscience", "praxist"],
     "ARIS is excluded because it contributes method, not evidence",
   );
 });

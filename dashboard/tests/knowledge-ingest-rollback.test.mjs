@@ -704,7 +704,7 @@ function runAbruptTransactionStage({
   return { assetDirectory, assetPath, resultPath, targetPath };
 }
 
-test("a dead ingestion owner cannot admit an ordinary edit before recovery rollback", async () => {
+test("an ordinary edit rolls back a dead ingestion before changing the garden", async () => {
   const fixture = createGardenFixture();
   const registryRoot = path.join(fixture.root, "transaction-registry");
   const runtimeJobsRoot = path.join(fixture.root, "runtime", "jobs");
@@ -718,19 +718,17 @@ test("a dead ingestion owner cannot admit an ordinary edit before recovery rollb
       stage: "active",
     });
     let editRan = false;
-    await assert.rejects(
-      withGardenMutationLease(
+    await withGardenMutationLease(
         fixture.clusterDir,
         "ordinary-edit-before-recovery",
         () => {
           editRan = true;
+          assert.equal(fs.readFileSync(targetPath, "utf8"), ORIGINAL_FILES.get("learning/shared-concept.md"));
           fs.writeFileSync(targetPath, "legitimate post-crash edit\n", "utf8");
         },
-      ),
-      (error) => error?.code === "GARDEN_MUTATION_BUSY",
     );
-    assert.equal(editRan, false);
-    assert.equal(fs.readFileSync(targetPath, "utf8"), "mutated garden page\n");
+    assert.equal(editRan, true);
+    assert.equal(fs.readFileSync(targetPath, "utf8"), "legitimate post-crash edit\n");
 
     assert.deepEqual(
       recoverKnowledgeWriteTransactions(
@@ -739,7 +737,7 @@ test("a dead ingestion owner cannot admit an ordinary edit before recovery rollb
         registryRoot,
         runtimeJobsRoot,
       ),
-      [{ transactionId, outcome: "rolled-back" }],
+      [],
     );
 
     await withGardenMutationLease(

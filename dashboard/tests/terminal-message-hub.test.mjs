@@ -6,6 +6,7 @@ import test, { after, beforeEach } from "node:test";
 import ts from "typescript";
 import crypto from "node:crypto";
 import * as clicky from "../src/lib/clicky/companion.ts";
+import * as pdfScope from "../src/lib/pdf-assistant-scope.ts";
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-terminal-hub-"));
 process.env.BREADBOARD_DATA_DIR = dataRoot;
@@ -43,6 +44,8 @@ function route(relative, overrides = {}) {
       routeErrorResponse: (error) => Response.json({ error: error.message }, { status: error.status ?? 500 }),
     },
     "@/lib/db": { default: db },
+    "@/lib/pdf-assistant-scope.ts": pdfScope,
+    "@/lib/browser-terminal.ts": { parseBrowserTerminalAccess: () => undefined },
     "@/lib/conversations/store.ts": store,
     "@/lib/conversations/origin-label.ts": origins,
     "@/lib/conversations/search.ts": search,
@@ -111,6 +114,21 @@ test("terminal opens another surface's exact transcript while enforcing ownershi
   assert.equal((await api.GET(new Request("http://localhost/chat?surface=quartz_ai"), params)).status, 404);
   const other = store.createConversation({ userId: 2 });
   assert.equal((await api.GET(new Request("http://localhost/chat?surface=dashboard_terminal"), { params: Promise.resolve({ sessionId: other.public_id }) })).status, 404);
+});
+
+test("PDF conversations restore document scope and inline answers without a runtime", () => {
+  const key = "pdf:12345678abcdef00";
+  const chat = store.createConversation({ userId: 1, title: "A PDF question", surface: "dashboard_terminal", originLabel: "PDF" });
+  const selection = { id: "pdf-question", mode: "inline", sourceMessageId: `${key}:page:2`, start: 0, end: 7, quote: "excerpt", prefix: undefined, suffix: undefined };
+  store.reserveConversationTurn({ conversation: chat, clientMessageId: "pdf-first", surface: chat.surface, content: "Explain this", metadata: { activePageSlug: key, textSelection: selection } });
+  store.completeAssistantMessage({ conversationId: chat.id, clientMessageId: "pdf-first", content: "This is the saved inline answer.", metadata: { textSelection: selection } });
+  assert.equal(runtime.getRuntimeSessionByConversation(chat.id), null);
+  const summary = presentation.presentHermesSessionSummary(chat);
+  assert.equal(summary.pageSlug, key);
+  assert.equal(summary.originLabel, "PDF Assistant");
+  const detail = presentation.presentHermesSessionDetail(chat);
+  assert.deepEqual(detail.messages.map((message) => message.textSelection), [selection, selection]);
+  assert.equal(presentation.presentHermesSessionSummary(store.renameConversation(chat, "New title")).pageSlug, key);
 });
 
 test("browser-created chats keep their origin through history, rename, reopen and search", async () => {
@@ -189,7 +207,7 @@ test("message and event endpoints resolve a terminal viewer to the original runt
     "@/lib/conversations/branch-history.ts": { parseConversationBranchHistory: () => null },
     "@/lib/chat-text-selection.ts": { normalizeChatTextSelectionReference: () => null },
     "@/lib/chat-attachments-request.ts": { parseChatAttachments: () => [] },
-    "@/lib/document-attachments-server.ts": { resolveDocumentAttachments: () => [] },
+    "@/lib/document-attachments-server.ts": { hydrateDocumentAttachments: () => [] },
     "@/lib/colpali/retrieval.ts": { retrieveDocumentAttachments: async () => [] },
     "@/lib/hermes/current-location-context.ts": { parseCurrentLocationPayload: () => null },
     "@/lib/schedules/receipt-server.ts": { scheduledChatReceiptForUser: () => null },

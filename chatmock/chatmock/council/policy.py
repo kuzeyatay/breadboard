@@ -92,6 +92,11 @@ def council_enabled() -> bool:
 class CouncilConfig:
     council_models: List[str] = field(default_factory=lambda: list(DEFAULT_COUNCIL_MODELS))
     chairman_model: str = DEFAULT_CHAIRMAN_MODEL
+    # True only when an operator named the bench (COUNCIL_MODELS /
+    # CHAIRMAN_MODEL). Left unset, the seats follow the model each request
+    # asked for; see CouncilRuntime._seat_models.
+    council_models_configured: bool = False
+    chairman_configured: bool = False
     default_council_mode: str = "direct_council"
     # ChatGPT OAuth model used for direct_council parity with legacy ChatMock calls.
     upstream_fallback_model: str = DEFAULT_MODEL
@@ -111,9 +116,11 @@ class CouncilConfig:
         models = _parse_models(os.environ.get("COUNCIL_MODELS"))
         if models:
             cfg.council_models = models
+            cfg.council_models_configured = True
         chairman = (os.environ.get("CHAIRMAN_MODEL") or "").strip()
         if chairman:
             cfg.chairman_model = chairman
+            cfg.chairman_configured = True
         default_mode = (os.environ.get("DEFAULT_COUNCIL_MODE") or "").strip()
         if default_mode in COUNCIL_MODES:
             cfg.default_council_mode = default_mode

@@ -6,6 +6,7 @@ import { pageResources, renderPage } from "../../components/renderPage"
 import { ProcessedContent, QuartzPluginData, defaultProcessedContent } from "../vfile"
 import { FullPageLayout } from "../../cfg"
 import path from "path"
+import { fileOf } from "../../processors/treeSpill"
 import {
   FullSlug,
   SimpleSlug,
@@ -79,11 +80,12 @@ function computeFolderInfo(
   )
 
   // Update with actual content if available
-  for (const [tree, file] of content) {
+  for (const entry of content) {
+    const file = fileOf(entry)
     const slug = stripSlashes(simplifySlug(file.data.slug!)) as SimpleSlug
     const folderSlug = (slug.endsWith("/index") ? path.dirname(slug) : slug) as SimpleSlug
     if (folders.has(folderSlug)) {
-      folderInfo[folderSlug] = [tree, file]
+      folderInfo[folderSlug] = entry
     }
   }
 

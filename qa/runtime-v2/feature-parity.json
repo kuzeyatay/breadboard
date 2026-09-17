@@ -81,7 +81,7 @@
     "sourceRefs",
     "sourceSha256"
   ],
-  "capabilityCount": 496,
+  "capabilityCount": 495,
   "countsByCategory": {
     "agency-persona": 264,
     "approval": 8,
@@ -100,13 +100,13 @@
     "recovery": 10,
     "registry": 9,
     "repository": 2,
-    "runtime-agent": 37,
+    "runtime-agent": 36,
     "tool-family": 40,
     "workflow": 24
   },
   "sourceCatalogs": {
     "nextApiRoutes": {
-      "count": 525,
+      "count": 519,
       "sha256": "f7a647536eb74a6f4926513da485d3f1939fb213b5183ffe1141df9a4bea9810"
     },
     "desktopIpcSources": {
@@ -41558,130 +41558,6 @@
       ],
       "sourceSha256": "2530afc64df2ccb09133e41417310345a9720d50c5a26465595d9f88c0e87413",
       "baselineContractSha256": "1bfc6417fa91a623d7d508311bf5f0dd14b4a7edf2a96786405ca211c7bf0850"
-    },
-    {
-      "capabilityId": "runtime-agent:open-gym",
-      "sourceIdentity": "open-gym",
-      "displayName": "openGym",
-      "category": "runtime-agent",
-      "visibleEntryPoint": "Agents tab and /agents:open-gym",
-      "slashCommand": "/agents:open-gym",
-      "implicitTrigger": null,
-      "selectionSemantics": "{\"stacksCapabilities\":false,\"acceptsAttachments\":false,\"launchableByModel\":true,\"requiresLaunchApproval\":false}",
-      "routeOrIpcContract": "/api/open-gym/runs; SSE /api/open-gym/runs/[runId]/events; POST /api/open-gym/runs/[runId]/abort",
-      "requiredServiceOrWorker": [
-        "registered Runtime V2 open-gym disposable worker"
-      ],
-      "providerRequirements": [],
-      "credentialRequirements": [],
-      "externalSoftwareRequirements": [],
-      "inputTypes": [
-        "text"
-      ],
-      "outputTypes": [
-        "chat-message",
-        "external-agent-run-card",
-        "durable-transcript-field"
-      ],
-      "artifactTypes": [
-        "agent-specific"
-      ],
-      "progressEventContract": "Fenced Runtime worker events are durably projected and replayed from /api/open-gym/runs/[runId]/events.",
-      "streamingContract": "Conversation SSE with bounded replay.",
-      "cancellationBehavior": "POST /api/open-gym/runs/[runId]/abort cancels the exact Runtime job; the native owner applies the registered graceful window and complete-tree termination.",
-      "approvalBehavior": "Direct user selection authorizes launch.",
-      "followUpContextBehavior": "Conversation-bound openGymRun descriptor restores the run card and follow-up context.",
-      "restartBehavior": "The durable exact-job mapping, fenced event projection, and transcript descriptor survive Dashboard restart; installed restart evidence remains NOT RUN.",
-      "recoveryBehavior": "External run kind open_gym maps to openGymRun; missing or mismatched Runtime identity fails closed without a Next fallback.",
-      "preMigrationStatus": "SOURCE_PRESENT",
-      "preMigrationEvidence": [
-        "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-        "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:8",
-        "dashboard/src/app/api/open-gym/runs/route.ts:17",
-        "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-        "dashboard/src/lib/hermes/capability-combinations.ts:1",
-        "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-      ],
-      "postMigrationStatus": "NOT RUN",
-      "postMigrationEvidence": [],
-      "uiEntryPoint": "Agents tab and /agents:open-gym",
-      "selectionEvidence": {
-        "preMigration": [
-          "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/route.ts:17",
-          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-          "dashboard/src/lib/hermes/capability-combinations.ts:1",
-          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-        ],
-        "postMigration": []
-      },
-      "runtimePath": "/api/open-gym/runs -> authenticated durable Runtime submit -> registered open-gym disposable worker -> fenced replay at /api/open-gym/runs/[runId]/events",
-      "serviceWorkerEvidence": {
-        "preMigration": [
-          "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/route.ts:17",
-          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-          "dashboard/src/lib/hermes/capability-combinations.ts:1",
-          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-        ],
-        "postMigration": []
-      },
-      "outputArtifactEvidence": {
-        "preMigration": [
-          "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/route.ts:17",
-          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-          "dashboard/src/lib/hermes/capability-combinations.ts:1",
-          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-        ],
-        "postMigration": []
-      },
-      "cancellationEvidence": {
-        "preMigration": [
-          "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/route.ts:17",
-          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-          "dashboard/src/lib/hermes/capability-combinations.ts:1",
-          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-        ],
-        "postMigration": []
-      },
-      "recoveryEvidence": {
-        "preMigration": [
-          "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:8",
-          "dashboard/src/app/api/open-gym/runs/route.ts:17",
-          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-          "dashboard/src/lib/hermes/capability-combinations.ts:1",
-          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-        ],
-        "postMigration": []
-      },
-      "result": "NOT RUN",
-      "stoppedServiceBehavior": "Must remain visible while stopped; the original action cold-starts the dependency without another user action.",
-      "mockOrFallbackDeclarations": {
-        "count": 2,
-        "sha256": "1c401bc730766e965e6f76cf228b5aebc0ba547d47243623ca07566acaeb8292",
-        "evidence": [
-          "dashboard/src/lib/conversations/external-agent-runs.ts:157:* metadata; the fallback repairs rows written by the older card-takeover model,",
-          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:212:\"Choose it when the deck will be presented or shared as a link and the interactivity is the point — a punchline that lands on a click, a live product mock. Resource2Skill makes the"
-        ],
-        "truncated": false
-      },
-      "sourceRefs": [
-        "dashboard/src/app/api/open-gym/runs/[runId]/abort/route.ts:8",
-        "dashboard/src/app/api/open-gym/runs/[runId]/events/route.ts:9",
-        "dashboard/src/app/api/open-gym/runs/route.ts:17",
-        "dashboard/src/lib/conversations/external-agent-runs.ts:6",
-        "dashboard/src/lib/hermes/capability-combinations.ts:1",
-        "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
-      ],
-      "sourceSha256": "eb38b0b476390752dca9bde2da7c8ddb5c65c08f5b7a9a56f794f00a50722668",
-      "baselineContractSha256": "58e87029b5a86d66d09edfc01089bc84612221c2318914fa28c9e813c92a193d"
     },
     {
       "capabilityId": "runtime-agent:opencode",

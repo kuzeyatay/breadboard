@@ -27,14 +27,15 @@ app.whenReady().then(async () => {
       import React from 'react';
       import { createRoot } from 'react-dom/client';
       import { useDesktopTabs } from './src/app/components/use-desktop-tabs';
+      import DesktopTitleBar from './src/app/components/desktop-title-bar';
       import BrowserMenuControls from './src/app/browser/browser-menu-controls';
       function App() {
         const state = useDesktopTabs();
         const tab = state?.tabs.find(tab => tab.id === state.selfId);
-        return <div className="browser-toolbar" style={{marginTop:32}}>
+        return <><DesktopTitleBar />{tab?.browser ? <div className="browser-toolbar">
           <div className="browser-address-form" style={{flex:1}}><div className="browser-address-bar">{tab?.browser?.address || 'Search or enter address'}</div></div>
-          <BrowserMenuControls profileLabel="Fixture profile" address={tab?.browser?.address || ''} matches={tab?.browser?.find} onPanel={panel => { window.testPanel = panel; }} />
-        </div>;
+          <BrowserMenuControls profileLabel="Fixture profile" onPanel={panel => { window.testPanel = panel; }} />
+        </div> : <main style={{padding:24}}><h1>Dashboard search fixture</h1><p>A local needle.</p><p>Another local needle.</p><input aria-label="Fixture editor" /></main>}</>;
       }
       createRoot(document.getElementById('root')).render(<App />);
     `, resolveDir: dashboard, loader: "tsx" },
@@ -83,6 +84,60 @@ app.whenReady().then(async () => {
   });
   await window.loadURL(origin + "/dashboard");
   window.showInactive();
+  const shortcut = (contents, keyCode, modifiers = []) => {
+    contents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    contents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+  };
+  const findInput = 'input[aria-label="Find in page"]';
+  const findSurface = () => webContents.getAllWebContents().find(contents => contents.getURL().includes("/find-in-page.html"));
+  const findUI = {
+    executeJavaScript: script => findSurface()?.executeJavaScript(script),
+    insertText: text => findSurface().insertText(text),
+    sendInputEvent: event => findSurface().sendInputEvent(event),
+  };
+  const captureFind = async name => {
+    let capture;
+    await until(async () => { capture = await findSurface().capturePage(); return !capture.isEmpty(); }, "find bar paints");
+    if (!process.env.BREADBOARD_MENU_QA_DIR) return;
+    fs.mkdirSync(process.env.BREADBOARD_MENU_QA_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.BREADBOARD_MENU_QA_DIR, name), capture.toPNG());
+  };
+  const local = window.webContents;
+  const localFind = () => manager.stateFor(local).tabs.find(tab => tab.id === manager.stateFor(local).selfId)?.find;
+  await until(() => local.executeJavaScript('Boolean(document.querySelector("[aria-label=\\"Fixture editor\\"]"))'), "dashboard renders");
+  await local.executeJavaScript('document.querySelector("[aria-label=\\"Fixture editor\\"]").focus()');
+  shortcut(local, "F", ["control"]);
+  await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "Ctrl+F focuses dashboard search");
+  await findUI.insertText("needle");
+  try {
+    await until(() => localFind()?.matches === 2, "dashboard search finds its own two matches");
+  } catch (error) {
+    console.error("Local find diagnostics", JSON.stringify({ commands: findCommands, value: await findUI.executeJavaScript(`document.querySelector('${findInput}').value`), state: manager.stateFor(local) }));
+    throw error;
+  }
+  await until(() => localFind()?.activeMatchOrdinal > 0, "dashboard selects an initial match");
+  const firstLocalMatch = localFind().activeMatchOrdinal;
+  shortcut(findUI, "Enter");
+  await until(() => localFind()?.activeMatchOrdinal === firstLocalMatch % 2 + 1, "Enter advances dashboard match");
+  shortcut(findUI, "Enter", ["shift"]);
+  await until(() => localFind()?.activeMatchOrdinal === firstLocalMatch, "Shift+Enter goes to previous dashboard match");
+  shortcut(findUI, "F", ["control"]);
+  await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}') && document.activeElement.selectionEnd === 6 && document.activeElement.selectionStart === 0`), "repeated Ctrl+F selects the existing query");
+  await findUI.insertText("no-such-match");
+  await until(() => localFind()?.matches === 0, "missing text reports zero matches");
+  await captureFind("find-dashboard.png");
+  shortcut(findUI, "Escape");
+  await until(async () => !findSurface() && await local.executeJavaScript(`document.activeElement?.getAttribute('aria-label') === 'Fixture editor'`), "Escape closes find and restores editor focus");
+  assert.equal(localFind(), undefined, "dashboard highlights cleared");
+  // Keep a search open across reload, then switch to a different document.
+  shortcut(local, "F", ["control"]);
+  await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "local find reopens");
+  await findUI.insertText("needle");
+  await until(() => localFind()?.matches === 2, "local query restored");
+  const localFindSurface = findSurface();
+  await local.loadURL(origin + "/dashboard?reloaded=1");
+  await until(() => localFind()?.matches === 2, "local search follows full document navigation");
+  assert.equal(findSurface(), localFindSurface, "navigation retains the native find controls");
   assert.equal(await manager.handleCommand(window.webContents, { type: "browser", url: web }), true);
   let chrome, page;
   await until(() => {
@@ -134,32 +189,37 @@ app.whenReady().then(async () => {
     await choose(id);
     await until(async () => await chrome.executeJavaScript("window.testPanel") === panel, `${id} panel requested`);
   }
-  await choose("find");
-  await until(() => chrome.executeJavaScript("Boolean(document.querySelector('input[aria-label=\"Find in page\"]'))"), "find bar opens");
-  await chrome.executeJavaScript("document.querySelector('input').focus()");
-  await chrome.insertText("needle");
+  page.focus();
+  shortcut(page, "F", ["control"]);
+  await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "Ctrl+F from website focuses find bar");
+  assert.equal(window.contentView.children.at(-1).webContents, findSurface(), "find bar remains above the native website view");
+  await findUI.insertText("needle");
   try {
     await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.matches === 3, "Chromium finds three matches");
   } catch (error) {
-    console.error("Find diagnostics", JSON.stringify({ commands: findCommands, value: await chrome.executeJavaScript("document.querySelector('input').value"), state: manager.stateFor(chrome) }));
+    console.error("Find diagnostics", JSON.stringify({ commands: findCommands, value: await findUI.executeJavaScript("document.querySelector('input').value"), state: manager.stateFor(chrome) }));
     throw error;
   }
-  await chrome.executeJavaScript("document.querySelector('[aria-label=\"Next match\"]').click()");
+  await findUI.executeJavaScript("document.querySelector('[aria-label=\"Next match\"]').click()");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.activeMatchOrdinal === 2, "next match works");
-  await chrome.executeJavaScript("document.querySelector('[aria-label=\"Previous match\"]').click()");
+  await findUI.executeJavaScript("document.querySelector('[aria-label=\"Previous match\"]').click()");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.activeMatchOrdinal === 1, "previous match works");
+  assert.equal(localFind(), undefined, "changing tabs clears the previous page's search without mixing results");
   await page.loadURL(web + "/other");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.matches === 1, "find follows page navigation");
   await page.loadURL(web + "/");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.matches === 3, "find follows navigation back");
-  if (process.env.BREADBOARD_MENU_QA_DIR) {
-    fs.mkdirSync(process.env.BREADBOARD_MENU_QA_DIR, { recursive: true });
-    fs.writeFileSync(path.join(process.env.BREADBOARD_MENU_QA_DIR, "find-toolbar.png"), (await chrome.capturePage()).toPNG());
-  }
-  await chrome.executeJavaScript("document.querySelector('[aria-label=\"Close find in page\"]').click()");
+  await captureFind("find-toolbar.png");
+  page.focus();
+  shortcut(page, "Escape");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find === undefined, "find selection cleared");
+  await until(() => !findSurface(), "Escape works with website focus");
   page.emit("found-in-page", {}, { requestId: 123, matches: 3, activeMatchOrdinal: 1 });
   assert.equal(manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find, undefined, "late results cannot reopen a closed search");
+  await choose("find");
+  await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "menu still opens and focuses search");
+  await findUI.executeJavaScript("document.querySelector('[aria-label=\"Close find in page\"]').click()");
+  await until(() => !findSurface(), "close button dismisses search");
 
   let printed = false;
   page.print = (options, callback) => { assert.equal(options.silent, false); printed = true; callback(true, ""); };

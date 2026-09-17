@@ -11,6 +11,22 @@ The switch is off by default and the weights are not shipped with Breadboard.
 Turned on, it is a standing instruction rather than a per-message choice — see
 "Automatic mode" below.
 
+### First-use setup and scores
+
+The first requested rewrite now installs the pinned BART checkpoint automatically
+if it is missing. Health checks and app startup do not download weights. An
+existing checkpoint under `~/.breadboard/humanizer/models/hub` is reused when
+Runtime V2 selects a new data directory. A complete checkpoint requires the exact
+revision's tokenizer, configuration, and safetensors files; a config file alone
+does not count as an installation. Inference remains offline, and installation
+downloads model files only, without sending any answer text.
+
+The answer's action row displays the original and candidate style scores. An
+unchanged or declined candidate reports that the original was kept; setup or
+rewrite failures show the reason. Stored rewrite versions retain their scores
+when a garden chat is reopened. Scores measure writing patterns, not authorship
+or the result another detector will report.
+
 ---
 
 ## What it does, from the reader's side
@@ -126,7 +142,14 @@ sidecar through `POST /api/hermes/tools/humanizer`:
 | Tool | Does |
 | --- | --- |
 | `humanize_text` | Rewrites a passage; returns the original, the rewrite, both scores, chunk counts and the preservation report. |
-| `humanize_status` | Whether the service is up and the model downloaded, and on which device. Never loads or downloads anything. |
+| `humanize_status` | Starts an idle service through a Runtime lease, then reports readiness and device. May warm an installed model. A missing checkpoint is installed by the first rewrite. |
+
+`/humanize <passage>` calls `humanize_text` directly; a preflight is optional.
+Both the chat and Office status tools use `humanizerToolStatus`, so Runtime's
+normal idle shutdown cannot be mistaken for a missing installation. Passive
+settings health checks still never acquire a lease. The inference timeout
+starts after service readiness, and the Hermes transport allows startup plus
+the full ten-minute rewrite budget before timing out.
 
 This door is deliberately narrower than the dialog's. It **returns text and
 writes nothing** — no message edited, no note written, no version created. The
@@ -622,7 +645,7 @@ Full notice: `humanizer-service/THIRD_PARTY_NOTICES.md`.
 
 | What you see | What it means |
 | --- | --- |
-| "The local rewriter is not running on this machine." | Almost always no Python environment: run `npm run setup:humanizer` and start Breadboard again. If `.runtime/humanizer-venv` does exist, the launcher printed why it skipped the service — check the stack output, or run `npm run dev:humanizer` on its own to see it start. |
+| "The local rewriter is not running." in passive status | Normal while Runtime has stopped the idle service. `/humanize` and `humanize_status` acquire a service lease and wake it. If startup itself fails, inspect Runtime's service error. Bare dashboard development still requires the separately launched local service. |
 | "The rewriting model has not been downloaded yet." | Environment present, checkpoint absent. `npm run setup:humanizer -- --download-model`. |
 | "The rewriter is already working on something." | One inference at a time, by design. Try again in a moment. |
 | "The rewrite took too long and was stopped." | A long answer on CPU. Raise `BREADBOARD_HUMANIZER_TIMEOUT_MS`, or rewrite a shorter passage. |

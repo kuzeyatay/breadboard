@@ -17,16 +17,33 @@ function savedTrack(payload: unknown): Track | null {
     ? { uri: track.uri, name: track.name } : null;
 }
 
-/** Uses the existing account connection and player; never picks an external URL. */
-export async function executeClapMusic(action: Extract<ClapAction, { kind: 'music' }>, services: ClapMusicServices): Promise<string> {
-  if (!services.connected()) throw new Error('Connect Spotify in Settings → Connections, then try your gesture again.');
+async function playbackCommand(services: ClapMusicServices, command: {
+  method: 'PUT' | 'POST'; endpoint: string; body?: unknown;
+}): Promise<void> {
+  // Song lookup can outlive the player registration. Resolve the device only
+  // when we are ready to send the command, including after library sampling.
   const engine = await services.engine();
   const deviceId = engine.ready ? engine.deviceId : null;
   if (!deviceId) throw new Error("Breadboard's Spotify player is unavailable. Try your gesture again once the player is ready.");
-  const query = { device_id: deviceId };
+  try {
+    await services.api({ ...command, query: { device_id: deviceId } });
+  } catch (error) {
+    // Spotify explicitly rejected an absent device, so nothing was dispatched.
+    // Recover once if the local player has since registered a replacement.
+    // Never replay an uncertain response, especially next/previous commands.
+    if (record(error).code !== 'spotify_device_unavailable') throw error;
+    const current = await services.engine();
+    if (!current.ready || !current.deviceId || current.deviceId === deviceId) throw error;
+    await services.api({ ...command, query: { device_id: current.deviceId } });
+  }
+}
+
+/** Uses the existing account connection and player; never picks an external URL. */
+export async function executeClapMusic(action: Extract<ClapAction, { kind: 'music' }>, services: ClapMusicServices): Promise<string> {
+  if (!services.connected()) throw new Error('Connect Spotify in Settings → Connections, then try your gesture again.');
   if (['pause', 'resume', 'next', 'previous'].includes(action.operation)) {
     const operation = action.operation === 'resume' ? 'play' : action.operation;
-    await services.api({ method: ['next', 'previous'].includes(operation) ? 'POST' : 'PUT', endpoint: `/v1/me/player/${operation}`, query });
+    await playbackCommand(services, { method: ['next', 'previous'].includes(operation) ? 'POST' : 'PUT', endpoint: `/v1/me/player/${operation}` });
     return { pause: 'Asked Spotify to pause.', resume: 'Asked Spotify to resume.', next: 'Skipped to the next song.', previous: 'Went to the previous song.' }[action.operation as 'pause' | 'resume' | 'next' | 'previous'];
   }
   let track: Track | null = null;
@@ -45,6 +62,6 @@ export async function executeClapMusic(action: Extract<ClapAction, { kind: 'musi
     track = savedTrack(offset === 0 ? first : await services.api({ method: 'GET', endpoint: '/v1/me/tracks', query: { limit: 1, offset } }));
     if (!track) throw new Error('That saved song is unavailable on Spotify. Clap again to choose another.');
   }
-  await services.api({ method: 'PUT', endpoint: '/v1/me/player/play', query, body: { uris: [track.uri] } });
+  await playbackCommand(services, { method: 'PUT', endpoint: '/v1/me/player/play', body: { uris: [track.uri] } });
   return `Playing “${track.name}” in Breadboard.`;
 }

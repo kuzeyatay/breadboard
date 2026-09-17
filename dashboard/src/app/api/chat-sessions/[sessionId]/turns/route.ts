@@ -15,6 +15,8 @@ import {
   reserveConversationTurn,
 } from "@/lib/conversations/store";
 import { apiErrorResponse } from "@/lib/hermes/route-helpers";
+import { getRuntimeSessionByConversation } from "@/lib/hermes/runtime-store.ts";
+import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -87,6 +89,8 @@ export async function POST(
     const textSelection = normalizeChatTextSelectionReference(
       body.textSelection,
     );
+    const branchGroupId = typeof body.branchGroupId === "string"
+      ? body.branchGroupId.trim().slice(0, 200) : "";
 
     const conversation = ensureConversationForLegacyChatSession(
       numericSessionId,
@@ -100,6 +104,7 @@ export async function POST(
       metadata: {
         gardenPreDispatch: true,
         responseStartedAt: createdAt,
+        ...(branchGroupId ? { branchGroupId } : {}),
         ...(body.internalAgentContinuation === true
           ? { internalAgentContinuation: true }
           : {}),
@@ -172,6 +177,12 @@ export async function DELETE(
     });
     if (!message) {
       return NextResponse.json({ error: "Turn not found" }, { status: 404 });
+    }
+    // Inline questions have their own runtime. Stop only that turn, including
+    // a runtime that registered while the checkpoint was being cancelled.
+    const inlineRuntime = getRuntimeSessionByConversation(conversation.id, clientMessageId);
+    if (inlineRuntime && message.status === "aborted") {
+      await cancelRuntimeSessionWork(userId, inlineRuntime);
     }
     return NextResponse.json({
       cancelled: message.status === "aborted",

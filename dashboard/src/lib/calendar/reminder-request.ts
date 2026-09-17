@@ -155,7 +155,9 @@ function classLike(
 function reminderPrompt(occurrence: CalendarOccurrence): string {
   const title = occurrence.title.trim() || "Your class";
   const location = occurrence.location?.trim();
-  return `${title} starts at ${timeOf(occurrence.start)}${location ? ` at ${location}` : ""}`;
+  const event = `${title} starts at ${timeOf(occurrence.start)}${location ? ` at ${location}` : ""}`;
+  const notes = occurrence.description?.trim();
+  return notes ? `${event}\n${notes}` : event;
 }
 
 /** Build one one-shot reminder for each upcoming class occurrence today. */

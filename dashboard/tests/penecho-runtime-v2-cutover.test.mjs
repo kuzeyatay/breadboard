@@ -399,7 +399,7 @@ test("PenEcho status is observational and Quartz cards heartbeat then release on
   assert.match(card, /crypto\.randomUUID\(\)/);
   assert.match(card, /window\.setInterval[\s\S]*VIEW_HEARTBEAT_MS/);
   assert.match(card, /method: "DELETE"[\s\S]*keepalive: true/);
-  assert.match(card, /disposeActiveBoards\(\)[\s\S]*querySelectorAll/);
+  assert.match(card, /disposeActiveBoards\(true\)[\s\S]*querySelectorAll/);
   assert.match(card, /document\.removeEventListener\("keydown", onKeyDown\)/);
   assert.match(card, /event\.source !== frame\.contentWindow/);
   assert.match(card, /data\?\.type !== FRAME_READY_MESSAGE/);

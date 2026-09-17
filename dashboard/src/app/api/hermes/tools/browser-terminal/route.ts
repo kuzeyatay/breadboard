@@ -37,7 +37,11 @@ export async function POST(request: Request) {
     if (args.action === "scroll" && !["up", "down", "top", "bottom"].includes(String(args.direction))) {
       throw new ApiError(400, "invalid_browser_direction", "Choose up, down, top, or bottom.");
     }
-    const page = await readBrowserTerminal(access, args.action as "read" | "screenshot" | "scroll", args.direction as "up" | "down" | "top" | "bottom");
+    if (args.surface !== undefined && !["page", "app"].includes(String(args.surface))) {
+      throw new ApiError(400, "invalid_browser_surface", "Choose page or app.");
+    }
+    const page = await readBrowserTerminal(access, args.action as "read" | "screenshot" | "scroll",
+      args.direction as "up" | "down" | "top" | "bottom", args.surface as "page" | "app" | undefined);
     return NextResponse.json({ ok: true, data: page });
   } catch (error) {
     return apiErrorResponse(error);

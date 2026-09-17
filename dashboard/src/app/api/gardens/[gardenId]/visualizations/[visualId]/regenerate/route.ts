@@ -36,7 +36,7 @@ import {
   loadVisualizationPlan,
   persistedVisualizationOpportunityContractProblems,
 } from "@/lib/visualization-opportunities";
-import { acquireGardenLearnLease } from "@/lib/learn-atomic-promotion";
+import { acquireGardenLearnLease } from "@/lib/garden-mutation-lease";
 import { stableGeneratedVisualCouncilRecoveryRoot } from "@/lib/generated-visual-council-receipts";
 import {
   generatedVisualPublicationPointersMatch,
@@ -285,6 +285,7 @@ export async function POST(
             ...relativePage.split("/"),
           );
           const result = await createGeneratedVisualization({
+            sourceSkill: "interactive-visualizer-in-chat",
             client,
             model: DEFAULT_MODEL,
             gardenDir: mutation.stagingGardenDir,

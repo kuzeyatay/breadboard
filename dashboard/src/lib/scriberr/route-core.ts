@@ -18,6 +18,7 @@ import {
   publicVideoTranscriptionJob,
   type ExistingVideoSource,
   type PublicVideoTranscriptionJob,
+  type VideoTranscriptionAnalysis,
   type VideoTranscriptionJob,
   type YouTubeMediaMetadata,
 } from "./types.ts";
@@ -150,6 +151,8 @@ export async function handleCreateVideoTranscription(
       displayFilename: string;
     } | null = null;
     let retranscribe = false;
+    let analysis: VideoTranscriptionAnalysis = "transcript";
+    let retainMedia = true;
 
     if (isMultipart) {
       // Reject oversized uploads before buffering the form when possible.
@@ -176,6 +179,8 @@ export async function handleCreateVideoTranscription(
       const file = media instanceof File ? media : legacyVideo;
       const urlValue = form.get("youtubeUrl");
       retranscribe = form.get("retranscribe") === "true";
+      analysis = form.get("analysis") === "watch" ? "watch" : "transcript";
+      retainMedia = form.get("retainMedia") !== "false";
       if (typeof urlValue === "string" && urlValue.trim() && file instanceof File) {
         throw new VideoTranscriptionError("invalid_input", {
           userMessage:
@@ -208,6 +213,8 @@ export async function handleCreateVideoTranscription(
       const body = await readJsonBody(request);
       const url = body.youtubeUrl ?? body.url;
       retranscribe = body.retranscribe === true;
+      analysis = body.analysis === "watch" ? "watch" : "transcript";
+      retainMedia = body.retainMedia !== false;
       if (body.video !== undefined || body.media !== undefined) {
         throw new VideoTranscriptionError("invalid_input", {
           userMessage: "Media uploads must use multipart/form-data.",
@@ -294,6 +301,8 @@ export async function handleCreateVideoTranscription(
         sourceTitle:
           youtube.metadata?.title ?? `YouTube video ${youtube.parsed.videoId}`,
         videoMetadata: youtube.metadata,
+        analysis,
+        retainMedia,
       });
       await deps.runnerStart(job.id, null);
       return { status: 202, body: { success: true, job: jobResponse(job) } };
@@ -354,6 +363,8 @@ export async function handleCreateVideoTranscription(
         sourceTitle: titleFromFilename(upload.displayFilename),
         mediaTempPath: null,
         mediaSha256: sha256,
+        analysis,
+        retainMedia,
       });
       await deps.runnerStart(job.id, sealedUpload);
       return { status: 202, body: { success: true, job: jobResponse(job) } };

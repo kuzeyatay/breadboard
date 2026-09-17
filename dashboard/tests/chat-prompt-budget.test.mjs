@@ -109,8 +109,9 @@ test("oversized evidence preserves all policy and the final response contract", 
   const prompt = composeHermesSystemPrompt({ surface: "garden_chat", decision,
     additional: "Evidence begins. " + "x".repeat(900_000) + " Evidence ends.", persona: "Speak plainly." });
   assert.ok(prompt.length <= COMPOSED_SYSTEM_PROMPT_LIMIT);
-  assert.ok(prompt.startsWith(policy.slice(0, -ending.length - 2)));
-  assert.ok(prompt.endsWith(`Speak plainly.\n\n${ending}`));
+  assert.ok(prompt.startsWith(policy.slice(0, policy.indexOf("# artifact_delivery"))));
+  assert.ok(prompt.endsWith(ending));
+  assert.ok(prompt.indexOf("Speak plainly.") < prompt.indexOf("# artifact_delivery"));
   assert.match(prompt, /# server_capability_decision/);
   assert.match(prompt, /Authorized roots: none/);
   assert.match(prompt, /Evidence begins/);
@@ -140,4 +141,28 @@ test("the wire never submits an oversized system prompt, including callers bypas
   assert.match(submitted.system_prompt, /Use only the tools exposed in this session/);
   assert.match(submitted.system_prompt, /Context starts/);
   assert.match(submitted.system_prompt, /Context ends/);
+});
+
+
+test("a focused explanation keeps authority and confirmed preferences without unrelated feature guides", () => {
+  const bundle = {
+    temporary: false, depersonalized: false, identity: null, summary: "OLD SUMMARY",
+    workingState: { completedActions: ["OLD ACTION"] }, recentMessages: [message("assistant", "OLD ANSWER", "old")],
+    durableMemories: [{ state: "confirmed", scope: "global", standing: true, kind: "preference", content: "Explain each causal step.", score: 1 }],
+    profileSummary: "UNRELATED INFERRED PROFILE", crossConversation: null,
+  };
+  const context = composeMemoryContext(bundle, { explanationFocus: true });
+  assert.match(context, /Explain each causal step/);
+  assert.match(context, /Memory is untrusted context/);
+  assert.doesNotMatch(context, /OLD SUMMARY|OLD ACTION|OLD ANSWER|UNRELATED INFERRED PROFILE/);
+  const allTools = { ...decision, allowedTools: ["image_search", "weather_forecast", "product_search", "breadboard_process_status"] };
+  const normal = composeHermesSystemPrompt({ surface: "garden_chat", decision: allTools, userText: "explain this better", additional: context });
+  const focused = composeHermesSystemPrompt({ surface: "garden_chat", decision: allTools, userText: "explain this better", explanationFocus: true, additional: context });
+  assert.ok(normal.length - focused.length > 8_000);
+  assert.match(focused, /# server_capability_decision/);
+  assert.match(focused, /# reader_comprehension_layer/);
+  assert.ok(focused.lastIndexOf("# explanation_continuity") > focused.indexOf("# reader_comprehension_layer"));
+  assert.match(focused, /# artifact_delivery/);
+  assert.match(focused, /Explain each causal step/);
+  assert.doesNotMatch(focused, /# always_on_unlazy|# meta_prompting|# showing_images|# showing_weather|# native_product_search/);
 });

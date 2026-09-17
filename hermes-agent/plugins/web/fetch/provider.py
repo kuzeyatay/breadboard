@@ -215,6 +215,98 @@ def _readable_text(html: str) -> tuple[str, str]:
     return title, text
 
 
+# NCBI's page front ends are not readable by a plain HTTP client: PubMed
+# answers every non-browser request with a bare "403 Forbidden", and PMC
+# intermittently serves a reCAPTCHA page in place of the article — which then
+# extracts to a hundred characters of challenge chrome that look like a read.
+# Both sites publish the same records through E-utilities, an API meant for
+# exactly this kind of client, so a PubMed or PMC page URL is served from
+# there: the abstract record for PubMed, the full-text JATS XML for PMC.
+_EUTILS_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+_PUBMED_URL = re.compile(
+    r"^https?://(?:www\.)?pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/?(?:[?#].*)?$", re.I
+)
+_PMC_URL = re.compile(
+    r"^https?://(?:pmc\.ncbi\.nlm\.nih\.gov/articles|www\.ncbi\.nlm\.nih\.gov/pmc/articles)"
+    r"/PMC(\d+)/?(?:[?#].*)?$",
+    re.I,
+)
+# JATS elements whose text is apparatus rather than the article.
+_JATS_DROP = ("ref-list", "table-wrap", "fig", "front//journal-meta", "back//fn-group")
+
+
+def _ncbi_record(url: str) -> Optional[tuple[str, str]]:
+    """Return ``(title, text)`` for a PubMed or PMC page URL via E-utilities.
+
+    ``None`` when the URL is neither; raises on a failed API call so the
+    caller can fall through to the plain GET and report *that* failure, which
+    is the one the user can act on.
+    """
+    pubmed = _PUBMED_URL.match(url)
+    pmc = _PMC_URL.match(url)
+    if not pubmed and not pmc:
+        return None
+    import httpx
+
+    if pubmed:
+        params = {
+            "db": "pubmed",
+            "id": pubmed.group(1),
+            "rettype": "abstract",
+            "retmode": "text",
+        }
+    else:
+        params = {"db": "pmc", "id": pmc.group(1), "retmode": "xml"}
+    response = httpx.get(
+        _EUTILS_EFETCH,
+        params=params,
+        timeout=_TIMEOUT_SECONDS,
+        headers={"User-Agent": _USER_AGENT},
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"NCBI E-utilities returned HTTP {response.status_code}")
+    body = response.text
+    if pubmed:
+        text = _compact(body)
+        # An unknown id comes back as a bare list numeral ("1. "), not an error.
+        if not text or text.startswith("Error occurred") or re.fullmatch(r"\d+\.", text):
+            raise RuntimeError("NCBI E-utilities returned no record for this PubMed id")
+        # The text record opens with the citation line, then the title.
+        paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+        title = re.sub(r"\s+", " ", paragraphs[1]) if len(paragraphs) > 1 else ""
+        return title, text
+    return _jats_text(body)
+
+
+def _jats_text(xml: str) -> tuple[str, str]:
+    """Title and readable text of a PMC ``efetch`` article set."""
+    from lxml import etree
+
+    root = etree.fromstring(xml.encode("utf-8"), parser=etree.XMLParser(recover=True, huge_tree=True))
+    if root is None:
+        raise RuntimeError("NCBI E-utilities returned an unreadable article")
+    error = root.find(".//error")
+    if error is not None and not root.findall(".//article"):
+        raise RuntimeError(f"NCBI E-utilities: {(error.text or 'no article').strip()}")
+    for pattern in _JATS_DROP:
+        for node in root.findall(f".//{pattern}"):
+            parent = node.getparent()
+            if parent is not None:
+                parent.remove(node)
+    title_node = root.find(".//article-title")
+    title = re.sub(r"\s+", " ", "".join(title_node.itertext())).strip() if title_node is not None else ""
+    parts: List[str] = []
+    if title:
+        parts.append(title)
+    for section in ("abstract", "body"):
+        for node in root.findall(f".//{section}"):
+            parts.append(" ".join(node.itertext()))
+    text = _compact("\n\n".join(parts))
+    if not text:
+        raise RuntimeError("NCBI E-utilities returned an article with no readable text")
+    return title, text
+
+
 def _fetch(url: str) -> tuple[str, str, str]:
     """GET *url* and return ``(final_url, content_type, body_text)``.
 
@@ -374,6 +466,29 @@ class DirectFetchWebProvider(WebSearchProvider):
                             "host": blocked["host"],
                             "rule": blocked["rule"],
                             "source": blocked["source"],
+                        },
+                    }
+                )
+                continue
+
+            try:
+                record = _ncbi_record(url)
+            except Exception as exc:  # noqa: BLE001 — the page GET is still tried
+                logger.info("NCBI E-utilities lookup failed for %s: %s", url, exc)
+                record = None
+            if record is not None:
+                title, text = record
+                results.append(
+                    {
+                        "url": url,
+                        "title": title,
+                        "content": text,
+                        "raw_content": text,
+                        "metadata": {
+                            "sourceURL": url,
+                            "title": title,
+                            "contentType": "text/plain",
+                            "via": "ncbi-eutils",
                         },
                     }
                 )

@@ -388,7 +388,7 @@ async function gardenComposer(page: Page, authority: PackagedParityUiAuthority) 
 
 async function legacyGardenComposer(page: Page, authority: PackagedParityUiAuthority) {
   await openGardenDocument(page, authority);
-  const composer = page.getByPlaceholder(/Ask about a topic, page, source, or link/).last();
+  const composer = page.getByPlaceholder('Ask anything', { exact: true }).last();
   if (!(await composer.isVisible().catch(() => false))) {
     const assistant = page.getByRole("button", { name: "Assistant", exact: true }).last();
     await expect(assistant).toBeVisible({ timeout: ACTION_TIMEOUT_MS });
@@ -668,7 +668,7 @@ async function submitFollowUp(
   const composer = prepared.kind === "garden"
     ? page.getByPlaceholder(/Ask about your documents/).last()
     : prepared.kind === "legacy-garden"
-      ? page.getByPlaceholder(/Ask about a topic, page, source, or link/).last()
+      ? page.getByPlaceholder('Ask anything', { exact: true }).last()
       : await terminalComposer(page);
   await expect(composer).toBeEditable({ timeout: ACTION_TIMEOUT_MS });
   const beforeActions = await page.getByRole("button", { name: "More response actions", exact: true }).count();
@@ -907,7 +907,7 @@ async function exerciseCancellation(
   const composer = prepared.kind === "garden"
     ? page.getByPlaceholder(/Ask about your documents/).last()
     : prepared.kind === "legacy-garden"
-      ? page.getByPlaceholder(/Ask about a topic, page, source, or link/).last()
+      ? page.getByPlaceholder('Ask anything', { exact: true }).last()
       : page.getByPlaceholder(/Ask anything across your gardens/).last();
   await expect(composer).toBeEditable({ timeout: ACTION_TIMEOUT_MS });
   const newAlerts = (await page.getByRole("alert").allTextContents().catch(() => [])).slice(beforeAlerts).join(" ").trim();
@@ -943,7 +943,7 @@ async function assertRecovery(
         await expect(page.getByText(marker, { exact: false }).last()).toBeVisible({ timeout: ACTION_TIMEOUT_MS });
         break;
       case "surface:legacy-garden-chat": {
-        const composer = page.getByPlaceholder(/Ask about a topic, page, source, or link/).last();
+        const composer = page.getByPlaceholder('Ask anything', { exact: true }).last();
         if (!(await composer.isVisible().catch(() => false))) {
           await page.getByRole("button", { name: "Assistant", exact: true }).last().click();
         }

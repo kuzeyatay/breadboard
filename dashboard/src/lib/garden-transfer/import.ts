@@ -204,7 +204,11 @@ async function republish(
     const { publishQuartzAfterMutation } = await import("../quartz-publish.ts");
     // The imported Gardens are invalidated individually below; this first
     // publication covers the aggregate/private index only.
-    await publishQuartzAfterMutation(reason, { userId, topologyImpact: "none" });
+    await publishQuartzAfterMutation(reason, {
+      userId,
+      topologyImpact: "none",
+      scope: slugs,
+    });
     const { invalidateThoughtTopologyAfterMutation } = await import(
       "../thought-topology/state.ts"
     );

@@ -7,6 +7,7 @@ import {
   WINDOW_THEME_STATE_FILE,
   isWindowThemeSchedule,
   readLastWindowTheme,
+  readLaunchThemeState,
   themeForWindowSchedule,
   writeLastWindowTheme,
 } from "../src/main/theme-state";
@@ -96,6 +97,7 @@ test("only well-formed schedules cross the IPC boundary", () => {
   assert.equal(isWindowThemeSchedule({ mode: "auto" }), false);
   assert.equal(isWindowThemeSchedule("sun"), false);
   assert.equal(isWindowThemeSchedule(null), false);
+  assert.equal(isWindowThemeSchedule({ mode: "sun", sunriseMinutes: 360, sunsetMinutes: 1200, overrideUntil: Infinity }), false);
 
   assert.equal(themeForWindowSchedule({ mode: "manual" }, new Date()), null);
   // A schedule that wraps midnight still has a daylight side.
@@ -103,4 +105,17 @@ test("only well-formed schedules cross the IPC boundary", () => {
   assert.equal(themeForWindowSchedule(wrapped, new Date(2026, 0, 1, 23, 30)), "light");
   assert.equal(themeForWindowSchedule(wrapped, new Date(2026, 0, 1, 0, 30)), "light");
   assert.equal(themeForWindowSchedule(wrapped, new Date(2026, 0, 1, 12)), "dark");
+});
+
+test("a manual dark override survives relaunch until the next sun transition", () => {
+  withFixture(fixture => {
+    const until = new Date(2026, 8, 12, 20).getTime();
+    const schedule = { mode: "sun" as const, sunriseMinutes: 420, sunsetMinutes: 1200, overrideUntil: until };
+    writeLastWindowTheme(fixture, "dark", schedule);
+    assert.deepEqual(readLaunchThemeState(fixture, new Date(2026, 8, 12, 18)), { theme: "dark", schedule });
+    // Voice chrome changes preserve both the schedule and its standing override.
+    writeLastWindowTheme(fixture, "dark");
+    assert.equal(readLastWindowTheme(fixture, new Date(2026, 8, 12, 19)), "dark");
+    assert.equal(readLastWindowTheme(fixture, new Date(2026, 8, 13, 9)), "light");
+  });
 });

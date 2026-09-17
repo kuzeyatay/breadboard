@@ -1,4 +1,5 @@
 export interface GardenTurnCheckpointMessage {
+  branchGroupId?: string;
   role: "user" | "assistant";
   content: string;
   createdAt?: string;

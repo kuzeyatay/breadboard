@@ -28,10 +28,11 @@ test("every browser menu action is wired and the menu reports the actual page zo
 
 test("page-only commands are unavailable on browser home and zoom stays within its bounds", () => {
   const home = flatten(browserMenuTemplate({ profileLabel: "Profile", hasPage: false, zoomPercent: 100, fullscreen: false }, () => {}));
-  for (const id of ["print", "save", "translate", "find", "zoom-in", "zoom-out", "zoom-reset", "developer-tools", "copy-link", "picture-in-picture"]) {
+  for (const id of ["print", "save", "translate", "zoom-in", "zoom-out", "zoom-reset", "developer-tools", "copy-link", "picture-in-picture"]) {
     assert.equal(home.find(item => item.id === id)!.enabled, false, id);
   }
   assert.equal(home.find(item => item.id === "downloads")!.enabled, true);
+  assert.equal(home.find(item => item.id === "find")!.enabled, true, "browser home is searchable too");
   const maximum = flatten(browserMenuTemplate({ profileLabel: "Profile", hasPage: true, zoomPercent: 300, fullscreen: false }, () => {}));
   assert.equal(maximum.find(item => item.id === "zoom-in")!.enabled, false);
 });
@@ -41,6 +42,7 @@ test("browser shortcuts and IPC reject malformed commands", () => {
   assert.equal(browserMenuShortcut(key), "downloads");
   assert.equal(browserMenuShortcut({ ...key, key: "P" }), "print");
   assert.equal(browserMenuShortcut({ ...key, key: "f" }), "find");
+  assert.equal(browserMenuShortcut({ ...key, key: "f", control: false, meta: true }), "find");
   assert.equal(browserMenuShortcut({ ...key, key: "o", shift: true }), "bookmarks");
   assert.equal(browserMenuShortcut({ ...key, key: "p", shift: true }), "new-private-tab");
   assert.equal(browserMenuShortcut({ ...key, key: "n", shift: true }), "new-private-window");

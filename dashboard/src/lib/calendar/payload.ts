@@ -66,6 +66,12 @@ export function readEventPatch(body: Body): CalendarEventPatch {
     patch.location = body.location as string | null;
   }
   if (typeof body.allDay === "boolean") patch.allDay = body.allDay;
+  if (typeof body.notificationsEnabled === "boolean") {
+    patch.notificationsEnabled = body.notificationsEnabled;
+  }
+  if (typeof body.leadReminderEnabled === "boolean") {
+    patch.leadReminderEnabled = body.leadReminderEnabled;
+  }
   if (typeof body.startsAt === "string") patch.startsAt = body.startsAt;
   if (typeof body.endsAt === "string") patch.endsAt = body.endsAt;
   if ("recurrence" in body) patch.recurrence = readRecurrence(body.recurrence);

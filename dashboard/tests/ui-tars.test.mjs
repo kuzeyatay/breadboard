@@ -384,10 +384,10 @@ test("Agent TARS thinking matches normal chat metadata without metric tags", () 
   const responseMeta = source("src/app/components/assistant-response-meta.tsx");
   assert.match(metrics, /<AssistantResponseMeta/);
   assert.match(responseMeta, /label = "Thinking"/);
-  assert.match(responseMeta, /\? "Thought" : label/);
+  assert.match(responseMeta, /failed \? "Response interrupted" : "Thought"/);
   assert.match(responseMeta, /counting tokens/);
   assert.doesNotMatch(responseMeta, /tokens unavailable/);
-  assert.match(responseMeta, /className="my-1 text-\[var\(--ink\)\]"/);
+  assert.match(responseMeta, /className="assistant-response-meta my-1 text-\[var\(--ink\)\]"/);
   assert.doesNotMatch(metrics, /label="(?:Input|Output|Total|Calls)"/);
 
   const inline = source("src/app/components/hermes/inline-browser-run.tsx");

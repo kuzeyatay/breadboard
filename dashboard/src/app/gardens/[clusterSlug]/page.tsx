@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+import { cache } from "react";
 import { getServerSession } from "next-auth/next";
 import { redirect, notFound } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
@@ -7,29 +9,12 @@ import { organizationClusterClause } from "@/lib/organizations/store";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import WorkspaceClient from "./workspace-client";
 
-export default async function WorkspacePage({
-  params,
-  searchParams,
-}: {
-  params: Promise<{ clusterSlug: string }>;
-  searchParams: Promise<{ chat?: string | string[]; learn?: string | string[] }>;
-}) {
+// Share the access check and saved name with metadata within each server render.
+const getWorkspacePageData = cache(async (clusterSlug: string) => {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login");
 
   const userId = Number((session.user as { id?: string }).id);
-  const { clusterSlug } = await params;
-  const requested = await searchParams;
-  const initialChatId = Array.isArray(requested.chat)
-    ? requested.chat[0] ?? null
-    : requested.chat ?? null;
-  // A Learn notice links here with `?learn=1` so the panel it describes is
-  // already open on arrival.
-  const requestedLearn = Array.isArray(requested.learn)
-    ? requested.learn[0]
-    : requested.learn;
-  const initialLearnPanelOpen = requestedLearn !== undefined && requestedLearn !== "0";
-
   // Try owner access first
   let cluster = await getCluster(userId, clusterSlug);
   let isOwner = true;
@@ -82,6 +67,39 @@ export default async function WorkspacePage({
     }
     isOwner = false;
   }
+
+  return { userId, cluster, isOwner };
+});
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ clusterSlug: string }>;
+}): Promise<Metadata> {
+  const { clusterSlug } = await params;
+  const { cluster } = await getWorkspacePageData(clusterSlug);
+  return { title: cluster.name };
+}
+
+export default async function WorkspacePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ clusterSlug: string }>;
+  searchParams: Promise<{ chat?: string | string[]; learn?: string | string[] }>;
+}) {
+  const { clusterSlug } = await params;
+  const { userId, cluster, isOwner } = await getWorkspacePageData(clusterSlug);
+  const requested = await searchParams;
+  const initialChatId = Array.isArray(requested.chat)
+    ? requested.chat[0] ?? null
+    : requested.chat ?? null;
+  // A Learn notice links here with `?learn=1` so the panel it describes is
+  // already open on arrival.
+  const requestedLearn = Array.isArray(requested.learn)
+    ? requested.learn[0]
+    : requested.learn;
+  const initialLearnPanelOpen = requestedLearn !== undefined && requestedLearn !== "0";
 
   return (
     <WorkspaceClient

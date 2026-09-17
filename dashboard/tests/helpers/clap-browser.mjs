@@ -20,6 +20,8 @@ export async function clapBrowser() {
     import {registerClapChat} from './src/lib/speech/clap-wake';
     import {registerClapTarget,dispatchClapSpeech} from './src/lib/speech/clap/targets';
     import {openGestureAction,takeGestureLaunch} from './src/lib/speech/clap/action-launch';
+    import {openVoiceWindow} from './src/lib/speech/voice-window';
+    window.openVoiceWindow=openVoiceWindow;
     window.openGestureAction=openGestureAction;window.takeGestureLaunch=takeGestureLaunch;
     import {clapSnapshot,saveClapPreferences,saveClapAction,updateClapRuntime,setClapTestMode} from './src/lib/speech/clap/client';
     import {requestForegroundMicrophone,stopForegroundStream,holdForegroundAudio} from './src/lib/speech/clap/audio-focus';
@@ -75,7 +77,11 @@ export async function clapBrowser() {
       }else if(pathname==='/api/profile/clap-action/interpret'){
         res.end(JSON.stringify(body.prompt==='Do something'?{clarification:'Which action should your clap run?'}:{action:{kind:'assistant',prompt:body.prompt}}));
       }else if(pathname==='/api/profile/clap-action/execute'){fixture.executions++;fixture.executionBodies.push({control:snap?'snap':'clap',...body});res.end(JSON.stringify(body.expectedAction.kind==='assistant'?{message:'Started your AI request.',href:'/dashboard?terminalChat=conv_gesture_test'}:{message:'Music command sent'}));}
-      else if(pathname==='/api/browser/spotify')res.end(JSON.stringify({connected:fixture.musicConnected!==false,engine:{ready:fixture.playerReady!==false,deviceId:'breadboard-player'}}));
+      else if(pathname==='/api/browser/spotify'||pathname==='/api/hermes/connections/spotify')res.end(JSON.stringify({connected:fixture.musicConnected!==false,engine:{ready:fixture.playerReady!==false,deviceId:'breadboard-player'}}));
+      else if(pathname==='/api/hermes/connections/spotify/engine'){
+        (fixture.playerLeases??=[]).push({method:req.method,...body});
+        res.end(JSON.stringify({ready:fixture.playerReady!==false,deviceId:'breadboard-player'}));
+      }
       else if(pathname==='/api/workflows/local')res.end('{"workflows":[{"id":"wf_example","name":"Morning review"}]}');
       else if(pathname==='/api/speech/settings')res.end(JSON.stringify({settings:{speechProvider:fixture.speechProvider,enabled:true}}));
       else if(pathname==='/api/speech/synthesize'){if(fixture.voiceFailure){res.statusCode=503;res.end('{"error":"Selected Voicebox unavailable"}');}else{res.setHeader('Content-Type','audio/wav');res.end(greetingWav);}}

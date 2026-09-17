@@ -56,7 +56,10 @@ test("browser tabs share Breadboard's strip and use a trusted address toolbar", 
   assert.match(client, /type: "browser-navigate", input/);
   assert.match(client, /breadboard:focus-browser-address/);
   assert.match(client, /Search the web or enter a web address/);
-  assert.match(client, /useChatGreeting\(\{ scope: "mine", temporary: false \}\)/);
+  assert.match(
+    client,
+    /useChatGreeting\(\{[\s\S]*?scope: "mine",[\s\S]*?temporary: false,[\s\S]*?initialSignals: initialGreetingSignals/,
+  );
   assert.match(widgets, /function BrowserQuickLinks/);
   assert.match(widgets, /function BrowserDock/);
   assert.match(client, /<DashboardAgentTerminal[\s\S]*?presentation="drawer"/);
@@ -113,6 +116,22 @@ test("browser startup reconnects and repairs a plain shell instead of becoming a
   assert.doesNotMatch(client, /Browser tabs are available in the Breadboard desktop app/);
 });
 
+test("the browser greeting starts typing as soon as its first text arrives", () => {
+  const greetingHook = read("../src/app/components/hermes/use-chat-greeting.ts");
+  assert.match(client, /<AnimatedBrowserGreeting greeting=/);
+  assert.match(page, /readChatGreetingSignals\(db, userId\)/);
+  assert.match(page, /initialGreetingSignals=/);
+  assert.match(client, /initialSignals: initialGreetingSignals/);
+  assert.match(greetingHook, /const \[signals, setSignals\] = useState<ChatGreetingSignals \| null>\(initialSignals\)/);
+  assert.match(greetingHook, /cache = \{ signals: initial, readAt: Date\.now\(\) \}/);
+  assert.match(widgets, /useGreetingTypewriter\(target\)/);
+  assert.doesNotMatch(greetingTypewriter, /initializedRef/);
+  assert.match(greetingTypewriter, /if \(current\.length === 0\) write\(1\);/);
+  assert.match(greetingTypewriter, /window\.setTimeout\(erase, 32\)/);
+  assert.match(greetingTypewriter, /window\.setTimeout\(\(\) => write\(index \+ 1\), 46\)/);
+  assert.match(greetingTypewriter, /prefers-reduced-motion: reduce/);
+});
+
 test("browser home provides live dock data, search suggestions, and editable shortcuts", () => {
   assert.match(client, /role="combobox"/);
   assert.match(client, /role="listbox"/);
@@ -138,10 +157,6 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(client, /removeHistoryEntry\(value\)/);
   assert.match(globals, /\.browser-suggestion-remove\s*\{/);
   assert.doesNotMatch(client, /browser-suggestion-google|Google suggestion/);
-  assert.match(client, /<AnimatedBrowserGreeting greeting=/);
-  assert.match(widgets, /useGreetingTypewriter\(target\)/);
-  assert.match(greetingTypewriter, /window\.setTimeout\(erase, 32\)/);
-  assert.match(greetingTypewriter, /window\.setTimeout\(\(\) => write\(index \+ 1\), 46\)/);
   assert.match(widgets, /disconnected \/>/);
   assert.match(widgets, /Add shortcut/);
   assert.match(widgets, /navigatorWithBattery\.getBattery/);
@@ -239,15 +254,19 @@ test("browser bookmarks persist in desktop storage per profile and occupy truste
   assert.match(bridge, /getBrowserBookmarks\?: \(ownerKey: string\)/);
   assert.match(bridge, /setBrowserBookmarks\?:/);
   assert.match(client, /className="browser-bookmark-toggle"/);
-  assert.match(client, /className="browser-extensions-toggle"/);
-  assert.match(client, /aria-label="Extensions"/);
-  assert.match(client, /className="browser-extensions-menu"/);
-  assert.match(client, /Load unpacked/);
-  assert.match(client, /type: "browser-extension-load"/);
-  assert.match(client, /type: "browser-extension-reload", id/);
-  assert.match(client, /type: "browser-extension-remove", id/);
-  assert.match(client, /Install from a Chrome Web Store listing with “Add to Breadboard,”/);
-  assert.match(client, /Compatibility varies by extension/);
+  const extensionButton = read("../src/app/browser/browser-extensions-button.tsx");
+  const extensionPopup = read("../src/app/browser/browser-extensions-popover.tsx");
+  assert.match(client, /<BrowserExtensionsButton/);
+  assert.match(extensionButton, /className="browser-extensions-toggle"/);
+  assert.match(extensionButton, /aria-label="Extensions"/);
+  assert.match(extensionButton, /type: "browser-extensions-popover"/);
+  assert.match(extensionPopup, /browser-extensions-menu/);
+  assert.match(extensionPopup, /Load unpacked/);
+  assert.match(extensionPopup, /type: "browser-extension-load"/);
+  assert.match(extensionPopup, /type: "browser-extension-reload", id/);
+  assert.match(extensionPopup, /type: "browser-extension-remove", id/);
+  assert.match(extensionPopup, /Install from a Chrome Web Store listing with “Add to Breadboard,”/);
+  assert.match(extensionPopup, /Compatibility varies by extension/);
   assert.match(globals, /\.browser-extensions-menu\s*\{/);
   assert.match(globals, /\.browser-address-actions\s*\{/);
   assert.match(client, /aria-pressed=\{currentBookmarked\}/);
@@ -293,8 +312,8 @@ test("browser Spotify opens a CarPlay-style searchable player and uses the Bread
   assert.match(spotifyRoute, /"rename-playlist"/);
   assert.match(spotifyRoute, /"delete-playlist"/);
   assert.match(spotifyRoute, /body: \{ uris: queueUris \}/);
-  assert.match(spotifyRoute, /spotifyRecommendedTracks\(userId, trackUri\.slice/);
-  assert.match(spotifyRoute, /\.catch\(\(\) => \[\]\)/);
+  assert.match(spotifyRoute, /spotifyRecommendedTracks\(userId, trackId, 10\)/);
+  assert.match(spotifyRoute, /const prepared = preparedQueues\.get/);
   assert.match(spotifyRoute, /body: \{ context_uri: playlistUri \}/);
   assert.match(spotifyService, /endpoint: "\/v1\/recommendations"/);
   assert.match(widgets, /playTrack\(item, \[\], true\)/);

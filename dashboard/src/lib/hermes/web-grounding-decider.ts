@@ -108,6 +108,8 @@ export const WEB_GROUNDING_DECIDER_INSTRUCTION = [
   "    who currently holds a role, whether something has shipped or happened",
   "  - the latest version, release, or status of anything",
   "  - a specific URL, article, page, or product the user is pointing at",
+  "  - a published source the user refers to (a paper, study, article, report)",
+  "    whose text is not in the request: reading it means opening it",
   "  - recommendations of real places, venues, businesses, or purchasable",
   "    products, where the set of candidates and their status change",
   "",

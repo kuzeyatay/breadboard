@@ -481,6 +481,29 @@ export default function EvidencePanel({
           answer's completeness instead of taking its word for it. Rendered only
           for a turn that ran the tracked pipeline.
         */}
+        {verification.explanationReview && verification.explanationReview.status !== "not_applicable" ? (
+          <div className="mt-2.5 border-t border-[var(--line)] pt-2">
+            <SectionLabel>Explanation coverage</SectionLabel>
+            <p className="mt-1 text-[var(--ink-muted)]">{verification.explanationReview.reason}</p>
+            {verification.explanationReview.repairConcerns?.length ? (
+              <ul className="mt-1 space-y-1 text-[var(--ink-muted)]">
+                {verification.explanationReview.repairConcerns.map((item, index) => (
+                  <li key={index}>Rejected repair: {item.reason}</li>
+                ))}
+              </ul>
+            ) : null}
+            {verification.explanationReview.coverage.some(item => item.status === "missing" || item.status === "uncertain") ? (
+              <ul className="mt-1 space-y-1 text-[var(--ink-muted)]">
+                {verification.explanationReview.coverage.filter(item => item.status === "missing" || item.status === "uncertain").map(item => (
+                  <li key={item.id}>
+                    {verification.explanationReview?.status === "repaired" ? "Addressed: " : "Review concern: "}
+                    {item.reason} {item.consequence}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         {verification.researchCoverage ? (
           <div className="mt-2.5 border-t border-[var(--line)] pt-2">
             <SectionLabel>Research coverage</SectionLabel>

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawn } from "node:child_process";
 
 import {
   canonicalRuntimeInput,
@@ -150,4 +151,84 @@ test("the shared finite MCP worker rejects argv, path, size, and reparse escapes
     if (error?.code !== "EPERM") throw error;
     t.diagnostic("symlink creation is not permitted on this host; source still rejects symbolic workspaces");
   }
+});
+
+test("cancellation suppresses late checkpoints after acknowledgement", async (t) => {
+  const made = fixture(t, { inputCount: 0 });
+  const entry = path.join(made.dataRoot, "late-checkpoint.mjs");
+  fs.writeFileSync(entry, `
+    import { runRuntimeV2FiniteMcpWorker } from ${JSON.stringify(new URL("../scripts/runtime-v2-finite-mcp-worker-core.mjs", import.meta.url).href)};
+    await runRuntimeV2FiniteMcpWorker({
+      name: "late-checkpoint-test", validateRequest: value => value, expectedInputCount: () => 0,
+      async execute(launch, signal, progress) {
+        progress.checkpoint({ percent: 10 });
+        if (!signal.aborted) await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+        await new Promise(resolve => setTimeout(resolve, 60));
+        progress.checkpoint({ percent: 90 });
+        return { complete: false };
+      }
+    });
+  `);
+  const child = spawn(process.execPath, [entry, "start.json"], { cwd: made.attemptRoot, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let stdout = "";
+  let stderr = "";
+  let sent = false;
+  child.stdout.on("data", chunk => {
+    stdout += chunk;
+    if (!sent && stdout.includes('"type":"progress"')) {
+      sent = true;
+      child.stdin.write('{"type":"stop","force":false}\n');
+    }
+  });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(new Error("worker cancellation timed out")); }, 10_000);
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    child.on("exit", value => { clearTimeout(timer); resolve(value); });
+  });
+  assert.equal(code, 0, stderr);
+  const events = stdout.trim().split("\n").map(JSON.parse);
+  assert.equal(events.at(-1).type, "cancellation-acknowledged");
+  assert.equal(events.some(event => event.current === 90), false);
+  const checkpoint = JSON.parse(fs.readFileSync(path.join(made.dataRoot, made.manifest.checkpointPath), "utf8"));
+  assert.equal(checkpoint.snapshot.percent, 10);
+});
+
+test("identical checkpoint percentages publish one bounded progress event", async (t) => {
+  const made = fixture(t, { inputCount: 0 });
+  const entry = path.join(made.dataRoot, "duplicate-progress.mjs");
+  fs.writeFileSync(entry, `
+    import { runRuntimeV2FiniteMcpWorker } from ${JSON.stringify(new URL("../scripts/runtime-v2-finite-mcp-worker-core.mjs", import.meta.url).href)};
+    await runRuntimeV2FiniteMcpWorker({
+      name: "duplicate-progress-test", validateRequest: value => value, expectedInputCount: () => 0,
+      async execute(launch, signal, progress) {
+        for (const percent of [12, 12, 12, 13, 13, 13]) progress.checkpoint({ percent });
+        return { complete: true };
+      }
+    });
+  `);
+  const child = spawn(process.execPath, [entry, "start.json"], {
+    cwd: made.attemptRoot,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(new Error("worker completion timed out")); }, 10_000);
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    child.on("exit", value => { clearTimeout(timer); resolve(value); });
+  });
+  assert.equal(code, 0, stderr);
+  const events = stdout.trim().split("\n").map(JSON.parse);
+  assert.deepEqual(
+    events.filter(event => event.type === "progress").map(event => event.current),
+    [12, 13],
+  );
+  assert.equal(events.filter(event => event.type === "checkpoint").length, 1);
+  assert.equal(events.at(-1).type, "complete");
 });

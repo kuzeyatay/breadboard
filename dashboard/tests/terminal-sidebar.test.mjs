@@ -67,6 +67,11 @@ test("an untouched new chat cannot be selected twice", () => {
   assert.match(sidebar, /newChatDisabled\?: boolean/);
   assert.match(sidebar, /disabled=\{newChatDisabled\}/);
   assert.match(
+    sidebar,
+    /title="New chat"[\s\S]{0,500}hidden[\s\S]{0,300}group-hover\/section:block group-focus-within\/section:block/,
+    "the Recents new-chat pencil should follow the header's hover and keyboard-focus reveal",
+  );
+  assert.match(
     terminal,
     /const blankSavedChatSelected =\s*!temporaryChat[\s\S]{0,180}!currentChatActive/,
   );
@@ -502,10 +507,8 @@ test("the row's one status spot runs spinner, then dot, then nothing", () => {
   // The previous activity map is captured before it is replaced — a state
   // updater runs during the next render, by which time the ref would already
   // hold the snapshot being compared against.
-  assert.match(
-    terminal,
-    /const previousActive = chatActivity\.current;\s*chatActivity\.current = chatActivityById\(history\);/,
-  );
+  assert.match(terminal, /const \{ unreadChats, forgetUnreadChats \} = useUnreadChats\(\)/);
+  assert.doesNotMatch(terminal, /nextUnreadChats|readUnreadChats|writeUnreadChats/);
   // Deleting a chat takes its dot with it: pruning deliberately does nothing
   // against an empty list, which is what deleting the last chat produces.
   assert.match(terminal, /forgetUnreadChats\(\[item\.id\]\)/);
@@ -545,8 +548,9 @@ test("the dock bar carries the rollup, so a shut terminal still says something l
   // through the button's own label.
   assert.match(
     terminal,
-    /<UnreadChatDot[\s\S]{0,220}unreadCount > 0 \? unreadLabel : "Agent runtime is available"/,
+    /\{unreadCount > 0 \? \(\s*<UnreadChatDot[\s\S]{0,120}label=\{unreadLabel\}/,
   );
+  assert.doesNotMatch(terminal, /Agent runtime is available/);
   assert.match(
     terminal,
     /\) : unreadCount > 0 \? \([\s\S]*?bg-\[var\(--signal-live\)\]/,

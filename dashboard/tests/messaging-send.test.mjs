@@ -307,7 +307,7 @@ test("both transports can carry a file", () => {
   assert.match(service, /text\.length > 1_024/);
 });
 
-test("every delivered outbound message opens the Terminal continuation it is bound to", () => {
+test("every delivered outbound message joins the daily Terminal continuation it is bound to", () => {
   assert.match(service, /export async function recordDeliveredOwnerMessage/);
   assert.match(service, /createConversation\(\{/);
   assert.match(service, /appendConversationAssistantMessage\(\{/);

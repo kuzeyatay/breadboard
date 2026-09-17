@@ -11,7 +11,7 @@ import {
 } from "../supervisor-control.ts";
 import { RuntimeAuthorityUnavailableError } from "./authority-error.ts";
 
-export type ClaudeAccountOperation = "status" | "logout";
+export type ClaudeAccountOperation = "status" | "logout" | "refresh-usage";
 
 export interface ClaudeAccountJobResult {
   ok: boolean;

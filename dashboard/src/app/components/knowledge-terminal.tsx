@@ -48,6 +48,8 @@ import { useSmoothStreamText } from '@/app/components/chat/use-smooth-stream-tex
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import { useAssistantModels } from '@/app/components/use-assistant-models';
+import { useChatModelChanges } from '@/app/components/use-chat-model-changes';
+import { ChatModelChangeSeparators } from '@/app/components/chat-model-change-separator';
 import { UserMessageText } from '@/app/components/hermes/command-text';
 import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
 import {
@@ -359,8 +361,12 @@ export default function KnowledgeTerminal({ scope }: Props) {
     reasoningEffort,
     setReasoningEffort,
     intelligenceModes,
-  } = useAssistantIntelligence();
+  } = useAssistantIntelligence({ scope: draftSurface, sessionId: activeId, createdSessionId: createdId, shared: true });
   const { models, modelsLoading, loadModels } = useAssistantModels();
+  const { changeModel, labelsFor: modelChangesFor } = useChatModelChanges({
+    scope: draftSurface, sessionId: activeId, createdSessionId: createdId,
+    messages, model, onModelChange: setModel,
+  });
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState('');
@@ -708,6 +714,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
         message.role === 'assistant' &&
         revealedAssistantContent !== message.content;
       return (
+        <>
         <TranscriptRow
           message={paced ? { ...message, content: revealedAssistantContent } : message}
           messageKey={chatRowKey(message, index)}
@@ -715,12 +722,14 @@ export default function KnowledgeTerminal({ scope }: Props) {
           responding={isStreaming && isNewest}
           onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}
         />
+        <ChatModelChangeSeparators labels={modelChangesFor(message, index)} visible={!(isStreaming && isNewest)} />
+        </>
       );
     },
     // `retryAssistantMessage` is re-declared every render and is reachable only
     // from the newest row, which re-renders anyway.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [messages.length, timeSeparators, isStreaming, revealedAssistantContent],
+    [messages.length, timeSeparators, isStreaming, revealedAssistantContent, modelChangesFor],
   );
 
   async function addAttachmentFiles(files: File[]) {
@@ -1070,7 +1079,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
               models={models}
               modelsLoading={modelsLoading}
               onLoadModels={() => void loadModels()}
-              onModelChange={setModel}
+              onModelChange={changeModel}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
           intelligenceModes={intelligenceModes}
@@ -1083,6 +1092,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
               }
               statusMessage={attachmentStatus}
               voiceMessages={messages}
+              voiceConversationId={activeId}
+              voiceConversationScope={draftSurface}
+              voiceCreatedConversationId={createdId}
             />
           </div>
         </div>

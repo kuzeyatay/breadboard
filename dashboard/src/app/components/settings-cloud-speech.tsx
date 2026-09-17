@@ -4,17 +4,18 @@ import { OPENAI_SPEECH_VOICES, type SpeechCredentialStatus } from "@/lib/speech/
 const fieldClass = "neu-inset w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--ink)]";
 const buttonClass = "neu-button rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-sm text-[var(--ink)] disabled:opacity-45";
 
-export default function SettingsCloudSpeech({ cloud, voice, enabled, language, languages, busy, previewText, onPreviewText, onPreview, onUpdate, onCredentialsChanged }: {
+export default function SettingsCloudSpeech({ cloud, voice, enabled, language, readingLanguage, languages, busy, previewText, onPreviewText, onPreview, onUpdate, onCredentialsChanged }: {
   cloud?: SpeechCredentialStatus;
   voice: string;
   enabled: boolean;
   language: string | null;
+  readingLanguage: string;
   languages: readonly (readonly [string, string])[];
   busy: boolean;
   previewText: string;
   onPreviewText: (text: string) => void;
   onPreview: () => void;
-  onUpdate: (patch: { openaiVoice?: string; enabled?: boolean; transcriptionLanguage?: string | null }) => void;
+  onUpdate: (patch: { openaiVoice?: string; enabled?: boolean; language?: string; transcriptionLanguage?: string | null }) => void;
   onCredentialsChanged: () => Promise<unknown>;
 }) {
   return (
@@ -39,8 +40,13 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, l
               {OPENAI_SPEECH_VOICES.map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
             </select>
           </label>
-          <label className="text-xs text-[var(--ink-muted)]">Spoken language
-            <select aria-label="Spoken language" className={fieldClass} value={language || ""} onChange={(event) => onUpdate({ transcriptionLanguage: event.target.value || null })}>
+          <label className="text-xs text-[var(--ink-muted)]">Reading language
+            <select aria-label="Reading language" className={fieldClass} value={readingLanguage} onChange={(event) => onUpdate({ language: event.target.value })}>
+              {languages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-[var(--ink-muted)]">Dictation language
+            <select aria-label="Dictation language" className={fieldClass} value={language || ""} onChange={(event) => onUpdate({ transcriptionLanguage: event.target.value || null })}>
               <option value="">Detect automatically</option>
               {languages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
@@ -54,7 +60,7 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, l
           <textarea aria-label="Preview text" rows={2} className={fieldClass} value={previewText} onChange={(event) => onPreviewText(event.target.value)} />
         </label>
         <button type="button" className={buttonClass} disabled={!cloud?.configured || !enabled || !previewText.trim()} onClick={onPreview}>Preview voice</button>
-        <p className="text-xs leading-5 text-[var(--ink-muted)]">Microphone audio is sent live; speech plays as it arrives. Longer text is split automatically, with no 4,000-character limit. Uploaded recordings are processed in real time. Your subscription’s limits still apply. Local voices stay saved when you switch back.</p>
+        <p className="text-xs leading-5 text-[var(--ink-muted)]">Microphone audio is sent live. Read-aloud checks each passage against its transcript before playback, so it may take a moment to begin. Longer text is split automatically, with no 4,000-character limit. Your subscription’s limits still apply. Local voices stay saved when you switch back.</p>
       </fieldset>
     </section>
   );

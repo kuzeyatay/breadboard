@@ -447,6 +447,21 @@ class TestRegression_ToolsetScoping:
             toolset=toolset,
         )
 
+    def test_disabled_tool_is_hidden_and_cannot_be_called_directly_or_through_bridge(self):
+        import model_tools
+        self._register("mcp_access_allowed", "mcp-access")
+        self._register("mcp_access_denied", "mcp-access")
+        options = {"enabled_toolsets": ["mcp-access"], "tool_access": {"mcp_access_denied": False}}
+        result = json.loads(model_tools.handle_function_call("tool_search", {"query": "mcp_access"}, **options))
+        assert {m["name"] for m in result["matches"]} == {"mcp_access_allowed"}
+        for name, args in [("mcp_access_denied", {}),
+                           ("tool_call", {"name": "mcp_access_denied", "arguments": {}}),
+                           ("tool_describe", {"name": "mcp_access_denied"})]:
+            assert "error" in json.loads(model_tools.handle_function_call(name, args, **options))
+        result = json.loads(model_tools.handle_function_call("tool_call",
+            {"name": "mcp_access_allowed", "arguments": {}}, **options))
+        assert result["ok"] is True
+
     def test_search_catalog_is_scoped_to_session_toolsets(self):
         import model_tools
 

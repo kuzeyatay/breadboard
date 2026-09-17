@@ -123,33 +123,14 @@ test("Terminal does not consume a restored hand-off before its conversation scop
   assert.match(drain, /session\.sessionId,/);
 });
 
-test("a recovered launch queued during the snapshot paint adopts the restored scope", async () => {
-  const { claimUnscopedAgentLaunchRequests } = await import(
-    "../src/app/components/hermes/agent-launch-scope.ts"
-  );
-  const request = {
-    requestId: "restored:call_launch",
-    agentId: "max-research",
-    agentName: "Max Research",
-    command: "/agents:max-research",
-    brief: "Conduct max research on hypertrophy.",
-    reason: "",
-    awaitResult: true,
-    requiresApproval: true,
-    originClientMessageId: "cm-1",
-  };
-  const queued = [{ request, scopeKey: null }];
-
-  assert.equal(claimUnscopedAgentLaunchRequests(queued, null), queued);
-  assert.deepEqual(
-    claimUnscopedAgentLaunchRequests(queued, "conv-restored"),
-    [{ request, scopeKey: "conv-restored" }],
-  );
-
-  const alreadyOwned = [{ request, scopeKey: "conv-original" }];
-  assert.equal(
-    claimUnscopedAgentLaunchRequests(alreadyOwned, "conv-other"),
-    alreadyOwned,
-    "a launch already bound to a conversation must never move to another one",
-  );
+test("delegation resolves only its actual parent chat", async () => {
+  const { originatingAgentLaunchSession } = await import("../src/app/components/hermes/agent-launch-scope.ts");
+  const headache = { id: 831, messages: [{ role: "assistant", clientMessageId: "headache-turn" }] };
+  const physique = { id: 832, messages: [{ role: "assistant", clientMessageId: "physique-turn" }] };
+  const request = { originClientMessageId: "physique-turn" };
+  assert.equal(originatingAgentLaunchSession([headache, physique], request), physique);
+  assert.equal(originatingAgentLaunchSession([headache], request), null);
+  assert.equal(originatingAgentLaunchSession([headache, physique], {}), null);
+  assert.equal(originatingAgentLaunchSession([physique, { ...physique, id: 833 }], request), null);
+  assert.equal(originatingAgentLaunchSession([{ ...physique, isOwn: false }], request), null);
 });

@@ -772,10 +772,6 @@ for (const invalid of [
     content: JSON.stringify([validDetection({ type: "equation", caption: "Unreadable equation" })]),
   },
   {
-    name: "an out-of-page bbox",
-    content: JSON.stringify([validDetection({ bbox: { x: 0.9, y: 0.1, width: 0.2, height: 0.2 } })]),
-  },
-  {
     name: "a missing bbox",
     content: JSON.stringify([{ type: "figure", caption: "No location" }]),
   },
@@ -935,6 +931,50 @@ test("source visual detection clamps only marginal page-edge bbox overshoot afte
     assert.equal(found.length, 1);
     assert.deepEqual(found[0].bbox, { x: 0, y: 0.05, width: 0.49, height: 0.95 });
     assert.ok(progress.some((step) => /clamped 1 marginal page-edge bbox on page 1/i.test(step)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source visual detection omits only untrustworthy out-of-page geometry after semantic retries", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-bbox-omit-fallback-"));
+  try {
+    const [page] = seedPageImages(root, "garden", 1);
+    const progress = [];
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      return {
+        choices: [{
+          message: {
+            content: JSON.stringify([
+              validDetection({ caption: "Retained visual" }),
+              validDetection({
+                caption: "Invalid crop",
+                bbox: { x: 0.9, y: 0.1, width: 0.2, height: 0.2 },
+              }),
+            ]),
+          },
+        }],
+      };
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "gpt-5.6-sol",
+      contentPath: root,
+      gardenSlug: "garden",
+      sourceId: "source-bbox-omit-fallback",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+      onProgress: (step) => progress.push(step),
+    });
+
+    assert.equal(calls, 3);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].caption, "Retained visual");
+    assert.ok(progress.some((step) =>
+      /omitted 1 detection with invalid out-of-page geometry on page 1 after bounded retries/i.test(step)));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -186,6 +186,18 @@ test("the dashboard translates only the fixed generated-visual Chromium contract
   }
 });
 
+test("native animation requests retain software 3D support and their bounded probe time", (t) => {
+  const fixture = invocationFixture(t);
+  const invocation = { ...fixture.invocation, args: fixture.invocation.args
+    .filter(arg => arg !== "--disable-gpu")
+    .map(arg => arg === "--virtual-time-budget=2500" ? "--virtual-time-budget=6500" : arg) };
+  invocation.args.splice(2, 0, "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-features=IsolateSandboxedIframes");
+  const parsed = client.parseGeneratedVisualBrowserInvocation(invocation);
+  assert.equal(parsed.request.nativeSimulation, true);
+  assert.equal(validateGeneratedVisualBrowserRequest(parsed.request), parsed.request);
+  assert.throws(() => validateGeneratedVisualBrowserRequest({ ...parsed.request, nativeSimulation: "yes" }));
+});
+
 test("browser discovery accepts a direct trusted file and never executes it", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-generated-browser-bin-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

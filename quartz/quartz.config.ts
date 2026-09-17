@@ -30,7 +30,15 @@ const quartzBaseUrl =
   ) ||
   "localhost:8081"
 
-const enableCustomOgImages = process.env.QUARTZ_CUSTOM_OG_IMAGES !== "false"
+// Social preview images only matter for a site reachable from the internet. A
+// local desktop garden (loopback base URL) would otherwise render one satori
+// image per published page, which dominates build time on large gardens.
+const loopbackBaseUrl = /^(?:localhost|127(?:\.\d+){3}|0\.0\.0\.0|\[::1\])(?::\d+)?$/i.test(
+  quartzBaseUrl,
+)
+const enableCustomOgImages =
+  process.env.QUARTZ_CUSTOM_OG_IMAGES === "true" ||
+  (process.env.QUARTZ_CUSTOM_OG_IMAGES !== "false" && !loopbackBaseUrl)
 
 /**
  * Quartz 4 Configuration
@@ -48,7 +56,17 @@ const config: QuartzConfig = {
     },
     locale: "en-US",
     baseUrl: quartzBaseUrl,
-    ignorePatterns: ["private", "templates", ".obsidian", ".breadboard"],
+    // `Internal/` holds ingestion planning nodes (concept graph, source maps).
+    // RemoveDrafts already hides every one of them, so skip them at the glob
+    // stage instead of parsing thousands of pages only to discard them.
+    ignorePatterns: [
+      "private",
+      "templates",
+      ".obsidian",
+      ".breadboard",
+      "**/Internal/**",
+      "**/internal/**",
+    ],
     defaultDateType: "modified",
     theme: {
       fontOrigin: "googleFonts",
@@ -112,6 +130,7 @@ const config: QuartzConfig = {
       Plugin.BreadboardVisuals(),
       Plugin.BreadboardGeneratedVisuals(),
       Plugin.PenechoBoards(),
+      Plugin.BreadboardArtifacts(),
       Plugin.GitHubFlavoredMarkdown(),
       Plugin.TableOfContents(),
       Plugin.CrawlLinks({ markdownLinkResolution: "shortest" }),

@@ -10,6 +10,7 @@ import {
   type SearchResponse,
 } from './ai/search';
 import { generateStructuredObject } from './ai/structured-output';
+import { writingSignal } from './ai/writing-budget';
 import { removeInvalidCitations, validateCitations } from './citations';
 import { annotateSources } from './source-quality';
 import { systemPrompt } from './prompt';
@@ -544,7 +545,7 @@ export async function writeFinalReport({
   const grounded = writerInputs({ learnings, visitedUrls, sources, evidence });
   const res = await generateText({
     model: getModel(),
-    abortSignal: combinedStepSignal(signal),
+    abortSignal: writingSignal(signal),
     system: systemPrompt(userContext, { writing: true }),
     maxTokens: FinalReportMaxTokens,
     prompt: trimPrompt(
@@ -553,6 +554,7 @@ export async function writeFinalReport({
     ),
   });
   onUsage?.(res.usage);
+  if (res.finishReason === 'length') throw new Error('The report exceeded its output limit before finishing.');
   const reportMarkdown = res.text.trim();
   if (!reportMarkdown) throw new Error('The model returned an empty report.');
 
@@ -614,7 +616,7 @@ export async function writeFinalAnswer({
   const grounded = writerInputs({ learnings, sources, evidence });
   const res = await generateText({
     model: getModel(),
-    abortSignal: combinedStepSignal(signal),
+    abortSignal: writingSignal(signal),
     system: systemPrompt(userContext, { writing: true }),
     prompt: trimPrompt(
       `Answer <question>${prompt}</question> in plain language for a first-time reader, using only the supplied evidence. Be as concise as a complete explanation permits: state the practical conclusion first, explain necessary specialist terms on first use, and give important numbers a comparison and practical meaning. Include citations immediately after factual claims as [S1][S2], using only the allowed_source_ids for the supporting evidence. If the evidence cannot answer the question, say that it could not be verified. Never invent a citation or fill a gap from memory. Return only the answer.\n\n<evidence_registry>\n${evidencePrompt(
@@ -627,6 +629,7 @@ export async function writeFinalAnswer({
     ),
   });
   onUsage?.(res.usage);
+  if (res.finishReason === 'length') throw new Error('The answer exceeded its output limit before finishing.');
   const exactAnswer = res.text.trim();
   if (!exactAnswer) throw new Error('The model returned an empty answer.');
 

@@ -128,14 +128,26 @@ async function humanizeEligibleStoredText(
 }
 
 /**
- * Capture the account preference once for a multi-document write. Learn uses
- * this at its post-build boundary so toggling the switch halfway through the
- * pass cannot leave a garden half rewritten.
+ * Capture the chat/artifact preference once for a multi-document write.
  */
 export function storedTextHumanizerForUser(
   userId: number,
 ): ((text: string, reason: AutoHumanizeReason) => Promise<AutoHumanizeResult>) | null {
   if (!humanizerAutoEnabled(userId)) return null;
+  return availableTextHumanizer();
+}
+
+/** Capture Learn's separate opt-in once at the validated post-build boundary. */
+export function storedLearnTextHumanizerForUser(
+  userId: number,
+): ReturnType<typeof availableTextHumanizer> {
+  try {
+    if (getHermesUserSettings(userId).composerSwitches.learnHumanizerAuto !== true) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
   return availableTextHumanizer();
 }
 

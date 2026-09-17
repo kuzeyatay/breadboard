@@ -323,6 +323,9 @@ export function compileGeneratedVisualization(
     opportunity,
   );
   const errors = [...ast.errors, ...definitionValidation.errors];
+  if (definitionValidation.definition?.nativeRuntime) {
+    errors.push("Native skill bundles must use the native package compiler, never a declarative module.");
+  }
   const definition =
     errors.length === 0 ? definitionValidation.definition : null;
   const compiledJavaScript = definition
@@ -352,4 +355,14 @@ export function compileGeneratedVisualization(
     }
   }
   return result;
+}
+
+/** Both Learn and the disposable Runtime V2 compiler use this same entrypoint. */
+export async function compileGardenVisualization(
+  sourceCode: string,
+  opportunity?: VisualizationOpportunity,
+): Promise<GeneratedVisualCompilation> {
+  if (!sourceCode.trimStart().startsWith("{")) return compileGeneratedVisualization(sourceCode, opportunity);
+  const { compileLearnNativeVisualizer } = await import("./learn-native-visualizer-compiler.ts");
+  return compileLearnNativeVisualizer(sourceCode, opportunity);
 }

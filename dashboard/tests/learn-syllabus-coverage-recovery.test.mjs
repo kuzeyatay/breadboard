@@ -11,6 +11,17 @@ import { modelSourcePageAnchors } from "../src/lib/model-source-anchor-ledger.ts
 const H1 = "1".repeat(64);
 const H2 = "2".repeat(64);
 
+function selectorPage(payload, predicate) {
+  const tuple = payload.pageCatalog.find((entry) => predicate(entry[2]));
+  assert.ok(tuple);
+  return {
+    anchorId: tuple[0],
+    sourceId: payload.sourceIds[tuple[1]],
+    pageNumber: tuple[2],
+    excerpt: tuple[3],
+  };
+}
+
 function fixture() {
   const syllabusPlan = {
     courseTitle: "Fields",
@@ -97,14 +108,12 @@ test("model-selected identities hydrate complete raw pages and bind an independe
       requests.push(request);
       if (request.phase === "page_selection") {
         const payload = JSON.parse(request.user);
-        const page = payload.pageCatalog.find((entry) => entry.pageNumber === 19);
+        const page = selectorPage(payload, (pageNumber) => pageNumber === 19);
         assert.equal(page.sourceId, "book");
         return {
           rawResponse: JSON.stringify({
             selectedPages: [{
               anchorId: page.anchorId,
-              sourceId: page.sourceId,
-              pageNumber: page.pageNumber,
               selectionReason: "This is the substantive Coulomb-law page.",
             }],
             selectionReason: "One complete page directly tests the gap.",
@@ -173,15 +182,16 @@ test("large canonical page catalogs retain every identity by uniformly bounding 
         assert.ok(
           JSON.stringify(catalog).length <= SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS,
         );
-        assert.equal(catalog[0].pageNumber, 1);
-        assert.equal(catalog.at(-1).pageNumber, pageCount);
-        assert.ok(catalog.every((entry) => entry.excerpt.length < 320));
-        const page = catalog.at(-1);
+        assert.equal(catalog[0][2], 1);
+        assert.equal(catalog.at(-1)[2], pageCount);
+        assert.ok(catalog.every((entry) => entry[3].length < 320));
+        const page = selectorPage(JSON.parse(request.user), () => true);
+        page.anchorId = catalog.at(-1)[0];
+        page.sourceId = JSON.parse(request.user).sourceIds[catalog.at(-1)[1]];
+        page.pageNumber = catalog.at(-1)[2];
         return { rawResponse: JSON.stringify({
           selectedPages: [{
             anchorId: page.anchorId,
-            sourceId: page.sourceId,
-            pageNumber: page.pageNumber,
             selectionReason: "Use the last canonical page to verify bounded identity retention.",
           }],
           selectionReason: "The catalog retained every canonical identity within its fixed cap.",
@@ -209,12 +219,10 @@ test("a valid syllabus unit without its optional label survives receipt persiste
     model: "model-a",
     provider: async (request) => {
       if (request.phase === "page_selection") {
-        const page = JSON.parse(request.user).pageCatalog.find((entry) => entry.pageNumber === 19);
+        const page = selectorPage(JSON.parse(request.user), (pageNumber) => pageNumber === 19);
         return { rawResponse: JSON.stringify({
           selectedPages: [{
             anchorId: page.anchorId,
-            sourceId: page.sourceId,
-            pageNumber: page.pageNumber,
             selectionReason: "Use the exact substantive page.",
           }],
           selectionReason: "One bounded page is sufficient for rereview.",
@@ -250,12 +258,12 @@ test("valid zero rereview is terminal and never coerced to teachable", async () 
     provider: async (request) => {
       calls += 1;
       if (request.phase === "page_selection") {
-        const page = JSON.parse(request.user).pageCatalog.find((entry) => entry.pageNumber === 19);
+        const page = selectorPage(JSON.parse(request.user), (pageNumber) => pageNumber === 19);
         return { rawResponse: JSON.stringify({
-          selectedPages: [{ ...page, selectionReason: "Test the only substantive page." }]
-            .map(({ anchorId, sourceId, pageNumber, selectionReason }) => ({
-              anchorId, sourceId, pageNumber, selectionReason,
-            })),
+          selectedPages: [{
+            anchorId: page.anchorId,
+            selectionReason: "Test the only substantive page.",
+          }],
           selectionReason: "Bounded evidence test.",
         }) };
       }
@@ -291,7 +299,7 @@ test("an already-teachable decision never consumes a recovery provider call", as
   assert.equal(calls, 0);
 });
 
-test("selector identity mismatch fails after one semantic candidate and makes no rereview call", async () => {
+test("selector rejects redundant source and page identities after one semantic candidate", async () => {
   const f = fixture();
   let calls = 0;
   await assert.rejects(
@@ -308,7 +316,7 @@ test("selector identity mismatch fails after one semantic candidate and makes no
         calls += 1;
         return { rawResponse: JSON.stringify({
           selectedPages: [{
-            anchorId: "text-book-page-19",
+            anchorId: "p1",
             sourceId: "wrong-source",
             pageNumber: 19,
             selectionReason: "Wrong binding.",
@@ -317,7 +325,7 @@ test("selector identity mismatch fails after one semantic candidate and makes no
         }) };
       },
     }),
-    /single bounded model candidate.*sourceId does not match/,
+    /single bounded model candidate.*must contain exactly anchorId and selectionReason/,
   );
   assert.equal(calls, 1);
 });
@@ -335,12 +343,10 @@ test("receipt/source/page/raw/history tamper and stale replay fail closed", asyn
     model: "model-a",
     provider: async (request) => {
       if (request.phase === "page_selection") {
-        const page = JSON.parse(request.user).pageCatalog.find((entry) => entry.pageNumber === 19);
+        const page = selectorPage(JSON.parse(request.user), (pageNumber) => pageNumber === 19);
         return { rawResponse: JSON.stringify({
           selectedPages: [{
             anchorId: page.anchorId,
-            sourceId: page.sourceId,
-            pageNumber: page.pageNumber,
             selectionReason: "Substantive page.",
           }],
           selectionReason: "Substantive page.",
@@ -404,13 +410,11 @@ test("structural headings outside Source material are not selectable authority",
       calls += 1;
       if (request.phase === "page_selection") {
         const catalog = JSON.parse(request.user).pageCatalog;
-        assert.equal(catalog.some((entry) => entry.pageNumber === 999), false);
-        const page = catalog.find((entry) => entry.pageNumber === 19);
+        assert.equal(catalog.some((entry) => entry[2] === 999), false);
+        const page = selectorPage(JSON.parse(request.user), (pageNumber) => pageNumber === 19);
         return { rawResponse: JSON.stringify({
           selectedPages: [{
             anchorId: page.anchorId,
-            sourceId: page.sourceId,
-            pageNumber: page.pageNumber,
             selectionReason: "Use only proven source-material authority.",
           }],
           selectionReason: "The internal decoy was not selectable.",
@@ -458,15 +462,13 @@ test("fence-tainted structural anchors are filtered before selector identity che
     provider: async (request) => {
       if (request.phase === "page_selection") {
         const catalog = JSON.parse(request.user).pageCatalog;
-        assert.equal(catalog.some((entry) => entry.pageNumber === 20), false);
-        assert.equal(catalog.some((entry) => entry.pageNumber === 21), false);
-        assert.equal(catalog.some((entry) => entry.pageNumber === 22), true);
-        const page = catalog.find((entry) => entry.pageNumber === 19);
+        assert.equal(catalog.some((entry) => entry[2] === 20), false);
+        assert.equal(catalog.some((entry) => entry[2] === 21), false);
+        assert.equal(catalog.some((entry) => entry[2] === 22), true);
+        const page = selectorPage(JSON.parse(request.user), (pageNumber) => pageNumber === 19);
         return { rawResponse: JSON.stringify({
           selectedPages: [{
             anchorId: page.anchorId,
-            sourceId: page.sourceId,
-            pageNumber: page.pageNumber,
             selectionReason: "Select only the accepted raw source-material page.",
           }],
           selectionReason: "Fence-tainted navigation entries are not evidence.",

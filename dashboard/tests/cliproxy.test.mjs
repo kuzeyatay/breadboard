@@ -17,9 +17,8 @@ delete process.env.CLIPROXY_BASE_URL;
 
 const config = await import("../src/lib/cliproxy/config.ts");
 const claudeCode = await import("../src/lib/claude-code.ts");
-const { cliproxyModelIdsFromPayload } = await import(
-  "../src/lib/cliproxy/management.ts"
-);
+const management = await import("../src/lib/cliproxy/management.ts");
+const { cliproxyModelIdsFromPayload } = management;
 
 test.after(() => {
   fs.rmSync(scratchHome, { recursive: true, force: true });
@@ -207,6 +206,68 @@ test("sibling credentials are returned in chronological order", () => {
     ["older@example.com", "newer@example.com"],
   );
   assert.ok(siblings[0].connectedAt < siblings[1].connectedAt);
+});
+
+test("a credential the proxy has disabled reads as connected but not active", () => {
+  const authDir = config.cliproxyAuthDir();
+  fs.writeFileSync(path.join(authDir, "antigravity-serving.json"), JSON.stringify({ type: "antigravity" }));
+  fs.writeFileSync(
+    path.join(authDir, "antigravity-waiting.json"),
+    JSON.stringify({ type: "antigravity", disabled: true }),
+  );
+  fs.writeFileSync(path.join(authDir, "antigravity-odd.json"), "not json");
+
+  const byFile = Object.fromEntries(
+    config
+      .readCliproxyAccounts()
+      .filter((account) => account.file.startsWith("antigravity-") && account.file !== "antigravity-bob.json")
+      .map((account) => [account.file, account.active]),
+  );
+  assert.deepEqual(byFile, {
+    "antigravity-serving.json": true,
+    "antigravity-waiting.json": false,
+    // Unreadable stays listed, and assumed serving: the proxy ignores nothing
+    // it cannot parse a `disabled` out of.
+    "antigravity-odd.json": true,
+  });
+});
+
+test("activating an account enables it before disabling its siblings", async () => {
+  const authDir = config.cliproxyAuthDir();
+  fs.writeFileSync(path.join(authDir, "xai-one.json"), JSON.stringify({ disabled: true }));
+  fs.writeFileSync(path.join(authDir, "xai-two.json"), "{}");
+  fs.writeFileSync(path.join(authDir, "xai-three.json"), "{}");
+  fs.writeFileSync(path.join(authDir, "antigravity-bob.json"), "{}");
+
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), method: init?.method, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+  };
+  try {
+    await management.activateAccount("xai-one.json");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.ok(calls.every((call) => call.url.endsWith("/auth-files/status")));
+  assert.ok(calls.every((call) => call.method === "PATCH"));
+  assert.deepEqual(calls[0].body, { name: "xai-one.json", disabled: false });
+  assert.deepEqual(
+    calls.slice(1).map((call) => call.body).sort((a, b) => a.name.localeCompare(b.name)),
+    [
+      { name: "xai-three.json", disabled: true },
+      { name: "xai-two.json", disabled: true },
+    ],
+  );
+  // Another vendor is not touched, and the Claude Code account has no toggle.
+  await management.activateAccount(claudeCode.CLAUDE_CODE_ACCOUNT_FILE);
+  await assert.rejects(
+    () => management.activateAccount("../escape.json"),
+    /not a credential this panel manages/,
+  );
+  await assert.rejects(() => management.activateAccount("xai-none.json"), /not signed in/);
 });
 
 test("an empty auth dir is not an error", () => {

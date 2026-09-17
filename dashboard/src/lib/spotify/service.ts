@@ -22,6 +22,9 @@ export const SPOTIFY_SKILL_SLUG = "spotify";
 // the provider boundary so every caller, including playback queue resolution,
 // stays valid even if it asks for a larger local result set.
 export const SPOTIFY_SEARCH_RESULT_LIMIT = 10;
+// Artist albums also cap each provider request at 10 results.
+const SPOTIFY_ARTIST_ALBUM_PAGE_SIZE = 10;
+const SPOTIFY_ARTIST_RELEASE_LIMIT = 30;
 export const SPOTIFY_LIKED_SONGS_ID = "liked-songs";
 export const SPOTIFY_LIKED_SONGS_URI = "spotify:collection:tracks";
 export const SPOTIFY_PLAYLIST_WRITE_SCOPE = "playlist-modify-private";
@@ -53,6 +56,31 @@ export interface SpotifyTrack {
   album: string;
   imageUrl: string | null;
   durationMs: number;
+}
+
+export interface SpotifyArtist {
+  id: string;
+  uri: string;
+  name: string;
+  imageUrl: string | null;
+}
+
+export interface SpotifyRelease {
+  id: string;
+  uri: string;
+  name: string;
+  imageUrl: string | null;
+  type: "album" | "single" | "compilation";
+  releaseDate: string;
+}
+
+export interface SpotifyArtistProfile {
+  artist: SpotifyArtist;
+  tracks: SpotifyTrack[];
+  tracksSource: "top" | "search";
+  releases: SpotifyRelease[];
+  playlists: SpotifyLibraryPlaylist[];
+  errors: Partial<Record<"tracks" | "releases" | "playlists", string>>;
 }
 
 export interface SpotifyPlaybackIntent {
@@ -167,6 +195,23 @@ export async function spotifyBrowserAccessToken(userId: number): Promise<{
   return { accessToken: tokens.accessToken, expiresAt: tokens.expiresAt };
 }
 
+const spotifyRequestGlobal = globalThis as typeof globalThis & {
+  spotifyRequestPolicy?: {
+    cooldowns: Map<string, number>;
+    reads: Map<string, Promise<unknown>>;
+  };
+};
+const spotifyRequestPolicy = spotifyRequestGlobal.spotifyRequestPolicy ??= {
+  cooldowns: new Map(),
+  reads: new Map(),
+};
+
+function spotifyCooldownError(retryAfterMs: number): ApiError {
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1_000));
+  const wait = seconds < 60 ? `${seconds} seconds` : `${Math.ceil(seconds / 60)} minutes`;
+  return Object.assign(new ApiError(429, "spotify_rate_limited", `Spotify is receiving too many requests. Try again in ${wait}.`), { retryAfterMs });
+}
+
 export async function spotifyApiRequest(input: {
   userId: number;
   method: "GET" | "POST" | "PUT" | "DELETE";
@@ -185,7 +230,20 @@ export async function spotifyApiRequest(input: {
   if (!integration) {
     throw new ApiError(503, "spotify_unavailable", "Spotify is temporarily unavailable.");
   }
-  return embeddedProviderRequest({
+  // Playback reads and writes share a cooldown across all mounted players.
+  // Other endpoints can have their own limits, so browsing stays available.
+  const resource = /^\/v1\/me\/player(?:\/|$)/u.test(input.endpoint) ? "/v1/me/player" : input.endpoint;
+  const cooldownKey = `${input.userId}:${resource}`;
+  const now = Date.now();
+  for (const [key, until] of spotifyRequestPolicy.cooldowns) {
+    if (until <= now) spotifyRequestPolicy.cooldowns.delete(key);
+  }
+  const retryAt = spotifyRequestPolicy.cooldowns.get(cooldownKey);
+  if (retryAt && retryAt > now) throw spotifyCooldownError(retryAt - now);
+  const readKey = input.method === "GET" ? `${input.userId}:${input.endpoint}:${JSON.stringify(input.query ?? {})}` : null;
+  const pending = readKey ? spotifyRequestPolicy.reads.get(readKey) : null;
+  if (pending) return pending;
+  const request: Promise<unknown> = Promise.resolve().then(() => embeddedProviderRequest({
     userId: input.userId,
     integration,
     request: {
@@ -194,7 +252,23 @@ export async function spotifyApiRequest(input: {
       ...(input.query ? { query: input.query } : {}),
       ...(input.body !== undefined ? { body: input.body } : {}),
     },
+  })).catch((error: unknown) => {
+    if (error instanceof ApiError && error.code === "spotify_rate_limited") {
+      const supplied = (error as ApiError & { retryAfterMs?: number }).retryAfterMs;
+      const retryAfterMs = typeof supplied === "number" && Number.isFinite(supplied) ? Math.max(1_000, supplied) : 60_000;
+      const until = Math.max(spotifyRequestPolicy.cooldowns.get(cooldownKey) ?? 0, Date.now() + retryAfterMs);
+      spotifyRequestPolicy.cooldowns.set(cooldownKey, until);
+      while (spotifyRequestPolicy.cooldowns.size > 128) {
+        spotifyRequestPolicy.cooldowns.delete(spotifyRequestPolicy.cooldowns.keys().next().value!);
+      }
+      throw spotifyCooldownError(until - Date.now());
+    }
+    throw error;
+  }).finally(() => {
+    if (readKey && spotifyRequestPolicy.reads.get(readKey) === request) spotifyRequestPolicy.reads.delete(readKey);
   });
+  if (readKey) spotifyRequestPolicy.reads.set(readKey, request);
+  return request;
 }
 
 export async function spotifyLibraryContains(
@@ -226,6 +300,21 @@ function safeImageUrl(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function spotifyArtist(value: unknown): SpotifyArtist | null {
+  const artist = objectRecord(value);
+  const id = typeof artist?.id === "string" ? artist.id : "";
+  const uri = typeof artist?.uri === "string" ? artist.uri : "";
+  const name = typeof artist?.name === "string" ? artist.name.trim() : "";
+  if (!/^[A-Za-z0-9]{10,64}$/.test(id) || uri !== `spotify:artist:${id}` || !name) return null;
+  const images = Array.isArray(artist?.images) ? artist.images : [];
+  return {
+    id,
+    uri,
+    name: name.slice(0, 300),
+    imageUrl: images.map(objectRecord).map((image) => safeImageUrl(image?.url)).find(Boolean) ?? null,
+  };
 }
 
 function spotifyTrack(value: unknown): SpotifyTrack | null {
@@ -428,6 +517,15 @@ export async function searchSpotifyTracks(
   query: string,
   limit = 10,
 ): Promise<SpotifyTrack[]> {
+  return (await searchSpotifyCatalog(userId, query, limit, "track")).tracks;
+}
+
+export async function searchSpotifyCatalog(
+  userId: number,
+  query: string,
+  limit = 10,
+  type: "track" | "track,artist" = "track,artist",
+): Promise<{ tracks: SpotifyTrack[]; artists: SpotifyArtist[] }> {
   const normalized = query.trim().slice(0, 200);
   if (!normalized) {
     throw new ApiError(400, "spotify_query_required", "A track or artist is required.");
@@ -439,15 +537,111 @@ export async function searchSpotifyTracks(
       endpoint: "/v1/search",
       query: {
         q: normalized,
-        type: "track",
+        type,
         limit: Math.min(SPOTIFY_SEARCH_RESULT_LIMIT, Math.max(1, limit)),
       },
     }),
   );
   const tracks = objectRecord(payload?.tracks);
-  return (Array.isArray(tracks?.items) ? tracks.items : [])
-    .map(spotifyTrack)
-    .filter((track): track is SpotifyTrack => Boolean(track));
+  const artists = objectRecord(payload?.artists);
+  return {
+    tracks: (Array.isArray(tracks?.items) ? tracks.items : [])
+      .map(spotifyTrack)
+      .filter((track): track is SpotifyTrack => Boolean(track)),
+    artists: (Array.isArray(artists?.items) ? artists.items : [])
+      .map(spotifyArtist)
+      .filter((artist): artist is SpotifyArtist => Boolean(artist)),
+  };
+}
+
+function spotifyRelease(value: unknown): SpotifyRelease | null {
+  const album = objectRecord(value);
+  const id = typeof album?.id === "string" ? album.id : "";
+  const uri = typeof album?.uri === "string" ? album.uri : "";
+  const name = typeof album?.name === "string" ? album.name.trim() : "";
+  if (!/^[A-Za-z0-9]{10,64}$/.test(id) || uri !== `spotify:album:${id}` || !name) return null;
+  const images = Array.isArray(album?.images) ? album.images : [];
+  return {
+    id, uri, name: name.slice(0, 300),
+    imageUrl: images.map(objectRecord).map((image) => safeImageUrl(image?.url)).find(Boolean) ?? null,
+    type: album?.album_type === "single" ? "single" : album?.album_type === "compilation" ? "compilation" : "album",
+    releaseDate: typeof album?.release_date === "string" ? album.release_date.slice(0, 10) : "",
+  };
+}
+
+async function spotifyArtistSongs(userId: number, artist: SpotifyArtist): Promise<Pick<SpotifyArtistProfile, "tracks" | "tracksSource">> {
+  try {
+    const payload = objectRecord(await spotifyApiRequest({userId, method: "GET", endpoint: `/v1/artists/${artist.id}/top-tracks`}));
+    return {
+      tracks: (Array.isArray(payload?.tracks) ? payload.tracks : []).map(spotifyTrack).filter((track): track is SpotifyTrack => Boolean(track)),
+      tracksSource: "top",
+    };
+  } catch (error) {
+    // Development-mode connections lost this endpoint in February 2026.
+    // Preserve access to the artist's songs without inventing a popularity ranking.
+    if (!(error instanceof ApiError) || (error.status !== 403 && !/HTTP (?:404|410)/u.test(error.message))) throw error;
+    const payload = objectRecord(await spotifyApiRequest({
+      userId, method: "GET", endpoint: "/v1/search",
+      query: {q: `artist:"${artist.name.replace(/["\\]/gu, " ")}"`, type: "track", limit: SPOTIFY_SEARCH_RESULT_LIMIT},
+    }));
+    const tracks = objectRecord(payload?.tracks);
+    return {
+      tracks: (Array.isArray(tracks?.items) ? tracks.items : [])
+        .filter((value) => {
+          const track = objectRecord(value);
+          return Array.isArray(track?.artists) && track.artists.some((item) => objectRecord(item)?.id === artist.id);
+        })
+        .map(spotifyTrack).filter((track): track is SpotifyTrack => Boolean(track)),
+      tracksSource: "search",
+    };
+  }
+}
+
+async function spotifyArtistReleasePage(userId: number, artistId: string): Promise<{ items: unknown[] }> {
+  const items: unknown[] = [];
+  for (let offset = 0; offset < SPOTIFY_ARTIST_RELEASE_LIMIT; offset += SPOTIFY_ARTIST_ALBUM_PAGE_SIZE) {
+    const page = objectRecord(await spotifyApiRequest({
+      userId,
+      method: "GET",
+      endpoint: `/v1/artists/${artistId}/albums`,
+      query: { include_groups: "album,single,compilation", limit: SPOTIFY_ARTIST_ALBUM_PAGE_SIZE, offset },
+    }));
+    const pageItems = Array.isArray(page?.items) ? page.items : [];
+    items.push(...pageItems.slice(0, SPOTIFY_ARTIST_ALBUM_PAGE_SIZE));
+    if (!page?.next || !pageItems.length) break;
+  }
+  return { items };
+}
+
+export async function spotifyArtistProfile(userId: number, artistId: string): Promise<SpotifyArtistProfile> {
+  if (!/^[A-Za-z0-9]{10,64}$/.test(artistId)) throw new ApiError(400, "invalid_spotify_artist", "The Spotify artist is invalid.");
+  const artist = spotifyArtist(await spotifyApiRequest({userId, method: "GET", endpoint: `/v1/artists/${artistId}`}));
+  if (!artist || artist.id !== artistId) throw new ApiError(502, "spotify_artist_unavailable", "This artist profile is unavailable. Try again shortly.");
+  const [songs, releases, playlists] = await Promise.allSettled([
+    spotifyArtistSongs(userId, artist),
+    spotifyArtistReleasePage(userId, artistId),
+    spotifyApiRequest({userId, method: "GET", endpoint: "/v1/search", query: {q: artist.name, type: "playlist", limit: 10}}),
+  ]);
+  const errors: SpotifyArtistProfile["errors"] = {};
+  const readSection = (key: keyof typeof errors, result: PromiseSettledResult<unknown>) => {
+    if (result.status === "fulfilled") return objectRecord(result.value);
+    errors[key] = result.reason instanceof ApiError ? result.reason.message : `Could not load ${key}. Try again.`;
+    return null;
+  };
+  readSection("tracks", songs);
+  const releasePage = readSection("releases", releases);
+  const playlistPage = objectRecord(readSection("playlists", playlists)?.playlists);
+  return {
+    artist,
+    ...(songs.status === "fulfilled" ? songs.value : {tracks: [], tracksSource: "top" as const}),
+    releases: (Array.isArray(releasePage?.items) ? releasePage.items : [])
+      .map(spotifyRelease).filter((release): release is SpotifyRelease => Boolean(release))
+      .filter((release, index, items) => items.findIndex((item) => item.id === release.id) === index),
+    // Search results are playlists about the artist, not necessarily owned by them.
+    playlists: (Array.isArray(playlistPage?.items) ? playlistPage.items : [])
+      .map(spotifyLibraryPlaylist).filter((playlist): playlist is SpotifyLibraryPlaylist => Boolean(playlist)),
+    errors,
+  };
 }
 
 export async function spotifyRecommendedTracks(
@@ -475,46 +669,78 @@ export async function spotifyRecommendedTracks(
     .filter((track) => track.id !== seedTrackId);
 }
 
+const spotifyLibraryMetadataCache = new Map<string, {
+  expiresAt: number;
+  request: Promise<unknown>;
+}>();
+
+function spotifyLibraryMetadata(userId: number, endpoint: "/v1/me" | "/v1/me/tracks"): Promise<unknown> {
+  // Separate connections, including reconnects to a different Spotify account.
+  const token = readConnectedAppTokens(userId, SPOTIFY_CONNECTION_SLUG)?.accessToken ?? "";
+  const key = `${userId}:${crypto.createHash("sha256").update(token).digest("hex")}:${endpoint}`;
+  const cached = spotifyLibraryMetadataCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.request;
+  const entry = {
+    expiresAt: Date.now() + (endpoint === "/v1/me" ? 5 * 60_000 : 30_000),
+    request: Promise.resolve<unknown>(null),
+  };
+  entry.request = spotifyApiRequest({
+    userId,
+    method: "GET",
+    endpoint,
+    ...(endpoint === "/v1/me/tracks" ? { query: { limit: 1 } } : {}),
+  }).catch((error: unknown) => {
+    if (error instanceof ApiError && error.code === "spotify_rate_limited") {
+      const retryAfterMs = (error as ApiError & { retryAfterMs?: number }).retryAfterMs;
+      entry.expiresAt = Date.now() + Math.max(60_000, retryAfterMs ?? 0);
+    } else if (spotifyLibraryMetadataCache.get(key) === entry) {
+      spotifyLibraryMetadataCache.delete(key);
+    }
+    throw error;
+  });
+  spotifyLibraryMetadataCache.set(key, entry);
+  while (spotifyLibraryMetadataCache.size > 128) {
+    spotifyLibraryMetadataCache.delete(spotifyLibraryMetadataCache.keys().next().value!);
+  }
+  return entry.request;
+}
+
+function optionalSpotifyLibraryMetadata(error: unknown): null {
+  if (error instanceof ApiError && error.code === "spotify_rate_limited") return null;
+  throw error;
+}
+
 export async function spotifyUserPlaylists(
   userId: number,
   limit = 20,
 ): Promise<SpotifyLibraryPlaylist[]> {
-  const likedSongsRequest = spotifyApiRequest({
-    userId,
-    method: "GET",
-    endpoint: "/v1/me/tracks",
-    query: { limit: 1 },
-  });
+  const likedSongsRequest = spotifyLibraryMetadata(userId, "/v1/me/tracks");
   if (!spotifyConnectionStatus(userId).playlistAccess) {
     return [spotifyLikedSongsCollection(await likedSongsRequest)];
   }
   try {
     const [likedSongsPayload, playlistPayload, profilePayload] = await Promise.all([
-      likedSongsRequest,
+      likedSongsRequest.catch(optionalSpotifyLibraryMetadata),
       spotifyApiRequest({
         userId,
         method: "GET",
         endpoint: "/v1/me/playlists",
         query: { limit: Math.min(50, Math.max(1, limit)) },
       }),
-      spotifyApiRequest({
-        userId,
-        method: "GET",
-        endpoint: "/v1/me",
-      }),
+      spotifyLibraryMetadata(userId, "/v1/me").catch(optionalSpotifyLibraryMetadata),
     ]);
     const payload = objectRecord(playlistPayload);
     const profile = objectRecord(profilePayload);
     const currentUserId = typeof profile?.id === "string" ? profile.id : "";
-    const likedSongs = spotifyLikedSongsCollection(likedSongsPayload);
+    const likedSongs = likedSongsPayload ? [spotifyLikedSongsCollection(likedSongsPayload)] : [];
     const playlists = (Array.isArray(payload?.items) ? payload.items : [])
       .map(spotifyLibraryPlaylist)
       .filter((playlist): playlist is SpotifyLibraryPlaylist => Boolean(playlist))
       .map((playlist) => spotifyPlaylistCapabilities(playlist, currentUserId))
       .filter(
-        (playlist) => playlist.ownerId === currentUserId || playlist.collaborative,
+        (playlist) => !currentUserId || playlist.ownerId === currentUserId || playlist.collaborative,
       );
-    return [likedSongs, ...playlists];
+    return [...likedSongs, ...playlists];
   } catch (error) {
     if (error instanceof ApiError && error.code === "provider_request_forbidden") {
       return [spotifyLikedSongsCollection(await likedSongsRequest)];
@@ -555,11 +781,7 @@ export async function spotifyPlaylistTracks(
       endpoint: `/v1/playlists/${playlistId}/items`,
       query: { limit: Math.min(50, Math.max(1, limit)) },
     }),
-    spotifyApiRequest({
-      userId,
-      method: "GET",
-      endpoint: "/v1/me",
-    }),
+    spotifyLibraryMetadata(userId, "/v1/me").catch(optionalSpotifyLibraryMetadata),
   ]);
   const parsedPlaylist = spotifyLibraryPlaylist(playlistPayload);
   if (!parsedPlaylist) {
@@ -601,7 +823,7 @@ async function spotifyManagedPlaylist(
   const id = spotifyPlaylistId(playlistId);
   const [playlistPayload, profilePayload] = await Promise.all([
     spotifyApiRequest({ userId, method: "GET", endpoint: `/v1/playlists/${id}` }),
-    spotifyApiRequest({ userId, method: "GET", endpoint: "/v1/me" }),
+    spotifyLibraryMetadata(userId, "/v1/me"),
   ]);
   const playlist = spotifyLibraryPlaylist(playlistPayload);
   const profile = objectRecord(profilePayload);

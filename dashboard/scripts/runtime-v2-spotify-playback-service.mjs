@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -282,9 +283,31 @@ function playerPage() {
 <body>
 <script>
 let deviceId=null;
-async function register(){
+let commands=null;
+let controlQueue=Promise.resolve();
+let registering=false;
+let pendingRegistration=null;
+let stateRevision=0;
+async function flushRegistration(){
+  if(registering)return;
+  registering=true;
+  try {
+    while(pendingRegistration){
+      const body=pendingRegistration;pendingRegistration=null;
+      await fetch("/register",{method:"POST",headers:{"Content-Type":"application/json"},body,cache:"no-store",signal:AbortSignal.timeout(5000)}).catch(()=>{});
+    }
+  }finally{registering=false;}
+}
+function register(state){
   if(!deviceId)return;
-  await fetch("/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({deviceId}),cache:"no-store"}).catch(()=>{});
+  const track=state?.track_window?.current_track;
+  const playback=track&&track.uri?.startsWith("spotify:track:")?{
+    track:{id:track.uri.split(":")[2],uri:track.uri,name:track.name??"",artist:(track.artists??[]).map(artist=>artist.name).join(", "),
+      album:track.album?.name??"",imageUrl:track.album?.images?.[0]?.url??null,durationMs:Math.round(state.duration)},
+    isPlaying:!state.paused,positionMs:Math.max(0,Math.round(state.position)),shuffle:state.shuffle===true
+  }:null;
+  pendingRegistration=JSON.stringify({deviceId,...(state===undefined?{}:{playback})});
+  return flushRegistration();
 }
 window.onSpotifyWebPlaybackSDKReady=()=>{
   const player=new Spotify.Player({
@@ -294,10 +317,41 @@ window.onSpotifyWebPlaybackSDKReady=()=>{
       fetch("/token",{cache:"no-store"}).then(response=>response.json()).then(payload=>callback(payload.accessToken));
     }
   });
-  player.addListener("ready",value=>{deviceId=value.device_id;void register();});
-  player.addListener("not_ready",()=>{deviceId=null;});
+  player.addListener("ready",value=>{
+    deviceId=value.device_id;void register();
+    if(commands)return;
+    commands=new EventSource("/commands");
+    commands.onmessage=event=>{
+      const command=JSON.parse(event.data);
+      controlQueue=controlQueue.catch(()=>{}).then(async()=>{
+        let result={handled:false};
+        try {
+          const state=await player.getCurrentState();
+          if(command.deviceId===deviceId && state && Date.now()<command.expiresAt){
+            if(command.action==="seek")await player.seek(Math.min(command.positionMs,Math.max(0,state.duration-1)));
+            else if(command.action==="pause")await player.pause();
+            else if(command.action==="resume")await player.resume();
+            else if(command.action==="next")await player.nextTrack();
+            else if(command.action==="previous")await player.previousTrack();
+            else throw new Error("Unsupported control");
+            const next=(command.action==="next"||command.action==="previous")?await player.getCurrentState():state;
+            result={handled:true,
+              trackUri:next?.track_window?.current_track?.uri??state.track_window.current_track.uri,
+              isPlaying:command.action==="pause"?false:command.action==="resume"?true:!next?.paused,
+              positionMs:command.action==="seek"?Math.min(command.positionMs,Math.max(0,state.duration-1)):next?.position??0};
+          }
+        }catch{result={error:true};}
+        await fetch("/command-result",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:command.id,result})}).catch(()=>{});
+      });
+    };
+  });
+  player.addListener("player_state_changed",state=>{stateRevision++;void register(state);});
+  player.addListener("not_ready",()=>{stateRevision++;void register(null);deviceId=null;});
   player.connect();
-  setInterval(()=>void register(),5000);
+  setInterval(()=>{
+    const revision=stateRevision;
+    void player.getCurrentState().then(state=>{if(revision===stateRevision)return register(state);}).catch(()=>register());
+  },5000);
 };
 </script>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
@@ -498,13 +552,13 @@ async function proxyToken(configuration, session) {
   };
 }
 
-async function proxyRegistration(configuration, session, deviceId) {
+async function proxyRegistration(configuration, session, deviceId, playback) {
   const value = await dashboardRequest(
     dashboardEngineUrl(configuration),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ticket: session.ticket, deviceId }),
+      body: JSON.stringify({ ticket: session.ticket, deviceId, ...(playback === undefined ? {} : { playback }) }),
     },
   );
   if (value.ok !== true) {
@@ -518,6 +572,12 @@ async function proxyRegistration(configuration, session, deviceId) {
 
 async function createPlayerBridge(configuration, session) {
   let origin = "";
+  let commandStream = null;
+  const pendingCommands = new Map();
+  const rejectPending = () => {
+    for (const command of pendingCommands.values()) command.reject(new Error("The local player disconnected."));
+    pendingCommands.clear();
+  };
   const pageBytes = Buffer.from(playerPage(), "utf8");
   const server = http.createServer(async (request, response) => {
     try {
@@ -544,13 +604,45 @@ async function createPlayerBridge(configuration, session) {
         sendError(response, 403, "Player request rejected.");
         return;
       }
+      if (request.method === "GET" && requestUrl.pathname === "/commands") {
+        commandStream?.end();
+        rejectPending();
+        commandStream = response;
+        response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        response.write(": connected\n\n");
+        response.once("close", () => {
+          if (commandStream !== response) return;
+          commandStream = null;
+          rejectPending();
+        });
+        return;
+      }
+      if (request.method === "POST" && requestUrl.pathname === "/command-result") {
+        const body = await readJsonBody(request, MAX_BRIDGE_REQUEST_BYTES);
+        const result = body?.result;
+        if (!exactRecord(body, ["id", "result"]) || typeof body.id !== "string" || !result || (
+          !(exactRecord(result, ["handled"]) && result.handled === false) && !(exactRecord(result, ["error"]) && result.error === true) &&
+          !(exactRecord(result, ["handled", "trackUri", "positionMs", "isPlaying"]) &&
+            result.handled === true && /^spotify:track:[A-Za-z0-9]{10,64}$/u.test(result.trackUri) &&
+            Number.isSafeInteger(result.positionMs) && result.positionMs >= 0 && typeof result.isPlaying === "boolean")
+        )) {
+          sendError(response, 400, "Player control result rejected.");
+          return;
+        }
+        const pending = pendingCommands.get(body.id);
+        if (result.error === true) pending?.reject(new Error("The local player could not apply that control."));
+        else if (result.handled === false || result.handled === true) pending?.resolve(result);
+        else { sendError(response, 400, "Player control result rejected."); return; }
+        sendJson(response, 200, { ok: true });
+        return;
+      }
       if (request.method === "GET" && requestUrl.pathname === "/token") {
         sendJson(response, 200, await proxyToken(configuration, session));
         return;
       }
       if (request.method === "POST" && requestUrl.pathname === "/register") {
-        const body = await readJsonBody(request, MAX_BRIDGE_REQUEST_BYTES);
-        if (!exactRecord(body, ["deviceId"])) {
+        const body = await readJsonBody(request, 16 * 1024);
+        if (!exactRecord(body, ["deviceId"]) && !exactRecord(body, ["deviceId", "playback"])) {
           sendError(response, 400, "Player registration rejected.");
           return;
         }
@@ -558,6 +650,7 @@ async function createPlayerBridge(configuration, session) {
           configuration,
           session,
           playbackDeviceId(body.deviceId),
+          body.playback,
         );
         sendJson(response, 200, { ok: true });
         return;
@@ -587,7 +680,29 @@ async function createPlayerBridge(configuration, session) {
     );
   }
   origin = `http://${LOOPBACK_HOST}:${address.port}`;
-  return { server, origin };
+  return {
+    server, origin,
+    async control(command) {
+      if (!commandStream || commandStream.destroyed) return { handled: false };
+      if (pendingCommands.size >= 16) fail("The local player is busy.", 429, "spotify_player_busy");
+      const id = randomUUID();
+      let timer;
+      try {
+        return await new Promise((resolve, reject) => {
+          pendingCommands.set(id, { resolve, reject });
+          timer = setTimeout(() => reject(new Error("The local player did not respond.")), 2_000);
+          commandStream.write(`data: ${JSON.stringify({ ...command, id, expiresAt: Date.now() + 1_500 })}\n\n`);
+        });
+      } catch {
+        // A dispatched command may already have changed audio. Never replay an
+        // ambiguous next/previous command through the Web API.
+        fail("The local player did not confirm that control. Try again.", 502, "spotify_control_unconfirmed");
+      } finally {
+        clearTimeout(timer);
+        pendingCommands.delete(id);
+      }
+    },
+  };
 }
 
 function closeServer(server) {
@@ -847,6 +962,19 @@ async function expireViews() {
   );
 }
 
+function controlSession(body) {
+  if (!exactRecord(body, ["userId", "deviceId", "action", "positionMs"]) ||
+    !["pause", "resume", "next", "previous", "seek"].includes(body.action) ||
+    (body.action === "seek" ? !Number.isSafeInteger(body.positionMs) || body.positionMs < 0 : body.positionMs !== null)) {
+    fail("The Spotify control is invalid.", 400, "invalid_spotify_playback_request");
+  }
+  const userId = positiveUserId(body.userId);
+  const deviceId = playbackDeviceId(body.deviceId);
+  const session = sessions.get(userId);
+  if (!session || session.stopping) return { handled: false };
+  return session.bridge.control({ deviceId, action: body.action, positionMs: body.positionMs });
+}
+
 async function main() {
   const configuration = runtimeConfiguration();
   const expiryTimer = setInterval(() => void expireViews(), 5_000);
@@ -895,6 +1023,9 @@ async function main() {
           );
         }
         return sessionStatus(positiveUserId(body.userId));
+      }
+      if (routePath === "/v1/control") {
+        return controlSession(body);
       }
       fail("Unknown Spotify playback route.", 404, "route_not_found");
     },

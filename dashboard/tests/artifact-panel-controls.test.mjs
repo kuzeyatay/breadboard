@@ -101,6 +101,12 @@ test("Garden artifact tabs use the archive icon without a duplicate panel header
     gardenWorkspace,
     /<ArtifactArchiveIcon className="h-3\.5 w-3\.5 shrink-0" \/>[\s\S]*?Artifacts/,
   );
+  assert.match(gardenWorkspace, /Artifacts\s*\{artifactCount > 0 \? ` \(\$\{artifactCount\}\)` : ""\}/);
+  assert.match(gardenWorkspace, /fetch\(`\/api\/hermes\/artifacts\?\$\{query\}`/);
+  assert.match(gardenWorkspace, /setArtifactCount\(filterArtifactsForArchive\(data\.artifacts\)\.length\)/);
+  assert.match(gardenWorkspace, /<ArtifactPanel[\s\S]*?onArchiveCountChange=\{setArtifactCount\}/);
+  assert.match(panel, /onArchiveCountChange\?: \(count: number\) => void/);
+  assert.match(panel, /onArchiveCountChange\?\.\(archiveArtifacts\.length\)/);
   assert.match(
     gardenWorkspace,
     /<ArtifactPanel[\s\S]{0,180}?compact[\s\S]{0,180}?hideHeader[\s\S]{0,180}?gardenSlug=\{clusterSlug\}[\s\S]{0,180}?sourceSurface="garden_chat"/,
@@ -164,18 +170,17 @@ test("the archive hides generating and failed artifacts", () => {
   assert.doesNotMatch(panel, />\s*Failed\s*</);
 });
 
-test("Terminal artifacts share Garden documents' square color and selection control", () => {
+test("artifacts attach through an explicit button while highlighting stays in the menu", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
 
-  assert.match(panel, /handleArtifactColorButtonClick/);
-  assert.match(panel, /pendingTimer !== undefined[\s\S]*?onToggleArtifactAttachment\(artifact\)/);
-  assert.match(panel, /flex h-5 w-5 items-center justify-center/);
-  assert.match(panel, /Click twice to select for chat/);
-  assert.match(panel, /Click once to choose a color/);
-  assert.match(panel, /ring-2 ring-\[var\(--botanical\)\]\/70/);
-  assert.match(panel, /backgroundColor: highlight\?\.color \?\? "transparent"/);
-  assert.match(panel, /<ArtifactColorPalette/);
+  assert.match(panel, /`Attach \$\{artifact\.title\} to chat`/);
+  assert.match(panel, /`Remove \$\{artifact\.title\} from chat`/);
+  assert.match(panel, /onToggleArtifactAttachment\(artifact\)/);
+  assert.match(panel, /disabled=\{attachmentSelectionBusy\}/);
+  assert.match(panel, /aria-pressed=\{attached\}/);
+  assert.doesNotMatch(panel, /Click twice|handleArtifactColorButtonClick|ArtifactColorPalette/);
+  assert.match(panel, /<HighlightBar/);
   assert.match(terminal, /fetch\(artifactUrl\(artifact, "download"\)\)/);
   assert.match(terminal, /sourceArtifactId: artifact\.id/);
   assert.match(terminal, /attachedArtifactIds=\{attachedArtifactIds\}/);

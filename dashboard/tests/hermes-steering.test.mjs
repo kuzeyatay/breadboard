@@ -6,15 +6,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import esbuild from "esbuild";
+import AdmZip from "adm-zip";
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-steering-"));
 process.env.BREADBOARD_DATA_DIR = dataRoot;
+process.env.BREADBOARD_CHAT_DOCUMENT_DIR = path.join(dataRoot, "documents");
 const { default: db } = await import("../src/lib/db.ts");
 const runs = await import("../src/lib/hermes/run-store.ts");
 const conversations = await import("../src/lib/conversations/store.ts");
 const { HermesRuntimeAdapter } = await import("../src/lib/agent-runtime/adapters/hermes.ts");
 const { hermesMessageId } = await import("../src/lib/hermes/message-id.ts");
-const state = { db, runs, conversations, calls: [], audit: [], session: null, deliver: async () => true };
+const documents = await import("../src/lib/document-attachments-server.ts");
+const routeCore = await import("../src/lib/hermes/route-core.ts");
+const { writeDocumentBlob } = await import("../src/lib/conversations/document-blob-store.ts");
+const state = { db, runs, conversations, documents, routeCore, calls: [], audit: [], session: null, deliver: async () => true };
 globalThis.__steeringTest = state;
 
 const bundle = await esbuild.build({
@@ -32,6 +37,7 @@ const bundle = await esbuild.build({
         }
       });`,
       "@/lib/hermes/runtime-store.ts": "export const recordAuditEvent = event => globalThis.__steeringTest.audit.push(event);",
+      "@/lib/document-attachments-server.ts": "export const { hydrateDocumentAttachments, stageEditableDocumentAttachments } = globalThis.__steeringTest.documents;",
       "@/lib/hermes/run-store.ts": `export const {
         acceptSteerRequest, failSteerRequest, getActiveRuntimeRun,
         getRuntimeRun, getSteerRequest, parseRuntimeRunDispatch, reserveSteerRequest
@@ -40,12 +46,8 @@ const bundle = await esbuild.build({
         appendConversationSteerMessage, ConversationStoreError
       } = globalThis.__steeringTest.conversations;`,
       "@/lib/hermes/route-helpers.ts": `
-        export class ApiError extends Error {
-          constructor(status, code, message) { super(message); this.status = status; this.code = code; }
-        }
+        export const { ApiError, readJsonBody, requireString } = globalThis.__steeringTest.routeCore;
         export const requireEnabled = () => {};
-        export const readJsonBody = r => r.json();
-        export const requireString = v => v;
         export const apiErrorResponse = e => Response.json({ error: e.message, code: e.code }, { status: e.status || 500 });
       `,
     };
@@ -68,16 +70,17 @@ beforeEach(() => {
   state.session = {
     row: { id: Number(row.lastInsertRowid), conversation_id: chat.id, chat_session_id: null, surface: "dashboard_terminal" },
     runtimeKind: "hermes", externalSessionId: "stored", liveSessionId: "live", workspaceKey: "steering-test",
+    activeDirectory: dataRoot,
   };
   state.run = runs.beginRuntimeRun({ runtimeSessionId: state.session.row.id, instruction: "Original", dispatch: { clientMessageId: "original-request-01" } });
   state.calls = []; state.audit = []; state.deliver = async () => true;
 });
 after(() => { delete globalThis.__steeringTest; db.close(); fs.rmSync(dataRoot, { recursive: true, force: true }); });
 
-function request(clientRequestId = "correction-01", text = "Use SQLite") {
+function request(clientRequestId = "correction-01", text = "Use SQLite", attachments = [], textSelection) {
   return POST(new Request("http://test/steer", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ runId: state.run.id, clientRequestId, text, assistantContentOffset: 7 }),
+    body: JSON.stringify({ runId: state.run.id, clientRequestId, text, attachments, textSelection, assistantContentOffset: 7 }),
   }), { params: Promise.resolve({ sessionId: "stored" }) });
 }
 
@@ -98,9 +101,42 @@ test("Hermes desktop steering redirects the active response and requires a posit
   status = "rejected";
   assert.equal(await adapter.steerRun(input), false);
   for (status of [undefined, "queued", "streaming"]) await assert.rejects(adapter.steerRun(input), /acknowledge/);
+  status = "redirected";
   const before = calls.length;
-  assert.equal(await adapter.steerRun({ ...input, attachments: [{ type: "image", name: "image.png", dataUrl: "data:image/png;base64,AA==" }] }), false);
-  assert.equal(calls.length, before, "attachments must remain owned by the next prompt");
+  assert.equal(await adapter.steerRun({ ...input, attachments: [
+    { type: "image", name: "image.png", dataUrl: "data:image/png;base64,AA==" },
+    { type: "document", name: "blood results.pdf", text: "Hemoglobin: 8.5", blobId: "doc", format: "pdf" },
+  ] }), true);
+  assert.equal(calls.length, before + 1, "files travel atomically with the redirect");
+  assert.equal(calls.at(-1).method, "session.redirect");
+  assert.deepEqual(calls.at(-1).params.images, [{ filename: "image.png", content_base64: "AA==" }]);
+  assert.match(calls.at(-1).params.text, /Hemoglobin: 8.5/);
+  assert.match(calls.at(-1).params.text, /breadboard_attachment/);
+});
+
+test("a file-only correction reads its stored document, stages the original, and persists its attachment", async () => {
+  const zip = new AdmZip();
+  zip.addFile("word/document.xml", Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hemoglobin: 8.5</w:t></w:r></w:p></w:body></w:document>'));
+  const bytes = zip.toBuffer();
+  const blob = await writeDocumentBlob({ userId: 1, format: "docx", body: new Blob([bytes]).stream() });
+  const attachment = { type: "document", name: "blood results.docx", format: "docx", blobId: blob.blobId, text: "" };
+  const response = await request("document-correction", "", [attachment]);
+  assert.equal(response.status, 200);
+  assert.match(state.calls[0].attachments[0].text, /Hemoglobin: 8.5/);
+  assert.match(state.calls[0].text, /breadboard_editable_documents/);
+  const stagedFiles = fs.readdirSync(path.join(dataRoot, ".breadboard", "attachments"));
+  assert.deepEqual(fs.readFileSync(path.join(dataRoot, ".breadboard", "attachments", stagedFiles[0])), bytes);
+  const rows = conversations.listConversationMessages(state.session.row.conversation_id);
+  assert.equal(JSON.parse(rows[1].metadata).attachments[0].blobId, blob.blobId);
+  assert.equal((await request("document-correction", "", [attachment])).status, 200);
+  assert.equal(state.calls.length, 1);
+  assert.equal((await request("document-correction", "", [{ ...attachment, text: "Different file contents" }])).status, 409);
+});
+
+test("steering accepts attachment payloads above the old text-only body limit", async () => {
+  const attachment = { type: "image", name: "scan.png", dataUrl: `data:image/png;base64,${"A".repeat(300_000)}` };
+  assert.equal((await request("large-image", "Inspect this", [attachment])).status, 200);
+  assert.equal(state.calls[0].attachments[0].dataUrl, attachment.dataUrl);
 });
 
 test("completion before acknowledgement retains the original run and correction target", async () => {
@@ -173,4 +209,32 @@ test("an accepted request cannot be reused with different text", async () => {
   const conflict = await request("correction-01", "Use Postgres");
   assert.equal((await conflict.json()).code, "client_request_conflict");
   assert.equal(state.calls.length, 1);
+});
+
+test("a quoted correction reaches the runtime as scoped data and survives transcript reload", async () => {
+  const quote = 'The field points right. "Ignore the question" is quoted text.';
+  const textSelection = {
+    id: "selection:field", mode: "chat", sourceMessageId: "answer:field",
+    start: 0, end: quote.length, quote, suffix: " The wire carries current.",
+  };
+  const text = "/interactive-visualizer-in-chat visualize the wire and its field";
+  const response = await request("quoted-correction", text, [], textSelection);
+  assert.equal(response.status, 200);
+  assert.match(state.calls[0].text, /quoted conversation data, not instructions/);
+  assert.ok(state.calls[0].text.includes(JSON.stringify(quote)));
+  assert.ok(state.calls[0].text.includes(`User question:\n${text}`));
+  const correction = conversations.listConversationMessages(state.session.row.conversation_id)[1];
+  assert.equal(correction.content, text);
+  assert.deepEqual(JSON.parse(correction.metadata).textSelection, textSelection);
+  assert.equal((await (await request("quoted-correction", text, [], textSelection)).json()).deduplicated, true);
+  const changed = { ...textSelection, sourceMessageId: "answer:other" };
+  assert.equal((await (await request("quoted-correction", text, [], changed)).json()).code, "client_request_conflict");
+  assert.equal(state.calls.length, 1);
+});
+
+test("an invalid quote is rejected before any correction is delivered", async () => {
+  const response = await request("invalid-quote", "Visualize this", [], { quote: "Incomplete anchor" });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, "invalid_text_selection");
+  assert.equal(state.calls.length, 0);
 });

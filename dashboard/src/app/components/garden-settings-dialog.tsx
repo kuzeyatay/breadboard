@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { GardenMemoryScope } from "@/lib/garden-settings";
+import { announceGardenNameChange } from "@/lib/garden-name-events";
 import { useReviewSettings } from "./hermes/use-review-settings";
 import type { ReviewChannel } from "@/lib/review/types";
 
@@ -396,6 +397,9 @@ export default function GardenSettingsDialog({
       setName(payload.settings.name);
       setDescription(payload.settings.description);
       setInstructions(payload.settings.instructions);
+      if (payload.settings.name !== settings?.name) {
+        announceGardenNameChange(gardenSlug, payload.settings.name);
+      }
       flash(message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save that.");

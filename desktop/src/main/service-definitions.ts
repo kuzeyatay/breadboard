@@ -91,6 +91,15 @@ export function resolveHermesPython(
   return fs.existsSync(venv) ? venv : binaries.python;
 }
 
+/** Hermes owns Computer Use; Breadboard owns and pins its native driver. */
+export function resolveHermesComputerUseDriver(paths: ResolvedPaths): string {
+  return path.join(
+    paths.binDir,
+    "cua-driver",
+    process.platform === "win32" ? "cua-driver.exe" : "cua-driver",
+  );
+}
+
 /**
  * Resolve the persona catalog shipped with Breadboard.
  *
@@ -635,6 +644,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       PYTHONUNBUFFERED: "1",
       PYTHONDONTWRITEBYTECODE: "1",
       HERMES_HOME: paths.hermesHome,
+      HERMES_CUA_DRIVER_CMD: resolveHermesComputerUseDriver(paths),
       HERMES_DESKTOP: "1",
       HERMES_SERVE_HEADLESS: "1",
       HERMES_DASHBOARD_SESSION_TOKEN: persistent.hermesSessionToken,
@@ -909,6 +919,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       BREADBOARD_HERMES_PYTHON: resolveHermesPython(paths, binaries),
       BREADBOARD_HERMES_APP_DIR: paths.hermesAppDir,
       BREADBOARD_HERMES_HOME: paths.hermesHome,
+      HERMES_CUA_DRIVER_CMD: resolveHermesComputerUseDriver(paths),
       HERMES_ENABLED: "true",
       HERMES_MODE: "required",
       HERMES_CAPABILITY_SECRET: persistent.hermesCapabilitySecret,

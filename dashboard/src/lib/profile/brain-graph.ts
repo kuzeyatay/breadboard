@@ -3,6 +3,7 @@ import {
   buildBrainGraphAccessContext,
   type BrainGraphAccessContext,
 } from "./brain-graph-auth.ts";
+import { brainGraphCache, type BrainGraphCache } from "./brain-graph-cache.ts";
 import { opaqueBrainId } from "./brain-graph-ids.ts";
 import { normalizeBrainGraph } from "./brain-graph-normalize.ts";
 import { brainGraphRevision } from "./brain-graph-revision.ts";
@@ -126,16 +127,27 @@ async function buildFragments(
 export async function buildBrainGraph(
   context: BrainGraphAccessContext,
   scope: BrainScope,
-  options: { mode?: BrainGraphMode; signal?: AbortSignal } = {},
+  options: { mode?: BrainGraphMode; signal?: AbortSignal; cache?: BrainGraphCache | null } = {},
+): Promise<BrainGraphResponse> {
+  const mode = options.mode ?? "overview";
+  const cache = options.cache === undefined ? brainGraphCache : options.cache;
+  if (!cache) return buildBrainGraphUncached(context, scope, mode, options.signal);
+  // A cached build is shared with every concurrent requester, so one caller
+  // going away must not abort (and then cache) a degraded graph for the rest.
+  return cache.build(context, scope, mode, () =>
+    buildBrainGraphUncached(context, scope, mode),
+  );
+}
+
+async function buildBrainGraphUncached(
+  context: BrainGraphAccessContext,
+  scope: BrainScope,
+  mode: BrainGraphMode,
+  signal?: AbortSignal,
 ): Promise<BrainGraphResponse> {
   const started = performance.now();
-  const limits = limitsForMode(options.mode ?? "overview");
-  const { fragments, adapterMs } = await buildFragments(
-    context,
-    scope,
-    limits,
-    options.signal,
-  );
+  const limits = limitsForMode(mode);
+  const { fragments, adapterMs } = await buildFragments(context, scope, limits, signal);
   const normalized = normalizeBrainGraph(fragments, limits);
   const warnings = cleanWarnings(fragments.flatMap((fragment) => fragment.warnings ?? []));
   const revision = brainGraphRevision(scope, normalized.nodes, normalized.edges);

@@ -404,6 +404,7 @@ export async function runRuntimeV2FiniteMcpWorker({
   let acknowledged = false;
   let acknowledgement = null;
   let checkpointPublished = false;
+  let lastPublishedProgressPercent = null;
   const acknowledge = () => {
     if (!acknowledged) {
       acknowledged = true;
@@ -431,6 +432,8 @@ export async function runRuntimeV2FiniteMcpWorker({
     await heartbeat.ready;
     const result = await execute(launch, abort.signal, {
       checkpoint(value) {
+        // Cancellation acknowledgement is the final worker event boundary.
+        if (stop.requested()) return;
         writeCheckpoint(launch.checkpointPath, {
           protocolVersion: PROTOCOL_VERSION,
           identity: launch.identity,
@@ -446,7 +449,15 @@ export async function runRuntimeV2FiniteMcpWorker({
           value.percent >= 0 &&
           value.percent <= 100
         ) {
-          events.progress("processing", value.percent, 100);
+          // Some finite pipelines checkpoint after every item while exposing
+          // only a rounded percentage. Publishing thousands of identical
+          // progress records can exhaust the supervisor's bounded lifecycle
+          // queue and take down unrelated resident workers. The checkpoint is
+          // still persisted above; only its unchanged UI projection is elided.
+          if (value.percent !== lastPublishedProgressPercent) {
+            events.progress("processing", value.percent, 100);
+            lastPublishedProgressPercent = value.percent;
+          }
         }
         if (!checkpointPublished) {
           checkpointPublished = true;

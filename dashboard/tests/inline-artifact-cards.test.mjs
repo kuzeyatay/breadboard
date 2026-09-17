@@ -83,7 +83,7 @@ test("ready video artifacts stay compact until the artifact is opened", () => {
   // player does not take over the assistant response.
   assert.doesNotMatch(cards, /function InlineVideoArtifact/);
   assert.doesNotMatch(cards, /artifact\.kind === "video"[\s\S]*?<InlineVideoArtifact/);
-  assert.match(cards, /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?context\.openArtifact\(artifact\.id\)/);
+  assert.match(cards, /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?context\.openArtifact\(artifact\.id, artifact\.version\)/);
   assert.match(viewer, /artifact\.kind === "video" && onEditVideo/);
 });
 
@@ -92,17 +92,17 @@ test("download-only artifact cards still open the viewer", () => {
   // Download and Edit. The response card must therefore remain actionable.
   assert.match(
     cards,
-    /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/,
+    /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?onClick=\{\(\) => void context\.openArtifact\(artifact\.id, artifact\.version\)\}/,
   );
 });
 
 test("clicking an open artifact closes it from inline cards and the archive", () => {
   assert.match(
     cards,
-    /setOpenId\(\(current\) => \(current === id \? null : id\)\)/,
+    /setOpenId\(\(current\) => \(current === key \? null : key\)\)/,
   );
-  assert.match(cards, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/);
-  assert.match(cards, /context\.openId === artifact\.id \? "Close" : "Open"/);
+  assert.match(cards, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id, artifact\.version\)\}/);
+  assert.match(cards, /context\.openId === artifactViewerKey\(artifact\) \? "Close" : "Open"/);
   assert.match(
     artifactPanel,
     /const toggleOpenArtifact = useCallback\(\(id: string\) => \{\s*setOpenId\(\(current\) => \(current === id \? null : id\)\)/,
@@ -116,7 +116,7 @@ test("the whole image artifact opens while redundant Open and Edit actions stay 
     cards.indexOf("export function InlineArtifactCardsProvider"),
   );
   assert.match(imageCard, /absolute inset-0 z-\[1\] cursor-pointer/);
-  assert.match(imageCard, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/);
+  assert.match(imageCard, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id, artifact\.version\)\}/);
   assert.match(imageCard, /bb-neu-artifact-preview-tilted[^\n]*-rotate-3/);
   assert.doesNotMatch(imageCard, />\s*(?:Open|Close|Edit)\s*</);
   assert.doesNotMatch(imageCard, />\s*Download\s*</);
@@ -265,7 +265,7 @@ test("chat rows stay covered until their artifact snapshot is ready", () => {
 
 test("gadgets use the standard artifact placeholder until opened", () => {
   assert.doesNotMatch(cards, /import InlineGadget|isGadgetArtifact/);
-  assert.match(cards, /<ArtifactFileIcon kind=\{artifact\.kind\} \/>/);
+  assert.match(cards, /<ArtifactFileIcon kind=\{artifact\.kind\} renderer=\{artifact\.renderer\} \/>/);
   assert.match(viewer, /if \(isGadget\) \{\s*return <InlineGadget artifact=\{artifact\} \/>/);
 });
 

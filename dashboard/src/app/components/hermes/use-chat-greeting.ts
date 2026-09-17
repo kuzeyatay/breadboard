@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CHAT_GREETING_ROTATION_MS,
@@ -22,6 +22,8 @@ interface Options {
   garden?: ChatGreetingGarden | null;
   /** The browser drawer opens with questions about the current page. */
   browser?: boolean;
+  /** Server-read signals let first paint avoid a second request. */
+  initialSignals?: ChatGreetingSignals | null;
 }
 
 export interface ChatGreetingState {
@@ -93,9 +95,10 @@ function normalizeSignals(value: unknown): ChatGreetingSignals {
  * what hour it is. A timer sleeping to the top of the hour then steps the
  * pools forward and re-reads the activity signals behind them.
  */
-export function useChatGreeting({ scope, temporary, garden, browser = false }: Options): ChatGreetingState {
+export function useChatGreeting({ scope, temporary, garden, browser = false, initialSignals = null }: Options): ChatGreetingState {
+  const initialSignalsRef = useRef(initialSignals);
   const [now, setNow] = useState<Date | null>(null);
-  const [signals, setSignals] = useState<ChatGreetingSignals | null>(null);
+  const [signals, setSignals] = useState<ChatGreetingSignals | null>(initialSignals);
   const [rotation, setRotation] = useState(0);
 
   useEffect(() => {
@@ -120,6 +123,13 @@ export function useChatGreeting({ scope, temporary, garden, browser = false }: O
   }, []);
 
   useEffect(() => {
+    const initial = initialSignalsRef.current;
+    if (initial) {
+      initialSignalsRef.current = null;
+      cache = { signals: initial, readAt: Date.now() };
+      return;
+    }
+
     const warm = cachedSignals();
     if (warm) {
       setSignals(warm);

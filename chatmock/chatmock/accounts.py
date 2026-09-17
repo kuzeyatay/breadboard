@@ -118,8 +118,33 @@ def list_accounts() -> List[ChatGptAccount]:
     return found
 
 
+#: Plans the Codex backend refuses outright — every request answers "The
+#: '<model>' model is not supported when using Codex with a ChatGPT account".
+#: Such an account is not a stand-in: handing it a request after a paid
+#: sibling's 429 replaces "your weekly limit is spent" with a model-support
+#: error that names the wrong problem entirely.
+_PLANS_WITHOUT_CODEX = frozenset({"free"})
+
+
+def can_serve_codex(account: ChatGptAccount) -> bool:
+    """Whether this account's plan can use Codex at all. Unknown plans are assumed able."""
+    return (account.plan or "").strip().lower() not in _PLANS_WITHOUT_CODEX
+
+
+def _candidate_accounts() -> List[ChatGptAccount]:
+    """Accounts worth sending a Codex request to, in routing order.
+
+    A plan that cannot serve Codex is only considered when no other account
+    exists at all: then it is still the right credential to produce the
+    refusal that tells the user why nothing works.
+    """
+    accounts = list_accounts()
+    capable = [account for account in accounts if can_serve_codex(account)]
+    return capable or accounts
+
+
 def healthy_accounts() -> List[ChatGptAccount]:
-    return [account for account in list_accounts() if not failover.is_cooling(account.cooldown_key)]
+    return [account for account in _candidate_accounts() if not failover.is_cooling(account.cooldown_key)]
 
 
 def select_account() -> Optional[ChatGptAccount]:
@@ -128,8 +153,11 @@ def select_account() -> Optional[ChatGptAccount]:
     When every account is cooling, the first is returned anyway — the caller
     still needs credentials to produce a meaningful upstream error, and the
     model-level failover above it is what moves traffic to another provider.
+    A spent paid account is preferred over a free one for that error too: its
+    429 says "the weekly limit is spent, back on Monday", which the reader can
+    act on, where the free account's refusal cannot be.
     """
-    accounts = list_accounts()
+    accounts = _candidate_accounts()
     if not accounts:
         return None
     for account in accounts:
@@ -173,15 +201,29 @@ def _connected_at(account: ChatGptAccount) -> Optional[str]:
 def account_state() -> List[Dict[str, Any]]:
     """Redacted account list for the management API. Never includes a token."""
     state: List[Dict[str, Any]] = []
+    serving = select_account()
     for account in list_accounts():
         cooldown = failover.cooldown_for(account.cooldown_key)
         connected_at = _connected_at(account)
+        stand_in = (
+            serving
+            if account.primary and serving is not None and serving.key != account.key
+            else None
+        )
         state.append(
             {
                 "key": account.key,
                 "email": account.email,
                 "plan": account.plan,
                 "primary": account.primary,
+                # The account the user chose: the primary, which Switch and
+                # sign-in both write. It stays chosen while it rests — the
+                # choice is not undone by a spent plan window — and `standIn`
+                # names the sibling taking its requests meanwhile, so the
+                # client can say both things instead of flipping the choice.
+                "active": account.primary,
+                "standIn": stand_in.label if stand_in is not None else None,
+                "serving": serving is not None and serving.key == account.key,
                 # File time is the only chronology shared by the primary
                 # credential and preserved siblings. Keep routing order in
                 # list_accounts(); only the management view is chronological.
@@ -261,3 +303,56 @@ def forget_account(key: str) -> bool:
         failover.clear(account.cooldown_key)
         return True
     return False
+
+
+def activate_account(key: str) -> bool:
+    """Make one account the primary, so requests go to it first.
+
+    Selection is sticky on the first healthy account and the primary leads the
+    order, so swapping which credential `auth.json` holds is the whole of
+    "switch": nothing running has to be told. The outgoing primary is kept in
+    `accounts/` exactly as preserve_current_account() would keep it, and the
+    incoming one's copy is removed once it is safely the primary — the same
+    account never lives in two files.
+
+    The chosen account also comes off any quota cooldown. Choosing it is an
+    instruction, not a guess: if its window really is still spent the next
+    request re-benches it and selection steps to a sibling as before. This is
+    what lets a resting primary be picked back deliberately.
+
+    False when the key names no signed-in account or a file could not be
+    written.
+    """
+    import os as _os
+
+    from .utils import write_auth_file
+
+    target = next((account for account in list_accounts() if account.key == key), None)
+    if target is None:
+        return False
+    failover.clear(target.cooldown_key)
+    if target.primary:
+        return True
+
+    current = _read_auth_path(_primary_path())
+    if current is not None:
+        current_key, current_email, _plan = _identity(current, _primary_path())
+        kept = any(
+            (stored := _read_auth_path(path)) is not None
+            and _identity(stored, path)[0] == current_key
+            for path in glob.glob(_os.path.join(accounts_dir(), "*.json"))
+        )
+        if not kept and not write_auth_file(
+            current, add_account_path(current_email or current_key)
+        ):
+            return False
+
+    if not write_auth_file(target.auth, _primary_path()):
+        return False
+    try:
+        _os.remove(target.path)
+    except OSError:
+        # list_accounts() dedupes by identity, so a leftover copy is masked by
+        # the primary rather than counted twice.
+        pass
+    return True

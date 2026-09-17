@@ -16,6 +16,23 @@ const manifest = JSON.parse(fs.readFileSync(
 ));
 const hermes = manifest.services.find(({ id }) => id === "hermes");
 
+test("Hermes Computer Use is a complete managed Runtime V2 dependency", () => {
+  const expected = new Set([
+    "bin/cua-driver/runtime-artifact.json",
+    "bin/cua-driver/cua-driver.exe",
+    "bin/cua-driver/cua-driver-uia.exe",
+    "bin/cua-driver/cua-cursor-theme.exe",
+    "bin/cua-driver/cua_driver_sdk.dll",
+    "bin/cua-driver/cua_driver_node_runtime.node",
+    "bin/cua-driver/cua_driver_abi.h",
+  ]);
+  const profile = hermes.launchProfiles.find(({ modes }) => modes.includes("hot"));
+  for (const file of profile.installProbe.files) {
+    if (file.authority === "runtime-root") expected.delete(file.path);
+  }
+  assert.deepEqual([...expected], []);
+});
+
 function sourceFixture(directory) {
   fs.mkdirSync(path.join(directory, "hermes_cli"), { recursive: true });
   fs.copyFileSync(path.resolve(desktopRoot, "../hermes-agent/breadboard_runtime.py"),

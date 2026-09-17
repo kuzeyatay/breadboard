@@ -5,9 +5,11 @@
 // Connecting an account is setup, done once; the capability surfaces are for
 // deciding what an agent may do with it afterward.
 
+import BambuConnectionEntry from "./settings-bambu";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invalidateCommandResponseCache } from "@/lib/hermes/command-client-cache";
 import { invalidateSettingsCache } from "@/lib/settings-client-cache";
+import { readConnectionsPanel } from "@/lib/settings-connections-read";
 
 const SPOTIFY_CONNECTION_URL = "/api/hermes/connections/spotify";
 
@@ -18,6 +20,7 @@ type ComposioResponse = {
   enabled: boolean;
   toolCount: number;
   message: string | null;
+  connectedIntegrations?: { slug: string }[];
 };
 
 type AppIntegration = {
@@ -54,6 +57,29 @@ function LoadingRows() {
   );
 }
 
+/**
+ * A calendar that was just authorized has no events until it synchronizes
+ * once. It runs on its own and reports only its own failure; the Connections
+ * panel never waits for it (SET-04).
+ */
+async function synchronizeGoogleCalendar(
+  onFailure: (message: string) => void,
+): Promise<void> {
+  const failed =
+    "Google Calendar connected, but its events could not update. Try Update now in Profile → Calendars.";
+  try {
+    const response = await fetch("/api/calendar/google", { method: "POST" });
+    const sync = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    if (!response.ok || sync.error) onFailure(sync.error ?? sync.message ?? failed);
+    window.dispatchEvent(new Event("breadboard:calendar:changed"));
+  } catch {
+    onFailure(failed);
+  }
+}
+
 export default function SettingsConnections() {
   const [appIntegrations, setAppIntegrations] = useState<AppIntegration[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
@@ -62,54 +88,41 @@ export default function SettingsConnections() {
   const [spotifyBusy, setSpotifyBusy] = useState(false);
   const [query, setQuery] = useState("");
 
-  const loadConnections = useCallback(async () => {
-    setConnectionsLoading(true);
-    try {
-      const [response, integrationsResponse, spotifyResponse] = await Promise.all([
-        fetch("/api/hermes/composio", { cache: "no-store" }),
-        fetch("/api/hermes/composio/integrations", {
-          cache: "no-store",
-        }),
-        fetch(SPOTIFY_CONNECTION_URL, { cache: "no-store" }),
-      ]);
-      const payload = (await response.json().catch(() => ({}))) as
-        | ComposioResponse
-        | { message?: string; error?: string };
-      if (!response.ok || !("provider" in payload)) {
-        const failure = payload as { message?: string; error?: string };
-        throw new Error(
-          failure.message ??
-            failure.error ??
-            "App connections could not be loaded.",
-        );
+  /**
+   * SET-03/SET-04: `readConnectionsPanel` reads each service independently
+   * and performs no calendar synchronization. This callback only applies the
+   * result, so what the panel shows when one service is down is decided (and
+   * tested) in one place.
+   */
+  const loadConnections = useCallback(
+    async (options: { afterAuthorization?: boolean } = {}) => {
+      setConnectionsLoading(true);
+      try {
+        const result = await readConnectionsPanel<AppIntegration, SpotifyConnection>({
+          read: async (input) => {
+            const response = await fetch(input, { cache: "no-store" });
+            return {
+              ok: response.ok,
+              body: (await response.json().catch(() => ({}))) as Record<string, unknown>,
+            };
+          },
+          connectionsUrl: "/api/hermes/composio",
+          integrationsUrl: "/api/hermes/composio/integrations",
+          spotifyUrl: SPOTIFY_CONNECTION_URL,
+          afterAuthorization: options.afterAuthorization,
+        });
+        if (result.spotify) setSpotify(result.spotify);
+        if (result.integrations) setAppIntegrations(result.integrations);
+        setConnectionsMessage(result.message ?? null);
+        if (result.calendarSyncNeeded) {
+          void synchronizeGoogleCalendar(setConnectionsMessage);
+        }
+      } finally {
+        setConnectionsLoading(false);
       }
-      setConnectionsMessage(payload.message);
-      if (spotifyResponse.ok) {
-        const spotifyPayload = (await spotifyResponse.json()) as SpotifyConnection;
-        setSpotify(spotifyPayload);
-      }
-      if (integrationsResponse.ok) {
-        const integrationsPayload = (await integrationsResponse.json()) as {
-          integrations?: AppIntegration[];
-        };
-        setAppIntegrations(
-          Array.isArray(integrationsPayload.integrations)
-            ? integrationsPayload.integrations.filter(
-                (integration) => integration.slug.toLowerCase() !== "spotify",
-              )
-            : [],
-        );
-      }
-    } catch (cause) {
-      setConnectionsMessage(
-        cause instanceof Error
-          ? cause.message
-          : "App connections could not be loaded.",
-      );
-    } finally {
-      setConnectionsLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   // Sign-in finishes in another window, so the list is re-read whenever this
   // one comes back to the foreground as well as on the popup's own message.
@@ -123,7 +136,7 @@ export default function SettingsConnections() {
         event.origin === window.location.origin &&
         event.data?.type === "breadboard:connections:changed"
       ) {
-        void loadConnections();
+        void loadConnections({ afterAuthorization: true });
       }
     };
     window.addEventListener("focus", refreshAfterExternalAuthorization);
@@ -155,6 +168,11 @@ export default function SettingsConnections() {
   const spotifyMatchesQuery = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return !normalized || "spotify music playback playlists".includes(normalized);
+  }, [query]);
+
+  const bambuMatchesQuery = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return !normalized || "bambu lab printer 3d printing".includes(normalized);
   }, [query]);
 
   async function connectSpotify() {
@@ -301,11 +319,12 @@ export default function SettingsConnections() {
       ) : null}
       {!appIntegrations.length && !spotify && connectionsLoading ? (
         <LoadingRows />
-      ) : spotifyMatchesQuery || visibleAppIntegrations.length ? (
+      ) : bambuMatchesQuery || spotifyMatchesQuery || visibleAppIntegrations.length ? (
         <ul
           className="grid grid-cols-1 gap-2 sm:grid-cols-2"
           aria-label="Available app connections"
         >
+          {bambuMatchesQuery ? <BambuConnectionEntry /> : null}
           {spotifyMatchesQuery ? (
             <li className="neu-card flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-3">
               <span

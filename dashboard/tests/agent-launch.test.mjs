@@ -400,7 +400,7 @@ test("agent-result continuations stay in context without impersonating the user"
 
 test("a delegated research hand-back remains one populated assistant field", () => {
   // Ordinary delegated owners fold into the continuation so there is never a
-  // duplicate assistant field. Self-presenting OpenGym and God's Eye rows keep
+  // duplicate assistant field. Self-presenting God's Eye rows keep
   // their interactive frame. The continuation carries the old preamble until
   // its first synthesized text arrives as a Thinking update, so the single
   // field never goes blank or presents progress narration as an answer.
@@ -410,7 +410,7 @@ test("a delegated research hand-back remains one populated assistant field", () 
   ]) {
     assert.match(
       sourceText,
-      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
       `${surface} must fold the delegated owner into its continuation`,
     );
     assert.match(
@@ -425,8 +425,8 @@ test("a delegated research hand-back remains one populated assistant field", () 
       `${surface} must connect the existing updates to the response header`,
     );
   }
-  assert.match(runtimePanel, /"Synthesizing research"/);
-  assert.match(runtimePanel, /"Research synthesized"/);
+  assert.match(runtimePanel, /delegatedResponsePresentation\(messages, index/);
+  assert.match(runtimePanel, /continuation\.stateLabel/);
   for (const [surface, sourceText] of [
     ["panel", runtimePanel],
     ["garden", garden],
@@ -446,7 +446,7 @@ test("a delegated research hand-back remains one populated assistant field", () 
   // surface-specific clauses (assistant-message editing) after these two.
   assert.match(
     runtimePanel,
-    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(index === lastVisibleAssistantIndex && delegationInFlight\)/,
+    /suppressActions=\{\s*message\.delegatedAgentRun === true \|\|\s*\(!delegationInterrupted && index === lastVisibleAssistantIndex && delegationInFlight\)/,
   );
   assert.match(assistantActions, /if \(suppressActions\) return null;/);
 });
@@ -621,16 +621,16 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.match(garden, /scopeKey: activeChatId/);
   assert.match(garden, /workerClientMessageId[\s\S]*internalAgentContinuation: true/);
   // An ordinary owning worker row is omitted while the private continuation is
-  // shown; self-presenting OpenGym and God's Eye frames remain in the transcript.
+  // shown; self-presenting God's Eye frames remain in the transcript.
   // The ordinary row is not merely hidden with CSS, which would leave duplicate
   // semantics in the rendered transcript.
   assert.match(
     runtimePanel,
-    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
   );
   assert.match(
     garden,
-    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.openGymRun &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
   );
   assert.match(terminal, /continuedDelegatedTurnsRef/);
   assert.match(garden, /continuedDelegatedRunsRef/);
@@ -721,7 +721,8 @@ test("the tool is super-agent only and revalidated on the route", () => {
   assert.match(route, /const awaitResult = true/);
   assert.match(route, /card is not shown to the user/);
   assert.match(route, /Summarize useful results as they arrive/);
-  assert.match(route, /parseRuntimeRunDispatch\(run\)\.clientMessageId\?\.trim\(\)/);
+  assert.match(route, /const dispatch = parseRuntimeRunDispatch\(run\)/);
+  assert.match(route, /dispatch\.clientMessageId\?\.trim\(\)/);
   assert.match(route, /agent_launch_origin_required/);
   assert.match(route, /reserveAgentLaunchRequestSlot\(run\.id\)/);
   assert.match(route, /agent_launch_batch_limit_reached/);
@@ -995,7 +996,7 @@ test("a delegation never lets its turn look finished", () => {
   ]) {
     assert.match(
       text,
-      /const lastVisibleAssistantIndex = messages\.reduce\([\s\S]{0,320}!\(\s*message\.delegatedAgentRun === true &&\s*!message\.openGymRun &&\s*!message\.godsEyeRun/,
+      /const lastVisibleAssistantIndex = messages\.reduce\([\s\S]{0,320}!\(\s*message\.delegatedAgentRun === true &&\s*!message\.godsEyeRun/,
       name,
     );
   }

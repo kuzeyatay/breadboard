@@ -13,6 +13,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
+import type { ChatGreetingSignals } from "@/lib/hermes/chat-greeting";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { usePageLoading } from "@/app/components/use-page-loading";
@@ -31,7 +32,7 @@ import {
   SearchGlyph,
   websiteIconUrl,
 } from "./browser-home-widgets";
-import { looksLikeBrowserAddress } from "./browser-recent-searches";
+import { looksLikeBrowserAddress, searchSuggestions, type SearchSuggestion } from "./browser-recent-searches";
 import PageAppearance from "@/app/components/page-appearance";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import BrowserHomeAccessories from "./browser-home-accessories";
@@ -42,10 +43,13 @@ import { useBrowserAddressSuggestions } from "./use-browser-address-suggestions"
 import { BrowserHistoryPanel } from "./browser-history-panel";
 import BrowserDownloadsPanel from "./browser-downloads";
 import BrowserDownloadsButton from "./browser-downloads-button";
+import BrowserExtensionsButton from "./browser-extensions-button";
 import BrowserMenuControls from "./browser-menu-controls";
 import privateStyles from "./browser-private.module.css";
+import PrivateBrowserGreeting from "./private-browser-greeting";
 import BrowserTranslationControls from "./browser-translation-controls";
 import { useBrowserBookmarkReorder } from "./use-browser-bookmark-reorder";
+import { useBrowserContextBookmark } from "./use-browser-context-bookmark";
 import { registerClapDock } from '@/lib/speech/clap/targets';
 
 const DashboardAgentTerminal = dynamic(
@@ -63,13 +67,6 @@ const STROKE = {
   strokeLinecap: "round" as const,
   strokeLinejoin: "round" as const,
 };
-
-interface SearchSuggestion {
-  value: string;
-  label: string;
-  detail?: string;
-  source: "google" | "history";
-}
 
 interface BrowserBookmark {
   url: string;
@@ -223,37 +220,6 @@ function useGoogleSuggestions(query: string): string[] {
   return result.query === value ? result.suggestions : [];
 }
 
-function searchSuggestions(
-  query: string,
-  recentSearches: readonly string[],
-  google: readonly string[],
-): SearchSuggestion[] {
-  const value = query.trim();
-  if (!value) {
-    return recentSearches.slice(0, 8).map((entry) => ({
-      value: entry,
-      label: entry,
-      source: "history",
-    }));
-  }
-  const normalized = value.toLocaleLowerCase();
-  const predictions: SearchSuggestion[] = (looksLikeAddress(value) ? [] : google).map((entry) => ({
-    value: entry,
-    label: entry,
-    source: "google" as const,
-  }));
-  if (!predictions.some((entry) => entry.value.toLocaleLowerCase() === normalized) && !looksLikeAddress(value)) {
-    predictions.unshift({ value, label: value, detail: "Search with Google", source: "google" });
-  }
-  const remembered: SearchSuggestion[] = recentSearches
-    .filter((entry) => entry.toLocaleLowerCase().includes(normalized))
-    .map((entry) => ({ value: entry, label: entry, source: "history" as const }));
-  const seen = new Set<string>();
-  return [...predictions, ...remembered]
-    .filter((entry) => !seen.has(entry.value) && seen.add(entry.value))
-    .slice(0, 8);
-}
-
 function BrowserSuggestionGlyph({ source }: { source: SearchSuggestion["source"] }) {
   return source === "history" ? (
     <svg className="browser-suggestion-glyph" viewBox="0 0 20 20" aria-hidden="true">
@@ -291,6 +257,7 @@ function BrowserSuggestionList({
           key={`${suggestion.source}-${suggestion.value}`}
           id={`${id}-${index}`}
           className="browser-suggestion-row"
+          data-source={suggestion.source}
           role="option"
           aria-selected={highlighted === index}
           data-selected={highlighted === index}
@@ -336,9 +303,11 @@ function BrowserSuggestionList({
 export default function BrowserClient({
   showFlowers,
   restoreOwnerKey,
+  initialGreetingSignals,
 }: {
   showFlowers: boolean;
   restoreOwnerKey: string;
+  initialGreetingSignals: ChatGreetingSignals;
 }) {
   const tabs = useDesktopTabs();
   // The outgoing page stays visible while a cold tab loads. Its navbar must
@@ -347,12 +316,14 @@ export default function BrowserClient({
     tabs.selfId === undefined ? tabs.activeId : tabs.selfId
   ));
   const browser = pageTab?.browser;
+  // The address changes as soon as navigation starts. Only let the native
+  // page show through once it is ready to cover the dashboard underneath.
+  const hasNativePage = Boolean(browser?.address) && (browser?.pageReady ?? true);
   const privateBrowsing = browser?.private === true;
   const isActive = Boolean(pageTab && pageTab.id === tabs?.activeId);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const searchFrameRef = useRef<HTMLFormElement | null>(null);
-  const extensionsControlRef = useRef<HTMLDivElement | null>(null);
   const terminalWidthRef = useRef(TERMINAL_DEFAULT_WIDTH);
   const terminalPreferenceLoadedRef = useRef(false);
   const terminalResizeRef = useRef<{
@@ -363,6 +334,8 @@ export default function BrowserClient({
   const lastSelectionRef = useRef("");
   const browserRepairAttemptedRef = useRef(false);
   const [draftAddress, setDraftAddress] = useState<string | null>(null);
+  const [submittedAddress, setSubmittedAddress] = useState<string | null>(null);
+  const submissionRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState("");
   const recentSearchStore = useBrowserRecentSearches(restoreOwnerKey, browser?.address, privateBrowsing);
   const recentSearches = recentSearchStore.items;
@@ -373,6 +346,7 @@ export default function BrowserClient({
     normalizeBookmarks,
   );
   const bookmarks = bookmarkStore.items;
+  useBrowserContextBookmark(bookmarkStore, bookmarkFromUnknown, MAX_BOOKMARKS);
   const bookmarkReorder = useBrowserBookmarkReorder(
     restoreOwnerKey,
     bookmarks,
@@ -391,15 +365,15 @@ export default function BrowserClient({
   const [activePanel, setActivePanel] = useState<BrowserToolPanel>("terminal");
   const [terminalLoaded, setTerminalLoaded] = useState(false);
   const [browserRecoveryFailed, setBrowserRecoveryFailed] = useState(false);
-  usePageLoading(browser ? pageTab?.loading === true || browser.translation?.status === "translating" : !browserRecoveryFailed);
-  const [extensionsOpen, setExtensionsOpen] = useState(false);
-  const [extensionAction, setExtensionAction] = useState<string | null>(null);
-  const [extensionError, setExtensionError] = useState<string | null>(null);
-  const address = draftAddress ?? browser?.address ?? "";
-  const addressDisplay = draftAddress ?? browserAddressDisplayValue(browser?.address ?? "");
-  const extensions = tabs?.extensions ?? [];
+  usePageLoading(submittedAddress !== null || (browser ? pageTab?.loading === true || browser.translation?.status === "translating" : !browserRecoveryFailed));
+  const address = draftAddress ?? submittedAddress ?? browser?.address ?? "";
+  const addressDisplay = draftAddress ?? submittedAddress ?? browserAddressDisplayValue(browser?.address ?? "");
   const addressLookupQuery = addressFocused && address === browser?.address ? "" : address;
-  const chatGreeting = useChatGreeting({ scope: "mine", temporary: false });
+  const chatGreeting = useChatGreeting({
+    scope: "mine",
+    temporary: false,
+    initialSignals: initialGreetingSignals,
+  });
   const personalization = usePageAppearance(restoreOwnerKey, "browser");
   const terminalOpen = browser?.terminalOpen ?? false;
   const selectionKey = browser?.selection
@@ -463,24 +437,6 @@ export default function BrowserClient({
     Boolean(browser?.address && addressFocused && addressSuggestions.length),
   );
 
-  useEffect(() => {
-    if (!extensionsOpen) return;
-    const closeOutside = (event: globalThis.PointerEvent) => {
-      if (!extensionsControlRef.current?.contains(event.target as Node)) {
-        setExtensionsOpen(false);
-      }
-    };
-    const closeWithEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setExtensionsOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeWithEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeWithEscape);
-    };
-  }, [extensionsOpen]);
-
   useEffect(() => () => {
     const session = terminalResizeRef.current;
     if (!session) return;
@@ -542,22 +498,30 @@ export default function BrowserClient({
   async function navigate(input: string) {
     const value = input.trim();
     if (!value) return;
-    // Finish the durable save before handing the search to the browser.
-    await recentSearchStore.remember(value);
+    const submission = ++submissionRef.current;
+    // Keep the submitted text and top bar visible through saving and the IPC
+    // handoff, before the shell can publish the new address/loading state.
+    setSubmittedAddress(value);
     setDraftAddress(null);
-    setSearchQuery("");
     setSearchFocused(false);
     setHighlightedSuggestion(-1);
     setAddressFocused(false);
-    setExtensionsOpen(false);
     setHighlightedAddressSuggestion(-1);
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    if (browser) {
-      void sendDesktopTabsCommand({ type: "browser-navigate", input: value });
-    } else {
-      setBrowserRecoveryFailed(false);
-      const opened = await openBrowserInDesktop({ url: value, replaceCurrent: true });
-      if (!opened) setBrowserRecoveryFailed(true);
+    try {
+      // Finish the durable save before handing the search to the browser.
+      await recentSearchStore.remember(value);
+      if (submission !== submissionRef.current) return;
+      if (browser) {
+        await sendDesktopTabsCommand({ type: "browser-navigate", input: value });
+        await refreshDesktopTabsState();
+      } else {
+        setBrowserRecoveryFailed(false);
+        const opened = await openBrowserInDesktop({ url: value, replaceCurrent: true });
+        if (!opened) setBrowserRecoveryFailed(true);
+      }
+    } finally {
+      if (submission === submissionRef.current) setSubmittedAddress(null);
     }
   }
 
@@ -611,32 +575,6 @@ export default function BrowserClient({
         iconUrl: safeBookmarkIcon(browser?.favicon, normalizedUrl),
       },
     ]);
-  }
-
-  async function loadBrowserExtension() {
-    setExtensionAction("load");
-    setExtensionError(null);
-    const loaded = await sendDesktopTabsCommand({ type: "browser-extension-load" });
-    if (!loaded) {
-      setExtensionError("That folder could not be loaded. Check that it contains a valid manifest.json file.");
-    }
-    setExtensionAction(null);
-  }
-
-  async function reloadBrowserExtension(id: string) {
-    setExtensionAction(`reload:${id}`);
-    setExtensionError(null);
-    const reloaded = await sendDesktopTabsCommand({ type: "browser-extension-reload", id });
-    if (!reloaded) setExtensionError("The extension could not be reloaded.");
-    setExtensionAction(null);
-  }
-
-  async function removeBrowserExtension(id: string) {
-    setExtensionAction(`remove:${id}`);
-    setExtensionError(null);
-    const removed = await sendDesktopTabsCommand({ type: "browser-extension-remove", id });
-    if (!removed) setExtensionError("The extension could not be removed.");
-    setExtensionAction(null);
   }
 
   function removeHistoryEntry(value: string) {
@@ -871,85 +809,8 @@ export default function BrowserClient({
             >
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.7 2.1 4.35 4.8.7-3.47 3.38.82 4.77L10 13.65 5.75 15.9l.82-4.77L3.1 7.75l4.8-.7L10 2.7Z" {...STROKE} /></svg>
             </button>
-            <div ref={extensionsControlRef} className="browser-extensions-control">
-              <button
-                type="button"
-                className="browser-extensions-toggle"
-                aria-label="Extensions"
-                aria-expanded={extensionsOpen}
-                aria-haspopup="dialog"
-                title="Extensions"
-                onClick={() => {
-                  setExtensionsOpen((open) => !open);
-                  setAddressFocused(false);
-                  setExtensionError(null);
-                  void sendDesktopTabsCommand({ type: "browser-address-suggestions", open: false });
-                }}
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true">
-                  <path d="M8 3H4a1 1 0 0 0-1 1v4h1.1a2 2 0 1 1 0 4H3v4a1 1 0 0 0 1 1h4v-1.1a2 2 0 1 1 4 0V17h4a1 1 0 0 0 1-1v-4h-1.1a2 2 0 1 1 0-4H17V4a1 1 0 0 0-1-1h-4v1.1a2 2 0 1 1-4 0V3Z" {...STROKE} />
-                </svg>
-                {extensions.length ? <span className="browser-extensions-count">{extensions.length}</span> : null}
-              </button>
-              {extensionsOpen ? (
-                <section className="browser-extensions-menu" role="dialog" aria-label="Browser extensions">
-                  <header>
-                    <strong>Extensions</strong>
-                    <span>{extensions.length} active</span>
-                  </header>
-                  <div className="browser-extensions-list">
-                    {extensions.length ? extensions.map((extension) => (
-                      <div key={extension.id} className="browser-extension-row">
-                        <span className="browser-extension-mark" aria-hidden="true">
-                          {extension.name.slice(0, 1).toUpperCase()}
-                        </span>
-                        <span className="browser-extension-copy">
-                          <strong>{extension.name}</strong>
-                          <small>Version {extension.version}</small>
-                        </span>
-                        <span className="browser-extension-actions">
-                          <button
-                            type="button"
-                            aria-label={`Reload ${extension.name}`}
-                            title="Reload extension"
-                            disabled={extensionAction !== null}
-                            onClick={() => void reloadBrowserExtension(extension.id)}
-                          >
-                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6A5 5 0 1 0 13 9m-.2-3V3.4M12.8 6h-2.6" {...STROKE} /></svg>
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Remove ${extension.name}`}
-                            title="Remove extension"
-                            disabled={extensionAction !== null}
-                            onClick={() => void removeBrowserExtension(extension.id)}
-                          >
-                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6m0-6-6 6" {...STROKE} /></svg>
-                          </button>
-                        </span>
-                      </div>
-                    )) : (
-                      <p className="browser-extensions-empty">No extensions loaded yet.</p>
-                    )}
-                  </div>
-                  {extensionError ? <p className="browser-extensions-error" role="alert">{extensionError}</p> : null}
-                  <button
-                    type="button"
-                    className="browser-extension-load"
-                    disabled={extensionAction !== null}
-                    onClick={() => void loadBrowserExtension()}
-                  >
-                    {extensionAction === "load" ? <span className="bb-tab-spinner" aria-hidden="true" /> : (
-                      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" {...STROKE} /></svg>
-                    )}
-                    Load unpacked
-                  </button>
-                  <p className="browser-extensions-note">
-                    Install from a Chrome Web Store listing with “Add to Breadboard,” or choose an unpacked extension folder. Compatibility varies by extension.
-                  </p>
-                </section>
-              ) : null}
-            </div>
+            <BrowserExtensionsButton open={browser?.extensionsOpen ?? false} count={tabs?.extensions.length ?? 0}
+              onOpen={() => setAddressFocused(false)} />
           </div>
           {addressFocused && addressSuggestions.length ? (
             <BrowserSuggestionList
@@ -972,7 +833,7 @@ export default function BrowserClient({
           Private
         </span>}
         <BrowserDownloadsButton active={isActive} open={browser?.downloadsOpen ?? false} />
-        <BrowserMenuControls profileLabel={restoreOwnerKey} address={browser?.address ?? ""} matches={browser?.find} onPanel={panel => {
+        <BrowserMenuControls profileLabel={restoreOwnerKey} onPanel={panel => {
           setActivePanel(panel);
           setBrowserPanelOpen(true);
         }} />
@@ -1030,6 +891,7 @@ export default function BrowserClient({
 
       <main
         className="browser-start-page browser-home-widget-surface"
+        data-native-page={hasNativePage}
         aria-live="polite"
         data-wallpaper-ready={personalization.ready}
         data-has-wallpaper={personalization.hasWallpaper}
@@ -1038,11 +900,10 @@ export default function BrowserClient({
           "--browser-wallpaper-image": `url("${personalization.wallpaper.src}")`,
         } as CSSProperties : undefined}
       >
-        {!browser?.address && <PageAppearance page="browser" ownerKey={restoreOwnerKey} />}
-        {!browser?.address ? (
+        {!hasNativePage && <PageAppearance page="browser" ownerKey={restoreOwnerKey} />}
+        {!hasNativePage ? (
           <div className="browser-start-copy">
-            {privateBrowsing ? <div className={`browser-greeting is-ready ${privateStyles.greeting}`}><h1>Private browsing</h1></div> : <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />}
-            {privateBrowsing && <p className={privateStyles.note}>History and searches aren’t saved. Site data is cleared when you close all private tabs.</p>}
+            {privateBrowsing ? <PrivateBrowserGreeting /> : <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />}
             <form ref={searchFrameRef} className="browser-home-search" onSubmit={searchWeb}>
               <GoogleGlyph />
               <input
@@ -1088,7 +949,7 @@ export default function BrowserClient({
             <BrowserQuickLinks navigate={navigate} ownerKey={restoreOwnerKey} />
           </div>
         ) : null}
-        {!browser?.address ? (
+        {!hasNativePage ? (
           <>
             <BrowserHomeAccessories ownerKey={restoreOwnerKey} />
 
@@ -1163,6 +1024,9 @@ export default function BrowserClient({
               presentation="drawer"
               drawerSidebarExpanded={terminalWidth >= TERMINAL_SIDEBAR_EXPAND_WIDTH}
               initialDraft={selectionDraft}
+              viewingWebsite={hasNativePage && /^https?:\/\//iu.test(browser?.address ?? "")
+                ? pageBookmarkTitle(pageTab?.title, browser?.address ?? "")
+                : null}
             />
           ) : null}
         </div>

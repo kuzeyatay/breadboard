@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { createRuntimeV2WorkerEventWriter } from "./runtime-v2-worker-events.mjs";
+import { registerGenofficeWorkerImports } from "./genoffice-worker-imports.mjs";
 
 const PROTOCOL_VERSION = 1;
 const START_MANIFEST_FILE = "start.json";
@@ -1203,6 +1204,9 @@ async function runSkillOperation(launch, modules, signal) {
 }
 
 async function loadOperationModules(launch, layout) {
+  if (["document-edit", "pdf-to-docx"].includes(launch.request.operation)) {
+    registerGenofficeWorkerImports(layout.sourceRoot);
+  }
   const importSource = (relativePath) => import(pathToFileURL(path.join(layout.sourceRoot, ...relativePath)).href);
   const modules = { layout };
   if (["command", "export", "document-edit", "pdf-to-docx", "spreadsheet"].includes(launch.request.operation)) {

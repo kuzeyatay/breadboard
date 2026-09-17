@@ -4,12 +4,14 @@ import {
   isValidElement,
   memo,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type ComponentProps,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
@@ -17,6 +19,7 @@ import remarkMath from 'remark-math';
 import { parseGodsEyeResult } from '@/lib/gods-eye/view';
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from '@/lib/workflows/navigation';
 import ChatImageResults from './chat-image-results';
+import { remarkLimitImageResults } from '@/lib/hermes/image-results';
 import ChatWeatherResults from './chat-weather-results';
 import type { ChatHighlightColor } from '@/lib/chat-highlights';
 import { resolveChatTextSelectionAnchor } from '@/lib/chat-text-selection';
@@ -35,6 +38,9 @@ export interface ChatTextAnnotation {
   end: number;
   kind?: 'answer' | 'highlight';
   color?: ChatHighlightColor;
+  note?: string;
+  /** A selection spanning steered segments shows its note only at the start. */
+  noteContinuation?: boolean;
   quote?: string;
   prefix?: string;
   suffix?: string;
@@ -100,7 +106,24 @@ function opensNumberLedMath(content: string, openingIndex: number): boolean {
 function normalizeMathDelimiters(content: string): string {
   return outsideCode(content, (prose) =>
     prose
-      .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math.trim()}\n$$`)
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string, offset: number, source: string) => {
+        // Existing block delimiters already carry their list indentation and
+        // blockquote prefixes. Trimming the body drops that context and lets a
+        // closing $$ open a new math block around the following explanation.
+        if (/^[\t ]*\r?\n/u.test(math) && /\n[\t >]*$/u.test(math)) {
+          return `$$${math}$$`;
+        }
+
+        // One-line display equations need new lines, with the same Markdown
+        // container prefix as their opening delimiter (including list markers).
+        const linePrefix = source.slice(source.lastIndexOf('\n', offset - 1) + 1, offset);
+        const continuation = linePrefix.replace(
+          /(?:[-+*]|\d+[.)])[\t ]+$/u,
+          (marker) => ' '.repeat(marker.length),
+        );
+        const prefix = /^[\t >]*$/u.test(continuation) ? continuation : '';
+        return `$$\n${prefix}${math.trim()}\n${prefix}$$`;
+      })
       .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
       .replace(CURRENCY_DOLLAR, (dollar, offset: number, source: string) =>
         opensNumberLedMath(source, offset) ? dollar : `\\${dollar}`,
@@ -161,7 +184,7 @@ function normalizeTableCellBreaks(content: string): string {
   return lines.join('\n');
 }
 
-const remarkPlugins = [remarkGfm, remarkMath];
+const remarkPlugins = [remarkGfm, remarkMath, remarkLimitImageResults];
 const rehypePlugins = [rehypeKatex];
 
 const languageNames: Record<string, string> = {
@@ -466,14 +489,49 @@ function annotationNodeClasses(node: HastNode): unknown[] {
   return Array.isArray(className) ? className : [className];
 }
 
-function annotationNodeIsSkipped(node: HastNode): boolean {
-  return annotationNodeClasses(node).some(
-    (value) =>
-      value === 'math-inline' ||
-      value === 'math-display' ||
-      value === 'language-image-results' ||
-      value === 'language-weather-results',
-  );
+function annotationNodeHasClass(node: HastNode, ...names: string[]): boolean {
+  return annotationNodeClasses(node).some((value) => names.includes(String(value)));
+}
+
+function hastText(node: HastNode): string {
+  if (node.type === 'text') return typeof node.value === 'string' ? node.value : '';
+  return (node.children ?? []).map(hastText).join('');
+}
+
+/**
+ * Text a node contributes to the annotation offset map when it must not be
+ * descended into, or `null` for ordinary nodes. Math is opaque because KaTeX
+ * replaces it wholesale and the rendered DOM carries no usable text offsets;
+ * the whole formula becomes one run written the way the Markdown spelled it
+ * (`$…$`, `$$…$$`), matching `chat-text-selection-ui`'s DOM-side map.
+ */
+function annotationOpaqueText(node: HastNode): string | null {
+  if (node.type !== 'element') return null;
+  if (annotationNodeHasClass(node, 'language-image-results', 'language-weather-results')) {
+    return '';
+  }
+  if (node.tagName === 'pre') {
+    const children = (node.children ?? []).filter(
+      (child) => child.type !== 'text' || String(child.value).trim(),
+    );
+    const code = children[0];
+    if (
+      children.length === 1 &&
+      code?.type === 'element' &&
+      code.tagName === 'code' &&
+      annotationNodeHasClass(code, 'language-math', 'math-display', 'math-inline')
+    ) {
+      return `$$${hastText(code)}$$`;
+    }
+    return null;
+  }
+  if (node.tagName === 'code') {
+    if (annotationNodeHasClass(node, 'math-display')) return `$$${hastText(node)}$$`;
+    if (annotationNodeHasClass(node, 'math-inline', 'language-math')) {
+      return `$${hastText(node)}$`;
+    }
+  }
+  return null;
 }
 
 function annotationPlainText(tree: HastNode): string {
@@ -483,7 +541,11 @@ function annotationPlainText(tree: HastNode): string {
       text += node.value;
       return;
     }
-    if (annotationNodeIsSkipped(node)) return;
+    const opaque = annotationOpaqueText(node);
+    if (opaque !== null) {
+      text += opaque;
+      return;
+    }
     for (const child of node.children ?? []) visit(child);
   }
   visit(tree);
@@ -517,13 +579,49 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
     let offset = 0;
     const started = new Set<string>();
 
+    function markElement(annotation: ChatTextAnnotation, children: HastNode[]): HastNode {
+      const isRoot = !started.has(annotation.id);
+      started.add(annotation.id);
+      return {
+        type: 'element',
+        tagName: 'mark',
+        properties: {
+          'data-chat-selection-id': annotation.id,
+          'data-chat-selection-kind': annotation.kind ?? 'answer',
+          ...(annotation.kind === 'highlight'
+            ? {
+                'data-chat-highlight-color': annotation.color ?? 'blue',
+                ...(annotation.note
+                  ? { 'data-chat-note': annotation.noteContinuation ? 'continuation' : 'true' }
+                  : {}),
+              }
+            : {}),
+          ...(isRoot ? { 'data-chat-selection-root': 'true' } : {}),
+        },
+        children,
+      };
+    }
+
     function visit(parent: HastNode) {
       if (!parent.children) return;
       const nextChildren: HastNode[] = [];
       for (const child of parent.children) {
         if (child.type !== 'text' || typeof child.value !== 'string') {
-          if (!annotationNodeIsSkipped(child)) visit(child);
-          nextChildren.push(child);
+          const opaque = annotationOpaqueText(child);
+          if (opaque === null) {
+            visit(child);
+            nextChildren.push(child);
+            continue;
+          }
+          // Opaque runs (math) cannot be split: any overlap paints the whole
+          // widget. rehype-katex later swaps the formula in place inside the mark.
+          const nodeStart = offset;
+          const nodeEnd = nodeStart + opaque.length;
+          offset = nodeEnd;
+          const match = opaque
+            ? sorted.find((annotation) => annotation.start < nodeEnd && annotation.end > nodeStart)
+            : undefined;
+          nextChildren.push(match ? markElement(match, [child]) : child);
           continue;
         }
 
@@ -546,21 +644,9 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
           if (start > cursor) {
             nextChildren.push({ type: 'text', value: child.value.slice(cursor, start) });
           }
-          const isRoot = !started.has(annotation.id);
-          started.add(annotation.id);
-          nextChildren.push({
-            type: 'element',
-            tagName: 'mark',
-            properties: {
-              'data-chat-selection-id': annotation.id,
-              'data-chat-selection-kind': annotation.kind ?? 'answer',
-              ...(annotation.kind === 'highlight'
-                ? { 'data-chat-highlight-color': annotation.color ?? 'blue' }
-                : {}),
-              ...(isRoot ? { 'data-chat-selection-root': 'true' } : {}),
-            },
-            children: [{ type: 'text', value: child.value.slice(start, end) }],
-          });
+          nextChildren.push(
+            markElement(annotation, [{ type: 'text', value: child.value.slice(start, end) }]),
+          );
           cursor = end;
         }
         if (cursor < child.value.length) {
@@ -582,12 +668,88 @@ function chatUrlTransform(url: string, key: string): string {
   return defaultUrlTransform(url);
 }
 
+// The note bubble is a hover tooltip on the underlined text: it shows the note
+// text and nothing else. It is portalled to the body and fixed-positioned so
+// the transcript's overflow clipping and virtualised rows cannot cut it off.
+const NOTE_BUBBLE_GAP = 8;
+const NOTE_BUBBLE_MAX_WIDTH = 416;
+const NOTE_BUBBLE_VIEWPORT_INSET = 12;
+
+type NoteBubbleAnchor = {
+  id: string;
+  rect: DOMRect;
+};
+
+function NoteBubble({
+  id,
+  text,
+  anchor,
+}: {
+  id: string;
+  text: string;
+  anchor: DOMRect;
+}) {
+  const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
+  const viewportHeight = typeof window === 'undefined' ? 768 : window.innerHeight;
+  const maxWidth = Math.min(
+    NOTE_BUBBLE_MAX_WIDTH,
+    viewportWidth - NOTE_BUBBLE_VIEWPORT_INSET * 2,
+  );
+  const left = Math.max(
+    NOTE_BUBBLE_VIEWPORT_INSET,
+    Math.min(anchor.left, viewportWidth - maxWidth - NOTE_BUBBLE_VIEWPORT_INSET),
+  );
+  // Prefer below the text; flip above when the anchor sits near the bottom edge.
+  const spaceBelow = viewportHeight - anchor.bottom;
+  const flip = spaceBelow < 160 && anchor.top > spaceBelow;
+  const style = flip
+    ? { left, bottom: viewportHeight - anchor.top + NOTE_BUBBLE_GAP, maxWidth }
+    : { left, top: anchor.bottom + NOTE_BUBBLE_GAP, maxWidth };
+  const tailOffset = Math.max(10, Math.min(anchor.left - left + 6, maxWidth - 20));
+  return createPortal(
+    <div
+      id={id}
+      role="tooltip"
+      className="bb-chat-note"
+      data-placement={flip ? 'above' : 'below'}
+      data-selection-exclude
+      style={{ ...style, ['--bb-chat-note-tail' as string]: `${tailOffset}px` }}
+    >
+      {text}
+    </div>,
+    document.body,
+  );
+}
+
 function ChatMarkdown({
   content,
   compact = false,
   textAnnotations = [],
   onTextAnnotationClick,
 }: Props) {
+  const noteIdPrefix = useId();
+  const notesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const { id, note, noteContinuation } of textAnnotations) {
+      if (note && !noteContinuation) map.set(id, note);
+    }
+    return map;
+  }, [textAnnotations]);
+  const [noteAnchor, setNoteAnchor] = useState<NoteBubbleAnchor | null>(null);
+  const activeNote = noteAnchor ? notesById.get(noteAnchor.id) : undefined;
+
+  // A fixed bubble would drift away from its text while the transcript
+  // scrolls, so any scroll or resize simply dismisses it until the next hover.
+  useEffect(() => {
+    if (!noteAnchor) return;
+    const dismiss = () => setNoteAnchor(null);
+    window.addEventListener('scroll', dismiss, { capture: true, passive: true });
+    window.addEventListener('resize', dismiss, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', dismiss, { capture: true });
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [noteAnchor]);
   // Agent control metadata is useful to its inline card but is never prose.
   // Parse it at the shared Markdown boundary as a fallback for synthesized or
   // legacy messages that lost their dedicated run-card descriptor.
@@ -619,35 +781,50 @@ function ChatMarkdown({
           (props as Record<string, unknown>)['data-chat-selection-kind'] === 'highlight'
             ? 'highlight'
             : 'answer';
+        const hasNote = Boolean((props as Record<string, unknown>)['data-chat-note']);
+        const showNote = (element: HTMLElement) => {
+          if (hasNote && annotationId) {
+            setNoteAnchor({ id: annotationId, rect: element.getBoundingClientRect() });
+          }
+        };
+        const hideNote = () => {
+          if (hasNote) setNoteAnchor(null);
+        };
+        const open = (element: HTMLElement) => {
+          if (!annotationId) return;
+          hideNote();
+          onTextAnnotationClick?.(annotationId, element.getBoundingClientRect());
+        };
         return (
           <mark
             {...props}
             className="bb-chat-text-highlight"
             role="button"
             tabIndex={0}
+            aria-describedby={hasNote ? `${noteIdPrefix}-${annotationId}` : undefined}
             aria-label={
-              annotationKind === 'highlight'
+              hasNote
+                ? 'Edit note on selected text'
+                : annotationKind === 'highlight'
                 ? 'Open highlight options'
                 : 'Open answer for highlighted text'
             }
+            onMouseEnter={(event) => showNote(event.currentTarget)}
+            onMouseLeave={hideNote}
+            onFocus={(event) => showNote(event.currentTarget)}
+            onBlur={hideNote}
             onClick={(event) => {
               event.stopPropagation();
-              if (annotationId) {
-                onTextAnnotationClick?.(
-                  annotationId,
-                  event.currentTarget.getBoundingClientRect(),
-                );
-              }
+              open(event.currentTarget);
             }}
             onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                hideNote();
+                return;
+              }
               if (event.key !== 'Enter' && event.key !== ' ') return;
               event.preventDefault();
-              if (annotationId) {
-                onTextAnnotationClick?.(
-                  annotationId,
-                  event.currentTarget.getBoundingClientRect(),
-                );
-              }
+              open(event.currentTarget);
             }}
           >
             {children}
@@ -655,7 +832,7 @@ function ChatMarkdown({
         );
       },
     }),
-    [onTextAnnotationClick],
+    [noteIdPrefix, onTextAnnotationClick],
   );
 
   return (
@@ -668,6 +845,13 @@ function ChatMarkdown({
       >
         {normalizedContent}
       </ReactMarkdown>
+      {noteAnchor && activeNote ? (
+        <NoteBubble
+          id={`${noteIdPrefix}-${noteAnchor.id}`}
+          text={activeNote}
+          anchor={noteAnchor.rect}
+        />
+      ) : null}
     </div>
   );
 }
@@ -692,6 +876,8 @@ export function chatTextAnnotationsEqual(
       annotation.end === b[index].end &&
       annotation.kind === b[index].kind &&
       annotation.color === b[index].color &&
+      annotation.note === b[index].note &&
+      annotation.noteContinuation === b[index].noteContinuation &&
       annotation.quote === b[index].quote &&
       annotation.prefix === b[index].prefix &&
       annotation.suffix === b[index].suffix,

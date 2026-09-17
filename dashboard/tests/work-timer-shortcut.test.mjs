@@ -63,5 +63,6 @@ test("a completed session offers the other timer next", () => {
 
 test("the full Paint Pomodoro page is still one click away with simpler copy", () => {
   assert.match(source, /href="\/pomodoro"/);
-  assert.match(source, />\s*Open in another tab\s*<\/a>/);
+  assert.match(source, /<NavigationLink newTab label="Work Timer"/);
+  assert.match(source, />\s*Open in another tab\s*<\/NavigationLink>/);
 });

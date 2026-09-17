@@ -17,3 +17,14 @@ export function conversationOriginLabel(origin: ConversationOrigin): string {
         : "Workspace";
   return [origin.gardenName?.trim(), surface].filter(Boolean).join(": ");
 }
+
+/** Messaging titles already identify their source in the terminal history. */
+export function conversationDisplayTitle(title: string, originLabel?: string): string {
+  if (
+    (!originLabel || ["Terminal", "Telegram", "WhatsApp"].includes(originLabel)) &&
+    /^(?:Telegram|WhatsApp)(?:\s*[:·]|$)/i.test(title)
+  ) {
+    return title;
+  }
+  return `${originLabel ? `${originLabel}: ` : ""}${title}`;
+}

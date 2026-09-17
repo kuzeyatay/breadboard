@@ -66,6 +66,7 @@ function protectedRoots(repoRoot) {
     path.join(dashboard, "chat-videos"),
     path.join(dashboard, "goal-mode"),
     path.join(dashboard, "hyperframes-cli"),
+    path.join(dashboard, "hyperframes-browser"),
     path.join(dashboard, "hyperframes-runs"),
     path.join(dashboard, "loopx-goals"),
     path.join(dashboard, "openscience-cli"),

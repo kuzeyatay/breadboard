@@ -354,10 +354,12 @@ class InstalledProbeTest(unittest.TestCase):
         import os
         from unittest import mock
 
-        with mock.patch.dict(os.environ, {"HF_HUB_CACHE": os.path.join(os.sep, "nope")}):
+        with mock.patch.dict(os.environ, {"HF_HUB_CACHE": os.path.join(os.sep, "nope")}), mock.patch(
+            "os.path.expanduser", return_value=os.path.join(os.sep, "no-home"),
+        ):
             self.assertFalse(model_module.model_is_installed("cive202/humanize-ai-text-bart-large"))
 
-    def test_a_snapshot_with_a_config_reads_as_installed(self):
+    def test_a_partial_or_wrong_revision_snapshot_is_not_installed(self):
         import os
         import tempfile
         from unittest import mock
@@ -369,8 +371,8 @@ class InstalledProbeTest(unittest.TestCase):
             os.makedirs(snapshot)
             with open(os.path.join(snapshot, "config.json"), "w", encoding="utf-8") as handle:
                 handle.write("{}")
-            with mock.patch.dict(os.environ, {"HF_HUB_CACHE": cache}):
-                self.assertTrue(
+            with mock.patch.dict(os.environ, {"HF_HUB_CACHE": cache}), mock.patch("os.path.expanduser", return_value=cache):
+                self.assertFalse(
                     model_module.model_is_installed("cive202/humanize-ai-text-bart-large")
                 )
 

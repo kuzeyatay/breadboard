@@ -1,5 +1,6 @@
 import { QuartzComponent, QuartzComponentConstructor, QuartzComponentProps } from "./types"
 import { classNames } from "../util/lang"
+import { ARTIFACT_CATEGORIES, artifactCategory, artifactKindLabel } from "../util/artifactReference"
 
 const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComponentProps) => {
   const slug = fileData.slug
@@ -53,7 +54,25 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
               </div>
             </label>
           </div>
-          <textarea class="markdown-editor-textarea" spellcheck={false} />
+          <div class="markdown-editor-workspace">
+          <textarea class="markdown-editor-textarea" spellcheck={false} aria-label="Note markdown" />
+          <div class="markdown-editor-artifacts" hidden aria-label="Attach an artifact">
+            <div class="markdown-editor-artifact-heading">
+              <div><h3>Garden artifacts</h3><p>Bring saved work into this note.</p></div>
+              <button class="markdown-editor-artifact-close" type="button" aria-label="Close" title="Close artifact browser">×</button>
+            </div>
+            <div class="markdown-editor-artifact-search-row">
+              <input class="markdown-editor-artifact-search" type="search" placeholder="Search by name or file type…" aria-label="Search garden artifacts" />
+              <button class="markdown-editor-artifact-refresh" type="button" aria-label="Refresh" title="Refresh artifacts">↻</button>
+            </div>
+            <div class="markdown-editor-artifact-filters" role="group" aria-label="Artifact types">
+              {ARTIFACT_CATEGORIES.map(category => <button type="button" data-artifact-category={category} aria-pressed={category === "All"}>{category}</button>)}
+            </div>
+            <p class="markdown-editor-artifact-status" aria-live="polite" />
+            <div class="markdown-editor-artifact-list" />
+            <p class="markdown-editor-artifact-hint">Choose a file to attach. Web pages appear directly in your note.</p>
+          </div>
+          </div>
           <input
             class="markdown-editor-image-input"
             type="file"
@@ -85,6 +104,9 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
           </div>
           <div class="markdown-editor-footer">
             <div class="markdown-editor-insert-tools">
+              <button class="markdown-editor-artifact" type="button" aria-expanded="false">
+                Attach artifact
+              </button>
               <button class="markdown-editor-image" type="button">
                 Add images
               </button>
@@ -135,6 +157,10 @@ MarkdownActions.css = `
 }
 
 .markdown-action-button,
+.markdown-editor-artifact,
+.markdown-editor-artifact-refresh,
+.markdown-editor-artifact-close,
+.markdown-editor-artifact-item,
 .markdown-editor-image,
 .markdown-editor-video,
 .markdown-editor-whiteboard,
@@ -156,6 +182,8 @@ MarkdownActions.css = `
 }
 
 .markdown-action-button:hover,
+.markdown-editor-artifact:hover,
+.markdown-editor-artifact-item:hover,
 .markdown-editor-image:hover,
 .markdown-editor-video:hover,
 .markdown-editor-whiteboard:hover,
@@ -176,6 +204,38 @@ MarkdownActions.css = `
 
 .markdown-editor-youtube-row[hidden] {
   display: none;
+}
+
+.markdown-editor-artifacts[hidden] { display: none; }
+.markdown-editor-workspace { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.markdown-editor-artifacts { display: flex; flex-direction: column; flex: 0 0 44%; min-width: 300px; min-height: 0; padding: 1.15rem; box-sizing: border-box; border-left: 1px solid var(--lightgray); background: color-mix(in srgb, var(--light) 96%, var(--secondary)); }
+.markdown-editor-artifact-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; margin-bottom: 1rem; }
+.markdown-editor-artifact-heading h3 { margin: 0; color: var(--dark); font-size: 1rem; letter-spacing: -0.02em; }
+.markdown-editor-artifact-heading p { margin: 0.3rem 0 0; color: var(--gray); font-size: 0.8rem; line-height: 1.4; }
+.markdown-editor-artifact-heading button { border: 0; background: transparent; font-size: 1.35rem; padding: 0.25rem 0.5rem; }
+.markdown-editor-artifact-search-row { display: flex; gap: 0.4rem; }
+.markdown-editor-artifact-search { flex: 1; min-width: 0; padding: 0.65rem 0.75rem; color: var(--dark); background: var(--light); border: 1px solid var(--lightgray); border-radius: 8px; font: inherit; font-size: 0.85rem; }
+.markdown-editor-artifact-refresh { width: 36px; font-size: 1.2rem; background: transparent; }
+.markdown-editor-artifact-filters { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.75rem; }
+.markdown-editor-artifact-filters button { border: 1px solid transparent; border-radius: 6px; padding: 0.4rem 0.5rem; background: transparent; color: var(--gray); font: inherit; font-size: 0.72rem; cursor: pointer; }
+.markdown-editor-artifact-filters button[aria-pressed="true"] { color: var(--secondary); background: color-mix(in srgb, var(--secondary) 10%, var(--light)); border-color: color-mix(in srgb, var(--secondary) 18%, transparent); font-weight: 600; }
+.markdown-editor-artifact-list { display: flex; flex-direction: column; gap: 0.4rem; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 3px; margin: 0 -3px; }
+.markdown-editor-artifact-item { display: flex; align-items: center; flex-shrink: 0; gap: 0.75rem; width: 100%; padding: 0.8rem; border-color: color-mix(in srgb, var(--lightgray) 65%, transparent); background: var(--light); text-align: left; line-height: 1.4; }
+.markdown-editor-artifact-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 42px; height: 48px; overflow: hidden; border: 1px solid var(--lightgray); border-radius: 6px; background: color-mix(in srgb, var(--secondary) 6%, var(--light)); color: var(--secondary); font-size: 0.62rem; font-weight: 600; }
+.markdown-editor-artifact-icon img { width: 100%; height: 100%; object-fit: cover; margin: 0; }
+.markdown-editor-artifact-copy { flex: 1; min-width: 0; }
+.markdown-editor-artifact-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--dark); font-size: 0.85rem; font-weight: 550; overflow-wrap: anywhere; }
+.markdown-editor-artifact-detail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 0.3rem; color: var(--gray); font-size: 0.7rem; font-weight: 400; }
+.markdown-editor-artifact-add { color: var(--secondary); font-size: 1.2rem; font-weight: 400; }
+.markdown-editor-artifact-status { margin: 0.8rem 0; font-size: 0.75rem; line-height: 1.5; color: var(--gray); }
+.markdown-editor-artifact-hint { border-top: 1px solid var(--lightgray); padding-top: 0.75rem; margin: 0.8rem 0 0; font-size: 0.72rem; line-height: 1.5; color: var(--gray); }
+.markdown-editor-artifacts :focus-visible, .markdown-editor-artifact:focus-visible { outline: 2px solid var(--secondary); outline-offset: 2px; }
+.markdown-editor-artifacts button:active { transform: scale(0.98); }
+@media (max-width: 700px) {
+  .markdown-editor-artifacts { position: absolute; inset: 0; min-width: 0; border-left: 0; background: var(--light); padding: 0.85rem; }
+  .markdown-editor-panel:has(.markdown-editor-artifacts:not([hidden])) .markdown-editor-fields { display: none; }
+  .markdown-editor-footer { flex-wrap: wrap; gap: 0.65rem; }
+  .markdown-editor-footer-actions { width: 100%; justify-content: flex-end; }
 }
 
 .markdown-editor-youtube-row {
@@ -391,6 +451,7 @@ body:has(.markdown-editor-modal:not([hidden])) .breadboard-ai-toggle {
 
 .markdown-editor-textarea {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   width: 100%;
   box-sizing: border-box;
@@ -449,6 +510,8 @@ body:has(.markdown-editor-modal:not([hidden])) .breadboard-ai-toggle {
 `
 
 MarkdownActions.afterDOMLoaded = `
+var sbArtifactCategory = ${artifactCategory.toString()}
+var sbArtifactKindLabel = ${artifactKindLabel.toString()}
 // Persist the open editor + draft so it survives the live-reload triggered by
 // saving an image asset, and is restored when you return to the same note.
 var SB_EDITOR_DRAFT_KEY = "second-brain:md-editor-draft"
@@ -599,7 +662,12 @@ function sbCreateTagField(box, input) {
 document.addEventListener("nav", () => {
   sbReportEditorState(false)
   for (const actions of document.querySelectorAll(".markdown-actions")) {
-    if (actions.dataset.bound === "true") continue
+    if (actions.dataset.bound === "true") {
+      // Canonical article refreshes run cleanup without replacing this editor.
+      // Restore its window listener while keeping the existing button handlers.
+      actions._sbBindArtifactMessages?.()
+      continue
+    }
     actions.dataset.bound = "true"
 
     const slug = actions.dataset.noteSlug
@@ -617,6 +685,11 @@ document.addEventListener("nav", () => {
     const videoInput = actions.querySelector(".markdown-editor-video-input")
     const addVideo = actions.querySelector(".markdown-editor-video")
     const addWhiteboard = actions.querySelector(".markdown-editor-whiteboard")
+    const attachArtifact = actions.querySelector(".markdown-editor-artifact")
+    const artifactPanel = actions.querySelector(".markdown-editor-artifacts")
+    const artifactSearch = actions.querySelector(".markdown-editor-artifact-search")
+    const artifactList = actions.querySelector(".markdown-editor-artifact-list")
+    const artifactStatus = actions.querySelector(".markdown-editor-artifact-status")
     const placementSelect = actions.querySelector(".markdown-editor-placement")
     const youtubeToggle = actions.querySelector(".markdown-editor-youtube")
     const youtubeRow = actions.querySelector(".markdown-editor-youtube-row")
@@ -728,6 +801,7 @@ document.addEventListener("nav", () => {
     }
 
     const hideModal = () => {
+      closeArtifactPanel()
       if (modal) modal.hidden = true
       sbReportEditorState(false)
     }
@@ -816,6 +890,142 @@ document.addEventListener("nav", () => {
       saveDraft()
       setStatus("Whiteboard added. Click Save to publish.")
     })
+
+    let artifactRequestId = ""
+    let artifactTimer
+    let availableArtifacts = []
+    let artifactCategoryFilter = "All"
+    let artifactLoading = false
+    const closeArtifactPanel = () => {
+      artifactRequestId = ""
+      clearTimeout(artifactTimer)
+      if (artifactPanel) artifactPanel.hidden = true
+      attachArtifact?.setAttribute("aria-expanded", "false")
+    }
+    const renderArtifacts = () => {
+      if (!artifactList || artifactLoading) return
+      artifactList.replaceChildren()
+      const query = (artifactSearch?.value || "").trim().toLowerCase()
+      const matches = availableArtifacts.filter((item) =>
+        (artifactCategoryFilter === "All" || sbArtifactCategory(item) === artifactCategoryFilter) &&
+        query.split(/\\s+/).every(term => [item.title, item.kind, item.filename, sbArtifactKindLabel(item)].join(" ").toLowerCase().includes(term)))
+      artifactPanel?.querySelectorAll("[data-artifact-category]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.artifactCategory === artifactCategoryFilter))
+      })
+      if (artifactStatus) artifactStatus.textContent = matches.length
+        ? matches.length + (matches.length === 1 ? " artifact" : " artifacts")
+        : availableArtifacts.length ? "No matching artifacts." : "No saved artifacts in this garden yet. You can add a video or whiteboard below."
+      for (const item of matches) {
+        const button = document.createElement("button")
+        button.type = "button"
+        button.className = "markdown-editor-artifact-item"
+        button.setAttribute("aria-label", "Attach " + (item.title || item.filename || "Artifact"))
+        const icon = document.createElement("span")
+        icon.className = "markdown-editor-artifact-icon"
+        icon.setAttribute("aria-hidden", "true")
+        const kind = sbArtifactKindLabel(item)
+        const extension = (item.filename || "").match(/\\.([a-z0-9]{1,5})$/i)?.[1]?.toUpperCase()
+        icon.textContent = item.kind === "html" ? "</>" : extension || "FILE"
+        if (item.thumbnailUrl) {
+          const image = document.createElement("img")
+          image.src = item.thumbnailUrl
+          image.alt = ""
+          image.loading = "lazy"
+          image.addEventListener("error", () => { icon.textContent = extension || "FILE" })
+          icon.replaceChildren(image)
+        }
+        const copy = document.createElement("span")
+        copy.className = "markdown-editor-artifact-copy"
+        const title = document.createElement("span")
+        title.className = "markdown-editor-artifact-title"
+        title.textContent = item.title || item.filename || "Artifact"
+        const detail = document.createElement("span")
+        detail.className = "markdown-editor-artifact-detail"
+        detail.textContent = kind + (item.filename ? " · " + item.filename : "")
+        detail.title = item.filename || kind
+        copy.append(title, detail)
+        const add = document.createElement("span")
+        add.className = "markdown-editor-artifact-add"
+        add.textContent = "+"
+        add.setAttribute("aria-hidden", "true")
+        button.append(icon, copy, add)
+        button.addEventListener("click", () => {
+          if (!textarea || typeof item.markdown !== "string") return
+          sbInsertSnippet(textarea, placementSelect, item.markdown)
+          saveDraft()
+          closeArtifactPanel()
+          setStatus("Artifact attached in editor. Click Save to publish.")
+        })
+        artifactList.appendChild(button)
+      }
+    }
+    const loadArtifacts = () => {
+      if (requireDashboardFrame()) return
+      artifactRequestId = crypto.randomUUID()
+      artifactLoading = true
+      clearTimeout(artifactTimer)
+      availableArtifacts = []
+      artifactList?.replaceChildren()
+      if (artifactStatus) artifactStatus.textContent = "Loading artifacts…"
+      window.parent.postMessage({ type: "second-brain:list-markdown-artifacts", slug, requestId: artifactRequestId }, "*")
+      artifactTimer = setTimeout(() => {
+        artifactRequestId = ""
+        artifactLoading = false
+        if (artifactStatus) artifactStatus.textContent = "Could not load artifacts. Select Refresh to try again."
+      }, 20000)
+    }
+    attachArtifact?.addEventListener("click", () => {
+      if (requireDashboardFrame() || !artifactPanel) return
+      if (!artifactPanel.hidden) { closeArtifactPanel(); return }
+      artifactPanel.hidden = false
+      artifactCategoryFilter = "All"
+      artifactPanel.querySelectorAll("[data-artifact-category]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.artifactCategory === "All")))
+      attachArtifact.setAttribute("aria-expanded", "true")
+      if (artifactSearch) artifactSearch.value = ""
+      artifactSearch?.focus()
+      loadArtifacts()
+    })
+    actions.querySelector(".markdown-editor-artifact-refresh")?.addEventListener("click", loadArtifacts)
+    actions.querySelector(".markdown-editor-artifact-close")?.addEventListener("click", () => {
+      closeArtifactPanel()
+      attachArtifact?.focus()
+    })
+    artifactPanel?.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        event.stopPropagation()
+        closeArtifactPanel()
+        attachArtifact?.focus()
+      }
+    })
+    artifactSearch?.addEventListener("input", renderArtifacts)
+    artifactPanel?.querySelectorAll("[data-artifact-category]").forEach(button => button.addEventListener("click", () => {
+      artifactCategoryFilter = button.dataset.artifactCategory
+      renderArtifacts()
+    }))
+    const receiveArtifacts = (event) => {
+      const data = event.data
+      if (event.source !== window.parent || data?.type !== "second-brain:markdown-artifacts-result") return
+      if (!artifactRequestId || data.requestId !== artifactRequestId || data.slug !== slug) return
+      clearTimeout(artifactTimer)
+      artifactRequestId = ""
+      artifactLoading = false
+      if (!data.ok) {
+        if (artifactStatus) artifactStatus.textContent = (data.error || "Could not load artifacts.") + " Select Refresh to try again."
+        return
+      }
+      availableArtifacts = Array.isArray(data.artifacts) ? data.artifacts : []
+      renderArtifacts()
+    }
+    const bindArtifactMessages = () => {
+      window.addEventListener("message", receiveArtifacts)
+      window.addCleanup?.(() => {
+        closeArtifactPanel()
+        window.removeEventListener("message", receiveArtifacts)
+      })
+    }
+    actions._sbBindArtifactMessages = bindArtifactMessages
+    bindArtifactMessages()
 
     const allowedImageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"]
     const readImage = (file) =>

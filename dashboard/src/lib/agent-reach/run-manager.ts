@@ -11,7 +11,7 @@
 // Runs are ephemeral: events live here and the SSE route replays them.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, open, lstat, realpath } from "node:fs/promises";
+import { mkdir, open, lstat, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { confinePath, parseCommand } from "./commands.ts";
 import {
@@ -30,6 +30,9 @@ import {
   type ChannelHealth,
 } from "./runtime.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
+import { createLongHeaderTimeoutFetch } from "../chatmock-client.ts";
+import { withinRetrievalBudget } from "./retrieval-budget.ts";
+import { retrievedSources, writeRetrievedFindings, type ResearchMessage } from "./writeup.ts";
 
 export interface AgentReachEvent {
   sequenceNumber: number;
@@ -75,7 +78,13 @@ const MAX_EVENTS = 5_000;
 const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_FILE_CHARS = 40_000;
 const COMMAND_TIMEOUT_MS = 180_000;
-const MODEL_TIMEOUT_MS = 180_000;
+const MODEL_TIMEOUT_MS = 15 * 60_000;
+const WRITEUP_TIMEOUT_MS = 15 * 60_000;
+// Reserve twenty minutes for bounded evidence summaries and writing, including
+// a final in-flight command and startup inside Max Research's 45-minute limit.
+const RETRIEVAL_TIMEOUT_MS = 20 * 60_000;
+const WRITEUP_TOTAL_TIMEOUT_MS = 20 * 60_000;
+const modelFetch = createLongHeaderTimeoutFetch({ timeoutMs: WRITEUP_TIMEOUT_MS });
 /** Attempts per step, so one slow upstream call does not end a sixteen-step run. */
 const MODEL_ATTEMPTS = 3;
 const RETENTION_MS = 10 * 60 * 1000;
@@ -307,16 +316,7 @@ async function readOutputFile(run: RunState, requested: string): Promise<string>
 
 // ---- ChatMock ---------------------------------------------------------------
 
-interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content?: string | null;
-  tool_calls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
-}
+type ChatMessage = ResearchMessage;
 
 interface ChatUsage {
   inputTokens: number;
@@ -331,14 +331,11 @@ async function complete(
   apiKey: string,
   signal: AbortSignal,
   toolChoice: "auto" | "none" = "auto",
+  onRetry?: (attempt: number, failure: Error) => void,
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
-  // Retried rather than fatal.
-  //
-  // One model call that times out or hits a transient upstream error used to
-  // end the whole run — and this agent runs up to sixteen steps, so that threw
-  // away every step before it. It showed up under concurrency: with two other
-  // research agents calling the same ChatMock at once, a call ran past the
-  // three-minute abort and the run failed at 192 seconds having found nothing.
+  // Retry explicit transient failures. A deadline gets one generous attempt:
+  // repeated three-minute cancellations left duplicate max-effort requests
+  // upstream and made even the first tool selection take nine minutes.
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= MODEL_ATTEMPTS; attempt += 1) {
     try {
@@ -357,10 +354,11 @@ async function complete(
       }
       const failure =
         error instanceof Error ? error : new Error("The model call failed.");
-      if (!isRetryableModelFailure(failure) || attempt === MODEL_ATTEMPTS) {
+      if (/timed? out/i.test(failure.message) || !isRetryableModelFailure(failure) || attempt === MODEL_ATTEMPTS) {
         throw failure;
       }
       lastError = failure;
+      onRetry?.(attempt + 1, failure);
       await abortableDelay(attempt * 5_000, signal);
     }
   }
@@ -385,14 +383,14 @@ async function completeOnce(
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new DOMException("The model call timed out", "TimeoutError")),
-    MODEL_TIMEOUT_MS,
+    toolChoice === "none" ? WRITEUP_TIMEOUT_MS : MODEL_TIMEOUT_MS,
   );
   timer.unref?.();
   const forwardAbort = () => controller.abort(signal.reason);
   if (signal.aborted) forwardAbort();
   else signal.addEventListener("abort", forwardAbort, { once: true });
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const response = await modelFetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -401,8 +399,7 @@ async function completeOnce(
       body: JSON.stringify({
         model,
         messages,
-        tools: TOOLS,
-        tool_choice: toolChoice,
+        ...(toolChoice === "none" ? {} : { tools: TOOLS, tool_choice: toolChoice }),
         reasoning_effort: reasoningEffort,
       }),
       signal: controller.signal,
@@ -411,9 +408,10 @@ async function completeOnce(
       throw new Error(`ChatMock returned ${response.status}`);
     }
     const data = (await response.json()) as {
-      choices?: Array<{ message?: ChatMessage }>;
+      choices?: Array<{ finish_reason?: string; message?: ChatMessage }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    if (data.choices?.[0]?.finish_reason === "length") throw new Error("The model response was truncated before it finished.");
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error("ChatMock returned no message");
     return {
@@ -561,160 +559,189 @@ async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<
 
   const usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
   const maxSteps = Math.min(Math.max(input.maxSteps ?? 16, 1), 40);
+  let stepsUsed = 0;
 
-  for (let step = 0; step < maxSteps; step += 1) {
-    if (run.aborted) return;
-    emit(run, "agent.thinking", {
-      state: "active",
-      step: step + 1,
-      summary: step === 0 ? "Choosing a platform and backend" : "Reviewing what came back",
-    });
-
-    const { message, usage: turnUsage } = await complete(
-      input.baseUrl,
-      input.model,
-      input.reasoningEffort,
-      messages,
-      input.apiKey,
-      run.abortController.signal,
-    );
-    if (run.aborted) return;
-
-    usage.calls += 1;
-    usage.inputTokens += turnUsage.inputTokens;
-    usage.outputTokens += turnUsage.outputTokens;
-    emit(run, "agent.usage", { ...usage });
-
-    const { thinking, answer } = splitReasoning(message.content ?? "");
-    // Text beside a tool call is commentary about the next step, not the
-    // answer. Keeping it as the answer meant a run that hit its step limit
-    // reported its first remark — "Using agent-reach, open web via Jina
-    // Reader." — as its finding, after sixteen steps of real reading.
-    if (answer && !(message.tool_calls ?? []).length) run.finalText = answer;
-    if (thinking) {
+  const ended = await withinRetrievalBudget(async phaseSignal => {
+    for (let step = 0; step < maxSteps; step += 1) {
+      if (run.aborted) return true;
+      phaseSignal.throwIfAborted();
+      stepsUsed = step + 1;
       emit(run, "agent.thinking", {
         state: "active",
         step: step + 1,
-        summary: thinking.split(/\r?\n/).filter(Boolean).at(-1)?.slice(0, 200) ?? "",
+        summary: step === 0 ? "Choosing a platform and backend" : "Reviewing what came back",
       });
-    }
-    messages.push({
-      role: "assistant",
-      content: message.content ?? "",
-      tool_calls: message.tool_calls,
-    });
 
-    const toolCalls = message.tool_calls ?? [];
-    if (!toolCalls.length) {
-      finish(run, "completed", {
-        summary: run.finalText || "Agent Reach finished without an answer.",
-        ...usage,
-      });
-      return;
-    }
-
-    for (const call of toolCalls) {
-      if (run.aborted) return;
-      let parsedArguments: Record<string, unknown> = {};
-      try {
-        parsedArguments = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
-      } catch {
-        parsedArguments = {};
-      }
-
-      if (call.function.name === "read_output_file") {
-        const requested = typeof parsedArguments.path === "string" ? parsedArguments.path : "";
-        emit(run, "fetch.started", { kind: "file", display: `read ${requested}` });
-        const content = requested
-          ? await readOutputFile(run, requested)
-          : "No path was provided.";
-        emit(run, "fetch.completed", {
-          kind: "file",
-          display: `read ${requested}`,
-          chars: content.length,
-        });
-        messages.push({ role: "tool", tool_call_id: call.id, content });
-        continue;
-      }
-
-      const raw = typeof parsedArguments.command === "string" ? parsedArguments.command : "";
-      const decision = parseCommand(raw, run.workspace);
-      if (!decision.ok) {
-        emit(run, "fetch.refused", { command: raw.slice(0, 400), reason: decision.reason });
-        messages.push({ role: "tool", tool_call_id: call.id, content: decision.reason });
-        continue;
-      }
-
-      const { executable, args, display } = decision.command;
-      emit(run, "fetch.started", {
-        kind: "command",
-        tool: executable,
-        // Read the URL off the parsed argv, not the raw line — the raw line
-        // still carries the quoting the model wrote around it.
-        url: args.find((arg) => /^https?:\/\//i.test(arg)) ?? null,
-        display,
-      });
-      const result = await execute(run, runtime, executable, args);
-      if (run.aborted) return;
-      emit(run, "fetch.completed", {
-        kind: "command",
-        tool: executable,
-        display,
-        chars: result.length,
-        preview: result.split(/\r?\n/).slice(0, 2).join(" ").slice(0, 200),
-      });
-      messages.push({ role: "tool", tool_call_id: call.id, content: result });
-    }
-  }
-
-  // Out of steps with the answer unwritten. Everything it read is still in
-  // the transcript, so ask for the write-up now, with tools withheld: a live
-  // Max Research drive watched this agent fetch national energy-price tables
-  // and a regulator's press release across sixteen steps and then hand back
-  // nothing, because the loop ended on a tool call and no turn was left to
-  // report. One more call costs seconds; the sixteen before it cost minutes.
-  if (!run.finalText && !run.aborted) {
-    emit(run, "agent.thinking", {
-      state: "active",
-      step: maxSteps + 1,
-      summary: "Writing up what was found",
-    });
-    messages.push({
-      role: "user",
-      content:
-        "You have used every step available. Do not call any more tools. Write your findings now from what you have already read: what you actually found and where you found it, quoting or paraphrasing sources and naming the page, thread, post or repository each came from. If something you tried returned nothing, say so plainly. Do not describe your plan or approach.",
-    });
-    try {
       const { message, usage: turnUsage } = await complete(
         input.baseUrl,
         input.model,
         input.reasoningEffort,
         messages,
         input.apiKey,
-        run.abortController.signal,
-        "none",
+        phaseSignal,
+        "auto",
+        (attempt, failure) => emit(run, "agent.thinking", {
+          state: "active", step: step + 1, attempt,
+          summary: `Retrying the research call (${attempt}/${MODEL_ATTEMPTS}) after ${failure.message}.`,
+        }),
       );
-      if (run.aborted) return;
+      if (run.aborted) return true;
+
       usage.calls += 1;
       usage.inputTokens += turnUsage.inputTokens;
       usage.outputTokens += turnUsage.outputTokens;
       emit(run, "agent.usage", { ...usage });
-      const { answer } = splitReasoning(message.content ?? "");
-      if (answer) run.finalText = answer;
+
+      const { thinking, answer } = splitReasoning(message.content ?? "");
+      // Text beside a tool call is commentary about the next step, not the
+      // answer. Keeping it as the answer meant a run that hit its step limit
+      // reported its first remark — "Using agent-reach, open web via Jina
+      // Reader." — as its finding, after sixteen steps of real reading.
+      if (answer && !(message.tool_calls ?? []).length) run.finalText = answer;
+      if (thinking) {
+        emit(run, "agent.thinking", {
+          state: "active",
+          step: step + 1,
+          summary: thinking.split(/\r?\n/).filter(Boolean).at(-1)?.slice(0, 200) ?? "",
+        });
+      }
+      messages.push({
+        role: "assistant",
+        content: message.content ?? "",
+        tool_calls: message.tool_calls,
+      });
+
+      const toolCalls = message.tool_calls ?? [];
+      if (!toolCalls.length) {
+        if (!run.finalText.trim()) {
+          finish(run, "failed", { error: "Agent Reach finished without an answer.", ...usage });
+          return true;
+        }
+        finish(run, "completed", {
+          summary: run.finalText,
+          ...usage,
+        });
+        return true;
+      }
+
+      for (const call of toolCalls) {
+        if (run.aborted) return true;
+        if (phaseSignal.aborted) {
+          // Close every declared call in the transcript before requesting prose.
+          messages.push({role:"tool", tool_call_id:call.id, content:"Not executed: the retrieval budget ended. Use the sources already retrieved."});
+          continue;
+        }
+        let parsedArguments: Record<string, unknown> = {};
+        try {
+          parsedArguments = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+        } catch {
+          parsedArguments = {};
+        }
+
+        if (call.function.name === "read_output_file") {
+          const requested = typeof parsedArguments.path === "string" ? parsedArguments.path : "";
+          emit(run, "fetch.started", { kind: "file", display: `read ${requested}` });
+          const content = requested
+            ? await readOutputFile(run, requested)
+            : "No path was provided.";
+          emit(run, "fetch.completed", {
+            kind: "file",
+            display: `read ${requested}`,
+            chars: content.length,
+          });
+          messages.push({ role: "tool", tool_call_id: call.id, content });
+          continue;
+        }
+
+        const raw = typeof parsedArguments.command === "string" ? parsedArguments.command : "";
+        const decision = parseCommand(raw, run.workspace);
+        if (!decision.ok) {
+          emit(run, "fetch.refused", { command: raw.slice(0, 400), reason: decision.reason });
+          messages.push({ role: "tool", tool_call_id: call.id, content: decision.reason });
+          continue;
+        }
+
+        const { executable, args, display } = decision.command;
+        emit(run, "fetch.started", {
+          kind: "command",
+          tool: executable,
+          // Read the URL off the parsed argv, not the raw line — the raw line
+          // still carries the quoting the model wrote around it.
+          url: args.find((arg) => /^https?:\/\//i.test(arg)) ?? null,
+          display,
+        });
+        const result = await execute(run, runtime, executable, args);
+        if (run.aborted) return true;
+        emit(run, "fetch.completed", {
+          kind: "command",
+          tool: executable,
+          display,
+          chars: result.length,
+          preview: result.split(/\r?\n/).slice(0, 2).join(" ").slice(0, 200),
+        });
+        messages.push({ role: "tool", tool_call_id: call.id, content: result });
+      }
+    }
+    return false;
+  }, run.abortController.signal, RETRIEVAL_TIMEOUT_MS - (Date.now() - run.createdAt));
+  if (ended || run.aborted) return;
+
+  // A run that ends retrieval on a tool call still owes a substantive report.
+  // Summarize bounded groups first when the captured pages exceed one input.
+  if (!run.finalText && !run.aborted) {
+    emit(run, "agent.thinking", {
+      state: "active",
+      step: stepsUsed + 1,
+      summary: "Writing up what was found",
+    });
+    // Preserve the exact retrieved evidence before reducing it. A transport
+    // failure must not erase pages that took many minutes to collect.
+    await writeFile(path.join(run.workspace, "retrieved-evidence.json"), JSON.stringify({
+      task: messages.filter(message => message.role === "user"), sources: retrievedSources(messages),
+    }, null, 2), "utf8");
+    const writing = new AbortController();
+    const forward = () => writing.abort(run.abortController.signal.reason);
+    if (run.abortController.signal.aborted) forward();
+    else run.abortController.signal.addEventListener("abort", forward, {once: true});
+    const timer = setTimeout(() => writing.abort(new DOMException("The evidence write-up budget ended.", "TimeoutError")), WRITEUP_TOTAL_TIMEOUT_MS);
+    timer.unref?.();
+    try {
+      run.finalText = await writeRetrievedFindings({
+        messages, signal: writing.signal,
+        onProgress: summary => emit(run, "agent.thinking", {state: "active", step: stepsUsed + 1, summary}),
+        complete: async (writeMessages, writeSignal) => {
+          const { message, usage: turnUsage } = await complete(
+            input.baseUrl, input.model, input.reasoningEffort, writeMessages,
+            input.apiKey, writeSignal, "none",
+            (attempt, failure) => emit(run, "agent.thinking", {
+              state: "active", step: stepsUsed + 1, attempt,
+              summary: `Retrying the write-up (${attempt}/${MODEL_ATTEMPTS}) with the retrieved sources after ${failure.message}.`,
+            }),
+          );
+          usage.calls += 1;
+          usage.inputTokens += turnUsage.inputTokens;
+          usage.outputTokens += turnUsage.outputTokens;
+          emit(run, "agent.usage", { ...usage });
+          return splitReasoning(message.content ?? "").answer;
+        },
+      });
     } catch (error) {
       if (run.aborted) return;
       emit(run, "agent.thinking", {
         state: "active",
-        step: maxSteps + 1,
+        step: stepsUsed + 1,
         summary: `The write-up call failed: ${
           error instanceof Error ? error.message : "unknown error"
         }`,
       });
+    } finally {
+      clearTimeout(timer);
+      run.abortController.signal.removeEventListener("abort", forward);
     }
   }
 
-  finish(run, "completed", {
-    summary: run.finalText || "Agent Reach reached its step limit before answering.",
+  finish(run, run.finalText ? "completed" : "failed", {
+    summary: run.finalText || "Agent Reach could not write up the sources it retrieved.",
     ...usage,
   });
 }

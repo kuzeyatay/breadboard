@@ -30,6 +30,7 @@ import {
 import { GARDEN_STRUCTURE_TOOLS, isProposalTool } from "./tool-scopes.ts";
 import { createProposal } from "./runtime-store.ts";
 import { gardenNavigationResourceFromSources } from "../generative-ui/contracts.ts";
+import { boundedGardenFileList, gardenReadEntries, gardenPageExcerpt, readGardenPage, readGardenRetrievalNodes } from "./garden-reader.ts";
 
 export interface GardenToolResult {
   ok: boolean;
@@ -182,6 +183,15 @@ export async function executeGardenTool(input: {
   }
 
   try {
+    if (input.tool === "garden_list_files") {
+      if (!["dashboard_terminal", "garden_chat"].includes(token.surface)) {
+        return { ok: false, tool: input.tool, error: "Listing a Garden requires a signed-in Breadboard chat." };
+      }
+      const folders: string[] = [];
+      const entries = await gardenReadEntries(contentPath(), cluster.slug, folders);
+      return { ok: true, tool: input.tool, data: { gardenId: cluster.slug, gardenName: cluster.name,
+        ...boundedGardenFileList(entries, input.args, folders) } };
+    }
     if (input.tool === "garden_discover_sources" || input.tool === "garden_import_source") {
       if (!["garden_chat", "dashboard_terminal"].includes(token.surface) || token.userId !== cluster.user_id) {
         return { ok: false, tool: input.tool, error: "Source discovery and import require the Garden's owner in a signed-in chat." };
@@ -231,6 +241,12 @@ async function executeReadTool(
   cluster: ClusterRow,
   args: Record<string, unknown>,
 ): Promise<GardenToolResult> {
+  if (tool === "garden_get_page" || tool === "garden_get_source_excerpt") {
+    const result = await readGardenPage(contentPath(), cluster.slug, String(args.slug ?? args.pageSlug ?? ""));
+    if (!result.node) return { ok: false, tool, error: "Page not found or ambiguous. Use an exact relPath from availableMatches; do not guess another slug.", data: { availableMatches: result.availableMatches } };
+    return { ok: true, tool, data: { ...nodeSummary(result.node), ...gardenPageExcerpt(result.node, args) } };
+  }
+
   const topologyGraph = async (
     start: unknown,
     overrides: Record<string, unknown> = {},
@@ -273,12 +289,9 @@ async function executeReadTool(
 
   // Lazy-load the heavy knowledge/retrieval modules so the scope-enforcement
   // path (and its tests) never pays for the Quartz publish dependency chain.
-  const { scanClusterKnowledge } = await import("../knowledge.ts");
-  const { retrieveGraphRag } = await import("../semantic-retrieval.ts");
-  const knowledge = scanClusterKnowledge(contentPath(), cluster.slug);
-
-  switch (tool) {
-    case "garden_search": {
+  if (tool === "garden_search") {
+      const { retrieveGraphRag } = await import("../semantic-retrieval.ts");
+      const nodes = await readGardenRetrievalNodes(contentPath(), cluster.slug);
       const query = String(args.query ?? "").slice(0, 2000);
       const retrieval = await retrieveGraphRag({
         query,
@@ -287,10 +300,12 @@ async function executeReadTool(
             slug: cluster.slug,
             name: cluster.name,
             rootPath: path.join(contentPath(), cluster.slug),
-            knowledge,
+            knowledge: { nodes },
           },
         ],
         maxChunks: MAX_RESULTS,
+        indexEmbeddings: false,
+        embeddingTimeoutMs: 3_000,
       });
       const chunks = retrieval.chunks.slice(0, MAX_RESULTS);
       const navigator = gardenNavigationResourceFromSources({
@@ -311,9 +326,11 @@ async function executeReadTool(
         tool,
         data: {
           context: retrieval.context.slice(0, MAX_EXCERPT_CHARS),
+          ...(retrieval.embeddingWarning ? { warning: retrieval.embeddingWarning } : {}),
           sources: retrieval.sources.slice(0, MAX_RESULTS),
           chunks: chunks.map((chunk) => ({
             pageSlug: chunk.pageSlug,
+            relPath: chunk.pageRelPath,
             pageTitle: chunk.pageTitle,
             heading: chunk.heading,
             content: chunk.content.slice(0, 800),
@@ -325,31 +342,14 @@ async function executeReadTool(
           ...(navigator ? { uiResources: [navigator] } : {}),
         },
       };
-    }
+  }
 
-    case "garden_get_page":
-    case "garden_get_source_excerpt": {
-      const slug = String(args.slug ?? args.pageSlug ?? "");
-      const node = knowledge.nodes.find(
-        (n) => n.slug === slug || n.relPath === slug,
-      );
-      if (!node)
-        return { ok: false, tool, error: "Page not found in this garden." };
-      return {
-        ok: true,
-        tool,
-        data: {
-          ...nodeSummary(node),
-          content: node.content?.slice(0, MAX_EXCERPT_CHARS),
-        },
-      };
-    }
+  const { scanClusterKnowledge } = await import("../knowledge.ts");
+  const knowledge = scanClusterKnowledge(contentPath(), cluster.slug, { migrateSources: false });
+  switch (tool) {
 
     case "garden_get_page_context": {
-      const slug = String(args.slug ?? args.pageSlug ?? "");
-      const node = knowledge.nodes.find(
-        (n) => n.slug === slug || n.relPath === slug,
-      );
+      const { node } = await readGardenPage(contentPath(), cluster.slug, String(args.slug ?? args.pageSlug ?? ""));
       if (!node)
         return { ok: false, tool, error: "Page not found in this garden." };
       const neighbors = knowledge.edges
@@ -603,7 +603,6 @@ async function executeStructureTool(
     GardenFilesystemError,
     createGardenFolder,
     deleteGardenFolder,
-    listGardenTree,
     moveGardenDocument,
     renameGardenFolder,
   } = await import("../garden-filesystem.ts");
@@ -632,13 +631,6 @@ async function executeStructureTool(
 
   const identity = { gardenId: cluster.slug, gardenName: cluster.name };
   try {
-    if (tool === "garden_list_files") {
-      return {
-        ok: true,
-        tool,
-        data: { ...identity, ...listGardenTree({ clusterSlug: cluster.slug }) },
-      };
-    }
     if (tool === "garden_create_folder") {
       const result = await createGardenFolder({
         userId: cluster.user_id,

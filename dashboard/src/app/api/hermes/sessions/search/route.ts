@@ -8,7 +8,7 @@ import {
   type ConversationSearchMessage,
 } from "@/lib/conversations/search.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
-import { conversationOriginLabel } from "@/lib/conversations/origin-label.ts";
+import { conversationDisplayTitle, conversationOriginLabel } from "@/lib/conversations/origin-label.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -109,7 +109,7 @@ export async function GET(request: Request) {
           ? row.public_id
           : String(row.legacy_chat_session_id),
       title: surface === "dashboard_terminal"
-        ? `${row.origin_label || conversationOriginLabel({ surface: row.surface, gardenName: row.garden_name, historySurface: row.history_surface })}: ${row.title}`
+        ? conversationDisplayTitle(row.title, row.origin_label || conversationOriginLabel({ surface: row.surface, gardenName: row.garden_name, historySurface: row.history_surface }))
         : row.title,
       updatedAt: row.updated_at,
       pinned: row.pinned_at !== null,

@@ -1433,6 +1433,8 @@ def _compute_host_turn_frame(
         ),
         "source": _session_source(session),
         "attached_images": attached_images,
+        "tool_access": session.get("tool_access"),
+        "tool_loop_guardrails": session.get("tool_loop_guardrails"),
     }
     if client_turn_id:
         frame["client_turn_id"] = client_turn_id
@@ -10386,6 +10388,20 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # Latch before interrupting: the run can release `running` immediately,
+    # letting a queued child completion race into a new model request.
+    with session["history_lock"]:
+        session["_notifications_cancelled_at"] = time.time()
+        session["_turn_cancel_requested"] = True
+        session["queued_prompt"] = None
+    from tools.async_delegation import cancel_for_session
+    try:
+        cancel_for_session(
+            session_key=str(session.get("session_key") or ""),
+            origin_ui_session_id=str(params.get("session_id") or ""),
+        )
+    except Exception:
+        logger.exception("Could not persist delegation cancellation")
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         if session.get("running"):
@@ -10727,7 +10743,7 @@ def _(rid, params: dict) -> dict:
     if agent is None and session.get("running"):
         # Hosts with their own durable queue must create the successor there,
         # otherwise this prompt would run without a corresponding host turn.
-        if params.get("queue_if_unavailable") is False:
+        if params.get("queue_if_unavailable") is False or params.get("images"):
             return _ok(rid, {"status": "rejected", "text": text})
         _enqueue_prompt(session, text, current_transport() or _stdio_transport)
         session["last_active"] = time.time()
@@ -10738,10 +10754,51 @@ def _(rid, params: dict) -> dict:
         or not hasattr(agent, "redirect")
     ):
         return _err(rid, 4010, "agent does not support active-turn redirect")
+    # Correction images travel in this request, independently of attached_images
+    # (which belongs to the next prompt). Never drain or populate that tray here.
+    images = params.get("images", [])
+    if not isinstance(images, list) or len(images) > 10:
+        return _err(rid, 4002, "images must contain at most 10 items")
+    decoded_images = []
+    for image in images:
+        if not isinstance(image, dict) or not isinstance(image.get("content_base64"), str):
+            return _err(rid, 4017, "image content_base64 is required")
+        data = _decode_attach_base64(image["content_base64"], mime_prefix="image/")
+        if not data or len(data) > _ATTACH_BYTES_MAX_BYTES:
+            return _err(rid, 4017, "image bytes are invalid or too large")
+        ext = _sniff_image_ext(data, str(image.get("filename") or ""))
+        if ext not in _allowed_image_extensions():
+            return _err(rid, 4016, f"unsupported image extension: {ext}")
+        decoded_images.append((data, ext))
+    image_directory = None
+    accepted = False
     try:
+        if decoded_images:
+            import tempfile
+
+            root = _hermes_home / "images"
+            root.mkdir(parents=True, exist_ok=True)
+            image_directory = Path(tempfile.mkdtemp(prefix="redirect-", dir=root))
+            image_paths = []
+            for index, (data, ext) in enumerate(decoded_images):
+                image_path = image_directory / f"{index + 1}{ext}"
+                image_path.write_bytes(data)
+                image_paths.append(str(image_path))
+            text = _enrich_with_attached_images(text, image_paths)
+        # Image preparation can outlive the original turn. Bind delivery to the
+        # captured agent and turn again before letting it reach the runtime.
+        if session.get("agent") is not agent or (
+            expected_turn_id and expected_turn_id != session.get("active_client_turn_id")
+        ):
+            return _ok(rid, {"status": "rejected", "text": text})
         accepted = agent.redirect(text)
     except Exception as exc:
         return _err(rid, 5000, f"redirect failed: {exc}")
+    finally:
+        if image_directory is not None and not accepted:
+            import shutil
+
+            shutil.rmtree(image_directory, ignore_errors=True)
     if accepted:
         with session["history_lock"]:
             _replace_inflight_user(session, text)
@@ -10888,6 +10945,10 @@ def _(rid, params: dict) -> dict:
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
         session["active_client_turn_id"] = client_turn_id
+        access = params.get("tool_access")
+        session["tool_access"] = {key: value for key, value in access.items()
+            if isinstance(key, str) and isinstance(value, bool)} if isinstance(access, dict) else {}
+        session["tool_loop_guardrails"] = params.get("tool_loop_guardrails")
         # The serving process also receives isolated-host lifecycle frames, so
         # its recovery journal must start at the exact same turn boundary.
         session["completed_tools"] = []
@@ -11116,6 +11177,18 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _notification_was_cancelled(session: dict, evt: dict) -> bool:
+    if evt.get("type") != "async_delegation":
+        return False
+    cancelled_at = session.get("_notifications_cancelled_at", 0)
+    if not cancelled_at:
+        return False
+    try:
+        return float(evt.get("dispatched_at") or 0) <= cancelled_at
+    except (TypeError, ValueError):
+        return True
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -11207,9 +11280,10 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             continue
         try:
-            _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
                 _run_prompt_submit(
                     rid,
@@ -11218,9 +11292,10 @@ def _notification_poller_loop(
                     text,
                     display_kind="async_delegation_complete",
                     display_metadata=_async_delegation_display_metadata(evt),
+                    notification_event=evt,
                 )
             else:
-                _run_prompt_submit(rid, sid, session, text)
+                _run_prompt_submit(rid, sid, session, text, notification_event=evt)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -11285,9 +11360,10 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             continue
         try:
-            _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
                 _run_prompt_submit(
                     rid,
@@ -11296,9 +11372,10 @@ def _notification_poller_loop(
                     text,
                     display_kind="async_delegation_complete",
                     display_metadata=_async_delegation_display_metadata(evt),
+                    notification_event=evt,
                 )
             else:
-                _run_prompt_submit(rid, sid, session, text)
+                _run_prompt_submit(rid, sid, session, text, notification_event=evt)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -11426,8 +11503,12 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, client_turn_id: str | None = None,
+    notification_event: dict | None = None,
 ) -> None:
     with session["history_lock"]:
+        if notification_event is not None and _notification_was_cancelled(session, notification_event):
+            session["running"] = False
+            return
         # ``_run_prompt_submit`` also runs inside the isolated compute host,
         # which bypasses the public prompt.submit handler above.
         session["completed_tools"] = []
@@ -11437,12 +11518,17 @@ def _run_prompt_submit(
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
-    agent = session["agent"]
-    if hasattr(agent, "clear_interrupt"):
-        try:
-            agent.clear_interrupt()
-        except Exception:
-            pass
+        agent = session["agent"]
+        agent.tool_access = dict(session.get("tool_access") or {})
+        guardrails = session.get("tool_loop_guardrails")
+        if isinstance(guardrails, dict):
+            from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+            agent._tool_guardrails = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping(guardrails))
+        if hasattr(agent, "clear_interrupt"):
+            try:
+                agent.clear_interrupt()
+            except Exception:
+                pass
     _emit(
         "message.start",
         sid,
@@ -11636,7 +11722,19 @@ def _run_prompt_submit(
             except (TypeError, ValueError):
                 pass
             usage_before = _get_usage(agent)
-            result = agent.run_conversation(run_message, **run_kwargs)
+            original_step_callback = getattr(agent, "step_callback", None)
+            def report_step(step, previous_tools):
+                if original_step_callback:
+                    original_step_callback(step, previous_tools)
+                usage = _turn_usage_delta(usage_before, _get_usage(agent))
+                if usage.get("total", 0):
+                    _emit("usage.update", sid, {"usage": usage, "turn_id": client_turn_id})
+                _emit("status.update", sid, {"kind": "model", "text": "Waiting for model response"})
+            agent.step_callback = report_step
+            try:
+                result = agent.run_conversation(run_message, **run_kwargs)
+            finally:
+                agent.step_callback = original_step_callback
             usage_after = _get_usage(agent)
             if display_kind and isinstance(text, str):
                 db = getattr(agent, "_session_db", None)
@@ -12004,7 +12102,7 @@ def _run_prompt_submit(
         # we check that guard before re-firing.
         if goal_followup:
             with session["history_lock"]:
-                if session.get("running"):
+                if session.get("_turn_cancel_requested") or session.get("running"):
                     # User already sent something — their turn wins,
                     # the judge will re-run on the next turn anyway.
                     return
@@ -12054,10 +12152,11 @@ def _run_prompt_submit(
                 )
                 _claim = claim_event_delivery(_evt, "tui-post-turn")
                 if _claim is None:
+                    with session["history_lock"]:
+                        session["running"] = False
                     continue
                 try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _run_prompt_submit(rid, sid, session, synth, notification_event=_evt)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

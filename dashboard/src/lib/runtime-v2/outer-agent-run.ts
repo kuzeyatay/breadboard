@@ -25,7 +25,7 @@ import {
   recordOuterAgentRuntimeRun,
   type OuterAgentKind,
 } from "./outer-agent-run-store.ts";
-import { outerAgentFailureMessage } from "./outer-agent-failure.ts";
+import { outerAgentFailureMessage, outerAgentInterruptionEvent } from "./outer-agent-failure.ts";
 
 export type { OuterAgentKind } from "./outer-agent-run-store.ts";
 
@@ -177,14 +177,6 @@ export const OUTER_AGENT_RUNTIME_ADAPTERS = Object.freeze({
     resourceClass: "media-processing",
     scopePrefix: "oa_shorts",
     timeoutMs: 3 * 60 * 60 * 1_000 + 10 * 60 * 1_000,
-  }),
-  "open-gym": Object.freeze({
-    kind: "open-gym",
-    jobType: "open-gym-run",
-    workerKind: "outer-open-gym-node",
-    resourceClass: "large-generation",
-    scopePrefix: "oa_open_gym",
-    timeoutMs: 4 * 60 * 60 * 1_000,
   }),
   legal: Object.freeze({
     kind: "legal",
@@ -605,8 +597,6 @@ function synthesizedTerminalEvent(
             ? "OpenWork finished without an answer."
           : adapter.kind === "shorts"
             ? "The Shorts run finished without any clips."
-          : adapter.kind === "open-gym"
-            ? "openGym finished without an answer."
           : adapter.kind === "legal"
             ? "The Legal Agent finished without producing a response."
           : adapter.kind === "openplanter"
@@ -679,8 +669,6 @@ function synthesizedTerminalEvent(
             ? "OpenWork stopped."
           : adapter.kind === "shorts"
             ? "The Shorts run was stopped before any clip was finished."
-          : adapter.kind === "open-gym"
-            ? "openGym stopped."
           : adapter.kind === "legal"
             ? "The assignment was stopped before anything was written."
           : adapter.kind === "openplanter"
@@ -1022,6 +1010,16 @@ export async function readOuterAgentRunView(
     );
   } else if (missing) {
     markOuterAgentRuntimeRunTerminal(runId);
+  }
+  // Runtime restart reconciliation is authoritative. Its checkpoint may be
+  // unavailable or still describe active work; neither may keep the chat busy.
+  const interruption = job ? outerAgentInterruptionEvent(job, since) : null;
+  if (interruption) {
+    return {
+      events: interruption.sequenceNumber > since ? [interruption] : [],
+      terminal: true,
+      status: "aborted",
+    };
   }
   const projection = job ? await runtimeProjection(adapter, authority, job) : null;
   const events = projection ? [...projection.events] : [];

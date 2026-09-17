@@ -5,6 +5,7 @@ import {
   authoredSyllabusLocatorCatalog,
   boundedCanonicalSourcePageEvidence,
   buildSyllabusCoverageSourceCatalog,
+  canonicalSourceHeadingIndex,
   canonicalSourceRawPageBlocks,
   detectUnavailableCitations,
   hydrateSelectedCanonicalSourceRawPages,
@@ -1045,7 +1046,7 @@ describe("bounded canonical source evidence for syllabus coverage", () => {
 
     assert.deepEqual(
       catalog[0].canonicalRawPageEvidence.pages.map((page) => page.pageNumber),
-      [1, 2, 3, 4, 5, 6, 7, 8],
+      [1, 2, 3, 4, 5],
     );
     assert.ok(
       catalog[0].canonicalRawPageEvidence.pages.reduce((total, page) => total + page.exactText.length, 0) > 2_000,
@@ -1078,9 +1079,9 @@ describe("bounded canonical source evidence for syllabus coverage", () => {
     assert.deepEqual(beforeLocators, afterLocators);
     assert.deepEqual(
       afterLocators[0].canonicalRawPageEvidence.pages.map((page) => page.pageNumber),
-      [1, 2, 3, 4, 5, 6, 7, 8],
+      [1, 2, 3, 4, 5],
     );
-    assert.equal(afterLocators[0].canonicalRawPageEvidence.omittedPageCount, 1);
+    assert.equal(afterLocators[0].canonicalRawPageEvidence.omittedPageCount, 4);
     assert.equal(
       afterLocators[0].canonicalRawPageEvidence.pages.some((page) => page.pageNumber === 40),
       false,
@@ -1106,5 +1107,228 @@ describe("bounded canonical source evidence for syllabus coverage", () => {
       complete: true,
     });
     assert.equal(evidence.truncated, false);
+  });
+});
+
+describe("per-lecture book sections from a study guide", () => {
+  const lecturePlan = {
+    courseTitle: "Electromagnetics I",
+    courseObjectives: ["apply and interpret physical concepts from electrostatics (Coulomb, Gauss)"],
+    units: [
+      {
+        id: "SU1",
+        label: "Lecture 1",
+        title: "Introduction",
+        objectives: [],
+        topics: ["Re-cap vector calculus, vector fields", "Coulomb's law"],
+        questionReferences: [],
+        materialIds: ["R1", "R2"],
+      },
+      {
+        id: "SU2",
+        label: "Lecture 2",
+        title: "Superposition and Gauss's law",
+        objectives: [],
+        topics: ["Superposition", "Gauss's law"],
+        questionReferences: [],
+        materialIds: ["R3", "R4"],
+      },
+    ],
+    referencedMaterials: [
+      {
+        id: "R1",
+        citation: "H&B9 1.1 - 1.7",
+        title: "Engineering Electromagnetics",
+        authors: ["W.H. Hayt", "J.A. Buck"],
+        kind: "chapter",
+        locator: "1.1 - 1.7",
+        sections: ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"],
+        required: true,
+      },
+      {
+        id: "R2",
+        citation: "H&B9 2.1",
+        title: "Engineering Electromagnetics",
+        authors: ["W.H. Hayt", "J.A. Buck"],
+        kind: "chapter",
+        locator: "2.1",
+        sections: ["2.1"],
+        required: true,
+      },
+      {
+        id: "R3",
+        citation: "H&B9 3.2 - 3.4",
+        title: "Engineering Electromagnetics",
+        authors: ["W.H. Hayt", "J.A. Buck"],
+        kind: "chapter",
+        locator: "3.2 - 3.4",
+        sections: ["3.2", "3.3", "3.4"],
+        required: true,
+      },
+      {
+        id: "R4",
+        citation: "pencasts",
+        title: "",
+        authors: [],
+        kind: "video",
+        required: true,
+      },
+    ],
+  };
+
+  test("the reader may expand a section range and leave generic titles empty", () => {
+    assert.deepEqual(modelAuthoredSyllabusPlanProblems(lecturePlan), []);
+    const plan = projectModelAuthoredSyllabusPlan(lecturePlan);
+    assert.deepEqual(plan.courseObjectives, lecturePlan.courseObjectives);
+    assert.deepEqual(plan.referencedMaterials[0].sections, ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"]);
+    assert.equal(plan.referencedMaterials[0].locator, "1.1 - 1.7");
+    // An empty title is "no identifiable work", exactly as the prompt asks.
+    assert.equal("title" in plan.referencedMaterials[3], false);
+    assert.equal("locator" in plan.referencedMaterials[3], false);
+
+    const orphanSections = structuredClone(lecturePlan);
+    delete orphanSections.referencedMaterials[0].locator;
+    assert.match(
+      modelAuthoredSyllabusPlanProblems(orphanSections).join("; "),
+      /sections requires the locator they expand/,
+    );
+    const paddedSection = structuredClone(lecturePlan);
+    paddedSection.referencedMaterials[0].sections[0] = " 1.1";
+    assert.match(
+      modelAuthoredSyllabusPlanProblems(paddedSection).join("; "),
+      /sections\[0\] must be a non-empty exact string/,
+    );
+
+    const tolerant = normalizeSyllabusPlan(lecturePlan);
+    assert.deepEqual(tolerant.referencedMaterials[2].sections, ["3.2", "3.3", "3.4"]);
+    assert.deepEqual(tolerant.courseObjectives, lecturePlan.courseObjectives);
+  });
+
+  test("authored locators carry their expanded sections to the coverage reviewer", () => {
+    assert.deepEqual(authoredSyllabusLocatorCatalog(lecturePlan.referencedMaterials), [
+      { materialId: "R1", locator: "1.1 - 1.7", sections: ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"] },
+      { materialId: "R2", locator: "2.1", sections: ["2.1"] },
+      { materialId: "R3", locator: "3.2 - 3.4", sections: ["3.2", "3.3", "3.4"] },
+    ]);
+  });
+
+  test("a unit's coverage record names the readings it was assigned and their verdicts", () => {
+    const plan = projectModelAuthoredSyllabusPlan(lecturePlan);
+    const decision = {
+      resolutions: [
+        { materialId: "R1", citation: "H&B9 1.1 - 1.7", status: "available", sourceIds: ["hayt-buck"], matchReason: "headings 1.1 through 1.7 on pages 2-14" },
+        { materialId: "R2", citation: "H&B9 2.1", status: "available", sourceIds: ["hayt-buck"], matchReason: "heading 2.1 on page 27" },
+        { materialId: "R3", citation: "H&B9 3.2 - 3.4", status: "missing", sourceIds: [], matchReason: "no heading for 3.3 in the index" },
+        { materialId: "R4", citation: "pencasts", status: "generic", sourceIds: [], matchReason: "no checkable work" },
+      ],
+      units: [
+        { unitId: "SU1", availableSourceIds: ["hayt-buck"], missingCitations: [], teachable: true, coverageReason: "sections present" },
+        { unitId: "SU2", availableSourceIds: [], missingCitations: ["H&B9 3.2 - 3.4"], teachable: false, coverageReason: "3.3 absent" },
+      ],
+    };
+    const coverage = projectModelAuthoredSyllabusCoverage(plan, decision, ["hayt-buck", "lecture-1"]);
+    assert.deepEqual(coverage.units[0].assignedMaterials, [
+      {
+        materialId: "R1",
+        citation: "H&B9 1.1 - 1.7",
+        title: "Engineering Electromagnetics",
+        authors: ["W.H. Hayt", "J.A. Buck"],
+        kind: "chapter",
+        locator: "1.1 - 1.7",
+        sections: ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"],
+        required: true,
+        status: "available",
+        sourceIds: ["hayt-buck"],
+      },
+      {
+        materialId: "R2",
+        citation: "H&B9 2.1",
+        title: "Engineering Electromagnetics",
+        authors: ["W.H. Hayt", "J.A. Buck"],
+        kind: "chapter",
+        locator: "2.1",
+        sections: ["2.1"],
+        required: true,
+        status: "available",
+        sourceIds: ["hayt-buck"],
+      },
+    ]);
+    assert.deepEqual(
+      coverage.units[1].assignedMaterials.map((material) => [material.materialId, material.status]),
+      [["R3", "missing"], ["R4", "generic"]],
+    );
+    assert.equal("title" in coverage.units[1].assignedMaterials[1], false);
+  });
+
+  test("the heading index lists every canonical heading with its page and skips page delimiters and fences", () => {
+    const body = [
+      "---",
+      "title: book",
+      "---",
+      "## Summary",
+      "",
+      "## Source material",
+      "",
+      "## Page 1",
+      "",
+      "# ENGINEERING ELECTROMAGNETICS",
+      "",
+      "## Page 2",
+      "",
+      "#### 1.1 SCALARS AND VECTORS",
+      "text",
+      "```",
+      "#### not a heading inside a fence",
+      "```",
+      "#### 1.2 VECTOR ALGEBRA",
+      "",
+      "## Page 47",
+      "",
+      "#### 3.2 GAUSS'S LAW",
+      "",
+      "## AnyDoc cross-check",
+      "",
+      "## Page 1",
+      "#### duplicated transcript heading",
+    ].join("\n");
+    const index = canonicalSourceHeadingIndex("hayt-buck", body);
+    assert.deepEqual(index, {
+      entries: [
+        { pageNumber: 1, heading: "# ENGINEERING ELECTROMAGNETICS" },
+        { pageNumber: 2, heading: "#### 1.1 SCALARS AND VECTORS" },
+        { pageNumber: 2, heading: "#### 1.2 VECTOR ALGEBRA" },
+        { pageNumber: 47, heading: "#### 3.2 GAUSS'S LAW" },
+      ],
+      totalHeadingCount: 4,
+      truncated: false,
+    });
+
+    const bounded = canonicalSourceHeadingIndex("hayt-buck", body, { maxEntries: 2 });
+    assert.equal(bounded.entries.length, 2);
+    assert.equal(bounded.totalHeadingCount, 4);
+    assert.equal(bounded.truncated, true);
+
+    const unpaged = canonicalSourceHeadingIndex("note", "## Source material\n\n### Only heading\n\nprose");
+    assert.deepEqual(unpaged.entries, [{ heading: "### Only heading" }]);
+  });
+
+  test("the coverage catalog carries the heading index for pages it cannot afford verbatim", () => {
+    const pages = ["## Page 1\n\n# ENGINEERING ELECTROMAGNETICS\n\nWILLIAM H. HAYT, JR.\n"];
+    for (let page = 2; page <= 60; page += 1) {
+      const chapter = Math.ceil(page / 6);
+      pages.push(`## Page ${page}\n\n#### ${chapter}.${page % 6 + 1} SECTION ON PAGE ${page}\n\n${"body ".repeat(400)}\n`);
+    }
+    const body = `## Source material\n\n${pages.join("\n")}`;
+    const [catalog] = buildSyllabusCoverageSourceCatalog([{
+      slug: "hayt-buck",
+      title: "Engineering Electromagnetics",
+      relPath: "sources/hayt-buck.md",
+      body,
+    }]);
+    assert.ok(catalog.canonicalRawPageEvidence.omittedPageCount > 0);
+    const deep = catalog.canonicalHeadingIndex.entries.find((entry) => entry.pageNumber === 58);
+    assert.deepEqual(deep, { pageNumber: 58, heading: "#### 10.5 SECTION ON PAGE 58" });
+    assert.equal(catalog.canonicalHeadingIndex.totalHeadingCount, 60);
+    assert.equal(catalog.canonicalHeadingIndex.truncated, false);
   });
 });

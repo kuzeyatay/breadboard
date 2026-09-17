@@ -9,7 +9,7 @@
 .launcher {
   position: relative;
   z-index: 1;
-  width: 100%;
+  width: calc(100% - 60px);
   max-width: 760px;
   height: 100%;
   margin: 0 auto;
@@ -47,6 +47,19 @@
 .surface[data-wallpaper-tone] .heading h1,
 .surface[data-wallpaper-tone] .addressee {
   color: var(--browser-wallpaper-foreground);
+  text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
+}
+
+/* Only text directly over the wallpaper uses its palette. */
+.surface[data-wallpaper-tone] .places,
+.surface[data-wallpaper-tone] .gardens {
+  --ink: var(--browser-wallpaper-foreground);
+  --ink-heading: var(--browser-wallpaper-foreground);
+  --ink-muted: var(--browser-wallpaper-muted);
+  --botanical: var(--browser-wallpaper-foreground);
+  --danger: var(--browser-wallpaper-foreground);
+  --line: color-mix(in srgb, var(--browser-wallpaper-foreground) 28%, transparent);
+  color: var(--ink);
   text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
 }
 
@@ -217,6 +230,7 @@
 
 .sectionHeading h2 {
   margin: 0;
+  color: var(--ink-heading);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.5;
@@ -355,8 +369,18 @@
   }
 }
 
+@media (max-width: 1000px) {
+  .launcher { margin-left: 0; }
+}
+
+@media (max-width: 700px) {
+  .launcher { width: calc(100% - 52px); }
+}
+
 @media (max-width: 540px) {
   .launcher {
+    width: calc(100% - 52px);
+    margin-left: 0;
     padding: 104px 20px 24px;
   }
 

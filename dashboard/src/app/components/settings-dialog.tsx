@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import ViewportPopover from "@/app/components/viewport-popover";
 import SettingsAgentMemory from "@/app/components/settings-agent-memory";
 import SettingsAccounts from "@/app/components/settings-accounts";
 import SettingsConnections from "@/app/components/settings-connections";
@@ -29,6 +30,7 @@ interface SettingsDialogProps {
   presentation?: "modal" | "popover";
   /** Keeps loaded tab state warm while the popover is closed. */
   open?: boolean;
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
 const TABS: Array<{ value: SettingsTab; label: string; description: string }> = [
@@ -61,7 +63,7 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
   {
     value: "speech",
     label: "Voice",
-    description: "Choose local or subscription speech, read responses aloud, and dictate messages.",
+    description: "Choose Local, ChatGPT subscription, or ElevenLabs speech, read responses aloud, and dictate messages.",
   },
   {
     value: "messaging",
@@ -85,6 +87,7 @@ export default function SettingsDialog({
   initialTab = "account",
   presentation = "modal",
   open = true,
+  anchorRef,
 }: SettingsDialogProps) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [visitedTabs, setVisitedTabs] = useState<ReadonlySet<SettingsTab>>(
@@ -158,7 +161,7 @@ export default function SettingsDialog({
         aria-labelledby="settings-dialog-title"
         className={`${open ? "flex" : "hidden"} ${presentation === "modal"
           ? "bb-modal-panel neu-dialog max-h-[min(46rem,92vh)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border text-[var(--ink)]"
-          : "neu-popover absolute bottom-0 right-full z-50 mr-2 max-h-[min(42rem,calc(100vh-2rem))] w-[min(56rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl"}`}
+          : `${anchorRef ? "min-h-0 w-full" : "absolute bottom-0 right-full z-50 mr-2 max-h-[min(42rem,calc(100vh-2rem))] w-[min(56rem,calc(100vw-2rem))]"} neu-popover flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl`}`}
       >
         <div className="flex shrink-0 items-start justify-between gap-3 px-6 pb-4 pt-5">
           <div className="min-w-0">
@@ -324,7 +327,20 @@ export default function SettingsDialog({
       </div>
   );
 
-  if (presentation === "popover") return panel;
+  if (presentation === "popover") return anchorRef ? (
+    <ViewportPopover
+      anchorRef={anchorRef}
+      ariaLabel="Settings panel"
+      role="dialog"
+      onClose={onClose}
+      open={open}
+      portal={false}
+      maxHeight={672}
+      className="fixed z-[110] flex w-[min(56rem,calc(100vw-24px))]"
+    >
+      {panel}
+    </ViewportPopover>
+  ) : panel;
 
   if (!open) return null;
 

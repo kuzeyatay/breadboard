@@ -242,12 +242,14 @@ app.whenReady().then(async () => {
   assert.equal(state().navigationPending, false);
   await until(async () => (await bar(outgoing.webContents))?.hidden === "true", "cancelled bar cleared");
 
-  // A page-local notice uses the router and starts the same progress bar.
+  // A page-local notice uses the shell too, focusing its existing destination.
+  const tabsBeforePageNotice = state().tabs.length;
   await outgoing.webContents.executeJavaScript('window.showNotice()');
   await until(() => outgoing.webContents.executeJavaScript('Boolean(document.querySelector("button[title^=Open]"))'), "page notification arrow");
   await outgoing.webContents.executeJavaScript('document.querySelector("button[title^=Open]").click()');
-  await until(async () => (await bar(outgoing.webContents))?.busy === "true", "web fallback blue bar");
-  assert.equal(await outgoing.webContents.executeJavaScript('window.pushedHref'), "/gardens/notification?chat=42");
+  await until(() => front() === destination, "page notification focuses existing chat");
+  assert.equal(state().tabs.length, tabsBeforePageNotice);
+  assert.equal(await outgoing.webContents.executeJavaScript('window.pushedHref'), undefined);
   assert.equal(outgoing.webContents.getURL(), origin + "/browser", "the page did not hard reload");
   fs.writeFileSync(resultFile, JSON.stringify({ ok: true }));
   window.destroy();
@@ -261,7 +263,8 @@ app.whenReady().then(async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true" };
   delete env.ELECTRON_RUN_AS_NODE;
   const run = spawnSync(path.join(desktopRoot, "node_modules", "electron", "dist", "electron.exe"), [fixture], {
-    cwd: fixture, env, encoding: "utf8", timeout: 30000, windowsHide: true,
+    // The fixture deliberately waits past two 10-second reveal deadlines.
+    cwd: fixture, env, encoding: "utf8", timeout: 45000, windowsHide: true,
   });
   const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile, "utf8")) : null;
   assert.equal(run.error, undefined, run.error?.message);

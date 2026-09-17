@@ -533,7 +533,7 @@ test("schema-2 rejects theme-breaking text, ambiguous transport controls, and un
   );
 });
 
-test("schema-2 custom visualizers pass the real responsive browser gate", { timeout: 90_000 }, async () => {
+test("schema-2 custom visualizers publish after desktop checks without requiring a phone layout", { timeout: 90_000 }, async () => {
   const fixture = customWaveFixture();
   fixture.package.files["index.html"] = fixture.package.files["index.html"].replace(
     '<script src="main.js"></script>',
@@ -541,6 +541,8 @@ test("schema-2 custom visualizers pass the real responsive browser gate", { time
   );
   fixture.package.files["styles.css"] +=
     ".sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}";
+  // A desktop-only model is allowed to overflow at a phone width.
+  fixture.package.files["styles.css"] += "#app{min-width:700px}";
   const compiled = compileCustomInteractiveVisualizerPackage(fixture.plan, fixture.package);
   assert.ok(compiled.package, compiled.validation.errors.join("\n"));
   const bundle = await bundleCustomInteractiveVisualizer(compiled.package);
@@ -553,6 +555,9 @@ test("schema-2 custom visualizers pass the real responsive browser gate", { time
       runtimeSessionId: 91_003,
     });
     assert.equal(result.passed, true, JSON.stringify(result.checks, null, 2));
+    assert.deepEqual(result.viewports, ["1280x800 light", "1280x800 dark", "1280x800 reduced-motion"]);
+    assert.equal(result.screenshotCreated, true);
+    assert.equal(result.checks.some(check => /mobile|375x667/.test(check.name)), false);
     assert.equal(
       result.checks
         .filter((check) => /^(browser mount|desktop preview|mobile preview)/.test(check.name))
@@ -1060,7 +1065,7 @@ test("visualization intent selects the reviewed skill automatically without wide
     text: handback,
     surface: "dashboard_terminal",
     authenticated: true,
-  }), true);
+  }), false);
   assert.equal(shouldAutoSelectInteractiveVisualizer({
     text: handback,
     surface: "dashboard_terminal",

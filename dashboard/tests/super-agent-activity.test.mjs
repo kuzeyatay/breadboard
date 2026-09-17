@@ -10,6 +10,8 @@ import {
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
+  delegatedWorkersForMessage,
+  delegatedWorkersOutcome,
   supersededDelegationAssistantIndices,
   superAgentActivityLabelForTool,
 } from "../src/lib/hermes/super-agent-activity.ts";
@@ -344,4 +346,35 @@ test("a self-presenting delegation is not superseded by its synthesis", () => {
     [...supersededDelegationAssistantIndices(delegatedPhases)],
     [1],
   );
+});
+
+test("a globe presentation keeps sibling research progress visible until synthesis", () => {
+  const research = [
+    { role: "user", content: "Research brief", internalAgentContinuation: true },
+    { role: "assistant", content: "", delegatedAgentRun: true, externalAgentOutcome: "running" },
+  ];
+  const globe = [
+    { role: "user", content: "Globe brief", internalAgentContinuation: true },
+    { role: "assistant", content: "", delegatedAgentRun: true, godsEyeRun: { runId: "globe" }, externalAgentOutcome: "completed" },
+  ];
+  for (const workers of [[...research, ...globe], [...globe, ...research]]) {
+    const messages = [
+      { role: "user", content: "Research this region and show it on the globe" },
+      { role: "assistant", content: "Delegating research and mapping work." },
+      ...workers,
+    ];
+    assert.deepEqual([...supersededDelegationAssistantIndices(messages)], []);
+    assert.deepEqual(delegatedWorkersForMessage(messages, 1), [research[1]]);
+    assert.equal(delegatedWorkersOutcome(delegatedWorkersForMessage(messages, 1)), "running");
+    messages.push(
+      { role: "user", content: "Research completed", internalAgentContinuation: true },
+      { role: "assistant", content: "Full synthesis of research and mapping results." },
+    );
+    assert.deepEqual([...supersededDelegationAssistantIndices(messages)], [1]);
+    messages.push(
+      { role: "user", content: "A new question" },
+      { role: "assistant", content: "A new answer" },
+    );
+    assert.deepEqual([...supersededDelegationAssistantIndices(messages)], [1]);
+  }
 });

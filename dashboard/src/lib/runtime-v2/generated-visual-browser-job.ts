@@ -116,6 +116,7 @@ interface ParsedInvocation {
     width: number;
     height: number;
     reducedMotion: boolean;
+    nativeSimulation?: boolean;
     screenshot: boolean;
     timeoutMs: number;
   };
@@ -208,6 +209,11 @@ export function parseGeneratedVisualBrowserInvocation(
     invocation.args.some((arg) => typeof arg !== "string" || Buffer.byteLength(arg, "utf8") > 8_192)
   ) throw new TypeError("The generated visual Runtime browser invocation is invalid.");
   const allowedFixed = new Set([
+    "--hide-scrollbars",
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
+    "--disable-features=IsolateSandboxedIframes",
+    "--disable-features=SkiaGraphiteUsePersistentCache,IsolateSandboxedIframes",
     "--headless=new",
     "--disable-gpu",
     "--disable-gpu-shader-disk-cache",
@@ -241,8 +247,8 @@ export function parseGeneratedVisualBrowserInvocation(
   const fixed = invocation.args.filter((arg) => !dynamic.includes(arg));
   if (
     !profile || !samePath(profile, invocation.profilePath) ||
-    !windowSize || virtualBudget !== "2500" ||
-    !fixed.includes("--headless=new") || !fixed.includes("--dump-dom") ||
+    !windowSize || !["2500", "6500"].includes(virtualBudget ?? "") ||
+    !fixed.includes("--headless=new") || (!fixed.includes("--dump-dom") && screenshotValue === null) ||
     fixed.some((arg) => !allowedFixed.has(arg)) ||
     new Set(fixed).size !== fixed.length ||
     dynamic.length !== 4 + (screenshotValue === null ? 0 : 1) ||
@@ -275,6 +281,7 @@ export function parseGeneratedVisualBrowserInvocation(
       width,
       height,
       reducedMotion: fixed.includes("--force-prefers-reduced-motion"),
+      ...(virtualBudget === "6500" ? { nativeSimulation: true } : {}),
       screenshot: screenshotPath !== null,
       timeoutMs: invocation.timeoutMs,
     },

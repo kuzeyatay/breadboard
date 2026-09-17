@@ -213,6 +213,7 @@ class CouncilRuntime:
             request_id=run.id,
             allow_account_failover=not council_input.strict_model_route,
             allow_transport_retry=not council_input.strict_model_route,
+            origin=council_input.origin,
         )
         try:
             if council_input.strict_model_route:
@@ -250,12 +251,39 @@ class CouncilRuntime:
     def _task_text(self, council_input: CouncilInput) -> str:
         return _clip(messages_text(council_input.messages))
 
-    def _candidate_models(self) -> List[Tuple[str, Optional[str]]]:
+    def _seat_models(self, council_input: CouncilInput) -> List[str]:
+        """The models the council's seats run on, best first.
+
+        An operator who set COUNCIL_MODELS chose the bench deliberately and it
+        applies to every run. Otherwise the seats follow the model the request
+        asked for: the council is that model reviewing itself, and the caller's
+        choice — and the caller's quota — is the one being spent. Before this,
+        the unconfigured bench was always ChatGPT, so a Learn note revision
+        requested on Gemini ran three gpt-5.6-sol calls of ~30k tokens each and
+        emptied a Plus account's weekly window in one evening, on an account
+        the person had never chatted with.
+        """
+        if self.config.council_models_configured:
+            models = [m for m in self.config.council_models if m]
+            if models:
+                return models
+        requested = (
+            council_input.resolved_model or council_input.requested_model or ""
+        ).strip()
+        if requested:
+            return [requested]
+        models = [m for m in self.config.council_models if m]
+        return models or [self.config.upstream_fallback_model]
+
+    def _chairman_model(self, council_input: CouncilInput) -> str:
+        if self.config.chairman_configured:
+            return self.config.chairman_model
+        return self._seat_models(council_input)[0]
+
+    def _candidate_models(self, council_input: CouncilInput) -> List[Tuple[str, Optional[str]]]:
         """(model, role) seats for full council. When only one distinct model is
         reachable, differentiate seats with candidate role variants instead."""
-        models = [m for m in self.config.council_models if m][: self.config.max_candidates]
-        if not models:
-            models = [self.config.upstream_fallback_model]
+        models = self._seat_models(council_input)[: self.config.max_candidates]
         effective = {self.router.effective_model(m) for m in models}
         if len(effective) > 1:
             return [(m, None) for m in models]
@@ -377,7 +405,7 @@ class CouncilRuntime:
     ) -> List[CouncilReview]:
         task_text = self._task_text(council_input)
         review_user_prompt = build_review_user_prompt(task_text, candidates)
-        models = self.config.council_models or [self.config.upstream_fallback_model]
+        models = self._seat_models(council_input)
 
         def _one(indexed_role: Tuple[int, Tuple[str, str]]) -> Tuple[CouncilReview | None, str | None]:
             index, (role_name, role_prompt) = indexed_role
@@ -472,8 +500,9 @@ class CouncilRuntime:
             council_input.task_type,
         )
         try:
+            chairman_model = self._chairman_model(council_input)
             final, reasoning = self._call_with_reasoning(
-                self.config.chairman_model,
+                chairman_model,
                 chair_system,
                 [{"role": "user", "content": chair_prompt}],
                 council_input,
@@ -483,7 +512,7 @@ class CouncilRuntime:
             self.ledger.record_event(
                 run.id,
                 ledger_events.EVENT_FINAL_SYNTHESIZED,
-                {"chairmanModel": self.config.chairman_model},
+                {"chairmanModel": chairman_model},
             )
             return final
         except Exception as exc:
@@ -549,7 +578,7 @@ class CouncilRuntime:
         )
 
     def _run_lite(self, council_input: CouncilInput, run: CouncilRun) -> None:
-        models = self.config.council_models or [self.config.upstream_fallback_model]
+        models = self._seat_models(council_input)
         seats: List[Tuple[str, Optional[str]]] = [(models[0], None)]
         candidates = self._generate_candidates(council_input, run, seats)
         self._anonymize(candidates)
@@ -566,7 +595,7 @@ class CouncilRuntime:
         run.final_answer = self._synthesize(council_input, run, candidates, reviews, ranking)
 
     def _run_full(self, council_input: CouncilInput, run: CouncilRun) -> None:
-        seats = self._candidate_models()
+        seats = self._candidate_models(council_input)
         candidates = self._generate_candidates(council_input, run, seats)
         self._anonymize(candidates)
         critic_roles = list(CRITIC_ROLES.items())[: self.config.max_critics]
@@ -592,7 +621,7 @@ class CouncilRuntime:
         goal = context.get("goal") if isinstance(context.get("goal"), str) else "Improve this artifact."
         artifact_text = artifact if isinstance(artifact, str) else json.dumps(artifact, ensure_ascii=False, default=str)
 
-        models = self.config.council_models or [self.config.upstream_fallback_model]
+        models = self._seat_models(council_input)
         mutate_prompt = (
             f"Improvement goal: {goal}\n\nArtifact type: {artifact_type}\n\n"
             f"Current artifact (baseline):\n\n{_clip(artifact_text, 20000)}"

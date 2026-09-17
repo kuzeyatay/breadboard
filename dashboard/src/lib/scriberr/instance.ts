@@ -22,6 +22,9 @@ import { sanitizeErrorForClient } from "./errors.ts";
 import { VideoTranscriptionJobStore } from "./job-store.ts";
 import type { VideoTranscriptionRouteDeps } from "./route-core.ts";
 import { findExistingVideoSource } from "./video-source-store.ts";
+import { kickPendingVisualAnalyses, VISUAL_ANALYSIS_QUESTION } from "./visual-analysis.ts";
+import { runWatch, MAX_WATCH_PROCESS_TIMEOUT_MS } from "../hermes/watch-service.ts";
+import { publishQuartzAfterMutation } from "../quartz-publish.ts";
 
 interface VideoTranscriptionGlobals {
   videoTranscriptionStore?: VideoTranscriptionJobStore;
@@ -47,7 +50,40 @@ export function videoTranscriptionRouteDeps(): VideoTranscriptionRouteDeps {
       return { userId, clusterId: cluster.id, clusterSlug: cluster.slug };
     },
     contentPath: () => process.env.QUARTZ_CONTENT_PATH ?? null,
-    runnerKick: (clusterId) => reconcileScriberrRuntimeJobs({ store, clusterId }),
+    runnerKick: async (clusterId) => {
+      await reconcileScriberrRuntimeJobs({ store, clusterId });
+      const contentPath = process.env.QUARTZ_CONTENT_PATH;
+      if (!contentPath) return;
+      // "Watch"-style jobs finish here: the worker cannot reach the Runtime
+      // job owner, the dashboard can.
+      kickPendingVisualAnalyses(
+        {
+          store,
+          contentPath,
+          ffmpegPath: config.ffmpegPath,
+          runWatch: async ({ userId, jobId, source, workspaceRoot }) =>
+            runWatch({
+              userId,
+              conversationId: `garden-video:${jobId}`,
+              workspaceRoot,
+              args: {
+                source,
+                question: VISUAL_ANALYSIS_QUESTION,
+                detail: "token-burner",
+                timestamps: [],
+                // The transcript already comes from Scriberr; captions are
+                // enough for the frame reading, no remote Whisper call.
+                noWhisper: true,
+                processTimeoutMs: MAX_WATCH_PROCESS_TIMEOUT_MS,
+              },
+            }),
+          publish: (reason, gardenSlug) =>
+            publishQuartzAfterMutation(reason, { requireSuccess: true, gardenSlug }),
+          log: (message) => console.warn(`[video-visual-analysis] ${message}`),
+        },
+        clusterId,
+      );
+    },
     runnerStart: async (jobId, upload) => {
       try {
         return await startScriberrRuntimeJob({

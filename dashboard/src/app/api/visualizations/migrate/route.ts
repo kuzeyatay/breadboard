@@ -14,7 +14,7 @@ import {
   recordVisualCreated,
   saveVisualSpec,
 } from '@/lib/visuals';
-import { acquireGardenLearnLease } from '@/lib/learn-atomic-promotion';
+import { acquireGardenLearnLease } from '@/lib/garden-mutation-lease';
 import {
   createDetachedGardenMutation,
   disposeDetachedGardenMutation,

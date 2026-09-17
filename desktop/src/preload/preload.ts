@@ -1,14 +1,19 @@
 import type { IpcRenderer } from "electron";
 import type {
   BrowserBookmark,
+  BrowserSignInsState,
   BrowserHistoryCommand,
   BrowserHistorySnapshot,
   BrowserDownloadCommand,
   BrowserDownloadsSnapshot,
+  ChatgptWebTabRequest,
+  ChatgptWebTabResult,
   ClickyLaunchResult,
   ClickyLauncherState,
   DesktopNotificationToast,
   NotificationOverlaySize,
+  OpenLocalPathRequest,
+  OpenLocalPathResult,
   TabsCommand,
   TabsState,
   WindowThemeSchedule,
@@ -26,7 +31,9 @@ export const PRELOAD_IPC_CHANNELS = {
   openMicrophoneSettings: "breadboard:open-microphone-settings",
   allowThemeLocation: "breadboard:allow-theme-location",
   setTheme: "breadboard:set-theme",
+  getThemeState: "breadboard:get-theme-state",
   getStartupSound: "breadboard:get-startup-sound",
+  claimStartupSound: "breadboard:claim-startup-sound",
   setStartupSound: "breadboard:set-startup-sound",
   getCurrentLocationPreference: "breadboard:get-current-location-preference",
   setCurrentLocationPreference: "breadboard:set-current-location-preference",
@@ -40,7 +47,12 @@ export const PRELOAD_IPC_CHANNELS = {
   tabsCommand: "breadboard:tabs-command",
   tabsState: "breadboard:tabs-state",
   notificationToast: "breadboard:notification-toast",
+  notificationOverlayVisibility: "breadboard:notification-overlay-visibility",
   getBrowserNavigation: "breadboard:get-browser-navigation",
+  getBrowserSignIns: "breadboard:get-browser-sign-ins",
+  openBrowserSignIn: "breadboard:open-browser-sign-in",
+  resetBrowserSignIns: "breadboard:reset-browser-sign-ins",
+  chatgptWebTab: "breadboard:chatgpt-web-tab",
   setBrowserNavigation: "breadboard:set-browser-navigation",
   getBrowserBookmarks: "breadboard:get-browser-bookmarks",
   setBrowserBookmarks: "breadboard:set-browser-bookmarks",
@@ -56,6 +68,7 @@ export const PRELOAD_IPC_CHANNELS = {
   getClickyState: "breadboard:get-clicky-state",
   launchClicky: "breadboard:launch-clicky",
   openClickyProject: "breadboard:open-clicky-project",
+  openLocalPath: "breadboard:open-local-path",
 } as const;
 
 export interface StartupServiceView {
@@ -100,6 +113,12 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     for (const listener of tabsListeners) listener(state as TabsState);
   });
   const notificationListeners = new Set<(notice: DesktopNotificationToast) => void>();
+  let notificationOverlayVisible = false;
+  const notificationVisibilityListeners = new Set<(visible: boolean) => void>();
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.notificationOverlayVisibility, (_event, visible) => {
+    notificationOverlayVisible = visible === true;
+    for (const listener of notificationVisibilityListeners) listener(notificationOverlayVisible);
+  });
   ipcRenderer.on(PRELOAD_IPC_CHANNELS.notificationToast, (_event, notice) => {
     for (const listener of notificationListeners) {
       listener(notice as DesktopNotificationToast);
@@ -138,8 +157,7 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.startupContinue) as Promise<void>,
     // Resolves when the dashboard loading behind the startup screen has
     // painted, so the welcome is not offered until a click on it would open a
-    // finished app. Always resolves — the shell caps the wait rather than
-    // reporting failure.
+    // finished app. Pending tab and widget loads keep this promise waiting.
     awaitDashboardReady: (): Promise<void> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.startupAwaitDashboard) as Promise<void>,
     pickFolder: (): Promise<string | null> =>
@@ -162,11 +180,18 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
         PRELOAD_IPC_CHANNELS.setTheme,
         ...(schedule ? [surface, schedule] : [surface]),
       ) as Promise<boolean>,
+    getThemeState: (): Promise<{ theme: "light" | "dark"; schedule: WindowThemeSchedule } | null> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getThemeState) as Promise<{
+        theme: "light" | "dark"; schedule: WindowThemeSchedule;
+      } | null>,
     // Whether the startup screen's chime may sound. Both the startup screen
     // that plays it and the Profile switch that sets it read the same answer
     // from the shell, which is the only place either of them can share.
     getStartupSound: (): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getStartupSound) as Promise<boolean>,
+    // Playback is granted once per launch, only to the current startup page.
+    claimStartupSound: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.claimStartupSound) as Promise<boolean>,
     /** Resolves false when the choice could not be written down. */
     setStartupSound: (enabled: boolean): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setStartupSound, enabled) as Promise<boolean>,
@@ -196,6 +221,15 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     // in; the page draws the strip from the state it is sent and asks for
     // changes by command. The state arrives whenever any of it changes, and
     // can be asked for outright on first paint.
+    getBrowserSignIns: (): Promise<BrowserSignInsState> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserSignIns) as Promise<BrowserSignInsState>,
+    openBrowserSignIn: (url?: string): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.openBrowserSignIn, url) as Promise<boolean>,
+    resetBrowserSignIns: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.resetBrowserSignIns) as Promise<boolean>,
+    /** The shell's ChatGPT tab for the OpenAI (web) provider, opened on demand. */
+    chatgptWebTab: (request: ChatgptWebTabRequest): Promise<ChatgptWebTabResult> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.chatgptWebTab, request) as Promise<ChatgptWebTabResult>,
     getTabsState: (): Promise<TabsState> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getTabsState) as Promise<TabsState>,
     getBrowserTerminalAccess: (): Promise<{ port: number; token: string } | null> =>
@@ -219,6 +253,12 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     ): (() => void) => {
       notificationListeners.add(listener);
       return () => notificationListeners.delete(listener);
+    },
+    /** Replay the shell's current visibility before announcing any cards. */
+    onNotificationOverlayVisibility: (listener: (visible: boolean) => void): (() => void) => {
+      notificationVisibilityListeners.add(listener);
+      listener(notificationOverlayVisible);
+      return () => notificationVisibilityListeners.delete(listener);
     },
     /** Resize the native overlay to exactly its interactive card content. */
     resizeNotificationOverlay: (size: NotificationOverlaySize): Promise<boolean> =>
@@ -288,6 +328,12 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(
         PRELOAD_IPC_CHANNELS.openClickyProject,
       ) as Promise<ClickyLaunchResult>,
+    /** Open a produced folder in the file explorer, or reveal a produced file. */
+    openLocalPath: (request: OpenLocalPathRequest): Promise<OpenLocalPathResult> =>
+      ipcRenderer.invoke(
+        PRELOAD_IPC_CHANNELS.openLocalPath,
+        request,
+      ) as Promise<OpenLocalPathResult>,
   };
 }
 

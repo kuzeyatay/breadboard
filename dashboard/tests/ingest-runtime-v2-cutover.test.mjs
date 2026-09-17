@@ -350,6 +350,112 @@ test("an arbitrary worker failure checkpoint cannot disclose internal details", 
   assert.equal(payloads[1], "[DONE]");
 });
 
+test("a quota-classified worker failure checkpoint reaches the upload dialog verbatim", async () => {
+  // The Feynman Vol. II ingestion: the VLM parse finished, then every model
+  // route for concept extraction refused for quota or credits. The worker
+  // writes one fixed public sentence for that case; it must pass the closed
+  // failure contract while any other wording still falls back to the generic
+  // message (previous test).
+  process.env.BREADBOARD_LEARN_SOURCE_ROOT = path.join(dashboardRoot, "src");
+  await import("../scripts/learn-worker-import-hook.mjs");
+  const { createRuntimeIngestSseResponse } = await import(
+    "../src/lib/runtime-v2/ingest-compatibility.ts"
+  );
+  const identity = {
+    jobId: "job_ingest_quota_failure",
+    attempt: 1,
+    workerInstanceId: "worker_ingest_quota_failure",
+  };
+  const quotaMessage =
+    "The selected model and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
+  const job = {
+    jobId: identity.jobId,
+    jobType: "document-ingestion",
+    workerKind: "document-ingestion-node",
+    resourceClass: "document-processing",
+    state: "failed",
+    stage: "processing",
+    attempt: identity.attempt,
+    workerInstanceId: identity.workerInstanceId,
+    gardenId: "garden-1",
+    conversationId: null,
+    createdAt: 100,
+    startedAt: 101,
+    updatedAt: 102,
+    finishedAt: 102,
+    lastHeartbeatAt: 101,
+    lastWorkerSequence: 2,
+    progressCurrent: 2,
+    progressTotal: 4,
+    failureCode: "INGEST_WORKER_FAILED",
+    failureMessage: "Runtime job execution failed.",
+    resourceExhaustion: null,
+    cancellationRequested: false,
+  };
+  const response = createRuntimeIngestSseResponse({
+    authority: { userId: 42, gardenId: "garden-1", conversationId: null },
+    job,
+    model: "openrouter/stealth/union-alpha",
+    startedAt: Date.now(),
+    control: {
+      async replay(_authority, _jobId, after) {
+        return {
+          jobId: identity.jobId,
+          after,
+          nextAfter: 1,
+          terminal: true,
+          hasMore: false,
+          events: [{
+            sequence: 1,
+            jobId: identity.jobId,
+            attempt: identity.attempt,
+            workerInstanceId: identity.workerInstanceId,
+            workerSequence: 1,
+            eventType: "worker-checkpoint",
+            payload: {},
+            createdAt: 101,
+          }],
+        };
+      },
+      async inspect() {
+        return job;
+      },
+      async readOutput(_authority, _jobId, kind) {
+        assert.equal(kind, "checkpoint");
+        return {
+          jobId: identity.jobId,
+          kind,
+          content: {
+            protocolVersion: 1,
+            identity,
+            stage: "processing",
+            step: "Retrying concept extraction for section 1 of 42 after a temporary upstream error (3/3)…",
+            tokenUsage: null,
+            failure: {
+              error: quotaMessage,
+              visionError: null,
+              recoveryId: "rec_0123456789abcdef0123456789abcdef",
+            },
+            revision: 589,
+            updatedAt: 102,
+          },
+        };
+      },
+    },
+  });
+  const payloads = await ssePayloads(response);
+  // A valid checkpoint also replays its last progress step before the error.
+  const events = payloads.slice(0, -1).map((payload) => JSON.parse(payload));
+  const progress = events.find((candidate) => candidate.type === "progress");
+  assert.match(progress?.step ?? "", /section 1 of 42/u);
+  const event = events.at(-1);
+  assert.equal(event.type, "error");
+  assert.equal(event.error, quotaMessage);
+  // The retained-upload handle rides along so the failed row can offer Resume.
+  assert.equal(event.recoveryId, "rec_0123456789abcdef0123456789abcdef");
+  assert.equal(payloads.at(-1), "[DONE]");
+});
+
 test("terminal inspect drains the completion event committed after the first replay", async () => {
   process.env.BREADBOARD_LEARN_SOURCE_ROOT = path.join(dashboardRoot, "src");
   await import("../scripts/learn-worker-import-hook.mjs");

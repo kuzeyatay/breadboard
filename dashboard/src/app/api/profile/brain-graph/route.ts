@@ -48,6 +48,15 @@ export async function GET(request: Request) {
       mode,
       signal: request.signal,
     });
+    // The profile page polls for change every 30 s. Answering with the
+    // revision alone spares it a multi-megabyte body it would only compare
+    // and discard; the build behind it is served from cache while unchanged.
+    if (searchParams.get("revisionOnly") === "1") {
+      return NextResponse.json(
+        { revision: graph.revision, generatedAt: graph.generatedAt },
+        { headers: PRIVATE_HEADERS },
+      );
+    }
     return NextResponse.json(graph, { headers: PRIVATE_HEADERS });
   } catch (error) {
     return errorResponse(error);

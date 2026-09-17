@@ -29,7 +29,6 @@ import {
   OPENEXECUTIVE_AGENT_NAME,
   OPENEXECUTIVE_COMMAND,
 } from "../openexecutive/identity.ts";
-import { OPEN_GYM_COMMAND } from "../open-gym/identity.ts";
 import { TRADINGAGENTS_COMMAND } from "../tradingagents/identity.ts";
 import { CODEX_COMMAND } from "../codex/identity.ts";
 import { DEEP_RESEARCH_SLASH_COMMAND } from "../deep-research/identity.ts";
@@ -187,11 +186,6 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   profile("career-ops", CAREER_OPS_COMMAND, "Career Ops"),
   profile(OPENEXECUTIVE_AGENT_ID, OPENEXECUTIVE_COMMAND, OPENEXECUTIVE_AGENT_NAME, {
     // Advisory analysis stays inside the conversation and its isolated memory.
-    requiresLaunchApproval: false,
-  }),
-  profile("open-gym", OPEN_GYM_COMMAND, "openGym", {
-    // It reads the local catalogue and writes only the user's private training
-    // state plus an artifact in the launching conversation.
     requiresLaunchApproval: false,
   }),
   // Meeting Notes takes a recording, so attachments are the point rather than an

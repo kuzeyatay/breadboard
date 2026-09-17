@@ -192,6 +192,14 @@ test("selections spanning a correction exclude the user text and paint both assi
   await mount();
   assert.deepEqual(await page.locator("mark").allInnerTexts(), ["First section.", "Second section."]);
   assert.equal(await page.locator("[data-selection-exclude] mark").count(), 0);
+  await page.evaluate(() => {
+    const entries = JSON.parse(localStorage.getItem("highlights"));
+    entries[0].note = "One note spanning the correction.";
+    localStorage.setItem("highlights", JSON.stringify(entries));
+  });
+  await mount();
+  assert.equal(await page.getByRole("note").count(), 1, "one callout per saved note across segments");
+  assert.deepEqual(await page.locator("mark").evaluateAll(marks => marks.map(mark => getComputedStyle(mark).textDecorationStyle)), ["dotted", "dotted"]);
 });
 
 test("the Terminal steered branch supplies the same actions and anchors as ordinary responses", () => {

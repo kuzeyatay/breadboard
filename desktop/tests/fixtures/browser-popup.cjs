@@ -136,8 +136,8 @@ app.whenReady().then(async () => {
   const linked = await pageAt(provider + "/link");
   assert.equal(await linked.executeJavaScript("window.opener === null"), true, "noopener links stay isolated");
   const lastId = state().activeId;
-  const lastChrome = webContents.getAllWebContents().find(contents =>
-    contents.getURL() === origin + "/browser" && manager.stateFor(contents)?.selfId === lastId);
+  const lastChrome = await until(() => webContents.getAllWebContents().find(contents =>
+    contents.getURL() === origin + "/browser" && manager.stateFor(contents)?.selfId === lastId), "last popup shell");
   assert.ok(lastChrome);
   for (const tab of state().tabs) {
     if (tab.id !== lastId) await command({ type: "close", id: tab.id });

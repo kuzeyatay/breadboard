@@ -26,7 +26,7 @@ import {
   type LearningUnitContract,
   type SourceArtifactAssignment,
 } from "./learning-unit-contract.ts";
-import { formulaMetricFamily } from "./learn-utils.ts";
+import { chatAssistantLeakMatches, formulaMetricFamily } from "./learn-utils.ts";
 import { isValidPublicConceptSlug } from "./semantic-core.ts";
 import { validateGardenSemantics } from "./garden-semantics.ts";
 
@@ -448,6 +448,8 @@ export interface FinalGardenState {
     learningMap?: string;
     sourceCoverage?: string;
   };
+  /** Learner-facing orientation prose outside the learning-unit contract. */
+  orientationPages?: Array<{ rel: string; body: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,6 +1546,7 @@ export function buildFinalGardenState(gardenDir: string, slug?: string): FinalGa
 
   const pages: FinalGardenPage[] = [];
   const sections: FinalGardenSection[] = [];
+  const orientationPages: Array<{ rel: string; body: string }> = [];
   for (const { abs, rel } of mdFiles) {
     if (/\/_index\.md$/i.test(rel) || rel === "learning/_index.md") {
       sections.push(parseSection(abs, rel));
@@ -1551,6 +1554,10 @@ export function buildFinalGardenState(gardenDir: string, slug?: string): FinalGa
     }
     const page = parsePage(abs, rel);
     if (page) pages.push(page);
+    else if (rel === "learning/Topic Overview.md" || rel === "learning/Learning Map.md") {
+      const { body } = splitFrontmatter(readText(abs) ?? "");
+      orientationPages.push({ rel, body });
+    }
   }
   pages.sort((a, b) => a.rel.localeCompare(b.rel));
 
@@ -1734,6 +1741,7 @@ export function buildFinalGardenState(gardenDir: string, slug?: string): FinalGa
     slug: slug ?? path.basename(gardenDir),
     pages,
     sections,
+    orientationPages,
     learningUnitContract: contract,
     sourceAnchors,
     sourceUsages,
@@ -3117,6 +3125,7 @@ function resolveRepairPage(entry: RepairLogEntry, pages: FinalGardenPage[]): Fin
 function pageProseValidation(page: FinalGardenPage): "pass" | "fail" {
   const prose = teachingProseOnly(page.body);
   if (LEARNER_SCAFFOLD_PROSE_PATTERNS.some((pattern) => pattern.test(prose))) return "fail";
+  if (chatAssistantLeakMatches(page.body).length > 0) return "fail";
   if (/\bsnns\b/.test(prose)) return "fail";
   if (/\bSNNs\s+learns\b/i.test(prose)) return "fail";
   return "pass";

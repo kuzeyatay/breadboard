@@ -87,6 +87,7 @@ function slugifyLoose(value: string): string {
 /** Ingest-era stub pages titled after the raw upload ("1.1 2510.27379v1"):
  * a page whose title is just the source file name is an artifact, not a lesson. */
 function isRawFileArtifactPage(fm: Record<string, unknown> | undefined): boolean {
+  if (fm?.garden_copy === true || fm?.garden_copy === "true") return false
   const title = frontmatterString(fm, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, "")
   const sourceFile = frontmatterString(fm, "source_file").replace(
     /\.(pdf|docx?|pptx?|xlsx?|txt|md|csv|zip|png|jpe?g|webp)$/i,
@@ -145,7 +146,10 @@ function isIngestLessonArtifact(
 
 export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {}) => ({
   name: "RemoveDrafts",
-  shouldPublish(_ctx, [_tree, vfile]) {
+  shouldPublish(_ctx, content) {
+    // Read only the VFile: the tree may live on disk and must not be loaded
+    // just to check frontmatter.
+    const vfile = content[1]
     const fm = vfile.data?.frontmatter as Record<string, unknown> | undefined
     const relativePath = String(vfile.data?.relativePath ?? "")
     const knowledgeType = frontmatterString(fm, "knowledge_type")

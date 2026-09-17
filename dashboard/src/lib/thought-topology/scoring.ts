@@ -3,6 +3,7 @@ import type {
   TopologyEdge,
   TopologyEdgeOrigin,
   TopologyRelationType,
+  TopologyEvidence,
 } from "./types.ts";
 
 export const THOUGHT_TOPOLOGY_SCORING = Object.freeze({
@@ -20,7 +21,9 @@ export const THOUGHT_TOPOLOGY_SCORING = Object.freeze({
   // decide whether to regenerate it. The route compares ordinals (see
   // `scoringVersionOrdinal`): a map built by an older formula is rebuilt when
   // it is next opened; a map newer than the serving bundle is left alone.
-  version: "thought-topology-affinity-v3",
+  // v4: source anchors are explicit provenance; inferred choices survive when
+  // either endpoint selects them, even when the other endpoint is a busy source.
+  version: "thought-topology-affinity-v4",
   projectionVersion: "semantic-projection-v3",
   weights: Object.freeze({ embedding: 0.7, concept: 0.2, lexical: 0.1 }),
   conceptWeights: Object.freeze({ primary: 1.35, supporting: 1 }),
@@ -54,6 +57,7 @@ export const THOUGHT_TOPOLOGY_SCORING = Object.freeze({
   selection: Object.freeze({
     candidateNeighbors: 12,
     crossFolderCandidates: 4,
+    /** Outgoing choices; incoming matches from other pages do not veto them. */
     inferredEdgeCap: 6,
     /** A page (or a section) keeps up to this many pairs that score within
      * the scale's `anchorMargin` of its best pair, above the absolute
@@ -150,6 +154,7 @@ export interface AuthoredCandidate {
   target: string;
   relationType?: TopologyRelationType;
   origin?: Extract<TopologyEdgeOrigin, "authored" | "provenance">;
+  evidence?: TopologyEvidence[];
 }
 
 const STOP_WORDS = new Set([
@@ -649,8 +654,8 @@ export function selectSparseInferredEdges(
     .filter(
       (candidate) =>
         candidate.score >= threshold &&
-        neighborhoods.get(candidate.source)?.has(candidate.target) &&
-        neighborhoods.get(candidate.target)?.has(candidate.source),
+        (neighborhoods.get(candidate.source)?.has(candidate.target) ||
+          neighborhoods.get(candidate.target)?.has(candidate.source)),
     )
     .sort(
       (left, right) =>
@@ -666,7 +671,7 @@ export function selectSparseInferredEdges(
     const key = unorderedPairKey(candidate.source, candidate.target);
     if (chosen.has(key)) return;
     if (
-      (degrees.get(candidate.source) ?? 0) >= edgeCap(candidate.source) ||
+      (degrees.get(candidate.source) ?? 0) >= edgeCap(candidate.source) &&
       (degrees.get(candidate.target) ?? 0) >= edgeCap(candidate.target)
     )
       return;
@@ -717,7 +722,15 @@ export function selectSparseInferredEdges(
       proposals.set(unorderedPairKey(candidate.source, candidate.target), candidate);
     }
   }
-  for (const candidate of [...proposals.values()].sort(byScore)) admit(candidate);
+  // An endpoint's nearest match must survive even when its partner already
+  // received many stronger matches from other pages.
+  for (const candidate of [...proposals.values()].sort(byScore)) {
+    const key = unorderedPairKey(candidate.source, candidate.target);
+    if (!chosen.has(key)) {
+      chosen.add(key);
+      selected.push(candidate);
+    }
+  }
   return selected;
 }
 
@@ -729,6 +742,7 @@ export function mergeAuthoredPairs(
   AffinityCandidate & {
     origin: TopologyEdgeOrigin;
     relationType: TopologyRelationType;
+    evidence?: TopologyEvidence[];
   }
 > {
   const scored = new Map(
@@ -742,6 +756,7 @@ export function mergeAuthoredPairs(
     AffinityCandidate & {
       origin: TopologyEdgeOrigin;
       relationType: TopologyRelationType;
+      evidence?: TopologyEvidence[];
     }
   >();
   for (const candidate of inferred) {
@@ -767,6 +782,7 @@ export function mergeAuthoredPairs(
       target: authoredEdge.target,
       origin: authoredEdge.origin ?? "authored",
       relationType: authoredEdge.relationType ?? "related",
+      evidence: authoredEdge.evidence,
     });
   }
   return [...merged.values()].sort((left, right) =>

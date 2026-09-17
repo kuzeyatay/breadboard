@@ -225,7 +225,11 @@ export async function searchOpenAlex(query: SourceQuery): Promise<RawHit[]> {
 
 export function arxivUrl(query: SourceQuery): string {
   const url = new URL("https://export.arxiv.org/api/query");
-  url.searchParams.set("search_query", `all:${query.query}`);
+  // arXiv requires an explicit conjunction for multi-term keyword searches.
+  // A single all: prefix followed by free text can admit unrelated single-term
+  // matches. Treat catalog input as keywords, never raw query-language syntax.
+  const terms = query.query.match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) ?? [];
+  url.searchParams.set("search_query", terms.map(term => `all:${term}`).join(" AND "));
   url.searchParams.set("start", "0");
   url.searchParams.set("max_results", String(Math.min(Math.max(query.limit, 5), 50)));
   url.searchParams.set("sortBy", "relevance");

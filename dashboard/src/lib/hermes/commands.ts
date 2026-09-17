@@ -381,7 +381,7 @@ function skillArtifactDeliveryInstruction(
   const requiresImport = kinds.some((kind) => importKinds.has(kind));
   const requiresRender = kinds.some((kind) => !importKinds.has(kind));
   return [
-    `[Server-enforced output contract] This skill produces ${kinds.join(", ")}. A reusable product must be attached as a durable artifact owned by this turn; a chat-only claim is not completion.`,
+    `[Server-enforced output contract] This skill can produce ${kinds.join(", ")}. When the user explicitly requests file output, attach that product as a durable artifact owned by this turn; a chat-only claim is not completion. Selecting a skill does not authorize file output for a prose-writing request.`,
     requiresRender
       ? "For text-backed products, use artifact_create with the matching production renderer and then artifact_render or artifact_finalize."
       : "",

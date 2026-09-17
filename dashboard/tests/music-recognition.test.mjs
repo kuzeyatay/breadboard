@@ -312,14 +312,13 @@ test("Recognize Music is a ready skill with a brokered private-surface tool", ()
   assert.ok(BROKERED_TOOLS.includes("music_recognize"));
 });
 
-test("the tool, skill context, protected route, and microphone UI are wired end to end", () => {
+test("recognition stays wired through its skill without an entry in the microphone menu", () => {
   const manifest = source("../hermes-agent/plugins/breadboard/plugin.yaml");
   const plugin = source("../hermes-agent/plugins/breadboard/__init__.py");
   const route = source("src/app/api/hermes/tools/music-recognition/route.ts");
   const directRoute = source("src/app/api/music-recognition/recognize/route.ts");
   const composer = source("src/app/components/assistant-composer.tsx");
   const microphone = source("src/app/components/speech-dictation-button.tsx");
-  const button = source("src/app/components/music-recognition-button.tsx");
   const canonical = source("src/lib/conversations/turn-service.ts");
   const garden = source("src/lib/hermes/garden-chat-adapter.ts");
 
@@ -333,17 +332,7 @@ test("the tool, skill context, protected route, and microphone UI are wired end 
   assert.match(directRoute, /consumeMusicRecognitionRateLimit/);
   assert.match(directRoute, /persistDirectMusicRecognition/);
   assert.match(composer, /runtimeSessionId=\{capabilitySessionId\}/);
-  assert.match(microphone, /<MusicRecognitionButton/);
-  assert.match(button, /MUSIC_CAPTURE_DURATION_MS = 12_000/);
-  assert.match(button, /echoCancellation: false/);
-  assert.match(button, /noiseSuppression: false/);
-  assert.match(button, /autoGainControl: false/);
-  assert.match(button, /streamRef\.current\?\.getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\)/);
-  assert.match(button, /requestAbortRef\.current\?\.abort\(\)/);
-  assert.match(button, /Listening…/);
-  assert.match(button, /Recognizing…/);
-  assert.match(button, /No match found/);
-  assert.match(button, /Recognition unavailable/);
+  assert.doesNotMatch(microphone, /MusicRecognitionButton|musicBusy|Identify song|Cancel song identification/);
   for (const pipeline of [canonical, garden]) {
     assert.match(pipeline, /renderMusicRecognitionContext/);
     assert.match(pipeline, /MUSIC_RECOGNITION_SKILL/);

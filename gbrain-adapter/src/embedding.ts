@@ -62,6 +62,16 @@ function hashProvider(dimension = 64): EmbeddingProvider {
   };
 }
 
+/**
+ * A lone surrogate (text cut in the middle of an emoji or a mathematical
+ * symbol) survives JSON but not the tokenizer behind `/v1/embeddings`, which
+ * answers 500 and takes the whole batch down with it. Replace it with U+FFFD:
+ * one unknown character costs nothing, an unembeddable page costs the map.
+ */
+export function wellFormed(text: string): string {
+  return text.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "�");
+}
+
 /** Breadboard's local gateway, and the model it serves without a key. */
 const CHATMOCK_DEFAULT_BASE_URL = "http://127.0.0.1:8765/v1";
 const CHATMOCK_DEFAULT_MODEL = "local/bge-small-en-v1.5";
@@ -95,7 +105,7 @@ export function chatmockProvider(options: ChatmockProviderOptions = {}): Embeddi
       const response = await fetch(`${baseUrl}/embeddings`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, input: text }),
+        body: JSON.stringify({ model, input: wellFormed(text) }),
         signal: AbortSignal.timeout(CHATMOCK_TIMEOUT_MS),
       });
       if (!response.ok) return null;

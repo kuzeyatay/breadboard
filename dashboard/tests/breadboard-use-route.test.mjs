@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { issueCapabilityToken } from '../src/lib/hermes/capability-token.ts';
 
-for (const action of ['state', 'launch_clicky']) {
+for (const action of ['state', 'launch_clicky', 'set_checked']) {
 test(`app control ${action} requires an owned active private conversation and uses server identity`, async () => {
   const state = globalThis.__breadboardUseRouteTest = {
     session: { id: 33, user_id: 7, surface: 'dashboard_terminal', conversation_id: 44 },

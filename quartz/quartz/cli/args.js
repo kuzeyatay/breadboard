@@ -105,4 +105,10 @@ export const BuildArgv = {
     number: true,
     describe: "how many threads to use to parse notes",
   },
+  scope: {
+    array: true,
+    string: true,
+    describe:
+      "only render content under these directories (relative to --directory); site-wide pages are skipped",
+  },
 }

@@ -165,6 +165,116 @@ const laidOutHeight = (scroller) =>
     scroller.querySelector("[data-chat-virtual-list]").style.height,
   );
 
+test("streaming with unchanged row identities does not re-estimate the entire history", { skip }, async () => {
+  const React = require("react");
+  const { act } = React;
+  const { createRoot } = require("react-dom/client");
+  realHeights.clear();
+  const scroller = makeScroller();
+  const root = createRoot(scroller);
+  const scrollRef = { current: scroller };
+  const bridge = inertBridge();
+  let estimates = 0;
+  const estimateSize = () => { estimates += 1; return ESTIMATE; };
+  const draw = (items) => React.createElement(VirtualizedMessageList, {
+    surface: "stream-performance", items, scrollRef, bridge, gap: GAP,
+    getItemKey: (item) => item.key,
+    estimateSize,
+    renderItem: (item) => React.createElement("div", null, item.content),
+  });
+  let items = Array.from({ length: 2_000 }, (_, index) => ({ key: `m${index}`, content: "answer" }));
+  try {
+    await act(async () => { root.render(draw(items)); });
+    await measured(act);
+    estimates = 0;
+    for (let token = 0; token < 5; token += 1) {
+      items = items.map((item, index) => index === items.length - 1 ? { ...item, content: item.content + " token" } : item);
+      await act(async () => { root.render(draw(items)); });
+    }
+    assert.equal(estimates, 0, "content updates must preserve the virtualizer's layout cache");
+  } finally {
+    await act(async () => { root.unmount(); });
+    scroller.remove();
+  }
+});
+
+test("scrolling reuses mounted message content and still applies new render closures", { skip }, async () => {
+  const React = require("react");
+  const { act } = React;
+  const { createRoot } = require("react-dom/client");
+  realHeights.clear();
+  const scroller = makeScroller();
+  const root = createRoot(scroller);
+  const renders = new Map();
+  const items = Array.from({ length: 2_000 }, (_, index) => ({ key: `m${index}` }));
+  const props = {
+    surface: "scroll-performance", items, scrollRef: { current: scroller }, bridge: inertBridge(), gap: GAP,
+    getItemKey: item => item.key, estimateSize: () => ESTIMATE,
+    renderItem: item => {
+      renders.set(item.key, (renders.get(item.key) ?? 0) + 1);
+      return React.createElement("div", null, item.key);
+    },
+  };
+  try {
+    await act(async () => { root.render(React.createElement(VirtualizedMessageList, props)); });
+    await measured(act);
+    const before = new Map(renders);
+    await act(async () => {
+      scroller.scrollTop = 40;
+      scroller.dispatchEvent(new dom.window.Event("scroll"));
+    });
+    for (const [key, count] of before) assert.equal(renders.get(key), count, `${key} rendered again just to scroll`);
+    assert.ok(scroller.querySelectorAll("[data-index]").length < 30);
+    await act(async () => {
+      root.render(React.createElement(VirtualizedMessageList, {
+        ...props, renderItem: item => React.createElement("div", null, `edited ${item.key}`),
+      }));
+    });
+    assert.match(scroller.textContent, /edited m0/);
+  } finally {
+    await act(async () => { root.unmount(); });
+    scroller.remove();
+  }
+});
+
+test("retrying an earlier response can shorten the transcript without reading removed rows", { skip }, async () => {
+  const React = require("react");
+  const { act } = React;
+  const { createRoot } = require("react-dom/client");
+  realHeights.clear();
+  const scroller = makeScroller();
+  const scrollRef = { current: scroller };
+  const bridge = inertBridge();
+  const root = createRoot(scroller);
+  const draw = (items) => React.createElement(VirtualizedMessageList, {
+    surface: "garden-chat", items, scrollRef, bridge, gap: GAP,
+    resetKey: "same-conversation",
+    getItemKey: item => item.key,
+    estimateSize: item => item.height,
+    renderItem: item => React.createElement("div", null, item.key),
+  });
+  try {
+    const original = Array.from({ length: COUNT }, (_, index) => ({ key: `m${index}`, height: ESTIMATE }));
+    await act(async () => { root.render(draw(original)); });
+    await measured(act);
+    await act(async () => { scroller.scrollTop = laidOutHeight(scroller) - VIEWPORT; scroller.dispatchEvent(new dom.window.Event("scroll")); });
+    const retried = [...original.slice(0, 4), { key: "retry-user", height: ESTIMATE }, { key: "retry-answer", height: ESTIMATE }];
+    await act(async () => { root.render(draw(retried)); });
+    await measured(act);
+    assert.equal(scroller.querySelector("[data-message-count]").dataset.messageCount, "6");
+    assert.match(scroller.textContent, /retry-answer/);
+    await act(async () => { root.render(draw([])); });
+    await measured(act);
+    assert.equal(laidOutHeight(scroller), 0);
+    await act(async () => { root.render(draw(original)); });
+    await measured(act);
+    assert.equal(laidOutHeight(scroller), COUNT * ESTIMATE + (COUNT - 1) * GAP);
+  } finally {
+    await act(async () => { root.unmount(); });
+    scroller.remove();
+  }
+});
+
 test(
   "a row measured while the reader is pinned to the end does not flush from inside the commit",
   { skip },

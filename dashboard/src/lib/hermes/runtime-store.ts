@@ -8,6 +8,7 @@
 // reconnect.
 
 import db from "../db.ts";
+import { proposalAssistantMessageId } from "./proposal-ownership.ts";
 import { DEFAULT_MODEL } from "../ai-models.ts";
 import {
   ASSISTANT_REASONING_EFFORTS,
@@ -124,12 +125,14 @@ export function getRuntimeSessionById(id: number): RuntimeSessionRow | null {
 
 export function getRuntimeSessionByConversation(
   conversationId: number,
+  inlineTurnId?: string,
 ): RuntimeSessionRow | null {
   const row = db.prepare(`
     SELECT * FROM hermes_runtime_sessions
     WHERE conversation_id = ?
+      AND json_extract(runtime_metadata, '$.inlineTurnId') IS ?
     ORDER BY id DESC LIMIT 1
-  `).get(conversationId) as RuntimeSessionRow | undefined;
+  `).get(conversationId, inlineTurnId ?? null) as RuntimeSessionRow | undefined;
   return row ?? null;
 }
 
@@ -163,7 +166,7 @@ export function getRuntimeSessionByChatSession(
 ): RuntimeSessionRow | null {
   const row = db
     .prepare(
-      "SELECT * FROM hermes_runtime_sessions WHERE chat_session_id = ? ORDER BY id DESC LIMIT 1",
+      "SELECT * FROM hermes_runtime_sessions WHERE chat_session_id = ? AND json_extract(runtime_metadata, '$.inlineTurnId') IS NULL ORDER BY id DESC LIMIT 1",
     )
     .get(chatSessionId) as RuntimeSessionRow | undefined;
   return row ?? null;
@@ -880,6 +883,7 @@ export function deleteRuntimeSession(id: number): void {
 
 export interface ProposalRow {
   id: number;
+  assistant_message_id: number | null;
   cluster_id: number | null;
   garden_id: string;
   surface: string;
@@ -909,12 +913,15 @@ export interface CreateProposalInput {
 }
 
 export function createProposal(input: CreateProposalInput): ProposalRow {
+  const assistantMessageId = proposalAssistantMessageId(
+    db, input.runtimeSessionId ?? null, input.createdByUserId ?? null,
+  );
   const result = db
     .prepare(
       `INSERT INTO hermes_proposals
          (cluster_id, garden_id, surface, kind, page_slug, rationale, payload,
-          evidence_anchors, created_by_user_id, runtime_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          evidence_anchors, created_by_user_id, runtime_session_id, assistant_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.clusterId,
@@ -929,6 +936,7 @@ export function createProposal(input: CreateProposalInput): ProposalRow {
         : null,
       input.createdByUserId ?? null,
       input.runtimeSessionId ?? null,
+      assistantMessageId,
     );
   return getProposalById(Number(result.lastInsertRowid))!;
 }

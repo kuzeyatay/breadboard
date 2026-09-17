@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
+import { apiErrorResponse, describeError, readJsonBody, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth.ts";
 import { humanizeStoredText } from "@/lib/humanizer/auto-server.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/hermes/capability-token.ts";
@@ -69,12 +69,14 @@ const ACTIONS = new Set([
 ]);
 
 export async function POST(request: Request) {
+  let actionForDiagnostics = "";
   try {
     requireEnabled();
     const rawToken = capabilityForInternalToolRequest(request);
     const verified = verifyCapabilityToken(rawToken);
     const body = await readJsonBody(request, 6 * 1024 * 1024);
     const action = typeof body.action === "string" && ACTIONS.has(body.action) ? body.action : "";
+    actionForDiagnostics = action;
     if (!verified.ok || !action || !tokenAllows(verified.token, { tool: action })) {
       throw new ApiError(403, "artifact_capability_denied", "Artifact access is not authorized.");
     }
@@ -476,6 +478,16 @@ export async function POST(request: Request) {
       error instanceof ArtifactImageServiceError
     ) {
       return NextResponse.json({ ok: false, error: error.message, code: error.code }, { status: error.status });
+    }
+    const { status } = describeError(error);
+    if (status >= 500) {
+      // The response body is sanitized to "Internal server error"; without this
+      // line the cause is lost entirely and the model can only guess.
+      console.error("[hermes-tools/artifacts] unexpected failure", {
+        action: actionForDiagnostics,
+        message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        stack: error instanceof Error ? error.stack?.split("\n").slice(0, 6).join("\n") : undefined,
+      });
     }
     return apiErrorResponse(error);
   }

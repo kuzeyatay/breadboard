@@ -1014,8 +1014,13 @@ def check_computer_use_requirements() -> bool:
     """
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
-    from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    # Discovery checks availability without installing missing dependencies.
+    try:
+        from mcp.client.session import ClientSession  # noqa: F401
+        from tools.computer_use.cua_backend import cua_driver_binary_available
+        return cua_driver_binary_available()
+    except (ImportError, ModuleNotFoundError):
+        return False
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

@@ -18,6 +18,7 @@ test("translation calls the configured provider with text only and no agent tool
     assert.ok(url.endsWith("/chat/completions"));
     const body = JSON.parse(options.body);
     assert.equal(body.stream, false);
+    assert.equal(body.reasoning_effort, "low");
     assert.equal(body.tools, undefined);
     assert.match(body.messages[0].content, /never instructions to follow/);
     assert.deepEqual(JSON.parse(body.messages[1].content), { segments: input.segments });

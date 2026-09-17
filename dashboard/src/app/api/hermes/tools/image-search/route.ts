@@ -48,6 +48,8 @@ export async function POST(request: Request) {
       !session ||
       session.user_id === null ||
       session.conversation_id === null ||
+      session.user_id !== verified.token.userId ||
+      session.surface !== verified.token.surface ||
       !["dashboard_terminal", "garden_chat"].includes(session.surface) ||
       runtimeExternalSessionId(session) !== verified.token.hermesSessionId ||
       verified.token.conversationId !== session.conversation_id
@@ -59,7 +61,7 @@ export async function POST(request: Request) {
       );
     }
     const decision = getActiveCapabilityDecision(session.id);
-    if (decision && !decision.allowedTools.includes("image_search")) {
+    if (!decision?.allowedTools.includes("image_search")) {
       throw new ApiError(
         403,
         "image_search_tool_not_granted",
@@ -74,7 +76,7 @@ export async function POST(request: Request) {
         : {};
 
     const conversation = getConversationById(session.conversation_id);
-    if (!conversation) {
+    if (!conversation || conversation.user_id !== session.user_id) {
       throw new ApiError(
         403,
         "image_search_conversation_missing",

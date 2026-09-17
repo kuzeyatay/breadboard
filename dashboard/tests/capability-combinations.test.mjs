@@ -45,7 +45,6 @@ const RUN_ROUTES = {
   "deep-tutor": ["deep-tutor", "runs"],
   "career-ops": ["career-ops", "runs"],
   openexecutive: ["openexecutive", "runs"],
-  "open-gym": ["open-gym", "runs"],
   "trading-agent": ["tradingagents", "runs"],
   "vibe-trading": ["vibe-trading", "runs"],
   "stock-analyst": ["stock-analyst", "runs"],

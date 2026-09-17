@@ -67,7 +67,8 @@ export class CliproxyRequestError extends Error {
 
 async function managementFetch(
   path: string,
-  method: "GET" | "DELETE" = "GET",
+  method: "GET" | "DELETE" | "PATCH" = "GET",
+  body?: Record<string, unknown>,
 ): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -76,7 +77,11 @@ async function managementFetch(
   try {
     response = await fetch(`${cliproxyManagementUrl()}${path}`, {
       method,
-      headers: { "X-Management-Key": cliproxyManagementKey() },
+      headers: {
+        "X-Management-Key": cliproxyManagementKey(),
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
       cache: "no-store",
       signal: controller.signal,
     });
@@ -228,6 +233,47 @@ export async function deleteAccount(
     throw new CliproxyRequestError(400, "That is not a credential this panel manages.");
   }
   await managementFetch(`/auth-files?name=${encodeURIComponent(name)}`, "DELETE");
+}
+
+/**
+ * Make one subscription credential the account its provider serves from.
+ *
+ * CLIProxyAPI has no notion of a preferred credential: every enabled file for
+ * a provider takes a share of the traffic. "Active" is therefore built from
+ * the one switch it does have — a per-file `disabled` flag its management API
+ * toggles (PATCH /auth-files/status, verified against v7.2.111, which writes
+ * the flag into the credential file so it survives a restart). Activating
+ * enables the chosen file first, so a failure part-way leaves the provider
+ * with at least one credential serving, and then disables its siblings.
+ *
+ * Claude is signed in through Claude Code and holds one account, which is
+ * always the active one; there is nothing to toggle there.
+ */
+export async function activateAccount(file: string): Promise<void> {
+  const name = file.trim();
+  if (name === CLAUDE_CODE_ACCOUNT_FILE) return;
+  if (
+    !name ||
+    name !== basename(name) ||
+    name.startsWith(".") ||
+    !name.toLowerCase().endsWith(".json")
+  ) {
+    throw new CliproxyRequestError(400, "That is not a credential this panel manages.");
+  }
+  const accounts = readCliproxyAccounts();
+  const chosen = accounts.find((account) => account.file === name);
+  if (!chosen) throw new CliproxyRequestError(404, "That account is not signed in.");
+
+  await managementFetch("/auth-files/status", "PATCH", { name, disabled: false });
+  for (const sibling of accounts) {
+    if (sibling.provider !== chosen.provider || sibling.file === name || !sibling.active) {
+      continue;
+    }
+    await managementFetch("/auth-files/status", "PATCH", {
+      name: sibling.file,
+      disabled: true,
+    });
+  }
 }
 
 /** Last path segment, treating both separators as such on every platform. */
@@ -386,6 +432,7 @@ export async function readStatus(userId: number, signal?: AbortSignal): Promise<
       file: CLAUDE_CODE_ACCOUNT_FILE,
       account: claudeStatus.email ?? claudeStatus.subscriptionType ?? "Signed in",
       connectedAt: null,
+      active: true,
     });
   }
 

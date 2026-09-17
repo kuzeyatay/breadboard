@@ -119,10 +119,10 @@ export async function executeGeneratedVisualCompilerOperation(launch) {
     fail("The generated-visual compiler request is outside its garden scope.");
   }
   const loaded = await import(pathToFileURL(compilerSource()).href);
-  if (typeof loaded.compileGeneratedVisualization !== "function") {
+  if (typeof loaded.compileGardenVisualization !== "function") {
     fail("The staged generated-visual compiler export is invalid.");
   }
-  return loaded.compileGeneratedVisualization(
+  return loaded.compileGardenVisualization(
     request.sourceCode,
     request.opportunity,
   );

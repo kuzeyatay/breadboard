@@ -23,7 +23,7 @@ export function conversationOrigin(conversation: ConversationRow) {
   ).get(conversation.legacy_chat_session_id) as { history_surface: string } | undefined;
   return {
     gardenSlug: garden?.slug ?? null,
-    originLabel: conversation.origin_label || conversationOriginLabel({
+    originLabel: conversation.origin_label === "PDF" ? "PDF Assistant" : conversation.origin_label || conversationOriginLabel({
       surface: conversation.surface,
       gardenName: garden?.name,
       historySurface: legacy?.history_surface,

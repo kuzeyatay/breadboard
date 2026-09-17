@@ -63,9 +63,12 @@ router explicitly; `/new` and review answers do not start an agent turn.
 
 ## Threading
 
-A WhatsApp thread keeps writing into the same Breadboard chat while it stays
-warm, and opens a new chat after a quiet spell (default 6 hours,
-`BREADBOARD_WHATSAPP_NEW_CHAT_AFTER_MINUTES`). The mapping lives in
+A WhatsApp thread keeps writing into the same Breadboard chat for one local
+calendar day, regardless of pauses between messages. The first message after
+midnight opens a new chat; `/new` can start a fresh chat within the day.
+Outgoing reminders and messages append to that same transcript alongside the
+user's messages and assistant replies. It appears as a normal chat in Recents.
+The mapping lives in
 `whatsapp_chats`; deleting the Breadboard chat simply causes the next message to
 open a new one.
 
@@ -137,7 +140,6 @@ desktop app.
 | `BREADBOARD_WHATSAPP_BRIDGE_PORT` | `8099` | Loopback port for the bridge's HTTP API. |
 | `BREADBOARD_WHATSAPP_NODE` | the server's own Node | Node binary used to spawn the bridge. |
 | `BREADBOARD_WHATSAPP_REPLY_PREFIX` | `🌱 *Breadboard*` header | Prepended in self-chat mode; also the bridge's echo guard, so an empty value is only safe in bot mode. |
-| `BREADBOARD_WHATSAPP_NEW_CHAT_AFTER_MINUTES` | `360` | Quiet period after which a thread opens a new chat. |
 
 ## Verified / not verified
 

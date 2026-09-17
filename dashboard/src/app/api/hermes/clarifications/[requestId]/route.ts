@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import db from "@/lib/db";
+import { resolveQuestionNotification } from "@/lib/chat-notifications/questions.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
   ApiError,
@@ -67,6 +69,7 @@ export async function POST(
       answer,
     });
 
+    resolveQuestionNotification(db, session.row.id, requestId);
     const activeRun = getActiveRuntimeRun(session.row.id);
     const courseCorrectionTargetClientMessageId = activeRun
       ? parseRuntimeRunDispatch(activeRun).clientMessageId

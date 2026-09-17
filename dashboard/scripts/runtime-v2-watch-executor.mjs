@@ -19,6 +19,8 @@ const MAX_FRAME_PATHS = 10_000;
 const MAX_WORK_DIRECTORY_BYTES = 3 * 1024 * 1024 * 1024;
 const MAX_WORK_DIRECTORY_ENTRIES = 50_000;
 const WATCH_PROCESS_TIMEOUT_MS = 5 * 60_000;
+// Garden video analysis of a lecture-length recording may raise the limit.
+const MAX_PROCESS_TIMEOUT_MS = 45 * 60_000;
 const CHATMOCK_TIMEOUT_MS = 120_000;
 const DETAILS = new Set(["transcript", "efficient", "balanced", "token-burner"]);
 const WHISPER_BACKENDS = new Set(["groq", "openai"]);
@@ -86,6 +88,7 @@ export function validateWatchRequest(value) {
       "whisper",
       "noWhisper",
       "noDedup",
+      "processTimeoutMs",
     ])
   ) fail("The Watch Runtime request is invalid.");
   const options = value.options;
@@ -104,7 +107,8 @@ export function validateWatchRequest(value) {
     !optionalNumber(options.fps, 0.01, 2) ||
     !(options.whisper === null || WHISPER_BACKENDS.has(options.whisper)) ||
     typeof options.noWhisper !== "boolean" ||
-    typeof options.noDedup !== "boolean"
+    typeof options.noDedup !== "boolean" ||
+    !optionalInteger(options.processTimeoutMs, 60_000, MAX_PROCESS_TIMEOUT_MS)
   ) fail("The Watch Runtime options are invalid.");
   if (value.sourceKind === "remote") validateRemoteUrlSyntax(value.source);
   return value;
@@ -125,10 +129,17 @@ export function expectedWatchInputCount(request) {
   return request.sourceKind === "local" ? 1 : 0;
 }
 
+function comparablePath(value) {
+  const resolved = path.resolve(value);
+  // Rust canonicalizes trusted Windows roots with the extended-length prefix;
+  // Node's realpath returns the ordinary spelling of the same direct path.
+  return process.platform === "win32"
+    ? path.toNamespacedPath(resolved).toLowerCase()
+    : resolved;
+}
+
 function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return comparablePath(left) === comparablePath(right);
 }
 
 function portableBasename(value) {
@@ -137,7 +148,7 @@ function portableBasename(value) {
 }
 
 function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  const relative = path.relative(comparablePath(root), comparablePath(candidate));
   return relative === "" ||
     (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
@@ -153,12 +164,13 @@ function directDirectory(value, label) {
   } catch {
     throw new WatchExecutorError("watch_runtime_unavailable", `${label} is unavailable.`);
   }
+  const canonical = fs.realpathSync.native(resolved);
   if (
     !metadata.isDirectory() ||
     metadata.isSymbolicLink() ||
-    !samePath(fs.realpathSync.native(resolved), resolved)
+    !samePath(canonical, resolved)
   ) throw new WatchExecutorError("watch_runtime_unavailable", `${label} is unavailable.`);
-  return resolved;
+  return canonical;
 }
 
 function directExecutable(value, label) {
@@ -172,12 +184,13 @@ function directExecutable(value, label) {
   } catch {
     throw new WatchExecutorError("watch_runtime_unavailable", `${label} is unavailable.`);
   }
+  const canonical = fs.realpathSync.native(resolved);
   if (
     !metadata.isFile() ||
     metadata.isSymbolicLink() ||
-    !samePath(fs.realpathSync.native(resolved), resolved)
+    !samePath(canonical, resolved)
   ) throw new WatchExecutorError("watch_runtime_unavailable", `${label} is unavailable.`);
-  return resolved;
+  return canonical;
 }
 
 function resolveWatchTools(env) {
@@ -491,7 +504,7 @@ async function runWatchProcess({ tools, options, source, outputDirectory, worksp
     timer = setTimeout(() => stopWith(new WatchExecutorError(
       "watch_timeout",
       "Watch exceeded its processing time limit.",
-    )), WATCH_PROCESS_TIMEOUT_MS);
+    )), options.processTimeoutMs ?? WATCH_PROCESS_TIMEOUT_MS);
     timer.unref?.();
     workspaceTimer = setInterval(() => {
       try {

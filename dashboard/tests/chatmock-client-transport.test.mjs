@@ -43,3 +43,23 @@ test("native ESM ChatMock clients always use the long-header undici dispatcher",
   assert.equal(client.fetch, productionFetch);
   assert.notEqual(client.fetch, globalThis.fetch);
 });
+
+test("a caller can outwait a deep reasoning model and forbid the SDK's own retries", () => {
+  const priorApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = priorApiKey || "transport-test-key";
+  try {
+    const plain = createChatmockClient("http://127.0.0.1:8765/v1");
+    // The SDK defaults: ten minutes and two silent retries.
+    assert.equal(plain.timeout, 600_000);
+    assert.equal(plain.maxRetries, 2);
+    const patient = createChatmockClient("http://127.0.0.1:8765/v1", {
+      timeout: 62 * 60 * 1000,
+      maxRetries: 0,
+    });
+    assert.equal(patient.timeout, 62 * 60 * 1000);
+    assert.equal(patient.maxRetries, 0);
+  } finally {
+    if (priorApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = priorApiKey;
+  }
+});

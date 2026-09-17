@@ -15,9 +15,10 @@
 // and the Watch skill use to decide what counts as "a video link" — so this
 // card appears for exactly the links the runtime would act on.
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ReclaimingVideo } from "@/app/components/reclaiming-media";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
+import { paletteFromCover, type PlayerPalette } from "@/lib/spotify/player-palette";
 import { videoSourceFor, videoUrlsIn, type VideoSource } from "@/lib/video-sources/identity";
 
 interface Props {
@@ -46,10 +47,17 @@ function youtubeVideoId(source: VideoSource): string | null {
     : null;
 }
 
-function PlayGlyph() {
+type PlayPalette = Pick<PlayerPalette, "surface" | "foreground">;
+
+const DEFAULT_PLAY_PALETTE: PlayPalette = { surface: "#171717", foreground: "#ffffff" };
+
+function PlayGlyph({ palette = DEFAULT_PLAY_PALETTE }: { palette?: PlayPalette }) {
   return (
-    <span className="grid h-14 w-14 place-items-center rounded-full bg-black/60 text-white shadow-lg transition group-hover:scale-105 group-hover:bg-black/75">
-      <svg className="h-6 w-6 translate-x-0.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+    <span
+      className="relative grid h-14 w-14 place-items-center rounded-full shadow-lg transition group-hover:scale-105 group-hover:brightness-110"
+      style={{ backgroundColor: palette.surface, color: palette.foreground }}
+    >
+      <svg className="h-6 w-6 translate-x-0.5" viewBox="0 0 24 24" fill={palette.foreground} aria-hidden>
         <path d="M8 5.5v13l11-6.5-11-6.5Z" />
       </svg>
     </span>
@@ -58,6 +66,7 @@ function PlayGlyph() {
 
 function YouTubeEmbed({ source }: { source: VideoSource }) {
   const [playing, setPlaying] = useState(false);
+  const [palette, setPalette] = useState<PlayPalette>(DEFAULT_PLAY_PALETTE);
   const videoId = youtubeVideoId(source);
   if (!videoId) return null;
   return (
@@ -86,8 +95,18 @@ function YouTubeEmbed({ source }: { source: VideoSource }) {
             alt=""
             className="absolute inset-0 h-full w-full object-cover"
             loading="lazy"
+            onLoad={(event) => {
+              const thumbnail = event.currentTarget;
+              // Sample only after the lazy thumbnail loads. The separate CORS
+              // image keeps the visible preview working if sampling is blocked.
+              void paletteFromCover(thumbnail.currentSrc).then((colors) => {
+                if (thumbnail.isConnected) setPalette(colors);
+              }).catch(() => {
+                // The neutral fallback stays legible without theme color tokens.
+              });
+            }}
           />
-          <PlayGlyph />
+          <PlayGlyph palette={palette} />
         </button>
       )}
     </div>
@@ -141,6 +160,32 @@ function VerticalEmbed({ source }: { source: VideoSource }) {
   );
 }
 
+function VideoLinkCard({ source, children }: { source: VideoSource; children: ReactNode }) {
+  const vertical = source.provider === "tiktok" || source.provider === "instagram";
+  // Enlarging is left to the player itself: YouTube, TikTok and Instagram ship
+  // a fullscreen control inside their iframes (delegated via allow="fullscreen"),
+  // and the native <video> has one in its controls. A second button here only
+  // ever duplicated that.
+  return (
+    <div className={`w-full ${vertical ? "max-w-[min(17rem,64vw)]" : "max-w-[min(32rem,72vw)]"}`}>
+      <div className="neu-surface-raised w-full overflow-hidden rounded-[22px] border border-[var(--line)] p-1">
+        {children}
+        <div className="flex items-center px-2 pt-1">
+          <a
+            href={source.canonicalUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)] hover:text-[var(--ink-heading)] hover:underline"
+            title={source.originalUrl}
+          >
+            {PROVIDER_NAME[source.provider]} · {source.label} ↗
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
   const sources = useMemo(() => {
     if (!text) return [];
@@ -166,14 +211,7 @@ export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
       {sources.map((source) => {
         const vertical = source.provider === "tiktok" || source.provider === "instagram";
         return (
-          <div
-            key={source.key}
-            className={`neu-surface-raised w-full overflow-hidden rounded-[22px] border border-[var(--line)] p-1 ${
-              // Vertical video in a 32rem-wide card would tower over the
-              // transcript; a narrower card keeps 9:16 at a sane height.
-              vertical ? "max-w-[min(17rem,64vw)]" : "max-w-[min(32rem,72vw)]"
-            }`}
-          >
+          <VideoLinkCard key={source.key} source={source}>
             {source.provider === "youtube" ? (
               <YouTubeEmbed source={source} />
             ) : vertical ? (
@@ -187,16 +225,7 @@ export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
                 className="block max-h-80 w-full rounded-[18px] bg-black"
               />
             )}
-            <a
-              href={source.canonicalUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="block truncate px-2 pb-1 pt-1.5 text-xs text-[var(--ink-muted)] hover:text-[var(--ink-heading)] hover:underline"
-              title={source.originalUrl}
-            >
-              {PROVIDER_NAME[source.provider]} · {source.label} ↗
-            </a>
-          </div>
+          </VideoLinkCard>
         );
       })}
     </div>

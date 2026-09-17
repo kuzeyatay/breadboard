@@ -129,7 +129,7 @@ function artifactsFromEvents(events: readonly OuterAgentEvent[]): HyperframesArt
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string) => {
     const resolved = path.normalize(path.resolve(value));
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    return process.platform === "win32" ? path.toNamespacedPath(resolved).toLowerCase() : resolved;
   };
   return normalize(left) === normalize(right);
 }

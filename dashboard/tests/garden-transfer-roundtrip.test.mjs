@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { buffer as readBuffer } from "node:stream/consumers";
 import test, { after, describe } from "node:test";
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-transfer-"));
@@ -86,10 +87,11 @@ function relativeFiles(dir) {
   return found.sort();
 }
 
-describe("exporting and importing a garden", () => {
+describe("exporting and importing a garden", async () => {
   seedGarden("signals", "Signals", "EE Year 1/Semester 2");
 
   const download = exportGardenArchive(USER, "signals");
+  const buffer = await readBuffer(download.stream);
 
   test("the download is named and typed after the file format", () => {
     assert.equal(download.kind, "garden");
@@ -105,7 +107,7 @@ describe("exporting and importing a garden", () => {
   });
 
   test("importing it back makes a second, independent garden", async () => {
-    const result = await importTransferArchive(USER, download.buffer);
+    const result = await importTransferArchive(USER, buffer);
 
     assert.equal(result.kind, "garden");
     assert.equal(result.gardens.length, 1);
@@ -134,7 +136,7 @@ describe("exporting and importing a garden", () => {
   });
 
   test("the content arrives, without the rebuild scratch", async () => {
-    const result = await importTransferArchive(USER, download.buffer);
+    const result = await importTransferArchive(USER, buffer);
     const dir = path.join(contentRoot, result.gardens[0].slug);
 
     assert.deepEqual(relativeFiles(dir), [
@@ -150,7 +152,7 @@ describe("exporting and importing a garden", () => {
   });
 
   test("a target cluster overrides where it lands", async () => {
-    const result = await importTransferArchive(USER, download.buffer, {
+    const result = await importTransferArchive(USER, buffer, {
       targetFolder: "Archive",
     });
     assert.equal(result.gardens[0].folder, "Archive");
@@ -158,7 +160,7 @@ describe("exporting and importing a garden", () => {
   });
 });
 
-describe("exporting and importing a cluster", () => {
+describe("exporting and importing a cluster", async () => {
   seedGarden("circuits", "Circuits", "EE Year 2");
   seedGarden("fields", "Fields", "EE Year 2/Semester 1");
   seedGarden("elsewhere", "Elsewhere", "Other");
@@ -168,6 +170,7 @@ describe("exporting and importing a cluster", () => {
   ).run(USER);
 
   const download = exportClusterArchive(USER, "EE Year 2");
+  const buffer = await readBuffer(download.stream);
 
   test("it carries the whole subtree and nothing outside it", () => {
     assert.equal(download.kind, "cluster");
@@ -184,7 +187,7 @@ describe("exporting and importing a cluster", () => {
   });
 
   test("importing it rebuilds the tree under a free name", async () => {
-    const result = await importTransferArchive(USER, download.buffer);
+    const result = await importTransferArchive(USER, buffer);
 
     // "EE Year 2" is taken, so the imported copy is suffixed rather than merged.
     assert.equal(result.clusterPath, "EE Year 2 2");
@@ -208,7 +211,7 @@ describe("exporting and importing a cluster", () => {
   });
 
   test("importing into a target cluster nests the whole subtree under it", async () => {
-    const result = await importTransferArchive(USER, download.buffer, {
+    const result = await importTransferArchive(USER, buffer, {
       targetFolder: "Archive",
     });
 

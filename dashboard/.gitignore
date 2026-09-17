@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/hyperframes-browser/
 /.pnp
 .pnp.*
 .yarn/*
@@ -21,6 +22,7 @@
 
 # production
 /build
+/public/assistant-widgets/
 
 # misc
 .DS_Store
@@ -42,3 +44,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Built from Quartz's Markdown transforms; bundled into the dashboard server.
+/src/lib/generated/quartz-reader.mjs

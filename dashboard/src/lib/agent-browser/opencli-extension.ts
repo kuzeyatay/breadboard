@@ -31,7 +31,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   externalRuntimePathExists,
   externalRuntimeReadUtf8,

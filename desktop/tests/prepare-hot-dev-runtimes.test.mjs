@@ -14,7 +14,7 @@ import { HERMES_SOURCE_HOOK } from "../scripts/hermes-python-source-hook.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredByTarget = Object.freeze({
-  node: Object.freeze(["runtimes/node/node.exe"]),
+  node: Object.freeze(["runtimes/node/node.exe", "runtimes/node/node_modules/npm/bin/npm-cli.js"]),
   python: Object.freeze([
     "runtimes/python/Lib/site-packages/breadboard-chatmock.pth",
     "runtimes/python/Lib/site-packages/breadboard-hermes.pth",
@@ -33,7 +33,7 @@ const requiredByTarget = Object.freeze({
     "runtimes/humanizer-python/runtime-artifact.json",
   ]),
 });
-const allRequiredPaths = Object.freeze(Object.values(requiredByTarget).flat().sort());
+const allRequiredPaths = Object.freeze(Object.values(requiredByTarget).flat().sort((a, b) => a.localeCompare(b)));
 
 function servicesManifest() {
   return {
@@ -147,6 +147,20 @@ test("cached Python repairs its source hooks without rebuilding dependencies", (
     "runtimes/python/Lib/site-packages/breadboard-chatmock.pth"), "utf8"), CHATMOCK_SOURCE_HOOK);
   assert.equal(fs.readFileSync(path.join(current.runtimeRoot,
     "runtimes/python/Lib/site-packages/breadboard-hermes.pth"), "utf8"), HERMES_SOURCE_HOOK);
+});
+
+test("an existing Node without npm is repaired before first-run tools start", (t) => {
+  const current = fixture();
+  t.after(() => fs.rmSync(current.root, { recursive: true, force: true }));
+  fs.rmSync(path.join(current.runtimeRoot, "runtimes/node/node_modules/npm/bin/npm-cli.js"));
+  const calls = [];
+  const result = prepareHotDevRuntimes(options(current, (target, context) => {
+    calls.push(target);
+    for (const relativePath of context.requiredPaths) writeRuntimeFile(context.runtimeRoot, relativePath);
+    return { status: 0 };
+  }));
+  assert.deepEqual(calls, ["node"]);
+  assert.deepEqual(result.preparedTargets, ["node"]);
 });
 
 test("only missing reviewed runtime groups invoke their exact preparer targets", (t) => {

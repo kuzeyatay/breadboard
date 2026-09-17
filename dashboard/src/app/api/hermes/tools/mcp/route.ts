@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertGuardedPrinterMcp } from "@/lib/bambu/mcp-guard.ts";
 import {
   addProxyMcpConnection,
   callProxyMcpTool,
@@ -244,6 +245,8 @@ export async function POST(request: Request) {
       try {
         const data = await executeComposioAction({
           userId: session.user_id,
+          signal: request.signal,
+          allowedGardenIds: verified.token.allowedGardenIds ?? (verified.token.activeGardenId ? [verified.token.activeGardenId] : []),
           action: action.name,
           args,
         });
@@ -360,6 +363,7 @@ export async function POST(request: Request) {
         "That connection is unavailable.",
       );
     }
+    assertGuardedPrinterMcp(connection);
     const config = runtimeMcpConfig(connection);
     const statuses = await addProxyMcpConnection(
       session.user_id,

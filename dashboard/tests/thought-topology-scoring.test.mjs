@@ -72,7 +72,7 @@ test("median/MAD threshold uses fallback and both clamps on each score scale", (
   assert.ok(Math.abs(half.anchorMargin - 0.06) < 1e-12);
 });
 
-test("mutual neighborhoods stay sparse and enforce the inferred degree cap", () => {
+test("endpoint choices stay sparse without a hard incoming degree cap", () => {
   const candidates = [];
   for (let left = 0; left < 10; left += 1) {
     for (let right = left + 1; right < 10; right += 1) {
@@ -92,8 +92,27 @@ test("mutual neighborhoods stay sparse and enforce the inferred degree cap", () 
     degrees.set(edge.source, (degrees.get(edge.source) ?? 0) + 1);
     degrees.set(edge.target, (degrees.get(edge.target) ?? 0) + 1);
   }
-  assert.ok([...degrees.values()].every((degree) => degree <= 6));
+  assert.ok([...degrees.values()].every((degree) => degree >= 1));
   assert.ok(selected.length < candidates.length);
+});
+
+test("a busy source cannot veto another node's strongest connection", () => {
+  const candidates = Array.from({ length: 20 }, (_, index) => ({
+    source: "textbook",
+    target: `page-${index}`,
+    sourceFolderId: "sources",
+    targetFolderId: index % 2 ? "learning/chapter" : "notes",
+    score: 0.8 - index * 0.02,
+    components: { embedding: 0.8, concept: 0, lexical: 0 },
+  }));
+  for (const threshold of [0.3, 0.9]) {
+    const selected = scoring.selectSparseInferredEdges(candidates, threshold);
+    assert.equal(selected.length, 20, "every page can choose the same source");
+    assert.deepEqual(
+      new Set(selected.map((edge) => edge.target)),
+      new Set(candidates.map((edge) => edge.target)),
+    );
+  }
 });
 
 test("a homogeneous garden keeps each page's best pair above the floor instead of ending unconnected", () => {

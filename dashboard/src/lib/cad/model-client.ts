@@ -26,7 +26,11 @@ import type { CADDesignSpec, CADValidationIssue } from "./types.ts";
 // Complex parametric parts can legitimately take several minutes on reasoning
 // models. A timeout is an honest no-result: callers never substitute canned CAD.
 const DEFAULT_REQUEST_TIMEOUT_MS = 600_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const MAX_TOOL_RESULT_CHARS = 12_000;
+// SSE repeats envelope fields for each token; allow that overhead above the
+// tool schema's 400k-character source limit while still bounding the stream.
+const MAX_MODEL_STREAM_BYTES = 16_000_000;
 
 export class CadModelError extends Error {
   readonly code: string;
@@ -57,6 +61,9 @@ export interface CadModelTarget {
   signal?: AbortSignal;
   onUsage?: (usage: unknown) => void;
   requestTimeoutMs?: number;
+  requestIdleTimeoutMs?: number;
+  /** Progress only; model reasoning is never exposed as CAD output. */
+  onProgress?: () => void;
 }
 
 function completionsUrl(baseUrl: string): string {
@@ -105,6 +112,7 @@ function unreachable(
   deadline: AbortSignal,
   error: unknown,
   timeoutMs: number,
+  idleTimeout = false,
 ): CadModelError {
   if (target.signal?.aborted) {
     return new CadModelError("aborted", "The run was stopped before the model answered.");
@@ -112,7 +120,9 @@ function unreachable(
   if (deadline.aborted) {
     return new CadModelError(
       "model_timeout",
-      `The model endpoint did not answer within ${Math.round(timeoutMs / 1_000)}s.`,
+      idleTimeout
+        ? `The model endpoint stopped sending progress for ${Math.round(timeoutMs / 1_000)}s.`
+        : `The model endpoint did not answer within ${Math.round(timeoutMs / 1_000)}s.`,
     );
   }
   return new CadModelError(
@@ -124,20 +134,128 @@ function unreachable(
   );
 }
 
+interface CompletionOptions {
+  allowedToolNames?: readonly string[];
+  forcedToolName?: string;
+  /** The backend whose tool contracts the model is shown. */
+  engine?: CadEngineId;
+}
+
+async function streamedCompletion(
+  response: Response,
+  progress: () => void,
+): Promise<{ choices: Array<{ message: { content: string; tool_calls: ToolCall[] } }>; usage?: unknown }> {
+  if (!response.body) throw new CadModelError("invalid_response", "The model returned an empty stream.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const calls = new Map<number, ToolCall>();
+  let buffer = "";
+  let content = "";
+  let usage: unknown;
+  let finished = false;
+  let done = false;
+  let received = 0;
+  const frame = (raw: string) => {
+    const data = raw.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart()).join("\n").trim();
+    if (!data) return;
+    if (data === "[DONE]") { done = true; return; }
+    const chunk = JSON.parse(data);
+    if (chunk.error) {
+      throw new CadModelError("model_unavailable", humanizeProviderError(
+        typeof chunk.error === "string" ? chunk.error : chunk.error.message ?? "The model stream failed.",
+      ));
+    }
+    if (chunk.usage) usage = chunk.usage;
+    const choice = chunk.choices?.find((item: { index?: number }) => (item.index ?? 0) === 0);
+    if (!choice) return;
+    const delta = choice.delta ?? {};
+    let active = false;
+    if (typeof delta.content === "string" && delta.content) {
+      content += delta.content;
+      active = true;
+    }
+    // A reasoning delta is liveness, never part of the answer or tool payload.
+    if ([delta.reasoning_content, delta.reasoning, delta.reasoning_summary]
+      .some((value) => typeof value === "string" && value.length > 0)) active = true;
+    for (const part of delta.tool_calls ?? []) {
+      const index = part.index ?? 0;
+      if (!Number.isSafeInteger(index) || index < 0 || index > 15) {
+        throw new CadModelError("invalid_response", "The model returned an invalid tool stream.");
+      }
+      const call: ToolCall = calls.get(index) ?? { id: "", type: "function", function: { name: "", arguments: "" } };
+      if (typeof part.id === "string") call.id = part.id;
+      if (typeof part.function?.name === "string") call.function.name += part.function.name;
+      if (typeof part.function?.arguments === "string") {
+        call.function.arguments += part.function.arguments;
+        active ||= part.function.arguments.length > 0;
+      }
+      calls.set(index, call);
+    }
+    if (active) progress();
+    if (choice.finish_reason) {
+      if (!["stop", "tool_calls"].includes(choice.finish_reason)) {
+        throw new CadModelError("incomplete_response", "The model stopped before completing the CAD tool call.");
+      }
+      finished = true;
+    }
+  };
+  try {
+    while (!done) {
+      const next = await reader.read();
+      if (next.done) { buffer += decoder.decode(); break; }
+      received += next.value.byteLength;
+      if (received > MAX_MODEL_STREAM_BYTES) throw new CadModelError("invalid_response", "The model response exceeded the CAD size limit.");
+      buffer += decoder.decode(next.value, { stream: true });
+      let boundary: RegExpExecArray | null;
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const raw = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        frame(raw);
+        if (done) break;
+      }
+    }
+    if (!done && buffer.trim()) frame(buffer);
+    if (!finished || [...calls.values()].some((call) => !call.id || !call.function.name)) {
+      throw new CadModelError("incomplete_response", "The model stream ended before completing the CAD response.");
+    }
+    return {
+      choices: [{ message: { content, tool_calls: [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call) } }],
+      ...(usage ? { usage } : {}),
+    };
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 async function completion(
   target: CadModelTarget,
   messages: ChatMessage[],
-  options: {
-    allowedToolNames?: readonly string[];
-    forcedToolName?: string;
-    /** The backend whose tool contracts the model is shown. */
-    engine?: CadEngineId;
-  } = {},
+  options: CompletionOptions = {},
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
+  if (target.signal?.aborted) {
+    throw new CadModelError("aborted", "The run was stopped before the model answered.");
+  }
   const controller = new AbortController();
   const timeoutMs = Math.max(15_000, target.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const idleMs = Math.min(timeoutMs, Math.max(15_000, target.requestIdleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS));
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
+  let idleExpired = false;
+  const onIdle = () => { idleExpired = true; controller.abort(); };
+  let idleTimer: ReturnType<typeof setTimeout>;
+  const progress = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(onIdle, idleMs);
+    idleTimer.unref?.();
+    target.onProgress?.();
+  };
+  idleTimer = setTimeout(onIdle, idleMs);
+  idleTimer.unref?.();
+  const failure = (error: unknown) => unreachable(
+    target, controller.signal, error, idleExpired ? idleMs : timeoutMs, idleExpired,
+  );
   const onAbort = () => controller.abort();
   target.signal?.addEventListener("abort", onAbort);
   try {
@@ -165,13 +283,15 @@ async function completion(
               ? { type: "function", function: { name: options.forcedToolName } }
               : "auto",
             parallel_tool_calls: false,
+            stream: true,
+            stream_options: { include_usage: true },
             ...(target.reasoningEffort ? { reasoning_effort: target.reasoningEffort } : {}),
           }),
           signal: controller.signal,
         }),
-      { ...(target.signal ? { signal: target.signal } : {}) },
+      { signal: controller.signal },
     ).catch((error: unknown) => {
-      throw unreachable(target, controller.signal, error, timeoutMs);
+      throw failure(error);
     });
     if (!response.ok) {
       // The upstream usually says why, and says it to the person who can act on
@@ -188,8 +308,13 @@ async function completion(
     // The body is a second place the connection can die — a gateway killed
     // between its headers and its answer sends a complete-looking 200 and then
     // nothing, which surfaces here as "terminated" rather than as a status.
-    const data = (await response.json().catch((error: unknown) => {
-      if (isTransportFailure(error)) throw unreachable(target, controller.signal, error, timeoutMs);
+    const streamed = response.headers?.get("content-type")?.includes("text/event-stream");
+    const data = (await (streamed ? streamedCompletion(response, progress) : response.json()).catch((error: unknown) => {
+      if (controller.signal.aborted || target.signal?.aborted) {
+        throw failure(error);
+      }
+      if (error instanceof CadModelError) throw error;
+      if (isTransportFailure(error)) throw failure(error);
       throw new CadModelError(
         "invalid_response",
         "The model endpoint returned a response Breadboard could not read.",
@@ -198,6 +323,9 @@ async function completion(
       choices?: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }>;
       usage?: unknown;
     };
+    if (controller.signal.aborted || target.signal?.aborted) {
+      throw failure(new Error("Request aborted"));
+    }
     if (data.usage) target.onUsage?.(data.usage);
     const message = data.choices?.[0]?.message;
     if (!message) {
@@ -209,7 +337,67 @@ async function completion(
     };
   } finally {
     clearTimeout(timer);
+    clearTimeout(idleTimer);
     target.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Retry only unanswered, forced model phases; no CAD tool has run yet. */
+async function phaseCompletion(
+  target: CadModelTarget,
+  messages: ChatMessage[],
+  options: CompletionOptions,
+  context: CadToolContext,
+): Promise<{ content: string; toolCalls: ToolCall[] }> {
+  let lastProgress = 0;
+  const phaseTarget = {
+    ...target,
+    onProgress: () => {
+      target.onProgress?.();
+      if (Date.now() - lastProgress < 15_000) return;
+      lastProgress = Date.now();
+      context.emit?.("cad.model.progress", {
+        phase: options.forcedToolName === "cad_create_project" ? "spec" : "source",
+      });
+    },
+  };
+  try {
+    return await completion(phaseTarget, messages, options);
+  } catch (error) {
+    const tool = options.forcedToolName;
+    const remaining = context.modelTimeoutRecoveriesRemaining ?? 1;
+    if (
+      !(error instanceof CadModelError) || error.code !== "model_timeout" ||
+      target.signal?.aborted || remaining <= 0 || context.attemptsRemaining <= 0 ||
+      (tool !== "cad_create_project" && tool !== "cad_generate_model")
+    ) throw error;
+
+    context.modelTimeoutRecoveriesRemaining = remaining - 1;
+    context.emit?.("cad.model.retrying", {
+      phase: tool === "cad_create_project" ? "spec" : "source",
+      reason: error.code,
+      message: tool === "cad_create_project"
+        ? "The design planning request timed out. Retrying once with a more concise planning pass."
+        : "The model generation request timed out. Retrying once from the saved design specification.",
+    });
+    return completion({
+      ...phaseTarget,
+      reasoningEffort: ["none", "minimal", "low"].includes(target.reasoningEffort ?? "")
+        ? target.reasoningEffort
+        : "low",
+    }, [
+      ...messages,
+      {
+        role: "user",
+        content: [
+          `The previous model request timed out before returning a usable tool call. Call ${tool} immediately.`,
+          "Keep every requested component, dimension, joint, and functional requirement. Omit planning commentary and alternative designs.",
+          tool === "cad_create_project"
+            ? "Return only the concise structured specification; source generation happens after it is saved."
+            : "Use compact reusable helpers for repeated geometry, preserve the saved specification, and return the complete program for validation.",
+        ].join("\n"),
+      },
+    ], options);
   }
 }
 
@@ -273,11 +461,11 @@ export async function runCadAgentLoop(input: CadAgentLoopInput): Promise<CadAgen
     if (input.signal?.aborted) {
       return { answer, projectId: input.toolContext.projectId ?? null, toolCalls, stoppedBecause: "aborted" };
     }
-    const { content, toolCalls: proposed } = await completion(input, messages, {
+    const { content, toolCalls: proposed } = await phaseCompletion(input, messages, {
       ...(input.allowedToolNames ? { allowedToolNames: input.allowedToolNames } : {}),
       ...(input.forcedToolName ? { forcedToolName: input.forcedToolName } : {}),
       engine: input.toolContext.engine ?? DEFAULT_CAD_ENGINE,
-    });
+    }, input.toolContext);
     if (content) answer = content;
     messages.push({
       role: "assistant",
@@ -444,13 +632,13 @@ export async function runCadProjectBuildPhase(input: CadModelTarget & {
       )
         ? input.reasoningEffort
         : "medium",
-      requestTimeoutMs: Math.min(input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, 240_000),
+      requestTimeoutMs: input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     };
-    const completed = await completion(buildTarget, messages, {
+    const completed = await phaseCompletion(buildTarget, messages, {
       allowedToolNames: ["cad_generate_model"],
       forcedToolName: "cad_generate_model",
       engine,
-    });
+    }, input.toolContext);
     if (completed.content) answer = completed.content;
     const proposed = completed.toolCalls.find(
       (call) => call.function.name === "cad_generate_model",

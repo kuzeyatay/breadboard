@@ -11,6 +11,25 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 const MIN_RUNTIME_MS = 1_000;
 const MAX_RUNTIME_MS = 3_600_000;
 const CHECKPOINT_INTERVAL_MS = 250;
+const POWERSHELL_ERROR_MARKER = "[Breadboard PowerShell diagnostics]";
+
+// PowerShell can exit 0 with no output after SilentlyContinue swallowed every
+// error (including a bad regex inside a multi-million-file scan). Keep streaming
+// the command normally, then expose a bounded diagnostic from its error buffer.
+// The original script runs in a child scope, away from our bookkeeping variables.
+export function wrapPowerShellCommand(command) {
+  return `& {\n${command}\n}
+$breadboardTerminalSucceeded = $?
+if ($Error.Count -gt 0) {
+  [Console]::Error.WriteLine('${POWERSHELL_ERROR_MARKER} ' + $Error.Count + ' error(s) recorded; recent errors (may include handled errors):')
+  foreach ($breadboardTerminalError in ($Error | Microsoft.PowerShell.Utility\\Select-Object -First 3)) {
+    $breadboardTerminalDiagnostic = [string]$breadboardTerminalError.Exception.Message
+    [Console]::Error.WriteLine($breadboardTerminalDiagnostic.Substring(0, [Math]::Min(1000, $breadboardTerminalDiagnostic.Length)))
+  }
+}
+if (-not $breadboardTerminalSucceeded) { exit 1 }
+`;
+}
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -168,7 +187,7 @@ export async function executeTerminalCommand(launch, signal, progress) {
   const workspaceRoot = directDirectory(request.workspaceRoot);
   const executable = resolveRuntimeTerminalShell();
   const args = process.platform === "win32"
-    ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request.command]
+    ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", wrapPowerShellCommand(request.command)]
     : ["-lc", request.command];
   const child = spawn(executable, args, {
     cwd: workspaceRoot,
@@ -208,6 +227,8 @@ export async function executeTerminalCommand(launch, signal, progress) {
       settled = true;
       clearTimeout(timeout);
       signal.removeEventListener("abort", onAbort);
+      // Error records can include errors the script deliberately handled. Keep
+      // the shell's exit code; diagnostics expose them without inventing one.
       state.exitCode = exitCode;
       if (checkpointFault) {
         reject(checkpointFault);

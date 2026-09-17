@@ -7,6 +7,30 @@ const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{1,79}$/;
 const MAX_CONTROLS = 16;
 const MAX_OUTPUTS = 20;
 
+/** Stage a representation change for a revision without mutating the ready plan.
+ * The package still goes through the normal compiler and browser gates. The
+ * service persists this candidate plan only with a successful publication.
+ */
+export function interactiveVisualizerPlanForAttempt(input: {
+  plan: InteractiveVisualizerPlan;
+  operation: "create" | "revise";
+  packageValue: unknown;
+  revisionPrompt?: string;
+}): InteractiveVisualizerPlan {
+  const { plan, packageValue } = input;
+  if (input.operation !== "revise" || !isRecord(packageValue) ||
+      !isRecord(packageValue.manifest)) return plan;
+  const mode = packageValue.manifest.mode;
+  if (mode !== "2d" && mode !== "3d" && mode !== "hybrid") return plan;
+  if (mode === plan.mode) return plan;
+  return {
+    ...plan,
+    mode,
+    rationale: input.revisionPrompt?.trim().slice(0, 2_000) ||
+      `Revise the existing visualization to use ${mode} representation.`,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -133,4 +157,51 @@ export function validateInteractiveVisualizerPlan(
     plan: errors.length === 0 ? value as unknown as InteractiveVisualizerPlan : null,
     errors,
   };
+}
+
+const CUSTOM_PACKAGE_FILES = ["index.html", "styles.css", "main.js"] as const;
+
+/**
+ * Cheap structural precheck of a package before a job row, a repair attempt,
+ * or a Runtime worker is spent on it. Models occasionally answer the nested
+ * package schema with numeric stand-ins (`"files": 0`, `"manifest": 0`); the
+ * worker's compiler would reject those too, but only after a job was opened
+ * and an attempt consumed. The compiler remains the authority on everything
+ * else, so this checks presence and JSON type only.
+ */
+export function precheckInteractiveVisualizerPackage(value: unknown): string[] {
+  if (!isRecord(value)) return ["package must be an object"];
+  const errors: string[] = [];
+  const schemaVersion = value.schemaVersion;
+  if (schemaVersion !== 1 && schemaVersion !== 2) {
+    errors.push("package.schemaVersion must be 1 or 2");
+  }
+  const placeholder = (field: string, item: unknown) =>
+    typeof item === "number"
+      ? `package.${field} is a number placeholder; send the full object`
+      : `package.${field} must be an object`;
+  if (!isRecord(value.manifest)) errors.push(placeholder("manifest", value.manifest));
+  for (const field of ["assumptions", "limitations", "sourceReferences", "semanticTests"] as const) {
+    if (!Array.isArray(value[field])) {
+      errors.push(`package.${field} must be an array`);
+    } else if (field === "sourceReferences" || field === "semanticTests") {
+      (value[field] as unknown[]).forEach((item, index) => {
+        if (!isRecord(item)) errors.push(placeholder(`${field}[${index}]`, item));
+      });
+    }
+  }
+  if (schemaVersion === 2) {
+    if (!isRecord(value.files)) {
+      errors.push(placeholder("files", value.files));
+    } else {
+      for (const name of CUSTOM_PACKAGE_FILES) {
+        if (typeof value.files[name] !== "string" || !value.files[name].trim()) {
+          errors.push(`package.files["${name}"] must be a non-empty string`);
+        }
+      }
+    }
+  } else if (schemaVersion === 1 && !isRecord(value.definition)) {
+    errors.push(placeholder("definition", value.definition));
+  }
+  return errors;
 }

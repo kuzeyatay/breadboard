@@ -1,3 +1,13 @@
+import type { ChatNotificationTarget } from "../chat-notification-inbox.ts";
+
+/** Compact account inbox entry, shared by every history list. */
+export interface UnreadChatRecord {
+  id: string;
+  target: ChatNotificationTarget;
+}
+
+// Legacy local-storage helpers. Live surfaces use unread-client.ts and the
+// account inbox; these keys are no longer a source of reading state.
 // Chats that answered while the user was looking at something else.
 //
 // A run keeps going after the user opens another chat, so an answer routinely

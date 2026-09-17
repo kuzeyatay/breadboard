@@ -17,9 +17,6 @@ import { repositoryRoot } from "../runtime-paths.ts";
 /** Default port for the bridge's loopback HTTP server. */
 const DEFAULT_BRIDGE_PORT = 8099;
 
-/** A WhatsApp chat that has been quiet this long starts a fresh Breadboard chat. */
-const DEFAULT_NEW_CHAT_AFTER_MINUTES = 360;
-
 /**
  * Prefixed onto every outgoing reply. Deliberately non-empty: in self-chat mode
  * our own replies come back as inbound `fromMe` messages, and the prefix is the
@@ -63,6 +60,16 @@ export function whatsAppSessionDir(): string {
   return path.join(base, "platforms", "whatsapp", "session");
 }
 
+/** Explicit paths shared with the bridge, including packaged Windows installs. */
+export function whatsAppMediaDirectories(): { image: string; document: string; audio: string } {
+  const root = path.join(path.dirname(whatsAppSessionDir()), "media");
+  return {
+    image: path.resolve(trimmedEnv("HERMES_IMAGE_CACHE_DIR") || path.join(root, "images")),
+    document: path.resolve(trimmedEnv("HERMES_DOCUMENT_CACHE_DIR") || path.join(root, "documents")),
+    audio: path.resolve(trimmedEnv("HERMES_AUDIO_CACHE_DIR") || path.join(root, "audio")),
+  };
+}
+
 export function whatsAppBridgePort(): number {
   const configured = Number(trimmedEnv("BREADBOARD_WHATSAPP_BRIDGE_PORT"));
   return Number.isInteger(configured) && configured > 0 && configured < 65_536
@@ -94,18 +101,6 @@ export function whatsAppReplyPrefix(): string {
   const configured = process.env.BREADBOARD_WHATSAPP_REPLY_PREFIX;
   if (configured === undefined) return DEFAULT_REPLY_PREFIX;
   return configured.replace(/\\n/g, "\n");
-}
-
-export function whatsAppNewChatAfterMs(): number {
-  // `Number("")` is 0, so an unset variable must be rejected before parsing —
-  // otherwise the window collapses and every message opens a brand-new chat.
-  const raw = trimmedEnv("BREADBOARD_WHATSAPP_NEW_CHAT_AFTER_MINUTES");
-  const configured = raw ? Number(raw) : Number.NaN;
-  const minutes =
-    Number.isFinite(configured) && configured >= 0
-      ? configured
-      : DEFAULT_NEW_CHAT_AFTER_MINUTES;
-  return Math.round(minutes * 60_000);
 }
 
 export interface WhatsAppTimings {

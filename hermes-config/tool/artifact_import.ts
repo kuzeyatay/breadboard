@@ -43,7 +43,7 @@ async function call(
 
 export default tool({
   description:
-    "Save an original file as a durable artifact in this exact chat. For a file attached to the current user message, pass its exact attachmentName (or 1-based attachmentIndex); path, kind, title, and filename are inferred and the original bytes are preserved. For a generated workspace file, pass path, kind, and title. Supports every chat upload format. The server verifies ownership, signatures, paths, and size limits.",
+    "Save an original file as a durable artifact in this exact chat. Import an attached file only when the user asks to save that upload; do not import source material just to read, summarize, or write from it. For a file attached to the current user message, pass its exact attachmentName (or 1-based attachmentIndex); path, kind, title, and filename are inferred and the original bytes are preserved. Publish a generated workspace file only when the user requested file output; pass path, kind, and title. A produced folder is published as one artifact with kind folder and its directory path; a file with no dedicated kind uses kind unknown. Supports every chat upload format. The server verifies ownership, signatures, paths, and size limits.",
   args: {
     kind: tool.schema.enum([
       "text",
@@ -61,6 +61,7 @@ export default tool({
       "code",
       "unknown",
       "model",
+      "folder",
     ]).optional(),
     title: tool.schema.string().optional(),
     path: tool.schema.string().optional(),

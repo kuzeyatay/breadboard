@@ -62,3 +62,23 @@ test("the semantic projection drops ingest scaffolding sections and provenance l
   assert.ok(!kept.includes("Source: [["));
   assert.ok(!kept.includes("Locations:"));
 });
+
+test("embed text is clipped on code points and within the adapter's byte budget", () => {
+  const { clipText, clipUtf8, SEMANTIC_TEXT_MAX_BYTES } = projection;
+  const wellFormed = (value) => value === value.toWellFormed();
+
+  // A cut that would land between the two halves of an emoji drops the pair.
+  const emojiAtEdge = `${"a".repeat(9)}\u{1F600}b`;
+  assert.equal(clipText(emojiAtEdge, 10), "a".repeat(9));
+  assert.equal(clipText(emojiAtEdge, 11), `${"a".repeat(9)}\u{1F600}`);
+  assert.equal(clipText(emojiAtEdge, 100), emojiAtEdge);
+  for (let max = 1; max <= 12; max += 1) assert.ok(wellFormed(clipText(emojiAtEdge, max)), `clipText at ${max}`);
+
+  // Bytes, not characters: a page of Greek letters is two bytes per character.
+  const greek = "ω".repeat(10_000);
+  const clipped = clipUtf8(greek, SEMANTIC_TEXT_MAX_BYTES);
+  assert.ok(Buffer.byteLength(clipped, "utf8") <= SEMANTIC_TEXT_MAX_BYTES);
+  assert.equal(clipped, "ω".repeat(8_000));
+  assert.ok(wellFormed(clipUtf8(`${"a".repeat(15_999)}\u{1F600}`, SEMANTIC_TEXT_MAX_BYTES)));
+  assert.equal(clipUtf8("short", SEMANTIC_TEXT_MAX_BYTES), "short");
+});

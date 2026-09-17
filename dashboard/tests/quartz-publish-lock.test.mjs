@@ -88,7 +88,7 @@ function createQuartzFixture(temporaryRoot) {
       `const log = ${JSON.stringify(buildLog)};`,
       'const output = process.argv.find((value) => value.startsWith("--output="))?.slice(9);',
       'if (!output) throw new Error("missing output");',
-      'fs.appendFileSync(log, JSON.stringify({ event: "start", pid: process.pid }) + "\\n");',
+      'fs.appendFileSync(log, JSON.stringify({ event: "start", pid: process.pid, execArgv: process.execArgv }) + "\\n");',
       "await new Promise((resolve) => setTimeout(resolve, 180));",
       'fs.mkdirSync(output, { recursive: true });',
       'fs.writeFileSync(path.join(output, `build-${process.pid}.html`), "built");',
@@ -150,6 +150,12 @@ test(
         activeBuilds += record.event === "start" ? 1 : -1;
         maximumActiveBuilds = Math.max(maximumActiveBuilds, activeBuilds);
         assert.ok(activeBuilds >= 0);
+        if (record.event === "start") {
+          assert.ok(
+            record.execArgv.includes("--max-old-space-size=7168"),
+            "the sealed Quartz child must have enough bounded heap for large gardens",
+          );
+        }
       }
       assert.equal(activeBuilds, 0);
       assert.equal(maximumActiveBuilds, 1);

@@ -1,4 +1,6 @@
 import db from "../db.ts";
+import { NO_MODEL_SENTINEL, NO_DEFAULT_MODEL_MESSAGE } from "../ai-models.ts";
+import { selectedModelForUser } from "../selected-model.ts";
 import { buildThoughtTopologyInRuntimeWorker, type ThoughtTopologyBuildResult } from "./builder.ts";
 
 interface QueueRow { id: number; cluster_id: number; revision: number; status: string }
@@ -35,9 +37,15 @@ export async function executeThoughtTopologyRuntimeBuild(input: {
         WHERE id = ?`,
     ).run(input.runtimeJobId, input.queueJobId);
     return candidate;
-  })();
+  // Acquire the writer lock before reading the revision. A deferred WAL
+  // transaction can fail its read-to-write upgrade immediately during Learn
+  // writes, bypassing the database's busy timeout and stranding the queue.
+  }).immediate();
   const effectiveRevision = row.revision;
   try {
+    if (selectedModelForUser(input.userId) === NO_MODEL_SENTINEL) {
+      throw new Error(NO_DEFAULT_MODEL_MESSAGE);
+    }
     const contentRoot = process.env.QUARTZ_CONTENT_PATH;
     if (!contentRoot) throw new Error("QUARTZ_CONTENT_PATH not configured");
     const result = await buildThoughtTopologyInRuntimeWorker({

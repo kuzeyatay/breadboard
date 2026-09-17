@@ -1,5 +1,6 @@
 import type { ResearchCoverageSummary } from "../research/session.ts";
 import type { CapabilitySummary } from "./capability-usage.ts";
+import type { ExplanationReviewReport } from "./explanation-review.ts";
 
 export type {
   CapabilityKind,
@@ -93,6 +94,8 @@ export interface ExternalAgentCall {
 }
 
 export interface VerificationSummary {
+  /** Coverage review is separate from factual/tool verification. */
+  explanationReview?: ExplanationReviewReport;
   state: VerificationState;
   evidence: EvidenceRecord[];
   unsupportedClaims: string[];
@@ -164,6 +167,7 @@ export function evidenceKindForTool(toolName: string): EvidenceKind {
     name === "searxngsearch" ||
     name === "parallelsearch" ||
     name === "productsearch" ||
+    name === "feynmanresearch" ||
     name === "searchweb" ||
     name === "webquery" ||
     name === "internetsearch" ||
@@ -198,6 +202,8 @@ export function evidenceKindForTool(toolName: string): EvidenceKind {
 }
 
 export function activityLabelForTool(toolName: string): string {
+  if (toolName === "attachment_image") return "Reading image";
+  if (toolName === "feynman_research") return "Finding and ranking papers";
   if (toolName === "garden_discover_sources") return "Finding Garden sources";
   if (toolName === "garden_import_source") return "Adding Garden source";
   if (toolName === "artifact_image_generate") return "Generating image";
@@ -242,6 +248,7 @@ export function evidenceTitleForTool(
 }
 
 export interface VerificationOptions {
+  explanationReview?: ExplanationReviewReport;
   /**
    * Breadboard decided before dispatch that this turn needs verified map data.
    * See lib/map/grounding.ts — the decision is made from the request, so an
@@ -623,6 +630,7 @@ export function assessVerification(
     evidence,
     unsupportedClaims,
     assumptions: [],
+    ...(options.explanationReview ? { explanationReview: options.explanationReview } : {}),
     externalAgents: options.externalAgents ?? [],
     ...(webGrounding.required ? { webGrounding } : {}),
     ...(options.researchCoverage

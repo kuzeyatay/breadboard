@@ -40,6 +40,28 @@ function schema() {
       db.exec(`ALTER TABLE music_producer_launches ADD COLUMN ${name} ${definition}`);
   }
   ready = true;
+  recoverMusicArtifactRuns();
+}
+/** Release provenance-only locks left by music launch failures before this fix. */
+export function recoverMusicArtifactRuns(): void {
+  schema();
+  db.prepare(`
+    UPDATE hermes_runs AS run
+    SET status = CASE
+          WHEN EXISTS (SELECT 1 FROM hermes_artifacts artifact WHERE artifact.originating_run_id = run.id)
+          THEN 'completed' ELSE 'error' END,
+        finished_at = ?
+    WHERE run.status = 'active' AND EXISTS (
+      SELECT 1 FROM music_producer_launches launch
+      JOIN conversations conversation ON conversation.public_id = launch.conversation_public_id
+        AND conversation.user_id = launch.user_id
+      JOIN hermes_runtime_sessions session ON session.conversation_id = conversation.id
+      WHERE launch.collection_state IN ('completed', 'failed', 'aborted', 'uncertain')
+        AND session.id = run.runtime_session_id
+        AND run.id = json_extract(CASE WHEN json_valid(launch.context_json) THEN launch.context_json ELSE '{}' END, '$.runId')
+        AND run.runtime_session_id = json_extract(CASE WHEN json_valid(launch.context_json) THEN launch.context_json ELSE '{}' END, '$.runtimeSessionId')
+    )
+  `).run(new Date().toISOString());
 }
 export function musicLaunch(userId: number, id: string): MusicLaunch {
   schema();

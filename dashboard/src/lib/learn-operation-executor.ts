@@ -4,7 +4,9 @@ import db from "@/lib/db";
 import { createChatmockClient } from "@/lib/knowledge";
 import {
   confirmLearningMap,
+  confirmedLearningMapPlannedAsUpdate,
   getLearnStatusSnapshot,
+  LEARN_MODEL_CLIENT_OPTIONS,
   LearnPipelineConflictError,
   rebuildEntireGarden,
   runLearnPipeline,
@@ -86,7 +88,7 @@ async function executeLearnOperationInner(
         gardenId: request.gardenId,
         userId: request.userId,
         mode: additiveUpdate ? "update_sources" : "plan",
-        client: createChatmockClient(request.baseURL),
+        client: createChatmockClient(request.baseURL, LEARN_MODEL_CLIENT_OPTIONS),
         contentPath: request.contentPath,
         includedSourceIds: request.includedSourceIds,
         syllabusSourceId: request.syllabusSourceId,
@@ -109,10 +111,14 @@ async function executeLearnOperationInner(
         status.job?.mode === "generate" &&
         status.job.status === "failed";
       const additiveUpdate =
-        status.job?.mode === "update_sources" &&
-        status.job.confirmedLearningMapId === status.confirmedLearningMapId &&
         request.requestedConfirmedLearningMapId ===
-          status.confirmedLearningMapId;
+          status.confirmedLearningMapId &&
+        ((status.job?.mode === "update_sources" &&
+          status.job.confirmedLearningMapId === status.confirmedLearningMapId) ||
+          confirmedLearningMapPlannedAsUpdate(
+            request.gardenId,
+            status.confirmedLearningMapId,
+          ));
       if (
         (status.latestTextbookVersionId || status.hasTextbook) &&
         !mayResumeFailedInitialGeneration &&
@@ -164,7 +170,7 @@ async function executeLearnOperationInner(
       return runTextbookGeneration({
         gardenId: request.gardenId,
         userId: request.userId,
-        client: createChatmockClient(request.baseURL),
+        client: createChatmockClient(request.baseURL, LEARN_MODEL_CLIENT_OPTIONS),
         contentPath: request.contentPath,
         confirmedLearningMapId: status.confirmedLearningMapId,
         mode: additiveUpdate ? "update_sources" : "generate",
@@ -193,7 +199,7 @@ async function executeLearnOperationInner(
       const generation = await runTextbookGeneration({
         gardenId: request.gardenId,
         userId: request.userId,
-        client: createChatmockClient(request.baseURL),
+        client: createChatmockClient(request.baseURL, LEARN_MODEL_CLIENT_OPTIONS),
         contentPath: request.contentPath,
         confirmedLearningMapId: request.proposedLearningMapId,
         mode:
@@ -212,7 +218,7 @@ async function executeLearnOperationInner(
       return runLearnRepairOperation({
         gardenId: request.gardenId,
         userId: request.userId,
-        client: createChatmockClient(request.baseURL),
+        client: createChatmockClient(request.baseURL, LEARN_MODEL_CLIENT_OPTIONS),
         model: request.model,
         contentPath: request.contentPath,
         request: request.request,
@@ -223,7 +229,7 @@ async function executeLearnOperationInner(
         request.gardenId,
         {
           userId: request.userId,
-          client: createChatmockClient(request.baseURL),
+          client: createChatmockClient(request.baseURL, LEARN_MODEL_CLIENT_OPTIONS),
           contentPath: request.contentPath,
           includedSourceIds: request.includedSourceIds,
           syllabusSourceId: request.syllabusSourceId,

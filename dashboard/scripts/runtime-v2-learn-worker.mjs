@@ -498,6 +498,12 @@ function configureTrustedLearnEnvironment(launch, request) {
   process.env.BREADBOARD_REPO_ROOT = layout.appRoot;
   process.env.QUARTZ_CONTENT_PATH = authoritativeContentPath;
   process.env.QUARTZ_AUTO_PUBLISH = "1";
+  // Learn publication runs in the Runtime V2 worker's bounded process tree.
+  // A four-way Quartz build can exceed that tree's commit budget on the large
+  // telecom garden, so keep the worker-safe default serial unless an explicit
+  // operator setting already exists.
+  process.env.QUARTZ_BUILD_CONCURRENCY =
+    process.env.QUARTZ_BUILD_CONCURRENCY?.trim() || "1";
   process.env.COUNCIL_LEDGER_DIR = path.join(
     launch.dataRoot,
     ".breadboard",
@@ -598,6 +604,34 @@ function failureCode(error) {
   return "LEARN_WORKER_FAILED";
 }
 
+function utf8Bytes(value) {
+  return Buffer.byteLength(JSON.stringify(value) ?? "null", "utf8");
+}
+
+/**
+ * The durable result exists for diagnostics; the Learn job and its Learning
+ * Map live in the Learn tables and are read from there. A stored map can
+ * exceed the envelope on its own (telecom-1 planning, 2026-09-16: 27 units
+ * with coverage plans and visual contracts), so oversized fields collapse to
+ * their identity instead of failing a finished operation.
+ */
+export function boundedRuntimeV2LearnResultValue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value ?? null;
+  const bounded = {};
+  for (const [key, field] of Object.entries(value)) {
+    if (!field || typeof field !== "object" || utf8Bytes(field) <= MAX_RESULT_BYTES / 4) {
+      bounded[key] = field;
+      continue;
+    }
+    const summary = { omitted: "exceeded the durable result envelope", bytes: utf8Bytes(field) };
+    if (typeof field.id === "string") summary.id = field.id;
+    if (typeof field.status === "string") summary.status = field.status;
+    if (typeof field.jobId === "string") summary.jobId = field.jobId;
+    bounded[key] = summary;
+  }
+  return bounded;
+}
+
 export function serializeRuntimeV2LearnResult({
   identity,
   completionSequence,
@@ -605,7 +639,7 @@ export function serializeRuntimeV2LearnResult({
   learnJobId,
   value,
 }) {
-  const bytes = Buffer.from(
+  const envelope = (resultValue) => Buffer.from(
     `${JSON.stringify({
       protocolVersion: PROTOCOL_VERSION,
       identity,
@@ -613,11 +647,15 @@ export function serializeRuntimeV2LearnResult({
       result: {
         operation,
         learnJobId: learnJobId ?? null,
-        value: value ?? null,
+        value: resultValue ?? null,
       },
     })}\n`,
     "utf8",
   );
+  let bytes = envelope(value);
+  if (bytes.byteLength > MAX_RESULT_BYTES) {
+    bytes = envelope(boundedRuntimeV2LearnResultValue(value));
+  }
   if (bytes.byteLength < 1 || bytes.byteLength > MAX_RESULT_BYTES) {
     fail("The durable Learn result exceeded its bounded envelope.");
   }
@@ -723,10 +761,18 @@ async function runRuntimeV2LearnWorker() {
       if (typeof learnModule.recoverAbandonedLearnJobs !== "function") {
         fail("The Runtime V2 Learn recovery export is unavailable.");
       }
+      const runtimeUrl = pathToFileURL(path.join(layout.sourceRoot, "lib", "learn-operation-runtime-v2.ts")).href;
+      const runtimeModule = await import(runtimeUrl);
       value = await learnModule.recoverAbandonedLearnJobs({
         contentPath: request.contentPath,
+        gardenHasLiveWorker: typeof runtimeModule.runtimeLearnWorkerIsLive === "function"
+          ? (gardenId) => runtimeModule.runtimeLearnWorkerIsLive(request.contentPath, gardenId)
+          : undefined,
       });
     } else {
+      const visualizationWorkerUrl = pathToFileURL(path.join(layout.sourceRoot, "lib", "learn-visualization-worker.ts")).href;
+      const { installLearnVisualizationWorker } = await import(visualizationWorkerUrl);
+      installLearnVisualizationWorker();
       const executorUrl = pathToFileURL(
         path.join(layout.sourceRoot, "lib", "learn-operation-executor.ts"),
       ).href;
@@ -789,9 +835,33 @@ async function runRuntimeV2LearnWorker() {
       if (cancellationTask) await cancellationTask;
       return;
     }
+    try {
+      const diagnosticRoot = path.join(launch.dataRoot, "runtime");
+      fs.mkdirSync(diagnosticRoot, { recursive: true });
+      fs.appendFileSync(
+        path.join(diagnosticRoot, "learn-worker-failures.jsonl"),
+        `${JSON.stringify({
+          at: new Date().toISOString(),
+          jobId: launch.identity.jobId,
+          operation: request.operation,
+          gardenId: request.gardenId ?? null,
+          message: boundedFailureMessage(error),
+        })}\n`,
+        { encoding: "utf8", mode: 0o600 },
+      );
+    } catch {
+      // Diagnostic persistence must not mask the terminal worker failure.
+    }
+    // The native supervisor treats the terminal worker event as authoritative
+    // and may tear down the process immediately afterward. Log the bounded
+    // application exception first so a Learn failure remains diagnosable even
+    // when the worker is stopped before Node flushes later stderr writes.
+    process.stderr.write(
+      `[runtime-v2-learn-worker] Learn execution failed: ${boundedFailureMessage(error)}\n`,
+      "utf8",
+    );
     events.failed(failureCode(error), SANITIZED_RUNTIME_FAILURE_MESSAGE);
     process.exitCode = 1;
-    console.error("[runtime-v2-learn-worker] Learn execution failed:", error);
   } finally {
     try {
       await heartbeat?.stop();

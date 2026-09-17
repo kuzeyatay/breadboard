@@ -529,3 +529,18 @@ test("a non-transient write error still fails loudly instead of being retried aw
     fs.renameSync = originalRenameSync;
   }
 });
+
+test("a copied lesson folder outside Learn's roots is detached from semantic validation", (t) => {
+  const root = makeLegacyGarden();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  migrateGardenSemantics(root, { gardenId: "fixture", migratedAt: "2026-07-13T00:00:00.000Z" });
+  assert.deepEqual(validateGardenSemantics(root).hardFailures, []);
+
+  // A reader copies a published lesson, frontmatter and tags included, into
+  // their own folder. Learn must not audit or claim that copy.
+  const lesson = fs.readFileSync(path.join(root, "learning/neurons/lif.md"), "utf8");
+  write(root, "m2/neurons/lif-copy.md", lesson);
+  write(root, "m2/notes.md", "---\ntitle: My notes\ntags: [personal]\n---\n\nNotes.\n");
+
+  assert.deepEqual(validateGardenSemantics(root).hardFailures, []);
+});

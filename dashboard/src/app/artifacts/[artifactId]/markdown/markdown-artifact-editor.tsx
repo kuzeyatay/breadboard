@@ -14,6 +14,10 @@ import ChatMarkdown from "@/app/components/chat-markdown";
 import { ConfirmDialog } from "@/app/components/confirm-dialog";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useAssistantModels } from "@/app/components/use-assistant-models";
+import { useChatModelChanges } from "@/app/components/use-chat-model-changes";
+import { ChatModelChangeSeparators } from "@/app/components/chat-model-change-separator";
+import { useDocumentAssistantHistory } from "@/app/components/use-document-assistant-history";
+import type { DocumentAssistantChatEntry as ChatEntry } from "@/lib/document-assistant-history-types";
 import { broadcastArtifactUpdate } from "@/lib/hermes/artifact-update-channel";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import {
@@ -25,13 +29,6 @@ import styles from "./markdown-artifact-editor.module.css";
 interface EditorPayload {
   artifact: PresentedArtifact;
   content?: string;
-}
-
-interface ChatEntry {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  error?: string;
 }
 
 interface AiPayload {
@@ -86,13 +83,15 @@ export default function MarkdownArtifactEditor({
   const discardConfirmedRef = useRef(false);
   const [prompt, setPrompt] = useState("");
   const [chat, setChat] = useState<ChatEntry[]>([]);
-  const [chatHydrated, setChatHydrated] = useState(false);
+  const [chatHydratedFor, setChatHydratedFor] = useState<string | null>(null);
+  const chatHydrated = chatHydratedFor === initialArtifact.id;
   const [assistantBusy, setAssistantBusy] = useState(false);
   const savingRef = useRef(false);
   const assistantController = useRef<AbortController | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement | null>(null);
   const documentRef = useRef<HTMLElement | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
+  const { error: historyError } = useDocumentAssistantHistory({ artifactId: initialArtifact.id, kind: "markdown", chat, setChat, busy: assistantBusy, hydrated: chatHydrated });
   const {
     model,
     setModel,
@@ -101,6 +100,9 @@ export default function MarkdownArtifactEditor({
     intelligenceModes,
   } = useAssistantIntelligence();
   const { models, modelsLoading, loadModels } = useAssistantModels({ eager: true });
+  const { changeModel, labelsFor: modelChangesFor } = useChatModelChanges({
+    scope: "markdown-assistant", sessionId: initialArtifact.id, messages: chat, model, onModelChange: setModel,
+  });
 
   const setContent = useCallback((value: string) => {
     discardConfirmedRef.current = false;
@@ -196,15 +198,16 @@ export default function MarkdownArtifactEditor({
           return [{
             id: typeof candidate.id === "string" ? candidate.id : messageId(),
             role: candidate.role,
-            text: candidate.text.slice(0, 8_000),
+            text: candidate.text.slice(0, 100_000),
             error: typeof candidate.error === "string" ? candidate.error.slice(0, 1_000) : undefined,
+            revision: typeof candidate.revision === "string" ? candidate.revision : undefined,
           }];
         }).slice(-MAX_CHAT_ENTRIES));
       }
     } catch {
       // A damaged local transcript must never keep the document from opening.
     } finally {
-      setChatHydrated(true);
+      setChatHydratedFor(initialArtifact.id);
     }
   }, [initialArtifact.id]);
 
@@ -484,7 +487,8 @@ export default function MarkdownArtifactEditor({
 
         <aside className={styles.assistant} aria-label="Bread Markdown assistant">
           <div ref={chatRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-5" aria-live="polite">
-            {chat.map((entry) => (
+            {historyError ? <p role="status" className="text-xs text-amber-600">{historyError}</p> : null}
+            {chat.map((entry, index) => (
               <div
                 key={entry.id}
                 className={entry.role === "user"
@@ -493,6 +497,7 @@ export default function MarkdownArtifactEditor({
               >
                 {entry.role === "assistant" ? <ChatMarkdown content={entry.text} compact /> : entry.text}
                 {entry.error ? <p className="mt-2 text-xs text-[#a44539]">{entry.error}</p> : null}
+                <ChatModelChangeSeparators labels={modelChangesFor(entry, index)} visible={!(assistantBusy && index === chat.length - 1)} />
               </div>
             ))}
             {assistantBusy ? (
@@ -517,7 +522,7 @@ export default function MarkdownArtifactEditor({
               models={models}
               modelsLoading={modelsLoading}
               onLoadModels={loadModels}
-              onModelChange={setModel}
+              onModelChange={changeModel}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
               intelligenceModes={intelligenceModes}

@@ -106,7 +106,7 @@ test("a run and the sign-in window never hold the same browser profile", () => {
   assert.match(route, /if \(await hasActiveRun\(\)\) throw new BrowserProfileError\(409, "run_in_progress"\)/);
 
   // And the refusal reaches the person as a sentence with a fix in it.
-  assert.match(identity.agentBrowserStartFailure("sign_in_window_open"), /profile page/);
+  assert.match(identity.agentBrowserStartFailure("sign_in_window_open"), /Close the external browser sign-in window/);
   assert.match(
     source("src/app/components/hermes/dashboard-agent-terminal.tsx"),
     /agentBrowserStartFailure\(data\?\.error\)/,
@@ -117,16 +117,16 @@ test("a run and the sign-in window never hold the same browser profile", () => {
   );
 });
 
-test("the profile page carries the sign-in card, read on the server", () => {
+test("the profile page uses Breadboard's live browser session instead of the external profile", () => {
   const page = source("src/app/profile/page.tsx");
-  assert.match(page, /browserProfile=\{await browserProfileState\(\)\}/);
+  assert.doesNotMatch(page, /browserProfileState/);
 
   const client = source("src/app/profile/profile-client.tsx");
   assert.match(client, /import BrowserProfilePanel from "\.\/browser-profile-panel";/);
-  assert.match(client, /<BrowserProfilePanel initial=\{browserProfile\} \/>/);
+  assert.match(client, /<BrowserProfilePanel \/>/);
 
   const panel = source("src/app/profile/browser-profile-panel.tsx");
-  assert.match(panel, /\/api\/agent-browser\/browser-profile/);
-  // Absent, not disabled, when there is no runtime the sign-in would serve.
-  assert.match(panel, /if \(!profile\.runtimeAvailable \|\| !profile\.browserFound\) return null;/);
+  assert.match(panel, /browserSignInsControl/);
+  assert.match(panel, /Open Breadboard browser/);
+  assert.doesNotMatch(panel, /\/api\/agent-browser\/browser-profile|BrowserProfileState|Microsoft Edge/);
 });

@@ -15,6 +15,7 @@
 // usage, and a marker saying which backend produced it.
 
 import "server-only";
+import { deliverCompletedHyperframes } from "./deliver-completed-hyperframes.ts";
 
 import OpenAI from "openai";
 import type {
@@ -22,8 +23,9 @@ import type {
   ResponseCreateParamsStreaming,
   ResponseStreamEvent,
 } from "openai/resources/responses/responses";
-import { DEFAULT_MODEL } from "../ai-models.ts";
+import { selectedModelForUser } from "../selected-model.ts";
 import type { BrowserTerminalAccess } from "../browser-terminal.ts";
+import { chatTextSelectionQuestionPrompt, type ChatTextSelectionReference } from "../chat-text-selection.ts";
 import { browserTerminalPrompt } from "../hermes/browser-terminal-context.ts";
 import {
   normalizeAssistantReasoningEffort,
@@ -142,6 +144,7 @@ export interface StartDirectTurnInput {
   model?: unknown;
   reasoningEffort?: unknown;
   attachments?: ChatAttachment[];
+  textSelection?: ChatTextSelectionReference;
   retry?: boolean;
   /** Groups a regenerated answer with the one it was regenerated from. */
   branchGroupId?: string;
@@ -229,6 +232,7 @@ function directSystemPrompt(
       "Answer from this conversation and your own knowledge. If the request genuinely needs an action rather than an answer, say plainly that it needs Agent mode switched back on, and give whatever part of the answer you can without it.",
       "A message beginning with a `/token` is a skill, connection, prompt, or agent the user picked from the palette. Except for a server-resolved `/reference:*` context selector, nothing resolved it for this turn, so read it as the name of what they wanted, say it needs Agent mode on, and answer the rest of the message normally.",
       "You can read the messages supplied in this conversation. Never claim to have read external files, written, run, saved, sent, or remembered anything through tools.",
+      "Use supplied current-location context when geography affects the answer. If no current area or user-specified destination is available, do not assume a country from the conversation language, device time zone, or an earlier assistant guess; ask for the region only when needed.",
     ].join("\n"),
     currentLocationContext,
     referencedChatContext,
@@ -236,21 +240,6 @@ function directSystemPrompt(
     // detail, never the explanation that makes the remaining answer usable.
     readerComprehensionPrompt(),
   ].filter(Boolean).join("\n\n");
-}
-
-function recentUserRequests(
-  conversation: ConversationRow,
-  clientMessageId: string,
-): string[] {
-  return listRecentConversationMessages(conversation.id, HISTORY_MESSAGES)
-    .filter(
-      (message) =>
-        message.client_message_id !== clientMessageId &&
-        message.role === "user" &&
-        message.content.trim().length > 0,
-    )
-    .slice(-8)
-    .map((message) => message.content);
 }
 
 function historyInput(
@@ -340,8 +329,8 @@ function currentUserInput(
   };
 }
 
-function selectedModel(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : DEFAULT_MODEL;
+function selectedModel(value: unknown, userId: number): string {
+  return typeof value === "string" && value.trim() ? value.trim() : selectedModelForUser(userId);
 }
 
 /**
@@ -389,11 +378,14 @@ export async function startDirectProviderTurn(
       "That referenced chat could not be found. Choose it again from the Reference tab.",
     );
   }
-  const requestText = referenceCommand.userText || (
+  const questionText = referenceCommand.userText || (
     referenceCommand.keys.length === 1
       ? "Summarize the referenced chat."
       : input.text
   );
+  const requestText = input.textSelection
+    ? chatTextSelectionQuestionPrompt(questionText, input.textSelection)
+    : questionText;
   // A live agent run owns the assistant slot and its own event stream. Sending a
   // provider turn into the same conversation would interleave two answers.
   const runtimeSession = getRuntimeSessionByConversation(input.conversation.id);
@@ -415,6 +407,7 @@ export async function startDirectProviderTurn(
       content: input.text,
       metadata: {
         backend: DIRECT_BACKEND,
+        ...(input.textSelection ? { textSelection: input.textSelection } : {}),
         attachmentNames: attachments.map((attachment) => attachment.name),
         attachments: chatMessageAttachments(attachments),
         ...(input.responseStartedAt
@@ -445,11 +438,12 @@ export async function startDirectProviderTurn(
     userOrderIndex: reservation.userMessage.order_index,
     reservationIsNew: reservation.isNew,
     preDispatchReserved,
+    isInlineQuestion: input.textSelection?.mode === "inline",
   })) {
     const { baseURL } = resolveChatmockBaseUrl(input.request);
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,
-      firstPrompt: requestText,
+      firstPrompt: questionText,
       model: input.model,
       baseUrl: baseURL,
     });
@@ -508,6 +502,13 @@ export async function startDirectProviderTurn(
     );
   }
 
+  const hyperframesDelivery = await deliverCompletedHyperframes({
+    userId: input.conversation.user_id, conversationId: input.conversation.id,
+    clientMessageId: input.clientMessageId, continuationText: input.text,
+    internalAgentContinuation: input.internalAgentContinuation,
+  });
+  if (hyperframesDelivery) return completedDirectResponse(hyperframesDelivery.content);
+
   // Scheduling is a Breadboard action that has already succeeded by the time
   // this turn arrives. Even with Agent mode off, acknowledge that app-owned
   // action directly instead of asking a tool-less provider to perform it.
@@ -561,7 +562,7 @@ export async function startDirectProviderTurn(
     }
   }
 
-  const model = selectedModel(input.model);
+  const model = selectedModel(input.model, input.conversation.user_id);
   const effort = normalizeAssistantReasoningEffort(input.reasoningEffort);
   const startedAtMs = Date.now();
   let reasoning = "";
@@ -574,6 +575,7 @@ export async function startDirectProviderTurn(
   ) => {
     const metadata = {
       backend: DIRECT_BACKEND,
+      ...(input.textSelection ? { textSelection: input.textSelection } : {}),
       model,
       ...(reasoning ? { reasoning } : {}),
       responseDurationMs: Math.max(0, Date.now() - startedAtMs),
@@ -646,10 +648,6 @@ export async function startDirectProviderTurn(
           ? ""
           : renderCurrentLocationContext({
               request: requestText,
-              priorRequests: recentUserRequests(
-                input.conversation,
-                input.clientMessageId,
-              ),
               location: input.currentLocation,
             }),
         requestText,

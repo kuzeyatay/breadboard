@@ -36,6 +36,7 @@ beforeEach(() => {
     DELETE FROM memory_profiles;
     DELETE FROM durable_memories;
     DELETE FROM conversations;
+    DELETE FROM clusters;
     DELETE FROM users;
     DELETE FROM sqlite_sequence;
   `);
@@ -88,6 +89,25 @@ test("a temporary chat never appears in history", () => {
 
   const listed = store.listConversationsForUser(1).map((row) => row.id);
   assert.deepEqual(listed, [ordinary.id]);
+});
+
+test("a legacy Garden chat can make the same temporary promise", () => {
+  db.prepare(
+    "INSERT INTO clusters(id, user_id, name, slug, visibility) VALUES (10, 1, 'Private notes', 'private-notes', 'private')",
+  ).run();
+  const legacy = db.prepare(
+    "INSERT INTO chat_sessions(cluster_id, user_id, title) VALUES (10, 1, 'Off record')",
+  ).run();
+  const conversation = store.ensureConversationForLegacyChatSession(
+    Number(legacy.lastInsertRowid),
+    1,
+    db,
+    { temporary: true },
+  );
+
+  assert.equal(store.conversationIsTemporary(conversation), true);
+  assert.equal(store.getConversationForLegacyChatSession(Number(legacy.lastInsertRowid), 1).id, conversation.id);
+  assert.deepEqual(store.listConversationsForUser(1), []);
 });
 
 test("no cross-chat memory is read into a temporary chat", () => {
@@ -262,6 +282,30 @@ const greetingEngine = fs.readFileSync(
   new URL("../src/lib/hermes/chat-greeting.ts", import.meta.url),
   "utf8",
 );
+const gardenWorkspace = fs.readFileSync(
+  new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
+  "utf8",
+);
+const gardenAssistant = fs.readFileSync(
+  new URL("../src/app/garden/garden-assistant.tsx", import.meta.url),
+  "utf8",
+);
+const gardenSessionsRoute = fs.readFileSync(
+  new URL("../src/app/api/chat-sessions/route.ts", import.meta.url),
+  "utf8",
+);
+const quartzChatRoute = fs.readFileSync(
+  new URL("../src/app/api/quartz-ai/chat/route.ts", import.meta.url),
+  "utf8",
+);
+const quartzAssistant = fs.readFileSync(
+  new URL("../../quartz/quartz/components/BreadboardAI.tsx", import.meta.url),
+  "utf8",
+);
+const quartzAssistantScript = fs.readFileSync(
+  new URL("../../quartz/quartz/components/scripts/breadboardAI.inline.ts", import.meta.url),
+  "utf8",
+);
 
 test("the switch floats in the corner of the new chat page, not in the toolbar", () => {
   assert.match(
@@ -419,4 +463,35 @@ test("an external agent launched from a temporary chat is given no memory", asyn
     env,
   }, db);
   assert.match(allowed?.text ?? "", /Halcyon/);
+});
+
+test("Garden workspace and Quartz assistants keep temporary chats off the record", () => {
+  for (const surface of [gardenWorkspace, gardenAssistant]) {
+    assert.match(surface, /data-temporary-chat=\{temporaryChat \? ["']true["'] : undefined\}/);
+    assert.match(surface, /persist: !temporaryChat/);
+    assert.match(surface, /enabled: !temporaryChat/);
+    assert.match(surface, /Temporary chat enabled/);
+    assert.match(surface, /session\.temporary !== true/);
+  }
+
+  assert.match(gardenWorkspace, /body: JSON\.stringify\(\{ clusterSlug, title, temporary: temporaryChat \}\)/);
+  assert.match(gardenWorkspace, /url\.searchParams\.delete\("chat"\)/);
+  assert.match(gardenAssistant, /temporary: options\.temporary \?\? temporaryChat/);
+  assert.match(
+    gardenAssistant,
+    /<div className="relative flex min-h-0 flex-1 flex-col">\s*\{newChatPageSelected \? \(/,
+  );
+
+  assert.match(gardenSessionsRoute, /COALESCE\(c\.temporary, 0\) = 0/);
+  assert.match(gardenSessionsRoute, /\{ temporary \}/);
+  assert.match(quartzChatRoute, /temporary: body\.temporary === true/);
+
+  assert.match(quartzAssistant, /breadboard-ai-temporary/);
+  assert.match(
+    quartzAssistant,
+    /class="breadboard-ai-transcript">\s*<button\s*class="breadboard-ai-temporary"/,
+  );
+  assert.match(quartzAssistantScript, /temporary: temporaryChat/);
+  assert.match(quartzAssistantScript, /sessionStorage\.removeItem\(storageKey\)/);
+  assert.match(quartzAssistantScript, /chatBeforeTemporary = \{ \.\.\.state \}/);
 });

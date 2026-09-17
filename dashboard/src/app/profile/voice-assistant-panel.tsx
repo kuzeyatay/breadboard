@@ -43,8 +43,8 @@ export default function VoiceAssistantPanel() {
         <div><p id={`${key}-label`} className="text-sm text-white">{label}</p><p id={`${key}-hint`} className="mt-1 text-xs leading-relaxed text-gray-500">{description}</p></div>
         <button type="button" role="switch" aria-checked={preferences[key]} aria-labelledby={`${key}-label`} aria-describedby={`${key}-hint`}
           disabled={!loaded || saving} onClick={() => void save(key, !preferences[key])}
-          className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${preferences[key] ? 'bg-emerald-600' : 'bg-gray-700'}`}>
-          <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${preferences[key] ? 'translate-x-5' : 'translate-x-0'}`} />
+          className={`neu-inset relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${preferences[key] ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}>
+          <span aria-hidden="true" className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform ${preferences[key] ? 'translate-x-5' : ''}`} />
         </button>
       </div>)}
     </div>

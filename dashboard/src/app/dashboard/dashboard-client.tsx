@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import LinkContextMenu from "@/app/components/link-context-menu";
 import { useRouter } from "next/navigation";
+import { announceGardenNameChange } from "@/lib/garden-name-events";
 import {
   createCluster,
   updateClusterDetails,
@@ -85,6 +86,7 @@ import {
 } from "@/lib/runtime-v2/ingest-recovery-client";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import PageAppearance from "@/app/components/page-appearance";
+import styles from "./dashboard-appearance.module.css";
 
 interface Props {
   userEmail: string;
@@ -1009,6 +1011,7 @@ export default function DashboardClient({
       <div
         key={key}
         role="button"
+        data-drop-target={isOver}
         tabIndex={0}
         draggable={clusterView === "mine"}
         onDragOver={(e) => {
@@ -1079,6 +1082,8 @@ export default function DashboardClient({
             : undefined
         }
         className={[
+          styles.wallpaperText,
+          styles.folderHeader,
           "relative basis-full mt-2 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-left transition-colors",
           clusterView === "mine" ? "cursor-grab active:cursor-grabbing" : "",
           isOver
@@ -1411,6 +1416,7 @@ export default function DashboardClient({
     startTransition(async () => {
       try {
         await updateClusterDetails(clusterId, nextName, nextDescription);
+        announceGardenNameChange(previous.slug, nextName);
         closeEditModal();
         router.refresh();
       } catch (err: unknown) {
@@ -2264,7 +2270,9 @@ export default function DashboardClient({
       // Marks the pixels the terminal dock's glass bar refracts.
       data-glass-scene-root
       data-dashboard-page
-      className="dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col"
+      data-wallpaper-ready={appearance.ready}
+      data-wallpaper-tone={bgImage ? appearance.wallpaperTone : undefined}
+      className={`${styles.surface} dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col`}
       style={{
         // Clear the fixed dock, then a screenful of slack so the bottom of the
         // grid can always be scrolled up to a comfortable reading position.
@@ -2302,7 +2310,7 @@ export default function DashboardClient({
       <div className="max-w-5xl mx-auto w-full px-6 py-12 flex-1">
         <div className="flex flex-col gap-5 mb-10">
           <div className="flex items-center justify-between gap-4">
-            <div>
+            <div className={styles.wallpaperText}>
               <h1 className="text-2xl font-semibold tracking-tight">Gardens</h1>
               <p className="text-sm text-gray-500 mt-1">
                 {clusterView === "mine"
@@ -2491,7 +2499,7 @@ export default function DashboardClient({
         </div>
 
         {clusterSections.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-32 text-gray-600">
+          <div className={`${styles.wallpaperText} flex flex-col items-center justify-center py-32 text-gray-600`}>
             <p className="text-lg">
               {searchQuery
                 ? "No matching gardens."
@@ -2540,6 +2548,7 @@ export default function DashboardClient({
                     if (id != null) handleMoveClusterToFolder(id, null);
                   }}
                   className={[
+                    styles.wallpaperText,
                     "mb-2 rounded-lg border border-dashed px-3 py-2 text-center text-xs transition-colors",
                     dragOverFolderKey === "root"
                       ? "border-cyan-400/60 bg-cyan-950/20 text-cyan-200"

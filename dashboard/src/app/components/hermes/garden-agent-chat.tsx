@@ -21,7 +21,7 @@ import {
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
-import { reusableChatAttachments } from "@/lib/chat-attachments";
+import { attachmentOnlyMessageText, reusableChatAttachments, type ChatAttachment } from "@/lib/chat-attachments";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import AgentRuntimePanel from "./agent-runtime-panel";
 import ArtifactPanel, {
@@ -37,6 +37,7 @@ import { GARDEN_DOCUMENTS_CHANGED_EVENT } from "./artifact-viewer";
 import { GARDEN_PROPOSALS_CHANGED_EVENT } from "./inline-proposal-cards";
 import {
   ActiveChatIcon,
+  UnreadChatDot,
   chatSessionIsActive,
   ChatHistoryLoading,
   deleteChatSession,
@@ -73,6 +74,8 @@ import { taskFromRufloCommand } from "@/lib/ruflo/identity.ts";
 import { useRufloAgent } from "./use-ruflo-agent";
 import { useAssistantModels } from "../use-assistant-models";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import { useUnreadChats } from "@/lib/conversations/unread-client";
+import { setActiveChatNotificationTarget } from "@/lib/chat-notification-inbox";
 
 interface Props {
   gardenSlug: string;
@@ -147,13 +150,17 @@ export default function GardenAgentChat({
   const [input, setInput] = useState("");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [view, setView] = useState<PanelView>("chat");
+  const session = useAgentSession("garden_chat", {
+    gardenSlug,
+    title: `${gardenName ?? gardenSlug} chat`,
+  });
   const {
     model: selectedModel,
     setModel: setSelectedModel,
     reasoningEffort: selectedReasoningEffort,
     setReasoningEffort,
     intelligenceModes: selectedIntelligenceModes,
-  } = useAssistantIntelligence();
+  } = useAssistantIntelligence({ scope: `garden_chat:${gardenSlug}`, sessionId: session.sessionId, createdSessionId: session.createdSessionId, shared: true });
   const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
     model: string;
     reasoningEffort: typeof selectedReasoningEffort;
@@ -166,6 +173,7 @@ export default function GardenAgentChat({
     activeAnswerIntelligence?.intelligenceModes ?? selectedIntelligenceModes;
   const { models } = useAssistantModels({ eager: true });
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
+  const { unreadChats } = useUnreadChats();
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   // Asked in the app's own sheet; `confirmDialog` is rendered at the foot of
@@ -173,10 +181,11 @@ export default function GardenAgentChat({
   const { confirm, confirmDialog } = useConfirmDialog();
   const deepResearchDispatchingRef = useRef(false);
   const [researchNotice, setResearchNotice] = useState("");
-  const session = useAgentSession("garden_chat", {
-    gardenSlug,
-    title: `${gardenName ?? gardenSlug} chat`,
-  });
+  useEffect(() => {
+    setActiveChatNotificationTarget(view === "chat" && session.sessionId
+      ? { surface: "dashboard_terminal", chatId: session.sessionId } : null);
+    return () => setActiveChatNotificationTarget(null);
+  }, [view, session.sessionId]);
   // Unsent text survives a reload here too. The garden is part of the surface
   // key: an unstarted chat belongs to the garden it was opened from.
   const draftSurface = `garden_chat:${gardenSlug}`;
@@ -455,7 +464,8 @@ export default function GardenAgentChat({
    */
   const routeMaxResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
-      // Under Super Agent the model owns the turn and delegates this privately.
+      // Only a typed slash command bypasses Super Agent. Natural-language
+      // requests remain Super Agent turns so any delegation stays private.
       const invocation = maxResearchInvocation(text, isSuperAgentEnabled());
       if (!invocation) return false;
       if (invocation.question && !maxResearchDispatchingRef.current) {
@@ -627,24 +637,28 @@ export default function GardenAgentChat({
   );
 
   const steer = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim();
+    async (text: string, attachments: readonly ChatAttachment[], textSelection?: ChatTextSelectionReference): Promise<boolean> => {
+      const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       if (!trimmed) return false;
-      return session.steer(trimmed);
+      return session.steer(trimmed, attachments, textSelection);
     },
     [session],
   );
 
   const sendQueued = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
+    async (text: string, attachments: readonly ChatAttachment[], textSelection?: ChatTextSelectionReference) => {
+      const trimmed = text.trim() || attachmentOnlyMessageText(attachments);
       if (!trimmed) return;
+      if (textSelection) {
+        await session.send(trimmed, { model, reasoningEffort, attachments: [...attachments], textSelection });
+        return;
+      }
       if (routeDeepResearchCommand(trimmed)) return;
       if (deepResearch.agent) {
         await deepResearch.launch(trimmed);
         return;
       }
-      await session.send(trimmed, { model, reasoningEffort });
+      await session.send(trimmed, { model, reasoningEffort, attachments: [...attachments] });
     },
     [deepResearch, model, reasoningEffort, routeDeepResearchCommand, session],
   );
@@ -947,6 +961,8 @@ export default function GardenAgentChat({
                       label={`${item.title} is running`}
                       className="h-3.5 w-3.5"
                     />
+                  ) : unreadChats.has(item.id) ? (
+                    <UnreadChatDot label={`${item.title} — unread`} />
                   ) : null}
                   <button
                     type="button"

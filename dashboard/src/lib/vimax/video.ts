@@ -13,9 +13,9 @@
 // selectable.
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import os from "node:os";
-import path from "node:path";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import type { VimaxProduction, VimaxShot } from "./types.ts";
 

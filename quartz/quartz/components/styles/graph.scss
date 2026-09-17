@@ -1,6 +1,39 @@
 @use "../../styles/variables.scss" as *;
+@use "./thoughtTopologyViewer.css";
 
 .graph {
+  .thought-topology-retry.thought-topology-recovery {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: auto;
+    height: auto;
+    padding: 8px 12px;
+    background: var(--light);
+    color: var(--dark);
+  }
+
+  .thought-topology-retry {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 5px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--gray);
+    cursor: pointer;
+
+    &[hidden] { display: none; }
+    &:hover { color: var(--dark); background: var(--lightgray); }
+    &:focus-visible { outline: 2px solid var(--secondary); outline-offset: 2px; }
+    &:disabled { opacity: 0.45; cursor: wait; }
+    svg { width: 16px; height: 16px; }
+  }
+
   & > h3 {
     font-size: 1rem;
     font-weight: $mediumWeight;

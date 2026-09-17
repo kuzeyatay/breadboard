@@ -28,10 +28,11 @@ export async function POST(request: Request) {
     if (!filename) {
       throw new ApiError(400, "file_filename_required", "The upload arrived without a filename.");
     }
-    const format = storedFileAttachmentFormat(filename);
-    if (!format) {
-      throw new ApiError(415, "unsupported_file_format", `Breadboard cannot keep "${filename}" as a chat file.`);
-    }
+    // A file of a kind the registry does not name is kept whole as `bin`
+    // under its original name. Without this a MATLAB script or a lab notebook
+    // reached the model as inline text and the transcript kept only its name,
+    // so a regenerated turn had nothing to resend.
+    const format = storedFileAttachmentFormat(filename) ?? "bin";
     const declared = Number(request.headers.get("content-length") ?? "");
     if (Number.isFinite(declared) && declared > MAX_STORED_FILE_ATTACHMENT_BYTES) {
       throw new ApiError(413, "file_too_large", "That file is larger than 128 MiB.");

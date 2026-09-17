@@ -11,6 +11,7 @@ import {
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import {
   getConversationForUser,
+  getConversationMessageByClientId,
   presentConversationMessage,
 } from "@/lib/conversations/store.ts";
 import {
@@ -217,11 +218,20 @@ export async function PATCH(
     if (body.state !== undefined && !state) {
       throw new ApiError(400, "invalid_external_agent_state", "External agent card state is invalid or too large.");
     }
+    const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
+    const owner = getConversationMessageByClientId(conversation.id, clientMessageId, "assistant");
+    const run = owner ? parseExternalAgentRun(JSON.parse(owner.metadata || "{}").externalAgentRun) : null;
+    let deliveredContent = content;
+    if (run?.kind === "hyperframes" && outcome === "completed") {
+      const { publishHyperframesVideo, hyperframesDeliveryContent } = await import("@/lib/hyperframes/artifact.ts");
+      const artifact = await publishHyperframesVideo(userId, run.runId);
+      if (artifact) deliveredContent = hyperframesDeliveryContent(artifact, run.runId);
+    }
     const message = finishExternalAgentTurn({
       conversationId: conversation.id,
-      clientMessageId: requireString(body.clientMessageId, "clientMessageId", 128),
+      clientMessageId,
       outcome: outcome as ExternalAgentTerminalOutcome,
-      content,
+      content: deliveredContent,
       usage,
       ...(activity.length ? { activity } : {}),
       ...(edits ? { edits } : {}),

@@ -132,6 +132,9 @@ export function deriveHotRuntimeClosure(servicesManifest) {
   if (closure.size === 0) {
     throw new Error("Runtime V2 services.json has an empty hot non-bin runtime closure.");
   }
+  if ([...closure.values()].includes("node")) {
+    closure.set("runtimes/node/node_modules/npm/bin/npm-cli.js", "node");
+  }
   return Object.freeze(
     [...closure.entries()]
       .map(([relativePath, target]) => Object.freeze({ relativePath, target }))

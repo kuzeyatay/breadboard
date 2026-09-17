@@ -172,6 +172,9 @@ export function listCalendars(store: CalendarStore, userId: number) {
       /** True for a mirror of a remote ICS — its events come from elsewhere. */
       subscribed: calendar.readOnly,
       sourceUrl: calendar.sourceUrl,
+      provider: calendar.googleCalendarId ? "google" : calendar.caldavUrl ? "caldav" : calendar.sourceUrl ? "subscription" : "local",
+      googleCalendarId: calendar.googleCalendarId ?? null,
+      canCopyToGoogle: !calendar.googleCalendarId,
       lastSyncedAt: calendar.lastSyncedAt,
       syncError: calendar.syncError,
     })),

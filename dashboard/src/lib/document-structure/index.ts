@@ -20,6 +20,7 @@ export { readDocx } from "./docx.ts";
 export { readXlsx } from "./xlsx.ts";
 export { readPptx } from "./pptx.ts";
 export { readOpenDocument } from "./opendocument.ts";
+export { readMlx, mlxText } from "./mlx.ts";
 
 /**
  * Read one document. PDFs are not handled here: their text comes from

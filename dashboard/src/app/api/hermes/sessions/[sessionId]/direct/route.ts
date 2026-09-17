@@ -9,6 +9,7 @@
 // they are checked here exactly as they are for an agent turn.
 
 import { NextResponse } from "next/server";
+import { normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import { parseBrowserTerminalAccess } from "@/lib/browser-terminal.ts";
 import { conversationRequestSurface } from "@/lib/hermes/session-surface.ts";
 import { requireUserId } from "@/lib/server-auth";
@@ -22,7 +23,7 @@ import { getConversationForUser } from "@/lib/conversations/store.ts";
 import { startDirectProviderTurn } from "@/lib/conversations/direct-turn-service.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
-import { resolveDocumentAttachments } from "@/lib/document-attachments-server.ts";
+import { hydrateDocumentAttachments } from "@/lib/document-attachments-server.ts";
 import { retrieveDocumentAttachments } from "@/lib/colpali/retrieval.ts";
 import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-context.ts";
 import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
@@ -62,6 +63,7 @@ export async function POST(
       surface: conversationRequestSurface(conversation, parseSurface(body.surface ?? "dashboard_terminal")),
       model: body.model,
       reasoningEffort: body.reasoningEffort,
+      textSelection: normalizeChatTextSelectionReference(body.textSelection) ?? undefined,
       // A regenerated turn sends a document's pointer without its words,
       // because the transcript never held them; this reads them back. Then
       // ColPali narrows a long document to the pages this question is about —
@@ -69,7 +71,7 @@ export async function POST(
       // that was never indexed still arrives whole.
       attachments: await retrieveDocumentAttachments(
         userId,
-        resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
+        await hydrateDocumentAttachments(userId, parseChatAttachments(body.attachments), request.signal),
         requireString(body.text, "text", 100_000),
         process.env,
       ),

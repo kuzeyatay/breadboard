@@ -224,19 +224,6 @@ const OUTER_SHORTS_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "SSL_CERT_DIR",
     "NODE_EXTRA_CA_CERTS",
 ];
-const OUTER_OPEN_GYM_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
-    "OPEN_GYM_ROOT",
-    "OPEN_GYM_AGENT_DATA_DIR",
-    "OPEN_GYM_MEDIA_CACHE_DIR",
-    "CHATMOCK_API_KEY",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
-];
 const AGENT_REACH_SETUP_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_AGENT_REACH_BROWSER_HOME",
     "DOCKER_CLI_PATH",
@@ -893,6 +880,7 @@ const HERMES_ENVIRONMENT_NAMES: &[&str] = &[
     "PYTHONUNBUFFERED",
     "PYTHONDONTWRITEBYTECODE",
     "HERMES_HOME",
+    "HERMES_CUA_DRIVER_CMD",
     "HERMES_DESKTOP",
     "HERMES_SERVE_HEADLESS",
     "HERMES_DASHBOARD_SESSION_TOKEN",
@@ -1137,6 +1125,12 @@ const SPOTIFY_PLAYBACK_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_SPOTIFY_DASHBOARD_ORIGIN",
     "BREADBOARD_SPOTIFY_BROWSER_PATH",
 ];
+const BAMBU_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_DATA_DIR",
+    "BREADBOARD_BAMBU_SERVICE_TOKEN",
+    "BREADBOARD_BAMBU_RUNTIME_MANAGED",
+    "BREADBOARD_BAMBU_DASHBOARD_ORIGIN",
+];
 const CLIPROXY_ENVIRONMENT_NAMES: &[&str] = &[
     "WRITABLE_PATH",
     "CLIPROXY_HOME",
@@ -1295,6 +1289,10 @@ const DASHBOARD_ENVIRONMENT_NAMES: &[&str] = &[
     "QUARTZ_CONTENT_PATH",
     "COUNCIL_LEDGER_DIR",
     "HERMES_HOME",
+    "BREADBOARD_HERMES_PYTHON",
+    "BREADBOARD_HERMES_APP_DIR",
+    "BREADBOARD_HERMES_HOME",
+    "HERMES_CUA_DRIVER_CMD",
     "NEXTAUTH_SECRET",
     "NEXTAUTH_URL",
     "SECOND_BRAIN_INITIAL_INVITE_CODE",
@@ -1339,6 +1337,8 @@ const DASHBOARD_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_INBOX_ZERO_SERVICE_URL",
     "BREADBOARD_INBOX_ZERO_SERVICE_TOKEN",
     "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_URL",
+    "BREADBOARD_BAMBU_SERVICE_URL",
+    "BREADBOARD_BAMBU_SERVICE_TOKEN",
     "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_TOKEN",
     "BREADBOARD_SPOTIFY_PLAYBACK_RUNTIME_MANAGED",
     "BREADBOARD_SOLIDWORKS_SERVICE_URL",
@@ -1522,7 +1522,6 @@ enum EnvironmentProfile {
     VimaxWorker,
     VoxDirectorWorker,
     OuterShortsWorker,
-    OuterOpenGymWorker,
     AgentReachSetupWorker,
     GbrainSyncWorker,
     OuterAgentReachWorker,
@@ -1591,6 +1590,7 @@ enum EnvironmentProfile {
     PostizCoordinator,
     InboxZeroStack,
     SpotifyPlayback,
+    BambuPrinter,
     Cliproxy,
     Quartz,
     UiTars,
@@ -1632,6 +1632,7 @@ impl EnvironmentProfile {
                 | Self::PostizCoordinator
                 | Self::InboxZeroStack
                 | Self::SpotifyPlayback
+                | Self::BambuPrinter
                 | Self::Cliproxy
                 | Self::Quartz
                 | Self::UiTars
@@ -1670,7 +1671,6 @@ impl EnvironmentProfile {
             "vimax-worker" => Ok(Self::VimaxWorker),
             "vox-director-worker" => Ok(Self::VoxDirectorWorker),
             "outer-shorts-worker" => Ok(Self::OuterShortsWorker),
-            "outer-open-gym-worker" => Ok(Self::OuterOpenGymWorker),
             "agent-reach-setup-worker" => Ok(Self::AgentReachSetupWorker),
             "gbrain-sync-worker" => Ok(Self::GbrainSyncWorker),
             "outer-agent-reach-worker" => Ok(Self::OuterAgentReachWorker),
@@ -1739,6 +1739,7 @@ impl EnvironmentProfile {
             "postiz-coordinator" => Ok(Self::PostizCoordinator),
             "inbox-zero-stack" => Ok(Self::InboxZeroStack),
             "spotify-playback" => Ok(Self::SpotifyPlayback),
+            "bambu-printer" => Ok(Self::BambuPrinter),
             "cliproxy" => Ok(Self::Cliproxy),
             "quartz" => Ok(Self::Quartz),
             "ui-tars" => Ok(Self::UiTars),
@@ -1827,10 +1828,6 @@ impl EnvironmentProfile {
             Self::OuterShortsWorker => (
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 OUTER_SHORTS_WORKER_ENVIRONMENT_NAMES,
-            ),
-            Self::OuterOpenGymWorker => (
-                TOOL_WORKER_ENVIRONMENT_NAMES,
-                OUTER_OPEN_GYM_WORKER_ENVIRONMENT_NAMES,
             ),
             Self::AgentReachSetupWorker => (
                 TOOL_WORKER_ENVIRONMENT_NAMES,
@@ -2052,6 +2049,10 @@ impl EnvironmentProfile {
             Self::SpotifyPlayback => (
                 NODE_SERVICE_ENVIRONMENT_NAMES,
                 SPOTIFY_PLAYBACK_ENVIRONMENT_NAMES,
+            ),
+            Self::BambuPrinter => (
+                NODE_SERVICE_ENVIRONMENT_NAMES,
+                BAMBU_ENVIRONMENT_NAMES,
             ),
             Self::Cliproxy => (SERVICE_COMMON_ENVIRONMENT_NAMES, CLIPROXY_ENVIRONMENT_NAMES),
             Self::Quartz => (NODE_SERVICE_ENVIRONMENT_NAMES, QUARTZ_ENVIRONMENT_NAMES),
@@ -6044,11 +6045,6 @@ mod windows_runtime {
                     "outer-shorts-worker",
                     EnvironmentProfile::OuterShortsWorker,
                     "SHORTS_PYTHON",
-                ),
-                (
-                    "outer-open-gym-worker",
-                    EnvironmentProfile::OuterOpenGymWorker,
-                    "OPEN_GYM_ROOT",
                 ),
                 (
                     "agent-reach-setup-worker",

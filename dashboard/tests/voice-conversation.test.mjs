@@ -15,11 +15,13 @@ import {
   inkRingPath,
   inkUnderlinePath,
   isDoubleTap,
+  isVoiceExitRequest,
   latestAssistantReply,
   replyKey,
   scribbleRings,
   speakableText,
   stageLabel,
+  voiceTranscriptMessages,
   voiceTurnVerdict,
 } from "../src/lib/speech/voice-conversation.ts";
 
@@ -35,6 +37,37 @@ const workspace = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx"
 const hermesPanel = source("../src/app/components/hermes/agent-runtime-panel.tsx");
 
 const FRAME_MS = 85;
+
+test('voice closes for complete farewell requests, not goodbye mentioned in a task', () => {
+  for (const text of ['Goodbye.', 'Bye, Bread.', 'Thank you, goodbye!', 'See you later.', 'Okay, that’s all.', 'Please close yourself.', '[sigh] You can close yourself now', 'Could you please close the voice assistant?', 'End this conversation, please.']) {
+    assert.equal(isVoiceExitRequest(text), true, text);
+  }
+  for (const text of ['', 'Thank you.', 'Don’t close yourself.', 'You cannot close yourself now.', 'Say goodbye in Turkish.', 'Explain what “goodbye” means.', 'Write a goodbye message.', 'Goodbye, but first finish the report.', 'Close the browser.', 'Stop listening.', '[noise]']) {
+    assert.equal(isVoiceExitRequest(text), false, text);
+  }
+});
+
+test('spoken close requests allow conversational lead-ins without swallowing tasks or negations', () => {
+  for (const text of [
+    'And then close yourself now',
+    'Okay, and then close yourself now, please.',
+    '[sigh] And then could you please close the voice assistant?',
+    'Then end this conversation.',
+    'So, goodbye.',
+  ]) {
+    assert.equal(isVoiceExitRequest(text), true, text);
+  }
+  for (const text of [
+    'And then don’t close yourself now.',
+    'And then you cannot close yourself now.',
+    'Explain what “and then close yourself now” means.',
+    'Finish the report and then close yourself now.',
+    'And then close yourself now if the report is ready.',
+    'And then close the browser.',
+  ]) {
+    assert.equal(isVoiceExitRequest(text), false, text);
+  }
+});
 
 /** Feeds `count` frames at one loudness into a turn. */
 function speak(state, level, milliseconds) {
@@ -66,12 +99,14 @@ test("a turn ends on the pause after speech, not on the first quiet frame", () =
   assert.equal(voiceTurnVerdict(turn), "send");
 });
 
-test("the hold is long enough to think in the middle of a sentence", () => {
-  // Taking the turn away mid-thought is far worse than waiting: people stop for
-  // well over a second to find a word. Anything under two seconds cuts them off.
-  assert.ok(VOICE_SILENCE_HOLD_MS >= 2_000, `${VOICE_SILENCE_HOLD_MS}ms is a cut-off`);
-  const thinking = speak(speak(initialVoiceTurn(), 0.14, 1_400), 0.002, 1_800);
-  assert.equal(voiceTurnVerdict(thinking), "listening");
+test("voice hands off promptly but preserves a breath and resets the hold when speech resumes", () => {
+  let turn = speak(speak(initialVoiceTurn(), 0.14, 1_400), 0.002, 700);
+  assert.equal(voiceTurnVerdict(turn), 'listening');
+  turn = speak(turn, 0.14, 400);
+  turn = speak(turn, 0.002, 700);
+  assert.equal(voiceTurnVerdict(turn), 'listening', 'a resumed sentence starts a fresh silence hold');
+  turn = speak(turn, 0.002, 500);
+  assert.equal(voiceTurnVerdict(turn), 'send', 'a completed turn reaches transcription within 1.2 seconds');
 });
 
 test("a quiet room is never mistaken for a sentence", () => {
@@ -219,8 +254,47 @@ test("a failed progress message does not lose subsequent updates or the answer",
   assert.deepEqual(h.idle, [true]);
 });
 
-test("markdown is turned into something worth hearing", () => {
-  const spoken = speakableText(
+test('answering a question keeps watching the same assistant message without replaying earlier speech', async () => {
+  const spoken = [];
+  const before = { role: 'assistant', content: 'Let me understand your goals. ', progressNotes: [searchNote] };
+  const queue = createVoiceNarrationQueue({
+    startIndex: 1,
+    initialMessage: before,
+    speak: async item => { spoken.push(item.text); },
+    onIdle() {},
+    onError(error) { throw error; },
+  });
+  const messages = [{ role: 'user', content: 'Help with fitness' }, before, { role: 'user', content: 'Build a workout plan' }];
+  assert.equal(queue.update(messages, true), false);
+  assert.equal(queue.update(messages, false), false, 'the old content cannot count as the new answer');
+  assert.deepEqual(spoken, []);
+  messages[1] = { ...before, content: before.content + 'Train three days a week.', progressNotes: [searchNote, retryNote] };
+  assert.equal(queue.update(messages, true), false);
+  await flushNarration();
+  assert.equal(queue.update(messages, false), true);
+  await flushNarration();
+  assert.deepEqual(spoken, [retryNote, 'Train three days a week.']);
+});
+
+test('tool questions and spoken answers stay in order as the same assistant message continues', () => {
+  const messages = [
+    { role: 'user', content: 'Help with fitness' },
+    { role: 'assistant', content: 'I can help. Start with three days. Use dumbbells.' },
+    { role: 'user', content: 'Build a workout plan', clientMessageId: 'clarify:first' },
+    { role: 'user', content: 'Dumbbells', clientMessageId: 'clarify:second' },
+  ];
+  const questions = [
+    { requestId: 'first', question: 'What would you like?', messageIndex: 1, contentBefore: 'I can help. ' },
+    { requestId: 'second', question: 'What equipment do you have?', messageIndex: 1, contentBefore: 'I can help. Start with three days. ' },
+  ];
+  assert.deepEqual(voiceTranscriptMessages(messages, questions).map(message => message.content), [
+    'Help with fitness', 'I can help.', 'What would you like?', 'Build a workout plan',
+    'Start with three days.', 'What equipment do you have?', 'Dumbbells', 'Use dumbbells.',
+  ]);
+});
+
+test("markdown is turned into something worth hearing", async () => {
+  const spoken = await speakableText(
     [
       "## Heading",
       "",
@@ -234,19 +308,53 @@ test("markdown is turned into something worth hearing", () => {
       "- second point",
     ].join("\n"),
   );
-  assert.match(spoken, /^Heading A bold claim/);
+  assert.match(spoken, /^Heading\.\n\nA bold claim/);
   assert.match(spoken, /a link\./);
-  assert.doesNotMatch(spoken, /```|const secret/);
+  assert.doesNotMatch(spoken, /```/);
+  assert.match(spoken, /const secret = 1;/);
   assert.doesNotMatch(spoken, /https:\/\//);
   assert.doesNotMatch(spoken, /\*\*|^#/m);
-  assert.match(spoken, /first point second point/);
+  assert.match(spoken, /first point\.\n\nsecond point\./);
 });
 
-test("a very long answer is cut at a sentence, not mid-word", () => {
+test('voice keeps resource-only replies and shows their widgets once after clarification', () => {
+  const resource = { id: 'search-1', renderer: 'chat-search-results' };
+  const messages = [{ role: 'assistant', content: 'Before. After.', uiResources: [resource] }];
+  const transcript = voiceTranscriptMessages(messages, [
+    { requestId: 'question', question: 'Which chat?', messageIndex: 0, contentBefore: 'Before. ', answer: 'Fitness' },
+  ]);
+  assert.deepEqual(transcript.map(message => message.content), ['Before.', 'Which chat?', 'Fitness', 'After.']);
+  assert.deepEqual(transcript.flatMap(message => message.uiResources ?? []), [resource]);
+  assert.deepEqual(transcript.at(-1).uiResources, [resource]);
+  assert.deepEqual(voiceTranscriptMessages([{ ...messages[0], content: '' }], []), [
+    { role: 'assistant', content: '', uiResources: [resource] },
+  ]);
+});
+
+test('a completed resource-only response releases voice from waiting', async () => {
+  const idle = [];
+  const queue = createVoiceNarrationQueue({ startIndex: 0, speak: async () => {}, onIdle: answered => idle.push(answered), onError: assert.fail });
+  const messages = [{ role: 'assistant', content: '', uiResources: [{ id: 'search-1' }] }];
+  assert.equal(queue.update(messages, true), false);
+  assert.equal(queue.update(messages, false), true);
+  await flushNarration();
+  assert.deepEqual(idle, [true]);
+});
+
+test('widget display data is not narrated as JSON or omitted code', async () => {
+  for (const language of ['weather-results', 'image-results']) {
+    for (const fence of ['```', '~~~']) {
+      assert.equal(await speakableText(`Here it is.\n${fence}${language}\n{"privateDisplayData":true}\n${fence}\nTake a look.`), 'Here it is.\n\nTake a look.');
+      assert.equal(await speakableText(`${fence}${language}\n{"partial":`), '');
+    }
+  }
+  assert.equal(await speakableText('```js\nconsole.log(1)\n```'), 'console.log(1)');
+});
+
+test("voice reads the entire long answer, including its final words", async () => {
   const long = `${"This is a full sentence. ".repeat(200)}`;
-  const spoken = speakableText(long);
-  assert.ok(spoken.length <= 1_400);
-  assert.match(spoken, /\.$/);
+  const spoken = await speakableText(long);
+  assert.equal(spoken, long.trim());
 });
 
 test("every stage has a label", () => {
@@ -373,9 +481,9 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
   assert.match(overlay, /createPortal\(overlay, document\.body\)/);
   assert.match(overlay, /'\/api\/speech\/transcribe'/);
   assert.match(overlay, /'\/api\/speech\/synthesize'/);
-  assert.match(overlay, /await prepareLocalSpeech\(prepareController\.signal\)/);
+  assert.match(overlay, /prepareLocalSpeech\(cloudController\.signal\)/);
   assert.match(overlay, /playSpeechBlob/);
-  assert.match(overlay, /onSend\(text\)/);
+  assert.match(overlay, /onSendRef\.current\(text\)/);
   // Escape closes, and closing tears the microphone and playback down.
   assert.match(overlay, /event\.key === 'Escape'/);
   assert.match(overlay, /stopSpeechPlayback\(\);\s*\n\s*releaseMicrophone\(\);/);
@@ -387,9 +495,9 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
 test("voice mode prepares the selected speech provider before it starts listening", () => {
   assert.match(
     overlay,
-    /await prepareLocalSpeech\(prepareController\.signal\)[\s\S]*?serviceReady = true;[\s\S]*?requestForegroundMicrophone/,
+    /const cloud = await subscriptionSelected\(cloudController\.signal\);[\s\S]*?if \(!cloud\) await prepareLocalSpeech\(cloudController\.signal\);[\s\S]*?serviceReady = true;[\s\S]*?requestForegroundMicrophone/,
   );
-  assert.match(overlay, /\[401, 403, 409, 429, 503\]\.includes\(response\.status\)[\s\S]*?enterStage\('unavailable'\)/);
+  assert.match(overlay, /\[401, 403, 409\]\.includes\(response\.status\)[\s\S]*?enterStage\('unavailable'\)/);
   assert.match(overlay, /stage === 'blocked' \|\| stage === 'unavailable'/);
 });
 
@@ -397,11 +505,8 @@ test("a slow answer is waited for; only an undelivered turn gives up", () => {
   // The watchdog guards delivery, not generation: an agent that thinks for two
   // minutes must not be abandoned and then never read out.
   assert.match(overlay, /const DISPATCH_WATCHDOG_MS = 20_000;/);
-  assert.match(overlay, /if \(dispatchedRef\.current \|\| busyRef\.current\) return;/);
-  assert.match(
-    overlay,
-    /if \(busy \|\| messages\.length > sentMessageCountRef\.current\) \{[\s\S]*?dispatchedRef\.current = true;[\s\S]*?clearWatchdog\(\);/,
-  );
+  // Delivery and retry behavior is exercised with microphone input and a busy
+  // question in voice-answer-dispatch-ui.test.mjs.
   assert.match(overlay, /sentMessageCountRef\.current = messagesRef\.current\.length;/);
   // Waiting is still escapable by hand, so nothing traps the screen.
   assert.match(overlay, /if \(stage === 'thinking'\) \{[\s\S]*?awaitingRef\.current = false;/);
@@ -470,7 +575,7 @@ test("the screen owns the whole window, chrome and scrollbars included", () => {
   assert.match(overlay, /shell\?\.setTheme\?\.\('voice'\)/);
   assert.match(
     overlay,
-    /delete root\.dataset\.voiceStage;[\s\S]*?setTheme\?\.\(root\.dataset\.theme === 'dark' \? 'dark' : 'light'\)/,
+    /setTheme\?\.\(root\.dataset\.theme === 'dark' \? 'dark' : 'light'\)[\s\S]*?paintShell\(false\);\s*delete root\.dataset\.voiceStage;/,
   );
   assert.match(
     styles,

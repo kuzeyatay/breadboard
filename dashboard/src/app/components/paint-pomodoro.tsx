@@ -10,16 +10,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PUBLIC_DOMAIN_ARTWORKS, type Artwork } from "@/lib/paint-pomodoro";
 import { PaintReveal } from "@/lib/paint-reveal";
+import {
+  DEFAULT_PAINT_POMODORO_DURATIONS as DEFAULT_DURATIONS,
+  type PaintPomodoroMode as Mode,
+} from "@/lib/paint-pomodoro-settings";
+import {
+  cachePaintPomodoroDurations,
+  loadPaintPomodoroDurations,
+  readLocalPaintPomodoroDurations,
+  savePaintPomodoroDurations,
+} from "@/lib/paint-pomodoro-settings-client";
 
-type Mode = "focus" | "short" | "long";
-
-const DEFAULT_DURATIONS: Record<Mode, number> = { focus: 25, short: 5, long: 15 };
 const MODE_LABEL: Record<Mode, string> = { focus: "Focus", short: "Short break", long: "Long break" };
 const MODE_ORDER: Mode[] = ["focus", "short", "long"];
 const REVEAL_SESSIONS = 6; // focus sessions to fully reveal a piece
 const BASE_REVEAL = 0.08; // glimpses show from the start so it reads as a painting
 
-const SETTINGS_KEY = "bb_paint_pomodoro_settings_v1";
 const PROGRESS_KEY = "bb_paint_pomodoro_progress_v1";
 
 function formatClock(totalSeconds: number): string {
@@ -27,7 +33,7 @@ function formatClock(totalSeconds: number): string {
   return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
 }
 
-function playChime() {
+function playAlarm() {
   try {
     const AudioContextClass =
       window.AudioContext ||
@@ -35,20 +41,31 @@ function playChime() {
     if (!AudioContextClass) return;
     const context = new AudioContextClass();
     const now = context.currentTime;
-    [523.25, 659.25, 783.99].forEach((frequency, index) => {
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.value = frequency;
-      const start = now + index * 0.16;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.18, start + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.7);
-      oscillator.connect(gain).connect(context.destination);
-      oscillator.start(start);
-      oscillator.stop(start + 0.72);
-    });
-    window.setTimeout(() => void context.close().catch(() => undefined), 1600);
+    // A bedside alarm rhythm: four short beeps, a pause, then repeat.
+    const bursts = 4;
+    const beepsPerBurst = 4;
+    const burstSpacing = 1.1;
+    const beepSpacing = 0.2;
+    const beepDuration = 0.12;
+    for (let burst = 0; burst < bursts; burst += 1) {
+      for (let beep = 0; beep < beepsPerBurst; beep += 1) {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "square";
+        oscillator.frequency.value = 880;
+        const start = now + burst * burstSpacing + beep * beepSpacing;
+        // Keep the attack crisp while softening the edges to prevent clicks.
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.08, start + 0.006);
+        gain.gain.setValueAtTime(0.08, start + 0.095);
+        gain.gain.linearRampToValueAtTime(0, start + beepDuration);
+        oscillator.connect(gain).connect(context.destination);
+        oscillator.start(start);
+        oscillator.stop(start + beepDuration);
+      }
+    }
+    const alarmDuration = (bursts - 1) * burstSpacing + (beepsPerBurst - 1) * beepSpacing + beepDuration;
+    window.setTimeout(() => void context.close().catch(() => undefined), (alarmDuration + 0.3) * 1000);
   } catch {
     // Audio is a nicety; ignore environments that block it.
   }
@@ -64,6 +81,10 @@ export default function PaintPomodoro() {
   const [artwork, setArtwork] = useState<Artwork | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const durationsRef = useRef(durations);
+  const saveVersionRef = useRef(0);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const revealRef = useRef<PaintReveal | null>(null);
@@ -100,17 +121,6 @@ export default function PaintPomodoro() {
     /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration of persisted state */
     let restoredArtwork = false;
     try {
-      const rawSettings = window.localStorage.getItem(SETTINGS_KEY);
-      if (rawSettings) {
-        const parsed = JSON.parse(rawSettings) as Partial<Record<Mode, number>>;
-        const next: Record<Mode, number> = { ...DEFAULT_DURATIONS };
-        for (const key of MODE_ORDER) {
-          const value = parsed[key];
-          if (typeof value === "number" && value >= 1 && value <= 180) next[key] = value;
-        }
-        setDurations(next);
-        setSecondsLeft(next.focus * 60);
-      }
       const rawProgress = window.localStorage.getItem(PROGRESS_KEY);
       if (rawProgress) {
         const parsed = JSON.parse(rawProgress) as { artwork?: Artwork; revealSessions?: number; focusCount?: number };
@@ -130,13 +140,37 @@ export default function PaintPomodoro() {
   }, [loadArtwork]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    try {
-      window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(durations));
-    } catch {
-      /* best-effort */
+    let active = true;
+    async function restoreSettings() {
+      const local = readLocalPaintPomodoroDurations();
+      let next = local ?? DEFAULT_DURATIONS;
+      try {
+        // Desktop origins change between launches; the account is authoritative.
+        const saved = await loadPaintPomodoroDurations();
+        if (!active) return;
+        next = saved ?? next;
+        if (!saved && local) await savePaintPomodoroDurations(local);
+      } catch {
+        if (active) setSettingsError("Could not sync timer settings. Retry saving to keep them across app restarts.");
+      }
+      if (!active) return;
+      durationsRef.current = next;
+      setDurations(next);
+      setSecondsLeft(next.focus * 60);
+      cachePaintPomodoroDurations(next);
+      setSettingsReady(true);
     }
-  }, [durations, hydrated]);
+    void restoreSettings();
+    return () => { active = false; };
+  }, []);
+
+  const persistDurations = useCallback((next: Record<Mode, number>) => {
+    const version = ++saveVersionRef.current;
+    void savePaintPomodoroDurations(next).then(
+      () => { if (version === saveVersionRef.current) setSettingsError(null); },
+      () => { if (version === saveVersionRef.current) setSettingsError("Could not save timer settings to your account. Retry to keep them across app restarts."); },
+    );
+  }, []);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -149,7 +183,7 @@ export default function PaintPomodoro() {
 
   const finishSession = useCallback(() => {
     setRunning(true);
-    playChime();
+    playAlarm();
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       new Notification(mode === "focus" ? "Focus session done" : `${MODE_LABEL[mode]} over`, {
         body: mode === "focus" ? "Take a break — the painting is waiting." : "Back to focus.",
@@ -217,11 +251,14 @@ export default function PaintPomodoro() {
 
   const adjustDuration = useCallback(
     (target: Mode, delta: number) => {
-      const nextValue = Math.min(180, Math.max(1, durations[target] + delta));
-      setDurations((current) => ({ ...current, [target]: nextValue }));
+      const nextValue = Math.min(180, Math.max(1, durationsRef.current[target] + delta));
+      const next = { ...durationsRef.current, [target]: nextValue };
+      durationsRef.current = next;
+      setDurations(next);
+      persistDurations(next);
       if (target === mode && !running) setSecondsLeft(nextValue * 60);
     },
-    [durations, mode, running],
+    [mode, running, persistDurations],
   );
 
   // Title reflects the countdown when the tab/window is inactive.
@@ -241,6 +278,10 @@ export default function PaintPomodoro() {
     revealRef.current = reveal;
     const apply = () => reveal.resizeCanvas(canvas.clientWidth, canvas.clientHeight);
     apply();
+    const applyTheme = () => reveal.setDarkMode(document.documentElement.dataset.theme === "dark");
+    applyTheme();
+    const themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     let debounce = 0;
     const observer = new ResizeObserver(() => {
       window.clearTimeout(debounce);
@@ -249,6 +290,7 @@ export default function PaintPomodoro() {
     observer.observe(canvas);
     return () => {
       observer.disconnect();
+      themeObserver.disconnect();
       window.clearTimeout(debounce);
       reveal.destroy();
       revealRef.current = null;
@@ -349,13 +391,13 @@ export default function PaintPomodoro() {
           <p className="pp-hud-sub">{subline}</p>
 
           <div className="pp-controls">
-            <button type="button" className="pp-btn pp-btn-primary" onClick={toggleRun}>
+            <button type="button" className="pp-btn pp-btn-primary" onClick={toggleRun} disabled={!settingsReady}>
               {primaryLabel}
             </button>
-            <button type="button" className="pp-btn pp-btn-secondary" onClick={reset}>
+            <button type="button" className="pp-btn pp-btn-secondary" onClick={reset} disabled={!settingsReady}>
               Reset
             </button>
-            <button type="button" className="pp-btn pp-btn-secondary" onClick={skip}>
+            <button type="button" className="pp-btn pp-btn-secondary" onClick={skip} disabled={!settingsReady}>
               Skip
             </button>
           </div>
@@ -365,6 +407,7 @@ export default function PaintPomodoro() {
               type="button"
               className="pp-time-adjust"
               onClick={() => adjustTimer(-30)}
+              disabled={!settingsReady}
               aria-label="Rewind timer by 30 seconds"
               title="Rewind 30 seconds"
             >
@@ -374,6 +417,7 @@ export default function PaintPomodoro() {
               type="button"
               className="pp-time-adjust"
               onClick={() => adjustTimer(30)}
+              disabled={!settingsReady}
               aria-label="Add 30 seconds to timer"
               title="Add 30 seconds"
             >
@@ -408,17 +452,24 @@ export default function PaintPomodoro() {
               <div key={item} className="pp-setting">
                 <span className="pp-setting-label">{MODE_LABEL[item]}</span>
                 <div className="pp-stepper">
-                  <button type="button" onClick={() => adjustDuration(item, -1)} aria-label={`Decrease ${MODE_LABEL[item]}`}>
+                  <button type="button" onClick={() => adjustDuration(item, -1)} disabled={!settingsReady} aria-label={`Decrease ${MODE_LABEL[item]}`}>
                     −
                   </button>
                   <span className="pp-setting-value">{durations[item]}</span>
-                  <button type="button" onClick={() => adjustDuration(item, 1)} aria-label={`Increase ${MODE_LABEL[item]}`}>
+                  <button type="button" onClick={() => adjustDuration(item, 1)} disabled={!settingsReady} aria-label={`Increase ${MODE_LABEL[item]}`}>
                     +
                   </button>
                 </div>
               </div>
             ))}
           </div>
+
+          {settingsError ? (
+            <p className="pp-settings-error" role="alert">
+              {settingsError}{" "}
+              <button type="button" className="pp-newpiece" onClick={() => persistDurations(durationsRef.current)}>Retry</button>
+            </p>
+          ) : null}
 
           <div className="pp-hud-footer">
             <button type="button" className="pp-newpiece" onClick={newPiece}>
@@ -434,7 +485,7 @@ export default function PaintPomodoro() {
 
 const THEME_CSS = `
 .pp-overlay {
-  --canvas: #faf7f2; --surface: #ffffff; --surface-muted: #f5f0e8;
+  --canvas: #fbf8f2; --surface: #ffffff; --surface-muted: #f5f0e8;
   --ink: #1a1a1a; --ink-sec: #3d3d3d; --ink-muted: #6b6b6b; --ink-subtle: #9a9a9a;
   --accent: #9a4f42; --accent-strong: #c45c4a; --accent-hover: #8a4539; --accent-fill: #efe8df; --warm: #8b7355;
   --border: #e5ddd2; --border-subtle: #ece4da;
@@ -536,6 +587,8 @@ const THEME_CSS = `
 .pp-stepper button { width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 2px; background: var(--surface); color: var(--ink); font-size: 1rem; line-height: 1; cursor: pointer; }
 .pp-stepper button:hover { background: var(--surface-muted); }
 .pp-setting-value { width: 26px; text-align: center; font-variant-numeric: tabular-nums; font-size: 0.875rem; color: var(--ink); }
+.pp-settings-error { margin: 0 0 14px; font-size: 0.8125rem; color: var(--ink-sec); }
+.pp-overlay button:disabled { opacity: 0.5; cursor: wait; }
 
 .pp-hud-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
 .pp-newpiece {
@@ -547,14 +600,14 @@ const THEME_CSS = `
 .pp-attr { margin: 0; font-size: 0.625rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-subtle); text-align: right; }
 
 html[data-theme="dark"] .pp-overlay {
-  --canvas: #0b0c0a; --surface: #212420; --surface-muted: #171916;
-  --ink: #e2e7de; --ink-sec: #ccd2c9; --ink-muted: #8d968b; --ink-subtle: #778075;
-  --accent: #91b7a1; --accent-strong: #a6c8b4; --accent-hover: #c4d8c8; --accent-fill: #253832; --warm: #c5a963;
-  --border: #454f48; --border-subtle: #2e3530;
+  --canvas: #0f1210; --surface: #212823; --surface-muted: #181d1a;
+  --ink: #e9ede5; --ink-sec: #d2d9d0; --ink-muted: #96a196; --ink-subtle: #7d8880;
+  --accent: #9ac6ac; --accent-strong: #aed7bf; --accent-hover: #c8dccc; --accent-fill: #273b35; --warm: #cbb069;
+  --border: #4a564e; --border-subtle: #2c352f;
 }
-html[data-theme="dark"] .pp-hud { background: rgb(23 25 22 / 97%); box-shadow: 0 10px 34px rgb(0 0 0 / 62%); }
+html[data-theme="dark"] .pp-hud { background: rgb(24 29 26 / 97%); box-shadow: 0 10px 34px rgb(0 0 0 / 62%); }
 html[data-theme="dark"] .pp-hud-toggle:hover { background: rgb(255 255 255 / 5%); }
-html[data-theme="dark"] .pp-btn-primary { color: #0b0c0a; }
-html[data-theme="dark"] .pp-clue { background: rgb(33 36 32 / 88%); }
-html[data-theme="dark"] .pp-clue.is-open { border-color: #9fb5c4; background: rgb(45 49 43 / 96%); }
+html[data-theme="dark"] .pp-btn-primary { color: #0f1210; }
+html[data-theme="dark"] .pp-clue { background: rgb(33 40 35 / 88%); }
+html[data-theme="dark"] .pp-clue.is-open { border-color: #a3bccd; background: rgb(45 54 48 / 96%); }
 `;

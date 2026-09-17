@@ -4,6 +4,7 @@ import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 import { ensureBuzzSchema } from "./buzz/schema.ts";
 import { databaseDir } from "./runtime-paths.ts";
 import { ensureConversationSchema } from "./conversations/schema.ts";
+import { ensureProposalOwnershipSchema } from "./hermes/proposal-ownership.ts";
 import { ensureDocumentSkillSchema } from "./document-skills/schema.ts";
 import { ensureOrganizationSchema } from "./organizations/schema.ts";
 import { ensureArtifactSchema } from "./hermes/artifact-schema.ts";
@@ -842,6 +843,7 @@ ensureColumn("chat_messages", "proposal", "proposal TEXT");
 // preserve every user-visible transcript without a destructive migration.
 ensureMcpOAuthSchema(db);
 ensureConversationSchema(db);
+ensureProposalOwnershipSchema(db);
 // Bookkeeping mapping durable memories to their mem0 semantic-index entries.
 // Must follow the conversation schema: it references durable_memories(id).
 ensureMem0Schema(db);

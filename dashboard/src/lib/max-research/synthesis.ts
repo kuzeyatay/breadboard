@@ -15,6 +15,8 @@ import type { MaxResearchParticipant, MaxResearchPlan } from "./plan.ts";
 
 /** What each participant's evidence is good for, and what it is not. */
 const STANDING: Record<MaxResearchParticipant, string> = {
+  feynman:
+    "Feynman PaperRank over public arXiv, Crossref and Europe PMC records, with bounded full-text inspection. Strongest on reading priority, source provenance and method/reproducibility evidence. Scores and critiques are deterministic heuristics, not proof that a paper is correct. Abstract-only findings are explicitly identified; no experiments were run.",
   deep_research:
     "Multi-round search over the indexed web, returned with citations and a source registry. Strongest on the published, findable account; weakest where something is true but not written down in an indexed place.",
   agent_reach:
@@ -24,8 +26,8 @@ const STANDING: Record<MaxResearchParticipant, string> = {
   openscience:
     "Its own workspace: code, data and small experiments. Strongest where a question can be settled by doing rather than reading, and its observations are first-hand rather than reported; weakest in scope, since it ran one thing under one set of conditions.",
   praxist:
-    "A prepared measurable R&D task executed by a multi-agent, multi-generation research loop. Strongest on accepted experimental findings with preserved run artifacts; weakest when the configured task only partially overlaps the question, which must be stated rather than generalized away.",
-  aris: "Methodology rather than evidence. It contributes the local harness's research workflow, and contributes no findings of its own — nothing it says is a fact about the world, and it must never be cited as one.",
+    "A declared measurable task executed by the Praxist research loop, with accepted findings and preserved receipts. Its scope is the task actually run: an arithmetic audit verifies computations, not source truth, clinical outcomes or causal effects. Describe the conditions and limitations of any actual experiment; never generalize an acceptance score into empirical proof.",
+  aris: "A fresh, same-family provisional critique applying the cloned research methodology to the collected evidence. Use its concrete corrections and uncertainty checks; it is not a new retrieval pass or independent empirical evidence and must not be cited as one.",
 };
 
 /**
@@ -38,6 +40,7 @@ const STANDING: Record<MaxResearchParticipant, string> = {
  * act on.
  */
 const RECORD_PART: Record<MaxResearchParticipant, string> = {
+  feynman: "ranked public literature and source-grounded method evidence",
   deep_research: "the indexed web (multi-round cited web research)",
   agent_reach: "the open internet (threads, posts, videos, repositories)",
   get_doc: "the primary literature",
@@ -184,7 +187,7 @@ export function maxResearchSynthesisPrompt(input: {
     "",
     "When two of your sources describe the same document and differ on a detail — a sample size, a p-value — do not hand the reader both numbers to sort out. Prefer the account closest to the document (its full text over its abstract, its abstract over a catalog record, any of those over a secondary summary), use that figure, and say in a few words which account you took it from. Flag a discrepancy only when neither account is the document itself.",
     "",
-    "Length is a cost the reader pays. Write the shortest answer that carries the same evidence: no caveat twice, no narration of how the material was gathered, no section that restates the summary. A long answer is not a thorough one. For one question, 700 to 1,200 words of body usually carries everything the evidence supports; go past that only when the evidence itself demands it, never to catalogue.",
+    "Write concisely while fulfilling every requested deliverable. Before drafting, inventory the question's distinct requests and constraints. A multi-part request for a practical plan may require tables, worked calculations, schedules, examples and adjustment rules; include these even when the body exceeds 1,200 words. Do not compress away details needed to act. Avoid repeated caveats, retrieval narration and a second summary that adds nothing.",
     "",
     // A live answer closed with "Triplet's practitioner page returned a 404
     // response… Google Search returned a CAPTCHA" — the machinery of the
@@ -200,6 +203,8 @@ export function maxResearchSynthesisPrompt(input: {
     "A study, report or page earns a mention only with its finding attached. Naming a source and saying nothing about what it showed — \"a 2024 review also exists\", \"an Australian study was published\" — is breadth without substance; either give the result or leave the source out. And never narrate retrieval mechanics: a page that returned 404, a search that met a CAPTCHA, a paywall, a timeout. Do not discuss a source that was not read — an unread paper is not evidence and not a caveat. If a source that matters could not be read, one clause says so; if it does not matter, nothing does.",
     "",
     "Answer the question that was asked, at the resolution it was asked. When it asks whether something pays, saves, or is worth it, give the verdict for a stated typical case and show the arithmetic: the inputs, each with its source, the result, and what changes it. If a needed input is missing, do not stop at a threshold — say which input is missing, state the value you would need and what it would have to be for the verdict to flip, and give the reader the best-supported figure you do have with its scope. A sourced calculation with one stated assumption is more useful than a refusal to calculate.",
+    "For an implementation plan, supply a concrete starting prescription, schedule, quantities and units, progression or adjustment rules, relevant alternatives and stopping criteria. Match these to the user's starting capacity, resources and deadline. Distinguish a practical choice within evidence-supported ranges from a protocol directly tested in a study. Label estimates, user inputs and assumptions; check totals, dates and units. Do not imply that every chosen number is a scientifically established optimum or promise a projected outcome. When safety or missing information changes an action, place that qualification beside the action without letting generic disclaimers replace the requested plan.",
+    "Choose one coherent default plan and a consistent set of quantities that add up; reserve alternatives for constraints that change the action. Estimate the practical time commitment where useful, and scale increments to the person's starting capacity. A prediction or baseline equation does not establish a personal safety floor or ceiling. Support causal explanations at the level of detail actually verified, rather than giving a long unsupported mechanism followed by a blanket disclaimer.",
     "",
     absent.length
       ? `These parts of the record went unread this time: ${absent

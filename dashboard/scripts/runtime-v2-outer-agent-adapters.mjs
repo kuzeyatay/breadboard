@@ -863,34 +863,6 @@ export function validateRuntimeV2ShortsRequest(value) {
   return value;
 }
 
-export function validateRuntimeV2OpenGymRequest(value) {
-  if (
-    !exactRecord(value, [
-      "task",
-      "model",
-      "reasoningEffort",
-      "baseUrl",
-      "conversationContext",
-      "conversationPublicId",
-      "maxSteps",
-    ]) ||
-    !boundedText(value.task, 256 * 1024) ||
-    value.task.length > 100_000 ||
-    !boundedString(value.model, 256) ||
-    !EFFORTS.has(value.reasoningEffort) ||
-    !baseUrl(value.baseUrl) ||
-    !boundedText(value.conversationContext, 32 * 1024, { empty: true }) ||
-    !(value.conversationPublicId === null || (
-      boundedString(value.conversationPublicId, 128) &&
-      /^conv_[A-Za-z0-9_-]{24}$/u.test(value.conversationPublicId)
-    )) ||
-    !Number.isSafeInteger(value.maxSteps) ||
-    value.maxSteps < 1 ||
-    value.maxSteps > 40
-  ) fail("The canonical openGym Runtime request is invalid.");
-  return value;
-}
-
 export function validateRuntimeV2OpenPlanterRequest(value) {
   if (
     !exactRecord(value, [
@@ -1575,7 +1547,6 @@ const REQUEST_VALIDATORS = Object.freeze({
   "agent-tars": validateRuntimeV2AgentTarsRequest,
   openwork: validateRuntimeV2OpenworkRequest,
   shorts: validateRuntimeV2ShortsRequest,
-  "open-gym": validateRuntimeV2OpenGymRequest,
   legal: validateRuntimeV2LegalRequest,
   openplanter: validateRuntimeV2OpenPlanterRequest,
   resource2skill: validateRuntimeV2Resource2SkillRequest,
@@ -1615,7 +1586,6 @@ const MANAGER_MODULES = Object.freeze({
   "agent-tars": ["lib", "ui-tars", "runtime-worker-run-manager.ts"],
   openwork: ["lib", "openwork", "run-manager.ts"],
   shorts: ["lib", "shorts", "run-manager.ts"],
-  "open-gym": ["lib", "open-gym", "run-manager.ts"],
   legal: ["lib", "legal", "run-manager.ts"],
   openplanter: ["lib", "openplanter", "run-manager.ts"],
   resource2skill: ["lib", "resource2skill", "run-manager.ts"],
@@ -1756,13 +1726,6 @@ export const RUNTIME_V2_OUTER_AGENT_WORKER_ADAPTERS = Object.freeze({
     workerKind: "outer-shorts-node",
     jobType: "shorts-run",
     scopePrefix: "oa_shorts_",
-    maximumInputs: 0,
-  }),
-  "open-gym": Object.freeze({
-    id: "open-gym",
-    workerKind: "outer-open-gym-node",
-    jobType: "open-gym-run",
-    scopePrefix: "oa_open_gym_",
     maximumInputs: 0,
   }),
   legal: Object.freeze({
@@ -1910,41 +1873,9 @@ export function validateRuntimeV2OuterAgentRequest(adapterId, value) {
 }
 
 export function expectedRuntimeV2OuterAgentInputCount(adapterId, request) {
-  if (
-    [
-      "deep-tutor",
-      "deer-flow",
-      "deep-research",
-      "video-use",
-      "openscience",
-      "trading-agent",
-      "career-ops",
-      "openexecutive",
-      "agent-reach",
-      "praxist",
-      "agent-tars",
-      "openwork",
-      "shorts",
-      "open-gym",
-      "openplanter",
-      "resource2skill",
-      "matraix",
-      "hyperframes",
-      "openmontage",
-      "bolt-slides",
-      "hardware-blueprint",
-      "inbox-zero",
-      "socials-manager",
-      "get-doc",
-      "get-doc-download",
-      "money-printer",
-      "max-research",
-      "parametric-cad",
-      "stock-analyst",
-      "vibe-trading",
-    ]
-      .includes(adapterId)
-  ) return 0;
+  // The registered contract is the authority; a second list can omit a newly
+  // registered worker (Music Producer used to fall through to undefined).
+  if (RUNTIME_V2_OUTER_AGENT_WORKER_ADAPTERS[adapterId]?.maximumInputs === 0) return 0;
   if (adapterId === "legal") {
     return 1 + request.attachments.filter((entry) => entry.kind !== "skipped").length;
   }
@@ -2250,18 +2181,6 @@ export async function executeRuntimeV2OuterAgentAdapter({
       apiKey: trustedSecret("CHATMOCK_API_KEY"),
       runtimeWorkspacePath: launch.workspacePath,
     });
-  } else if (adapterId === "open-gym") {
-    local = manager.startRuntimeWorkerRun({
-      ...base,
-      task: request.task,
-      model: request.model,
-      reasoningEffort: request.reasoningEffort,
-      baseUrl: request.baseUrl,
-      conversationContext: request.conversationContext,
-      conversationPublicId: request.conversationPublicId,
-      maxSteps: request.maxSteps,
-      apiKey: trustedSecret("CHATMOCK_API_KEY"),
-    });
   } else if (adapterId === "legal") {
     local = manager.startRuntimeWorkerRun({
       ...base,
@@ -2314,6 +2233,27 @@ export async function executeRuntimeV2OuterAgentAdapter({
   } else if (adapterId === "hyperframes") {
     local = manager.startRuntimeWorkerRun({
       ...base,
+      signal,
+      installCli: async () => {
+        const { executeManagedSetup } = await import("./runtime-v2-managed-setup-executor.mjs");
+        return executeManagedSetup(
+          { protocolVersion: 1, operation: "hyperframes", action: "install-cli" },
+          {
+            dataRoot: launch.dataRoot,
+            appRoot: process.env.BREADBOARD_REPO_ROOT,
+            env: process.env,
+            signal,
+          },
+        );
+      },
+      prepareBrowser: async (launcher) => {
+        const { prepareHyperframesBrowser } = await import("./runtime-v2-managed-setup-executor.mjs");
+        return prepareHyperframesBrowser(launcher, {
+          dataRoot: launch.dataRoot,
+          env: process.env,
+          signal,
+        });
+      },
       brief: request.brief,
       model: request.model,
       reasoningEffort: request.reasoningEffort,

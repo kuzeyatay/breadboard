@@ -27,6 +27,26 @@ function row(id, clientMessageId, role, content, orderIndex, metadata = null) {
   };
 }
 
+test("recreated and branched runtime histories retain the main chat and label inline exchanges", () => {
+  const metadata = JSON.stringify({ textSelection: {
+    id: "inline:1", mode: "inline", sourceMessageId: "msg_2", start: 0, end: 7, quote: "caching",
+  } });
+  const messages = [
+    row(1, "main", "user", "Review the whole architecture, including storage and auth.", 0),
+    row(2, "main", "assistant", "Architecture review with caching details.", 1),
+    row(3, "aside", "user", "Why?", 2, metadata),
+    row(4, "aside", "assistant", "A local caching explanation.", 3, metadata),
+    row(5, "next", "user", "Continue the review.", 4),
+  ];
+  const history = runtimeMessagesForBranch(messages);
+  assert.equal(history.length, messages.length);
+  assert.equal(history[0].content, messages[0].content);
+  assert.match(history[2].content, /^[[]Ask here: a side question about the highlighted excerpt "caching";/);
+  assert.equal(history[3].content, "A local caching explanation.", "answers are not wrapped, or the model copies the wrapper");
+  assert.equal(history[4].content, "Continue the review.");
+  assert.equal(messages[2].content, "Why?", "model context must not modify saved message text");
+});
+
 test("session restoration replaces regenerated siblings instead of displaying every retry", () => {
   const branchMetadata = JSON.stringify({ branchGroupId: "turn-2" });
   const attempts = [

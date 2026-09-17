@@ -172,7 +172,10 @@ export class BrowserVisitedLinks {
   }
 
   private refresh(contents: WebContents): void {
-    if (contents.isDestroyed()) return;
+    // Repeated history updates while a resource is stalled must not queue
+    // isolated-world scripts (and one Electron loading listener per call).
+    // The single stop handler below refreshes the latest URL and saved visits.
+    if (contents.isDestroyed() || contents.isLoadingMainFrame()) return;
     const url = contents.getURL();
     if (!normalizedVisitedLink(url)) return;
     const isResultsPage = isGoogleSearchResultsPage(url);
@@ -190,6 +193,7 @@ export class BrowserVisitedLinks {
   }
 
   attach(contents: WebContents): void {
+    if (this.pages.has(contents) || contents.isDestroyed()) return;
     this.pages.add(contents);
     contents.once("destroyed", () => this.pages.delete(contents));
     let previousUrl = contents.getURL();
@@ -210,5 +214,6 @@ export class BrowserVisitedLinks {
       this.styledPages.delete(contents);
       this.refresh(contents);
     });
+    contents.on("did-stop-loading", () => this.refresh(contents));
   }
 }

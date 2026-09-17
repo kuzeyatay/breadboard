@@ -22,9 +22,25 @@ import {
   nextAppThemeTransition,
   rememberEffectiveAppTheme,
   resolveAppTheme,
+  restoreAppThemeFromShell,
   solarTimesForDate,
 } from "../src/lib/app-theme.ts";
 import { quartzUrlWithTheme } from "../src/lib/quartz-url.ts";
+
+test("desktop restores a sun override into a fresh or previously used origin", () => {
+  const now = new Date(2026, 8, 12, 12);
+  const until = new Date(2026, 8, 12, 20).getTime();
+  const entries = new Map([[APP_THEME_STORAGE_KEY, "light"]]);
+  const storage = { getItem: key => entries.get(key) ?? null, setItem: (key, value) => entries.set(key, value), removeItem: key => entries.delete(key) };
+  restoreAppThemeFromShell({ theme: "dark", schedule: { mode: "sun", sunriseMinutes: 420, sunsetMinutes: 1200, overrideUntil: until } }, storage);
+  assert.equal(resolveAppTheme(storage, now).theme, "dark");
+  assert.equal(resolveAppTheme(storage, now).overridden, true);
+  assert.equal(appThemeScheduleForShell(storage, now).overrideUntil, until);
+  assert.equal(appThemeScheduleForShell(storage, new Date(until + 1)).overrideUntil, undefined);
+  restoreAppThemeFromShell({ theme: "dark", schedule: { mode: "manual" } }, storage);
+  assert.equal(entries.has(APP_THEME_OVERRIDE_STORAGE_KEY), false);
+  assert.equal(resolveAppTheme(storage, now).mode, "manual");
+});
 
 const layout = fs.readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
 const home = fs.readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
@@ -39,10 +55,6 @@ const dashboard = fs.readFileSync(
 const newTab = fs.readFileSync(new URL("../src/app/new-tab/new-tab-client.tsx", import.meta.url), "utf8");
 const appearance = fs.readFileSync(new URL("../src/app/components/page-appearance.tsx", import.meta.url), "utf8");
 const globals = fs.readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
-const themeTransition = fs.readFileSync(
-  new URL("../src/app/app-theme-transition.css", import.meta.url),
-  "utf8",
-);
 const animation = fs.readFileSync(
   new URL("../src/app/components/navbar-flower-wind.tsx", import.meta.url),
   "utf8",
@@ -344,26 +356,17 @@ test("the durable desktop launch theme overrides an empty or stale origin", () =
   });
 });
 
-test("theme changes crossfade without moving the page", () => {
-  assert.match(layout, /import "\.\/app-theme-transition\.css"/);
-  assert.match(runtime, /rememberEffectiveAppTheme\(theme, \{ animate: changed \}\)/);
-  assert.match(themeTransition, /::view-transition-old\(root\)/);
-  assert.match(themeTransition, /::view-transition-new\(root\)/);
-  assert.match(themeTransition, /animation-duration:\s*200ms/);
-  assert.match(themeTransition, /cubic-bezier\(0\.23, 1, 0\.32, 1\)/);
-  assert.match(themeTransition, /prefers-reduced-motion:\s*reduce/);
-  assert.doesNotMatch(themeTransition, /transform:/);
+test("theme changes use a cheap synchronous token swap", () => {
+  assert.doesNotMatch(runtime, /animate: changed/);
+  assert.doesNotMatch(rememberEffectiveAppTheme.toString(), /startViewTransition/);
+  assert.doesNotMatch(rememberEffectiveAppTheme.toString(), /ViewTransition/);
 });
 
-test("a rapid theme reversal interrupts the in-flight crossfade", async () => {
+test("a rapid theme reversal applies the final preference without a full-page snapshot", () => {
   const originalWindow = globalThis.window;
   const originalDocument = globalThis.document;
   const stored = new Map();
   const root = { dataset: { theme: "light" } };
-  const callbacks = [];
-  const finishers = [];
-  let skipped = 0;
-
   globalThis.window = {
     localStorage: {
       setItem(key, value) {
@@ -373,31 +376,11 @@ test("a rapid theme reversal interrupts the in-flight crossfade", async () => {
   };
   globalThis.document = {
     documentElement: root,
-    visibilityState: "visible",
-    startViewTransition(callback) {
-      callbacks.push(callback);
-      let finish;
-      const finished = new Promise((resolve) => {
-        finish = resolve;
-      });
-      finishers.push(finish);
-      return {
-        finished,
-        skipTransition() {
-          skipped += 1;
-        },
-      };
-    },
   };
 
   try {
     rememberEffectiveAppTheme("dark");
     rememberEffectiveAppTheme("light");
-    callbacks[0]();
-    finishers[0]();
-    await Promise.resolve();
-
-    assert.equal(skipped, 1);
     assert.equal(root.dataset.theme, "light");
     assert.equal(stored.get(APP_THEME_STORAGE_KEY), "light");
     assert.equal(root.dataset.themeTransition, undefined);
@@ -427,7 +410,7 @@ test("dark mode uses charcoal paper and Breadboard's pastel utility bridge", () 
   assert.match(login, /bg-gray-900/);
 });
 
-test("navbar gardens share a deterministic, wall-clock-synchronized animation", () => {
+test("navbar gardens share a deterministic animation with a bounded compositor cost", () => {
   assert.match(animation, /const STAR_COUNT = 56/);
   assert.match(animation, /styles\.skyAnimation/);
   assert.doesNotMatch(animation, /createPlants\(Math\.random\)/);
@@ -437,7 +420,11 @@ test("navbar gardens share a deterministic, wall-clock-synchronized animation", 
   assert.match(animation, /setAnimationClockMs\(Date\.now\(\)\)/);
   assert.match(animation, /data-animation-ready=\{animationReady\}/);
   assert.match(animationStyles, /html\[data-theme="dark"\].*\.skyAnimation/);
-  assert.match(animationStyles, /@keyframes starTwinkle/);
+  assert.match(animationStyles, /@keyframes starFieldBreathe/);
+  assert.doesNotMatch(animationStyles, /\.star\s*\{[^}]*animation:/);
+  assert.doesNotMatch(animationStyles, /\.plant\s*\{[^}]*animation:/);
+  assert.match(animationStyles, /\.wind\[data-animation-ready="true"\]\s*\{[^}]*animation:/);
+  assert.match(animation, /const COMET_COUNT = 1/);
   assert.match(animationStyles, /@keyframes cometPass/);
   assert.match(animationStyles, /animation-play-state:\s*paused/);
   assert.match(animationStyles, /prefers-reduced-motion: reduce/);

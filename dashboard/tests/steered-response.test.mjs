@@ -6,6 +6,12 @@ import {
   splitSteeredResponse,
 } from "../src/lib/steered-response.ts";
 
+test("a correction retains its selected excerpt when interleaved in the response", () => {
+  const textSelection = { id: "selection:field", mode: "chat", sourceMessageId: "answer:field", start: 0, end: 5, quote: "field" };
+  const segments = splitSteeredResponse("BeforeAfter", [{ id: "correction", content: "Visualize this", offset: 6, textSelection }]);
+  assert.deepEqual(segments[1].textSelection, textSelection);
+});
+
 test("answers to assistant clarification questions are not new chat turns", () => {
   assert.equal(
     isClarificationAnswerMessage({

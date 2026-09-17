@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { clapBrowser } from './helpers/clap-browser.mjs';
+import { expect } from '@playwright/test';
 
 async function desktopFixture(context) {
  await context.addInitScript(() => {
@@ -13,6 +14,42 @@ async function desktopFixture(context) {
   window.breadboardDesktop={getTabsState:async()=>({...window.desktopState}),onTabsState:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},tabs:async command=>{window.desktopCommands.push(command);return true;}};
  });
 }
+
+test('clap and snap music start a cold background player without opening or navigating tabs', {timeout:45000}, async()=>{
+ const h=await clapBrowser();
+ h.fixture.preferences={...h.fixture.preferences,enabled:true,resumeOnStartup:true};
+ h.fixture.snapPreferences={...h.fixture.snapPreferences,enabled:true,resumeOnStartup:true};
+ h.fixture.action={prompt:'Play Snap by manifest',action:{kind:'assistant',prompt:'Play Snap by manifest'}};
+ h.fixture.playerReady=false;
+ try{
+  await desktopFixture(h.context);const page=await h.context.newPage();page.setDefaultTimeout(5000);
+  await page.goto(h.url+'/profile?profile&snaps');await page.waitForFunction(()=>window.clapSnapshot?.().status==='listening');
+  const originalUrl=page.url();
+  await page.evaluate(()=>window.emitClaps());
+  // The page has no Spotify dock: the listener must acquire its own lease.
+  await expect.poll(()=>h.fixture.playerLeases?.some(lease=>lease.method==='POST')).toBe(true);
+  assert.equal(h.fixture.executions,0,'music waits for the background player to be ready');
+  h.fixture.playerReady=true;
+  await expect.poll(()=>h.fixture.executions).toBe(1);
+  await page.waitForFunction(()=>window.clapSnapshot().status==='listening');
+  assert.equal(h.fixture.executions,1);
+  await page.evaluate(()=>window.emitClaps('snap'));
+  await expect.poll(()=>h.fixture.executions).toBe(2);
+  await page.waitForFunction(()=>window.clapSnapshot().snapGestures===1&&window.clapSnapshot().status==='listening');
+  assert.equal(h.fixture.executions,2);assert.equal(h.context.pages().length,1);assert.equal(page.url(),originalUrl);
+  assert.deepEqual(await page.evaluate(()=>window.desktopCommands),[]);
+  assert.deepEqual(await page.evaluate(()=>window.navigated),[]);
+  assert.deepEqual(h.fixture.executionBodies.map(body=>body.control),['clap','snap']);
+  assert.equal(new Set(h.fixture.playerLeases.filter(lease=>lease.method==='POST').map(lease=>lease.viewId)).size,1);
+  h.fixture.musicConnected=false;
+  await page.evaluate(()=>window.emitClaps('snap'));
+  await page.locator('.clap-notice').filter({hasText:'Connect Spotify'}).waitFor();
+  assert.equal(h.fixture.executions,2);assert.equal(h.context.pages().length,1);
+  await page.evaluate(()=>window.showProvider(false));
+  await page.waitForFunction(()=>window.captures.every(capture=>capture.stream.getTracks()[0].readyState==='ended'));
+  await expect.poll(()=>h.fixture.playerLeases.some(lease=>lease.method==='DELETE')).toBe(true);
+ }finally{await h.close();}
+});
 
 test('parallel listening switches save independently, roll back on failure, and survive reload', {timeout:30000}, async()=>{
  const h=await clapBrowser();
@@ -175,11 +212,11 @@ test('clap preference controls save, recover from a rejected save, and survive a
   assert.equal(await controls.getByRole('alert').count(),0);
   await controls.getByRole('combobox',{name:'Microphone',exact:true}).selectOption('');await page.waitForFunction(()=>window.clapSnapshot().preferences.deviceId==='');
   await controls.getByRole('slider').press('ArrowRight');await page.waitForFunction(()=>window.clapSnapshot().preferences.sensitivity===.6);
-  await controls.getByRole('checkbox',{name:'Resume listening when Breadboard starts'}).check();await page.waitForFunction(()=>window.clapSnapshot().preferences.resumeOnStartup);
+  await controls.getByRole('switch',{name:'Resume listening when Breadboard starts'}).check();await page.waitForFunction(()=>window.clapSnapshot().preferences.resumeOnStartup);
   assert.equal(h.fixture.preferences.pattern,'single');assert.equal(h.fixture.preferences.deviceId,'');assert.equal(h.fixture.preferences.sensitivity,.6);assert.equal(h.fixture.preferences.resumeOnStartup,true);
   await page.reload();await page.waitForFunction(()=>window.clapSnapshot?.().loaded);
   assert.equal(await gesture.inputValue(),'single');assert.equal(await controls.getByRole('combobox',{name:'Microphone',exact:true}).inputValue(),'');
-  assert.equal(await controls.getByRole('slider').inputValue(),'60');assert.equal(await controls.getByRole('checkbox',{name:'Resume listening when Breadboard starts'}).isChecked(),true);
+  assert.equal(await controls.getByRole('slider').inputValue(),'60');assert.equal(await controls.getByRole('switch',{name:'Resume listening when Breadboard starts'}).isChecked(),true);
   assert.equal(await page.evaluate(()=>window.captures.length),0,'saving settings does not enable listening');
  }finally{await h.close();}
 });
@@ -226,8 +263,10 @@ test('Profile gesture switches retain independent listening, Spotify default, pr
   await snap.getByRole('button',{name:'Test snaps',exact:true}).click();
   await snap.getByRole('switch',{name:/^(Clap|Finger-snap) controls$/}).click();await page.waitForFunction(()=>window.clapSnapshot().status==='listening'&&window.clapSnapshot().mode==='actions');
   assert.equal(await snap.getByRole('alert').count(),0);
-  const musicTabPromise=page.waitForEvent('popup');await page.evaluate(()=>window.emitClaps('snap'));const musicTab=await musicTabPromise;await musicTab.waitForFunction(()=>!location.search.includes('gestureRun'));
-  await new Promise(resolve=>setTimeout(resolve,300));assert.equal(h.fixture.executions,1);assert.match(musicTab.url(),/new-tab\?panel=spotify/);assert.equal(await musicTab.locator('.clap-notice,[data-clap-indicator]').count(),0);await musicTab.close();await page.bringToFront();
+  const musicUrl=page.url(),tabCount=h.context.pages().length;await page.evaluate(()=>window.emitClaps('snap'));
+  await expect.poll(()=>h.fixture.executions).toBe(1);
+  await page.waitForFunction(()=>window.clapSnapshot().status==='listening');
+  assert.equal(h.fixture.executions,1);assert.equal(page.url(),musicUrl);assert.equal(h.context.pages().length,tabCount);assert.equal(await page.locator('.clap-notice,[data-clap-indicator]').count(),0);
   assert.equal(h.fixture.executionBodies[0].control,'snap');assert.equal(h.fixture.executionBodies[0].expectedAction.trackUri,'spotify:track:4EsRpVBBKiqOZ67DJj0QHF');
   assert.equal(h.fixture.preferences.enabled,false,'snap enable does not enable claps');
   await clap.getByRole('switch',{name:/^(Clap|Finger-snap) controls$/}).click();await page.waitForFunction(()=>window.clapSnapshot().status==='listening');

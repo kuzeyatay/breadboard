@@ -38,7 +38,7 @@ export default function BackLink({
   // The trail is read relative to wherever we are standing, so a route change
   // has to produce a fresh snapshot even when the trail itself is unchanged.
   const getSnapshot = useCallback(
-    () => (fixed ? fallbackHref : resolveBackHref(pathname, fallbackHref)),
+    () => (fixed ? fallbackHref : resolveBackHref(`${pathname}${window.location.search}`, fallbackHref)),
     [fallbackHref, fixed, pathname],
   );
   const getServerSnapshot = useCallback(() => fallbackHref, [fallbackHref]);

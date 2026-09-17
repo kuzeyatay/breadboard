@@ -134,7 +134,7 @@ test("completion notification stays silent for the focused chat", () => {
     });
     assert.equal(count, 3);
 
-    // The open chat stays silent even when the window has lost focus.
+    // Matching a selected chat in a hidden tab must not swallow its answer.
     globalThis.document = {
       visibilityState: "hidden",
       hasFocus: () => false,
@@ -147,16 +147,16 @@ test("completion notification stays silent for the focused chat", () => {
       chatId: "chat-a",
       activeChatId: "chat-a",
     });
-    assert.equal(count, 3);
-    assert.deepEqual(seenChatIds, ["chat-a", "chat-a"]);
+    assert.equal(count, 5);
+    assert.deepEqual(seenChatIds, []);
     notifyChatResponseFailed("background failure, window unfocused", {
       chatId: "chat-b",
       activeChatId: "chat-a",
     });
-    assert.equal(count, 4);
+    assert.equal(count, 6);
     // A run with no chat of its own still notifies when the window is away.
     notifyTaskCompleted("chatless task, window unfocused");
-    assert.equal(count, 5);
+    assert.equal(count, 7);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -185,7 +185,7 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /bg-\[var\(--botanical\)\]/);
   assert.match(toast, /bg-\[var\(--danger\)\]/);
   assert.match(toast, /dismissChatToasts/);
-  assert.match(toast, /aria-label="Open this chat"/);
+  assert.match(toast, /aria-label=\{toast.question \? 'Open chat to answer' : 'Open this chat'\}/);
   assert.match(toast, /↗/);
   assert.match(toast, /w-\[min\(36rem,calc\(100vw-2rem\)\)\]/);
   assert.match(toast, /max-h-\[min\(42vh,24rem\)\] overflow-y-auto/);
@@ -208,7 +208,7 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /chatNotificationHref/);
   assert.match(toast, /CHAT_NOTIFICATION_OPENED_EVENT/);
   assert.match(toast, /CHAT_RESPONSE_SEEN_EVENT/);
-  assert.match(toast, /seenTargetsRef/);
+  assert.match(toast, /isChatNotificationTargetViewed/);
   assert.doesNotMatch(toast, /line-clamp/);
   assert.doesNotMatch(toast, /setTimeout/);
   // Permission requests have a bell; ordinary completion cards keep their dot.

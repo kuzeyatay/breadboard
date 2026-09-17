@@ -16,6 +16,7 @@
 
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { collectGardenUserVisualIds, isGardenUserPath } from "../dashboard/src/lib/garden-user-content.ts";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +43,7 @@ import {
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
 import {
+  chatAssistantLeakMatches,
   formulaMeaningMatch,
   formulaMetricFamily,
   isFormulaExpression,
@@ -298,6 +300,7 @@ function walkMarkdown(dir: string, relDir: string, output: PageFile[]): void {
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue; // .breadboard internals/backups
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+    if (isGardenUserPath(rel)) continue;
     if (entry.isDirectory()) {
       walkMarkdown(path.join(dir, entry.name), rel, output);
       continue;
@@ -583,6 +586,10 @@ function learnerFacingScaffoldProseProblems(lessonPages: PageFile[]): string[] {
     for (const { label, pattern } of LEARNER_SCAFFOLD_PROSE_PATTERNS) {
       if (pattern.test(prose)) problems.push(`${page.relPath}: contains repair scaffold prose "${label}"`);
     }
+    const leaks = chatAssistantLeakMatches(page.body);
+    if (leaks.length > 0) {
+      problems.push(`${page.relPath}: contains chat-assistant scaffold prose ${leaks.map((leak) => JSON.stringify(leak)).join(", ")}`);
+    }
     if (/\bsnns\b/.test(prose)) problems.push(`${page.relPath}: uses lowercase acronym "snns"`);
     if (/\bSNNs\s+learns\b/i.test(prose)) problems.push(`${page.relPath}: contains grammar error "SNNs learns"`);
   }
@@ -784,7 +791,7 @@ function anchorTextForVisualIds(
 function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string, unknown>>): string[] {
   const problems: string[] = [];
   const docs: Array<[string, string]> = [];
-  const addDoc = (rel: string): void => docs.push([rel, path.join(gardenDir, ...rel.split("/"))]);
+  const addDoc = (rel: string): void => { docs.push([rel, path.join(gardenDir, ...rel.split("/"))]); };
   // The generated validation-report.md / repair-report.md are intentionally NOT
   // scanned: they echo the detector's own problem text, so scanning them makes a
   // reported caveat into a new self-referential caveat. Kept in sync with
@@ -1425,6 +1432,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   }
 
   const pages: PageFile[] = [];
+  const userVisualIds = collectGardenUserVisualIds(gardenDir);
   const hasSemanticRegistry = fs.existsSync(path.join(gardenDir, ".breadboard", "concept-registry.json"));
   walkMarkdown(gardenDir, "", pages);
   const published = pages.filter((page) => page.published);
@@ -1600,12 +1608,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     const allowedTopLevel = new Set(["_index.md", "Concepts", "learning", "sources", "assets", ".breadboard"]);
     try {
       for (const entry of fs.readdirSync(gardenDir, { withFileTypes: true })) {
-        if (!allowedTopLevel.has(entry.name)) {
+        if (!allowedTopLevel.has(entry.name) && !isGardenUserPath(entry.name)) {
           problems.push(`top-level entry is not exportable: ${entry.name}${entry.isDirectory() ? "/" : ""}`);
         }
         if (entry.name === "Learning") problems.push("uppercase Learning/ folder is not allowed; export must use learning/");
         if (entry.name === "Internal") problems.push("Internal/ folder is not allowed in the exported garden root");
-        if (entry.isDirectory() && /^\d+\.\s+/.test(entry.name)) {
+        if (entry.isDirectory() && !isGardenUserPath(entry.name) && /^\d+\.\s+/.test(entry.name)) {
           problems.push(`root-level numbered source-conversion folder is not allowed: ${entry.name}/`);
         }
       }
@@ -2270,7 +2278,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     try {
       for (const file of fs.readdirSync(visualsDir).filter((name) => name.endsWith(".json"))) {
         const id = file.replace(/\.json$/i, "");
-        if (!embeddedVisualIds.has(id)) problems.push(`.breadboard/visuals/${file}: spec file is orphaned (not embedded by any page)`);
+        if (!embeddedVisualIds.has(id) && !userVisualIds.has(id)) problems.push(`.breadboard/visuals/${file}: spec file is orphaned (not embedded by any page)`);
       }
     } catch {
       // A garden with no visuals may have no directory; existing checks cover missing specs for embedded blocks.
@@ -3616,6 +3624,7 @@ function sourceCoverageFinalArtifactConsistencyProblems(
   const usedInteractive = coverageModeSection(coverage, "Used as Interactive Grounding");
   const problems: string[] = [];
   const visualAnchors = new Map<string, Set<string>>();
+  const userVisualIds = collectGardenUserVisualIds(gardenDir);
   for (const { page, spec } of embeddedVisualSpecs) {
     const id = String(spec.id ?? "").trim();
     if (!id) continue;
@@ -3638,7 +3647,7 @@ function sourceCoverageFinalArtifactConsistencyProblems(
         continue;
       }
       const id = String(spec.id ?? name.replace(/\.json$/i, "")).trim();
-      if (!id || visualAnchors.has(id)) continue;
+      if (!id || userVisualIds.has(id) || visualAnchors.has(id)) continue;
       visualAnchors.set(id, new Set(visualAnchorIds(spec)));
     }
   }

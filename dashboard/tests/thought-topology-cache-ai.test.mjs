@@ -63,3 +63,17 @@ test("valid corrected JSON is accepted on the one corrective attempt", async () 
   assert.equal(result.explanation.state, "ready");
   assert.equal(result.relationType, "applies-to");
 });
+
+test("concurrent enrichment stops scheduling and drains active calls after cancellation", async () => {
+  const controller = new AbortController();
+  const started = [];
+  let finished = 0;
+  await assert.rejects(enrichment.mapWithConcurrency([1, 2, 3, 4, 5], 2, async (value) => {
+    started.push(value);
+    await new Promise((resolve) => setTimeout(resolve, value === 1 ? 1 : 20));
+    finished++;
+    if (value === 1) controller.abort();
+  }, controller.signal), /abort/i);
+  assert.deepEqual(started, [1, 2]);
+  assert.equal(finished, 2, "no in-flight writes escape the failed build");
+});

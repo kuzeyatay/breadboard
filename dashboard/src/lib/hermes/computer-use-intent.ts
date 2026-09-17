@@ -4,6 +4,7 @@
 // filesystem/terminal operations, and purpose-built browser tools first.
 
 import type { HermesSurface } from "./config.ts";
+import { requestedActions, actionMatches } from "./request-language.ts";
 
 export const COMPUTER_USE_SKILL = "computer-use";
 
@@ -58,18 +59,16 @@ export function shouldAutoSelectComputerUse(
     return true;
   }
 
-  const explicitDesktop = EXPLICIT_CONTROL.test(text) || DESKTOP_OBJECT.test(text);
-  // A normal web interaction belongs to the browser runtime. An explicit
-  // request to control the desktop still selects this skill, whose guidance
-  // will try that browser runtime before touching the GUI.
-  if (BROWSER_ROUTE.test(text) && !explicitDesktop) return false;
-
-  return (
-    EXPLICIT_CONTROL.test(text) ||
-    (GUI_ACTION.test(text) && DESKTOP_OBJECT.test(text)) ||
-    (GUI_ACTION.test(text) && NAMED_DESKTOP_APP.test(text)) ||
-    ACTION_IN_APP.test(text)
-  );
+  return requestedActions(text).some((action) => {
+    const clause = `${action.verb} ${action.target}`;
+    const control = actionMatches(action, /\b(use|take\s+over|control|operate|drive|interact\s+with)\b/i) && EXPLICIT_CONTROL.test(clause);
+    const explicitDesktop = control || DESKTOP_OBJECT.test(action.object);
+    // A web interaction belongs to the browser unless desktop control was
+    // actually requested in this clause.
+    if (BROWSER_ROUTE.test(clause) && !explicitDesktop) return false;
+    return control || (actionMatches(action, GUI_ACTION) &&
+      (DESKTOP_OBJECT.test(clause) || NAMED_DESKTOP_APP.test(clause) || ACTION_IN_APP.test(clause)));
+  });
 }
 
 export function computerUseCommandText(

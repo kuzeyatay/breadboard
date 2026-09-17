@@ -1,5 +1,8 @@
-import path from "node:path";
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { mkdir, readFile, stat } from "node:fs/promises";
+import { acceptedPraxistFindings } from "./findings.ts";
+import { praxistFinalizationReady } from "./finalization.ts";
+import { startPraxistContainer, stopPraxistContainer } from "./container.ts";
 import {
   resolvePraxistTaskProject,
   runPraxistCli,
@@ -22,6 +25,7 @@ interface RunState {
   workspace: string;
   runDir: string;
   stateDir: string;
+  containerName?: string;
   status: RunStatus;
   sequence: number;
   events: PraxistEvent[];
@@ -136,13 +140,13 @@ async function publishArtifacts(run: RunState): Promise<void> {
   const candidates = [
     "run_summary.json",
     "run_report.md",
+    "research-findings.md",
+    "findings/findings.jsonl",
     "orchestrator_status.final.json",
     "frontier.jsonl",
     "findings.jsonl",
   ];
-  const present = new Set(await readdir(/* turbopackIgnore: true */ run.runDir).catch(() => []));
   for (const name of candidates) {
-    if (!present.has(name)) continue;
     const artifactPath = path.join(run.runDir, name);
     const metadata = await stat(/* turbopackIgnore: true */ artifactPath).catch(() => null);
     if (!metadata?.isFile()) continue;
@@ -178,27 +182,36 @@ async function drive(run: RunState, input: RuntimeWorkerStartInput): Promise<voi
     OPENAI_BASE_URL: input.baseUrl,
     PRAXIST_STATE_DIR: run.stateDir,
   };
-  const launched = await runPraxistCli(runtime, [
-    "start",
-    "--task-path", run.taskPath,
-    "--run-dir", run.runDir,
-    "--agent-system", "codex_sdk",
-    "--runtime", "agent_runtime:codex_sdk",
-    "--model-provider", "model_provider:openai_compatible",
-    "--model", input.model,
-    "--startup-timeout", "45",
-    "--json",
-  ], { env: environment, timeoutMs: 60_000, signal: run.abortController.signal });
-  if (run.aborted) return;
-  if (launched.code !== 0) {
-    throw new Error((launched.stderr || launched.stdout || "Praxist could not start.").trim());
+  let entry: Record<string, unknown> | null;
+  if (process.platform === "win32") {
+    entry = await startPraxistContainer({
+      runtime, workspace: run.workspace, taskPath: run.taskPath, model: input.model,
+      baseUrl: input.baseUrl, apiKey: input.apiKey, signal: run.abortController.signal,
+      onCreated: name => { run.containerName = name; },
+    });
+  } else {
+    const launched = await runPraxistCli(runtime, [
+      "start",
+      "--task-path", run.taskPath,
+      "--run-dir", run.runDir,
+      "--agent-system", "codex_sdk",
+      "--runtime", "agent_runtime:codex_sdk",
+      "--model-provider", "model_provider:openai_compatible",
+      "--model", input.model,
+      "--startup-timeout", "45",
+      "--json",
+    ], { env: environment, timeoutMs: 60_000, signal: run.abortController.signal });
+    if (run.aborted) return;
+    if (launched.code !== 0) {
+      throw new Error((launched.stderr || launched.stdout || "Praxist could not start.").trim());
+    }
+    entry = (() => {
+      const start = launched.stdout.indexOf("{");
+      if (start < 0) return null;
+      try { return JSON.parse(launched.stdout.slice(start)) as Record<string, unknown>; }
+      catch { return null; }
+    })();
   }
-  const entry = (() => {
-    const start = launched.stdout.indexOf("{");
-    if (start < 0) return null;
-    try { return JSON.parse(launched.stdout.slice(start)) as Record<string, unknown>; }
-    catch { return null; }
-  })();
   if (!entry || typeof entry.run_id !== "string" || typeof entry.pid !== "number") {
     throw new Error("Praxist returned an invalid start receipt.");
   }
@@ -212,12 +225,26 @@ async function drive(run: RunState, input: RuntimeWorkerStartInput): Promise<voi
 
   while (!run.aborted) {
     const summary = await readJson(path.join(run.runDir, "run_summary.json"));
-    if (summary) {
+    const metadata = await readJson(path.join(run.runDir, "run.json"));
+    const completion = run.containerName ? await readJson(path.join(run.workspace, "container-complete.json")) : null;
+    const processExited = run.containerName
+      ? completion?.run_id === run.praxistRunId && completion?.process_exited === true
+      : !processAlive(entry.pid);
+    if (summary && praxistFinalizationReady(summary, metadata, processExited)) {
+      await disposeContainer(run);
       await publishArtifacts(run);
-      const successful = summary.status === "succeeded" || summary.exit_code === 0;
+      const successful = summary.status === "succeeded" || (!summary.status && summary.exit_code === 0);
       if (successful) {
+        const accepted = await acceptedPraxistFindings(run.runDir);
+        if (!accepted) {
+          finish(run, "failed", { error: "Praxist finished without accepted research findings.", summary: summaryMarkdown(summary, run.runDir), praxistRunId: run.praxistRunId });
+          return;
+        }
+        const reports = await Promise.all(["research-findings.md", "run_report.md"].map(name =>
+          readFile(path.join(run.runDir, name), "utf8").catch(() => ""),
+        ));
         finish(run, "completed", {
-          summary: summaryMarkdown(summary, run.runDir),
+          summary: [summaryMarkdown(summary, run.runDir), accepted.slice(0, 60_000), ...reports.filter(Boolean).map(report => report.slice(0, 40_000))].join("\n\n"),
           praxistRunId: run.praxistRunId,
           generations: summary.generations_completed ?? null,
           findings: object(summary.finding_summary).accepted ?? summary.findings_total ?? null,
@@ -240,7 +267,9 @@ async function drive(run: RunState, input: RuntimeWorkerStartInput): Promise<voi
         emit(run, "praxist.progress", payload);
       }
     }
-    if (Date.now() - run.createdAt > 60_000 && !processAlive(entry.pid)) {
+    const containerError = run.containerName ? await readJson(path.join(run.workspace, "container-error.json")) : null;
+    if (containerError) throw new Error(String(containerError.error ?? "The Praxist Linux runtime failed."));
+    if (!run.containerName && process.platform !== "win32" && Date.now() - run.createdAt > 60_000 && !processAlive(entry.pid)) {
       const logFile = typeof entry.log_file === "string" ? entry.log_file : "";
       const log = logFile ? await readFile(/* turbopackIgnore: true */ logFile, "utf8").catch(() => "") : "";
       throw new Error(log.trim().slice(-8_000) || "The Praxist process exited without a run summary.");
@@ -250,6 +279,12 @@ async function drive(run: RunState, input: RuntimeWorkerStartInput): Promise<voi
       timer.unref?.();
     });
   }
+}
+
+async function disposeContainer(run: RunState): Promise<void> {
+  if (!run.containerName) return;
+  await stopPraxistContainer(run.containerName);
+  run.containerName = undefined;
 }
 
 export interface StartRunInput {
@@ -293,7 +328,8 @@ export function startRuntimeWorkerRun(input: RuntimeWorkerStartInput): { runId: 
     createdAt: Date.now(),
   };
   runs.set(run.runId, run);
-  void drive(run, input).catch((error: unknown) => {
+  void drive(run, input).catch(async (error: unknown) => {
+    await disposeContainer(run).catch(() => undefined);
     if (!run.aborted) finish(run, "failed", {
       error: error instanceof Error ? error.message : "The Praxist run failed.",
     });
@@ -315,7 +351,9 @@ export async function abortRuntimeWorkerRun(userId: number, runId: string): Prom
   run.aborted = true;
   run.abortController.abort(new DOMException("Praxist stopped", "AbortError"));
   const readiness = runtimeReadiness();
-  if (readiness.runtime && run.praxistRunId) {
+  if (run.containerName) {
+    await disposeContainer(run);
+  } else if (readiness.runtime && run.praxistRunId) {
     await runPraxistCli(readiness.runtime, ["stop", run.praxistRunId], {
       env: { PRAXIST_STATE_DIR: run.stateDir },
       timeoutMs: 20_000,

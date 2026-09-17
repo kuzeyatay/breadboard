@@ -17,9 +17,8 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * The shared browser profile behind the profile page's sign-in card: read its
- * state, open the agents' browser on it so a person can log into their own
- * apps, close that window again, or throw the whole profile away.
+ * The external browser profile used by non-desktop agent runs. Built-in
+ * browser sign-ins on Profile are managed through the desktop IPC bridge.
  */
 export async function GET() {
   try {

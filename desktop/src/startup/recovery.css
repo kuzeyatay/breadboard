@@ -14,10 +14,10 @@
   color-scheme: dark;
   /* One black, not two: the caption strip Electron paints is a fixed
      colour, so a darker field under it draws a seam across the top. */
-  --background: #171916;
-  --chrome: #171916;
-  --ink: #ccd2c9;
-  --muted: #9da8a1;
+  --background: #181d1a;
+  --chrome: #181d1a;
+  --ink: #d2d9d0;
+  --muted: #9ea9a2;
 }
 
 * {

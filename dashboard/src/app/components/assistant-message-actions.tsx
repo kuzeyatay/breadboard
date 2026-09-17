@@ -2,6 +2,7 @@
 
 import { speechRequest } from "@/lib/speech/request-client";
 import { playSubscriptionText } from "@/lib/speech/playback";
+import { responseTextForSpeech } from "@/lib/speech/response-text";
 import {
   createContext,
   type CSSProperties,
@@ -17,6 +18,9 @@ import { createPortal } from "react-dom";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
+import RewriteStatus from "@/app/components/humanizer/rewrite-status";
+import type { HumanizerReviewPresentation } from "@/lib/humanizer/review-types";
+import type { AutoHumanizeProgress } from "@/app/components/humanizer/auto-humanize";
 import {
   chatResponseCompletedAt,
   formatChatClockTime,
@@ -48,6 +52,8 @@ interface Props {
   /** Regenerate this turn as a branch; the standing preference humanizes it. */
   onRewrite?: () => void;
   verification?: VerificationSummary;
+  humanizerReview?: HumanizerReviewPresentation;
+  naturalRewrite?: AutoHumanizeProgress;
   branch?: AssistantResponseBranch;
 }
 
@@ -95,19 +101,6 @@ function downloadMarkdown(content: string): void {
     new Blob([content], { type: "text/markdown;charset=utf-8" }),
     `breadboard-response-${new Date().toISOString().slice(0, 10)}.md`,
   );
-}
-
-function responseTextForSpeech(content: string): string {
-  return content
-    .replace(/```[\s\S]*?```/g, " Code example omitted. ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/[*_~>|]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 async function speechError(response: Response): Promise<string> {
@@ -173,6 +166,7 @@ export function AssistantResponseBranchNavigation({
 const MessageActionsSlotContext = createContext<{
   slot: HTMLElement | null;
   suppressActions: boolean;
+  branch?: AssistantResponseBranch;
   responseStartedAt?: string;
   responseDurationMs?: number;
   responseCompletedAt?: string;
@@ -187,6 +181,7 @@ const MessageActionsSlotContext = createContext<{
 export function MessageActionsSlot({
   children,
   suppressActions = false,
+  branch,
   responseStartedAt,
   responseDurationMs,
   responseCompletedAt,
@@ -194,6 +189,8 @@ export function MessageActionsSlot({
   children: ReactNode;
   /** Keep controls from escaping a visually hidden owner through the portal. */
   suppressActions?: boolean;
+  /** Shared by nested run cards so navigation lives in their bottom row. */
+  branch?: AssistantResponseBranch;
   /** Timing shared with action rows rendered by nested inline run cards. */
   responseStartedAt?: string;
   responseDurationMs?: number;
@@ -205,6 +202,7 @@ export function MessageActionsSlot({
       value={{
         slot,
         suppressActions,
+        branch,
         responseStartedAt,
         responseDurationMs,
         responseCompletedAt,
@@ -229,6 +227,8 @@ export default function AssistantMessageActions({
   onRetry,
   onRewrite,
   verification,
+  humanizerReview,
+  naturalRewrite,
   branch,
 }: Props) {
   const [copied, setCopied] = useState(false);
@@ -252,12 +252,14 @@ export default function AssistantMessageActions({
   const {
     slot,
     suppressActions,
+    branch: contextualBranch,
     responseStartedAt: contextualResponseStartedAt,
     responseDurationMs: contextualResponseDurationMs,
     responseCompletedAt: contextualResponseCompletedAt,
   } = useContext(MessageActionsSlotContext);
   const storageKey = useMemo(() => contentKey(content), [content]);
   const displayedVerification = verification ?? NO_RECORDED_EVIDENCE;
+  const responseBranch = branch ?? contextualBranch;
   const completedAt =
     responseCompletedAt ??
     contextualResponseCompletedAt ??
@@ -381,15 +383,17 @@ export default function AssistantMessageActions({
       setSpeechState("idle");
       return;
     }
-    const text = responseTextForSpeech(content);
-    if (!text) {
-      setSpeechMessage("This response has no readable text.");
-      return;
-    }
     const controller = new AbortController();
     speechAbortRef.current = controller;
     setSpeechState("loading");
     try {
+      const text = await responseTextForSpeech(content, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      if (!text) {
+        setSpeechMessage("This response has no readable text.");
+        setSpeechState("idle");
+        return;
+      }
       if (await playSubscriptionText(text, (error) => {
         if (mountedRef.current) { setSpeechState("idle"); if (error) setSpeechMessage(error.message); }
       }, controller.signal)) {
@@ -403,12 +407,14 @@ export default function AssistantMessageActions({
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(await speechError(response));
-      await playSpeechBlob(await response.blob(), () => {
+      const audio = await response.blob();
+      controller.signal.throwIfAborted();
+      await playSpeechBlob(audio, () => {
         if (mountedRef.current) setSpeechState("idle");
       });
       if (mountedRef.current) setSpeechState("playing");
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || controller.signal.aborted) return;
       setSpeechState("idle");
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setSpeechMessage(error instanceof Error ? error.message : "This response could not be spoken.");
@@ -457,16 +463,17 @@ export default function AssistantMessageActions({
       return;
     }
     setSpeechMessage(null);
-    const text = responseTextForSpeech(content);
-    if (!text) {
-      setMenuOpen(false);
-      setSpeechMessage("This response has no readable text.");
-      return;
-    }
     const controller = new AbortController();
     dictationAbortRef.current = controller;
     setDictationState("preparing");
     try {
+      const text = await responseTextForSpeech(content, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      if (!text) {
+        setMenuOpen(false);
+        setSpeechMessage("This response has no readable text.");
+        return;
+      }
       const response = await speechRequest("/api/speech/synthesize/mp3", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -475,7 +482,7 @@ export default function AssistantMessageActions({
       });
       if (!response.ok) throw new Error(await speechError(response));
       const recording = await response.blob();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || controller.signal.aborted) return;
       saveBlob(
         recording,
         `breadboard-dictation-${new Date().toISOString().slice(0, 10)}.mp3`,
@@ -489,8 +496,10 @@ export default function AssistantMessageActions({
         error instanceof Error ? error.message : "This response could not be saved as a recording.",
       );
     } finally {
-      if (dictationAbortRef.current === controller) dictationAbortRef.current = null;
-      if (mountedRef.current) setDictationState("idle");
+      if (dictationAbortRef.current === controller) {
+        dictationAbortRef.current = null;
+        if (mountedRef.current) setDictationState("idle");
+      }
     }
   }
 
@@ -505,7 +514,7 @@ export default function AssistantMessageActions({
   }
 
   const actions = (
-    <div className="mt-2 flex items-center gap-0.5" aria-label="Assistant response actions">
+    <div className="mt-2 flex flex-wrap items-center gap-0.5" aria-label="Assistant response actions">
       <button
         type="button"
         onClick={() => void copyResponse()}
@@ -670,7 +679,7 @@ export default function AssistantMessageActions({
         ) : null}
         {evidenceOpen && evidenceBox && typeof document !== "undefined"
           ? createPortal(
-              <div ref={evidenceRef} style={evidenceBox.style} className="z-50">
+              <div ref={evidenceRef} style={evidenceBox.style} className="z-50" data-assistant-response-overlay>
                 <EvidencePanel
                   verification={displayedVerification}
                   maxHeight={evidenceBox.maxHeight}
@@ -681,8 +690,9 @@ export default function AssistantMessageActions({
             )
           : null}
       </div>
-      {branch ? (
-        <AssistantResponseBranchNavigation branch={branch} className="ml-1" />
+      <RewriteStatus review={humanizerReview} progress={naturalRewrite} />
+      {responseBranch ? (
+        <AssistantResponseBranchNavigation branch={responseBranch} className="ml-1 shrink-0" />
       ) : null}
       {responseTime ? (
         <time

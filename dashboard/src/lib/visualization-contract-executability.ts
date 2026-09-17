@@ -5,6 +5,7 @@ import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
+import { recoverJsonValue } from "./learn-utils.ts";
 import {
   AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH,
   renderAuthoritativeLearningUnitContractMarkdown,
@@ -573,8 +574,11 @@ function normalizedVisualContractExecutabilityProviderResponse(
     };
   }
   try {
-    const parsedValue = JSON.parse(raw) as unknown;
+    // The exact raw text is what the ledger hashes and what feedback quotes;
+    // the candidate may be recovered from prose-wrapped or brace-surplus text.
+    const parsedValue = recoverJsonValue(raw);
     if (parsedValue === null) {
+      if (raw.trim() !== "null") throw new SyntaxError("no JSON candidate");
       return {
         responseEncoding: "exact_raw",
         response: raw,
@@ -620,11 +624,7 @@ function parsedVisualContractExecutabilityAttemptResponse(
     typeof attempt.response !== "string" ||
     attempt.exactRawResponseSha256 !== sha256Text(attempt.response)
   ) return null;
-  try {
-    return JSON.parse(attempt.response) as unknown;
-  } catch {
-    return null;
-  }
+  return recoverJsonValue(attempt.response);
 }
 
 function exactRawVisualContractExecutabilityAttemptParses(
@@ -635,12 +635,7 @@ function exactRawVisualContractExecutabilityAttemptParses(
     typeof attempt.response !== "string" ||
     attempt.exactRawResponseSha256 !== sha256Text(attempt.response)
   ) return false;
-  try {
-    JSON.parse(attempt.response);
-    return true;
-  } catch {
-    return false;
-  }
+  return recoverJsonValue(attempt.response) !== null;
 }
 
 export interface VisualContractExecutabilityRunResult<TPlan> {

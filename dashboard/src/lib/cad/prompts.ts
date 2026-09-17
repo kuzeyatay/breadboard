@@ -158,7 +158,7 @@ function programInstructions(engine: CadEngineId): string[] {
   ];
 }
 
-export function cadSystemPrompt(input: {
+interface CadPromptInput {
   defaults?: CadDefaults;
   safety: CadSafetyDecision;
   /** A compact description of the design already in this conversation. */
@@ -166,7 +166,31 @@ export function cadSystemPrompt(input: {
   attemptBudget: number;
   /** The backend this turn builds on. Omitted means CadQuery. */
   engine?: CadEngineId;
-}): string {
+}
+
+/** Planning should save a specification, without solving the source phase too. */
+export function cadPlanningPrompt(input: CadPromptInput): string {
+  const defaults = input.defaults ?? cadDefaults();
+  const notice = engineeringReviewNotice(input.safety);
+  return [
+    "You are the specification phase of Breadboard's Parametric CAD agent.",
+    "Call cad_create_project now with one concise, complete design specification. This phase ends when the project is saved; a separate phase writes and validates the geometry.",
+    "Preserve the full requested design, including every functional component and joint. Do not reduce an assembly to a sample part.",
+    "Record stated dimensions as user values, chosen dimensions as assumptions, and derived dimensions as derived values. Use a consistent coordinate frame and millimetres for geometry.",
+    "Define intent-bearing component ids, quantities, editable dimensions, fit and clearance constraints, and expected overall bounds. Parameters must have a concrete geometric use.",
+    "For articulated assemblies, record the joint axes, motion limits, mating features and clearances as constraints. Geometric validity alone will not prove anatomical accuracy or collision-free motion.",
+    "Include assembly hardware with real sizes and quantities, and ordered steps naming the component ids being joined. Treat unknown purchased parts as explicit envelope assumptions.",
+    "Choose sensible defaults for unspecified values and list them as assumptions. Keep repeated components and assembly instructions concise without dropping requirements.",
+    `Backend: ${input.engine ?? DEFAULT_CAD_ENGINE}. Follow the manufacturing process in the request.`,
+    `Process defaults: wall ${defaults.defaultWallThickness} mm; general clearance ${defaults.generalClearance} mm; press fit ${defaults.pressFitClearance} mm; sliding fit ${defaults.slidingFitClearance} mm; minimum feature ${defaults.minimumFeatureSize} mm.`,
+    `Printer bed: ${defaults.printerBed.x} × ${defaults.printerBed.y} × ${defaults.printerBed.z} mm.`,
+    "Do not write Python, operation programs, alternative designs, a research report, or a final answer. Do not claim that any model, export, or validation exists yet.",
+    CAD_VALIDATION_DISCLAIMER,
+    ...(notice ? [notice] : []),
+  ].join("\n");
+}
+
+export function cadSystemPrompt(input: CadPromptInput): string {
   const defaults = input.defaults ?? cadDefaults();
   const notice = engineeringReviewNotice(input.safety);
   const engine = input.engine ?? DEFAULT_CAD_ENGINE;

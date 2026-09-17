@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import test, { describe } from "node:test";
 
-import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+
+import { degrees, PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
 import { PDFParse } from "pdf-parse";
 
 import {
@@ -20,6 +23,41 @@ async function blankScan(pageCount) {
     doc.addPage([595, 842]);
   }
   return doc.save();
+}
+
+const require = createRequire(import.meta.url);
+const pdfjsPromise = import(
+  pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.mjs")).href
+);
+
+/**
+ * Where pdf.js sees each text run on page 1, as fractions of the page as a
+ * viewer shows it (rotation applied, y down) — the same space as the boxes.
+ */
+async function textItemsInView(bytes) {
+  const pdfjs = await pdfjsPromise;
+  const doc = await pdfjs.getDocument({ data: bytes, verbosity: 0 }).promise;
+  try {
+    const page = await doc.getPage(1);
+    const view = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+    const items = [];
+    for (const item of content.items) {
+      if (!item.str.trim()) continue;
+      const t = pdfjs.Util.transform(view.transform, item.transform);
+      const unit = Math.hypot(item.transform[0], item.transform[1]);
+      const width = (item.width * Math.hypot(t[0], t[1])) / unit;
+      items.push({
+        str: item.str,
+        x: t[4] / view.width,
+        baseline: t[5] / view.height,
+        width: width / view.width,
+      });
+    }
+    return items;
+  } finally {
+    await doc.destroy();
+  }
 }
 
 async function extractPages(bytes) {
@@ -145,6 +183,61 @@ describe("OCR text layer", () => {
     assert.equal(result.bytes, original);
   });
 
+  test("places spotted lines over their boxes on every page rotation", async () => {
+    const lines = [
+      { box: [0.1, 0.1, 0.6, 0.13], text: "Hello positioned world" },
+      { box: [0.5, 0.5, 0.9, 0.56], text: "second line lower right" },
+    ];
+    for (const rotation of [0, 90, 180, 270]) {
+      const doc = await PDFDocument.create();
+      doc.addPage([600, 800]).setRotation(degrees(rotation));
+      const result = await embedOcrTextLayer({
+        pdf: await doc.save(),
+        pages: [{ pageNumber: 1, text: "", lines }],
+      });
+      assert.equal(result.pagesWritten, 1, `rotation ${rotation}`);
+      assert.equal(result.positionedPages, 1, `rotation ${rotation}`);
+
+      const items = await textItemsInView(result.bytes);
+      const first = items.filter((item) =>
+        /Hello|positioned|world/.test(item.str),
+      );
+      const second = items.find((item) => /second line/.test(item.str));
+      assert.ok(first.length > 0 && second, `rotation ${rotation}`);
+      // Line one: left edge at 10%, baseline inside 10–13%, run spanning to 60%.
+      const left = Math.min(...first.map((item) => item.x));
+      const right = Math.max(...first.map((item) => item.x + item.width));
+      assert.ok(Math.abs(left - 0.1) < 0.01, `rotation ${rotation} left ${left}`);
+      assert.ok(Math.abs(right - 0.6) < 0.02, `rotation ${rotation} right ${right}`);
+      for (const item of first) {
+        assert.ok(
+          item.baseline > 0.1 && item.baseline < 0.13,
+          `rotation ${rotation} baseline ${item.baseline}`,
+        );
+      }
+      assert.ok(Math.abs(second.x - 0.5) < 0.01, `rotation ${rotation}`);
+      assert.ok(Math.abs(second.width - 0.4) < 0.02, `rotation ${rotation}`);
+      assert.ok(second.baseline > 0.5 && second.baseline < 0.56, `rotation ${rotation}`);
+    }
+  });
+
+  test("falls back to the even spread when a page has no usable boxes", async () => {
+    const result = await embedOcrTextLayer({
+      pdf: await blankScan(1),
+      pages: [
+        {
+          pageNumber: 1,
+          text: "fallback words here",
+          lines: [{ box: [0.5, 0.5, 0.5, 0.5], text: "collapsed" }],
+        },
+      ],
+    });
+    assert.equal(result.pagesWritten, 1);
+    assert.equal(result.positionedPages, 0);
+    const pages = await extractPages(result.bytes);
+    assert.match(pages[0], /fallback words here/);
+  });
+
   test("creates a visible text-only companion in source-page order", async () => {
     const result = await createOcrTextCompanionPdf({
       pages: [
@@ -171,12 +264,38 @@ describe("ingest wiring", () => {
     "utf8",
   );
 
-  test("both PDF OCR paths preserve the authoritative uploaded bytes", () => {
-    const calls = executor.match(/await preserveOriginalSourcePdf\(/g) ?? [];
-    assert.equal(calls.length, 2, "VLM parse and handwriting OCR both preserve the source");
-    assert.match(executor, /Keep the uploaded PDF byte-for-byte authoritative/);
-    assert.match(executor, /OCR text is retained in the notes/);
-    assert.doesNotMatch(executor, /await embedOcrTextLayer\(/);
+  test("both PDF OCR paths write a searchable twin and keep the upload intact", () => {
+    const calls = executor.match(/await writeSearchablePdfAsset\(/g) ?? [];
+    assert.equal(calls.length, 2, "VLM parse and handwriting OCR both write the twin");
+    // The layer goes into a second asset, never over the uploaded bytes.
+    assert.match(executor, /slugify\(`\$\{baseName\}-searchable`\)/);
+    assert.match(executor, /searchable_pdf: searchablePdfPath/);
+    assert.match(executor, /await embedOcrTextLayer\(/);
+    assert.match(executor, /await spotPageTextLines\(/);
+    assert.doesNotMatch(executor, /preserveOriginalSourcePdf/);
+    // Pages that already have text get neither a second layer nor a spotting pass.
+    assert.match(
+      executor,
+      /!hasUsableTextLayer\(embedded\.get\(page\.pageNumber\)\)/,
+    );
+  });
+
+  test("the viewer opens the searchable twin when the note has one", () => {
+    const route = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "src",
+        "app",
+        "api",
+        "documents",
+        "[slug]",
+        "source-pdf",
+        "route.ts",
+      ),
+      "utf8",
+    );
+    assert.match(route, /frontmatter\.searchable_pdf/);
+    assert.match(route, /pdfPath: useSearchable \? searchablePath : originalPath/);
   });
 
   test("image-only VLM PDFs get an anydoc text-companion fallback", () => {

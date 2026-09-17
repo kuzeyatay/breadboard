@@ -18,6 +18,11 @@ test("Breadboard use controls real Electron tabs through the dashboard transport
       bundle: true, platform: "node", format: "cjs", outfile: path.join(dir, "transport.cjs"),
       external: ["server-only", "better-sqlite3"],
     });
+    await esbuild.build({ entryPoints: [path.join(desktop, "tests/fixtures/profile-controls.tsx")],
+      bundle: true, platform: "browser", format: "iife", jsx: "automatic",
+      tsconfig: path.join(dashboard, "tsconfig.json"), nodePaths: [path.join(dashboard, "node_modules")],
+      outfile: path.join(dir, "profile-controls.js"),
+    });
     await esbuild.stop();
     const result = await runElectronFixture(require("electron") as string,
       [path.join(desktop, "tests/fixtures/breadboard-use.cjs"), dir], desktop, env, 45_000);

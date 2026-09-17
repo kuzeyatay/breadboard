@@ -1,7 +1,10 @@
+import type { ChatTextSelectionReference } from "./chat-text-selection.ts";
+
 export interface CourseCorrectionBoundary {
   id: string;
   content: string;
   offset: number;
+  textSelection?: ChatTextSelectionReference;
 }
 
 /**
@@ -21,7 +24,7 @@ export function isClarificationAnswerMessage(message: {
 
 export type SteeredResponseSegment =
   | { kind: "assistant"; content: string; key: string }
-  | { kind: "correction"; content: string; key: string };
+  | { kind: "correction"; content: string; key: string; textSelection?: ChatTextSelectionReference };
 
 /**
  * Split one continuously streamed assistant response around the moments where
@@ -63,6 +66,7 @@ export function splitSteeredResponse(
       kind: "correction",
       content: correction.content,
       key: `correction-${correction.id}`,
+      ...(correction.textSelection ? { textSelection: correction.textSelection } : {}),
     });
     cursor = boundary;
   }

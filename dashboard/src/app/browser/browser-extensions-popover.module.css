@@ -1,0 +1,89 @@
+.popover:global(.browser-extensions-menu) {
+  position: static;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 100vh;
+  padding: 0;
+  gap: 0;
+  overflow: auto;
+  border: 1px solid rgb(255 255 255 / 19%);
+  border-radius: 8px;
+  background: rgb(10 14 20 / 96%);
+  color: #f4f4f5;
+  color-scheme: dark;
+  font: 12px/16px "Segoe UI", Arial, sans-serif;
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 3%);
+  scrollbar-width: thin;
+  scrollbar-color: #55575d transparent;
+}
+
+/* Measure natural content so the native view can resize without clipping it. */
+.content { display: flex; flex: none; flex-direction: column; padding: 0 8px; }
+
+.popover .header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid rgb(255 255 255 / 24%);
+}
+
+.popover .header strong { color: inherit; font: 600 12px/16px "Segoe UI", Arial, sans-serif; }
+.list { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
+.extension { min-width: 0; }
+.row { display: flex; min-height: 48px; align-items: center; gap: 8px; }
+
+.popover button {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.popover button:focus-visible { outline: 2px solid #a8c7fa; outline-offset: -2px; }
+.popover button:disabled { cursor: default; }
+.rowAction { display: flex; min-width: 0; min-height: 48px; flex: 1; align-items: center; gap: 12px; padding: 6px 8px; border-radius: 4px; text-align: left; }
+.popover .pictureInPicture { flex: none; margin-right: 40px; }
+.icon { position: relative; display: grid; width: 32px; height: 32px; flex: none; place-items: center; color: #94a7b6; }
+.icon img { position: absolute; inset: 0; width: 32px; height: 32px; object-fit: contain; }
+.icon:has(img:not([hidden])) > svg { visibility: hidden; }
+.pipIcon { color: #87b9ef; }
+.copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 0; }
+.copy strong, .copy small { overflow: hidden; font: inherit; text-overflow: ellipsis; white-space: nowrap; }
+.copy strong { color: #f4f4f5; }
+.copy small { color: #c2c3c7; }
+.more { display: grid; width: 32px; height: 32px; flex: none; padding: 0; place-items: center; border-radius: 4px; }
+.popover .more[aria-expanded="true"] { background: rgb(255 255 255 / 14%); }
+.options { margin: 2px 0 4px 44px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 5px; background: #202329; }
+.version { margin: 0; padding: 6px 8px; color: #bfc1c8; font-size: 11px; }
+.option { display: flex; width: 100%; min-height: 32px; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 3px; text-align: left; }
+.option svg { flex: none; }
+.check { display: grid; width: 15px; height: 15px; flex: none; place-items: center; }
+.popover .remove { color: #ffb4ab; }
+.popover .option:disabled, .popover .load:disabled { opacity: .5; }
+.footer { padding: 4px 0; border-top: 1px solid rgb(255 255 255 / 24%); }
+.manage { width: 100%; min-height: 36px; padding: 8px; border-radius: 4px; text-align: left; }
+.management { display: flex; flex-direction: column; gap: 10px; padding: 4px 8px 12px; }
+.popover .load { display: flex; min-height: 34px; align-items: center; justify-content: center; gap: 8px; padding: 6px 10px; border: 1px solid rgb(255 255 255 / 22%); border-radius: 4px; }
+.note { margin: 0; color: #c2c3c7; font-size: 11px; line-height: 16px; }
+.empty { margin: 0; padding: 16px 8px; color: #c2c3c7; }
+.error { margin: 0; padding: 8px; color: #ffb4ab; overflow-wrap: anywhere; }
+
+@media (hover: hover) and (pointer: fine) {
+  .popover .rowAction:not(:disabled):hover,
+  .popover .more:hover,
+  .popover .option:not(:disabled):hover,
+  .popover .manage:hover,
+  .popover .load:not(:disabled):hover { background: rgb(255 255 255 / 16%); }
+}
+
+.popover button:not(:disabled):active { background: rgb(255 255 255 / 22%); }
+
+:global(html):has(.popover),
+:global(html):has(.popover) :global(body) { margin: 0; min-height: 0; overflow: hidden; background: transparent !important; }
+:global(html):has(.popover) :global(.desktop-title-bar),
+:global(html):has(.popover) :global(.bb-page-toast-host) { display: none !important; }

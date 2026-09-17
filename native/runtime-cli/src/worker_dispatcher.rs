@@ -194,6 +194,55 @@ impl From<WorkerDispatcherError> for DispatchLoopError {
     }
 }
 
+impl DispatchLoopError {
+    /// Bounded, non-secret description of why a lane is taking the generation
+    /// down. Retained authorities carry no error of their own, so the variant
+    /// name is the whole story for them; the owner error that produced them
+    /// is reported separately at the site that discards it.
+    fn describe(&self) -> String {
+        match self {
+            Self::Fatal(error) => error_chain(error),
+            Self::Authority(authority) => format!(
+                "retained {} authority",
+                match authority {
+                    FatalDispatchAuthority::Claimed(_) => "claimed-process",
+                    FatalDispatchAuthority::Resident(_) => "resident-process",
+                    FatalDispatchAuthority::NotCreated(_) => "not-created",
+                    FatalDispatchAuthority::NotCreatedCleanup(_) => "not-created-cleanup",
+                    FatalDispatchAuthority::Residency(_) => "residency",
+                    FatalDispatchAuthority::BeforeStarted(_) => "before-started",
+                    FatalDispatchAuthority::TreeExit(_) => "tree-exit",
+                    FatalDispatchAuthority::Completion { .. } => "completion",
+                    FatalDispatchAuthority::Uncertain(_) => "uncertain-launch",
+                    FatalDispatchAuthority::PendingWorkerEvent { .. } => "pending-worker-event",
+                }
+            ),
+        }
+    }
+}
+
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(" | caused by: ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
+/// Every lane failure ends the generation, and until now the only trace it
+/// left was the host's generic exit line. This goes to the private supervisor
+/// log (stderr), never to a control-plane payload.
+fn report_dispatch_failure(stage: &str, detail: &str) {
+    eprintln!("[worker-dispatcher] {stage}: {detail}");
+}
+
+fn report_owner_error(stage: &str, error: &dyn std::error::Error) {
+    report_dispatch_failure(stage, &error_chain(error));
+}
+
 impl WorkerDispatcher {
     pub(crate) fn start(config: WorkerDispatcherConfig) -> Result<Self, WorkerDispatcherError> {
         let shutdown = Arc::clone(&config.shutdown);
@@ -360,6 +409,9 @@ fn run_dispatch_loop(config: &WorkerDispatcherConfig) -> Result<(), DispatchLoop
         }
     }
 
+    for failure in &failures {
+        report_dispatch_failure("dispatch loop ended the generation", &failure.describe());
+    }
     failures.extend(join_worker_lanes(lanes));
     match DispatchLoopFailure::from_errors(failures) {
         Some(failure) => Err(failure),
@@ -591,7 +643,8 @@ fn dispatch_one(
                     }
                 }
                 Err(error) => {
-                    let (authority, _source) = error.into_parts();
+                    let (authority, source) = error.into_parts();
+                    report_owner_error("worker not-created finalization failed", &source);
                     Err(DispatchLoopError::Authority(
                         FatalDispatchAuthority::NotCreated(Box::new(authority)),
                     ))
@@ -682,11 +735,7 @@ fn reap_finished_worker_lanes(lanes: &mut Vec<ActiveWorkerLane>) -> Vec<Dispatch
     while index < lanes.len() {
         if lanes[index].thread.is_finished() {
             let lane = lanes.swap_remove(index);
-            match lane.thread.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => failures.push(error),
-                Err(_) => failures.push(WorkerDispatcherError::ThreadPanicked.into()),
-            }
+            failures.extend(join_worker_lane(lane));
         } else {
             index += 1;
         }
@@ -695,15 +744,20 @@ fn reap_finished_worker_lanes(lanes: &mut Vec<ActiveWorkerLane>) -> Vec<Dispatch
 }
 
 fn join_worker_lanes(lanes: Vec<ActiveWorkerLane>) -> Vec<DispatchLoopError> {
-    let mut failures = Vec::new();
-    for lane in lanes {
-        match lane.thread.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => failures.push(error),
-            Err(_) => failures.push(WorkerDispatcherError::ThreadPanicked.into()),
-        }
-    }
-    failures
+    lanes.into_iter().filter_map(join_worker_lane).collect()
+}
+
+fn join_worker_lane(lane: ActiveWorkerLane) -> Option<DispatchLoopError> {
+    let failure = match lane.thread.join() {
+        Ok(Ok(())) => return None,
+        Ok(Err(error)) => error,
+        Err(_) => WorkerDispatcherError::ThreadPanicked.into(),
+    };
+    report_dispatch_failure(
+        &format!("worker lane {} ended the generation", lane.definition_key),
+        &failure.describe(),
+    );
+    Some(failure)
 }
 
 fn release_worker_dependencies(
@@ -916,7 +970,10 @@ fn drive_claimed_process(
         }
     };
     loop {
-        if apply_stop_policy(&mut process, &mut runtime, store, &identity, shutdown).is_err() {
+        if let Err(error) =
+            apply_stop_policy(&mut process, &mut runtime, store, &identity, shutdown)
+        {
+            report_owner_error("claimed worker stop policy failed", &error);
             return Err(DispatchLoopError::Authority(
                 FatalDispatchAuthority::Claimed(Box::new(process)),
             ));
@@ -926,7 +983,8 @@ fn drive_claimed_process(
                 let residency = match process.into_residency() {
                     Ok(residency) => residency,
                     Err(error) => {
-                        let (process, _source) = error.into_parts();
+                        let (process, source) = error.into_parts();
+                        report_owner_error("claimed worker residency failed", &source);
                         return Err(DispatchLoopError::Authority(
                             FatalDispatchAuthority::Claimed(Box::new(process)),
                         ));
@@ -935,7 +993,8 @@ fn drive_claimed_process(
                 let resident = match store.settle_worker_residency(residency) {
                     Ok(resident) => resident,
                     Err(error) => {
-                        let (authority, _source) = error.into_parts();
+                        let (authority, source) = error.into_parts();
+                        report_owner_error("worker residency settlement failed", &source);
                         return Err(DispatchLoopError::Authority(
                             FatalDispatchAuthority::Residency(Box::new(authority)),
                         ));
@@ -955,7 +1014,8 @@ fn drive_claimed_process(
                 let exit = match process.confirm_exit(&terminal) {
                     Ok(exit) => exit,
                     Err(error) => {
-                        let (process, _source) = error.into_parts();
+                        let (process, source) = error.into_parts();
+                        report_owner_error("claimed worker exit confirmation failed", &source);
                         return Err(DispatchLoopError::Authority(
                             FatalDispatchAuthority::Claimed(Box::new(process)),
                         ));
@@ -964,7 +1024,8 @@ fn drive_claimed_process(
                 return match store.finish_worker_before_started(exit) {
                     Ok((_job, tree_exit)) => cleanup_terminal_job_inputs(store, paths, tree_exit),
                     Err(error) => {
-                        let (authority, _source) = error.into_parts();
+                        let (authority, source) = error.into_parts();
+                        report_owner_error("worker before-started finalization failed", &source);
                         Err(DispatchLoopError::Authority(
                             FatalDispatchAuthority::BeforeStarted(Box::new(authority)),
                         ))
@@ -977,28 +1038,38 @@ fn drive_claimed_process(
                 // poison completion authority, stop the coupled claim/tree,
                 // and continue draining; never return and implicitly drop
                 // live authority.
-                if process.reject_current_worker_event().is_err()
-                    || begin_stop(&mut process, &mut runtime, StopReason::WorkerProtocolFault)
-                        .is_err()
+                if let Err(error) = process
+                    .reject_current_worker_event()
+                    .map_err(WorkerDispatcherError::Process)
+                    .and_then(|_| {
+                        begin_stop(&mut process, &mut runtime, StopReason::WorkerProtocolFault)
+                    })
                 {
+                    report_owner_error("stop after early claimed worker event failed", &error);
                     return Err(DispatchLoopError::Authority(
                         FatalDispatchAuthority::Claimed(Box::new(process)),
                     ));
                 }
             }
-            Ok(ProcessOwnerEvent::WorkerProtocolFault(_)) => {
-                if begin_stop(&mut process, &mut runtime, StopReason::WorkerProtocolFault).is_err()
+            Ok(ProcessOwnerEvent::WorkerProtocolFault(fault)) => {
+                if let Err(error) =
+                    begin_stop(&mut process, &mut runtime, StopReason::WorkerProtocolFault)
                 {
+                    report_owner_error(
+                        &format!("stop after claimed worker protocol fault {fault:?} failed"),
+                        &error,
+                    );
                     return Err(DispatchLoopError::Authority(
                         FatalDispatchAuthority::Claimed(Box::new(process)),
                     ));
                 }
             }
             Err(ProcessOwnerError::EventWaitTimeout) => {}
-            Err(_) => {
+            Err(error) => {
+                report_owner_error("claimed worker event read failed", &error);
                 return Err(DispatchLoopError::Authority(
                     FatalDispatchAuthority::Claimed(Box::new(process)),
-                ))
+                ));
             }
         }
     }
@@ -1013,7 +1084,8 @@ fn drive_resident_process(
     shutdown: &ShutdownCoordinator,
 ) -> Result<(), DispatchLoopError> {
     loop {
-        if apply_stop_policy(&mut process, runtime, store, identity, shutdown).is_err() {
+        if let Err(error) = apply_stop_policy(&mut process, runtime, store, identity, shutdown) {
+            report_owner_error("resident worker stop policy failed", &error);
             return Err(DispatchLoopError::Authority(
                 FatalDispatchAuthority::Resident(Box::new(process)),
             ));
@@ -1029,10 +1101,17 @@ fn drive_resident_process(
                         // Its eventual tree-exit receipt can then never mint
                         // completion authority, while unrelated jobs remain
                         // available in this generation.
-                        if process.reject_current_worker_event().is_err()
-                            || begin_stop(&mut process, runtime, StopReason::WorkerProtocolFault)
-                                .is_err()
+                        if let Err(error) = process
+                            .reject_current_worker_event()
+                            .map_err(WorkerDispatcherError::Process)
+                            .and_then(|_| {
+                                begin_stop(&mut process, runtime, StopReason::WorkerProtocolFault)
+                            })
                         {
+                            report_owner_error(
+                                "stop after rejected resident worker event failed",
+                                &error,
+                            );
                             return Err(DispatchLoopError::Authority(
                                 FatalDispatchAuthority::Resident(Box::new(process)),
                             ));
@@ -1052,8 +1131,14 @@ fn drive_resident_process(
                     }
                 }
             }
-            Ok(ProcessOwnerEvent::WorkerProtocolFault(_)) => {
-                if begin_stop(&mut process, runtime, StopReason::WorkerProtocolFault).is_err() {
+            Ok(ProcessOwnerEvent::WorkerProtocolFault(fault)) => {
+                if let Err(error) =
+                    begin_stop(&mut process, runtime, StopReason::WorkerProtocolFault)
+                {
+                    report_owner_error(
+                        &format!("stop after resident worker protocol fault {fault:?} failed"),
+                        &error,
+                    );
                     return Err(DispatchLoopError::Authority(
                         FatalDispatchAuthority::Resident(Box::new(process)),
                     ));
@@ -1063,7 +1148,8 @@ fn drive_resident_process(
                 let tree_exit = match process.confirm_exit(&terminal) {
                     Ok(tree_exit) => tree_exit,
                     Err(error) => {
-                        let (process, _source) = error.into_parts();
+                        let (process, source) = error.into_parts();
+                        report_owner_error("resident worker exit confirmation failed", &source);
                         return Err(DispatchLoopError::Authority(
                             FatalDispatchAuthority::Resident(Box::new(process)),
                         ));
@@ -1078,10 +1164,11 @@ fn drive_resident_process(
                 );
             }
             Err(ProcessOwnerError::EventWaitTimeout) => {}
-            Err(_) => {
+            Err(error) => {
+                report_owner_error("resident worker event read failed", &error);
                 return Err(DispatchLoopError::Authority(
                     FatalDispatchAuthority::Resident(Box::new(process)),
-                ))
+                ));
             }
         }
     }

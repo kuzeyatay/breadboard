@@ -73,7 +73,7 @@ const PREVIEW_THEME_SCRIPT = `
       : parentTheme === "dark" ? "dark" : "light";
     document.documentElement.classList.add("quartz-graph-preview");
     document.documentElement.style.colorScheme = theme;
-    document.documentElement.style.backgroundColor = theme === "dark" ? "#0b0c0a" : "#f5f3ee";
+    document.documentElement.style.backgroundColor = theme === "dark" ? "#0f1210" : "#f5f3ee";
     window.localStorage.setItem("theme", theme);
     document.documentElement.setAttribute("saved-theme", theme);
   } catch {}

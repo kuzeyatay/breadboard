@@ -1,5 +1,10 @@
 "use client";
+import { useStartupLoading } from "@/app/components/startup-readiness";
+import { runGardenInlineQuestion, preserveInlineQuestionMessages, reconcileInlineQuestionMessages } from "@/lib/conversations/garden-inline-question";
 
+import { useGardenTitle } from "@/app/components/use-garden-title";
+import { useTextHighlights } from "@/app/components/use-text-highlights";
+import { TextHighlightSaveStatus } from "@/app/components/text-highlight-save-status";
 import { GARDEN_SOURCE_IMPORTED_EVENT, handleGardenSourceImportResult } from "@/lib/hermes/garden-source-import-client";
 import {
   learnCompletionChimeKey,
@@ -33,20 +38,14 @@ import ProductDetailsPanel, {
 } from "@/app/components/hermes/product-details-panel";
 import GenerativeUiRenderer from "@/app/components/hermes/generative-ui-renderer";
 import { useRailResize } from "@/app/components/hermes/use-rail-resize";
-import {
-  chatActivityById,
-  nextUnreadChats,
-  readUnreadChats,
-  sameChatIds,
-  writeUnreadChats,
-} from "@/lib/conversations/unread";
+import { useUnreadChats } from "@/lib/conversations/unread-client";
 import { recordLastOpenedChat } from "@/lib/conversations/last-opened";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import DocumentContextMenu from "@/app/components/document-context-menu";
 import LinkContextMenu from "@/app/components/link-context-menu";
-import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
+import { useLearnHumanizerMode } from "@/app/components/use-learn-humanizer-mode";
 import {
   restoreQueuedFollowUpDraft,
   useQueuedFollowUps,
@@ -60,16 +59,18 @@ import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
 import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
 import { forgetChatDrafts } from "@/lib/conversations/drafts";
+import { messageRewriteReview } from "@/app/components/humanizer/rewrite-status";
 import AssistantMessageActions, {
   MessageActionsSlot,
-  AssistantResponseBranchNavigation,
 } from "@/app/components/assistant-message-actions";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
+import { isYoloModeEnabled } from "@/app/components/use-yolo-mode";
 import { isPersonalizeEnabled } from "@/app/components/use-personalize";
 import {
   applyBranchVariant,
   cloneMessages,
+  restoreBranchAnchor,
   createConversationBranch,
   messageBranchId,
   previousUserMessageIndex,
@@ -90,13 +91,17 @@ import {
 } from "@/app/components/chat/chat-row-identity";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
+import { delegatedResponsePresentation } from "@/lib/hermes/delegated-response";
 import AttachmentPreviewDialog, {
   type AttachmentPreviewSource,
 } from "@/app/components/attachment-preview-dialog";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { useChatModelChanges } from "@/app/components/use-chat-model-changes";
+import { ChatModelChangeSeparators } from "@/app/components/chat-model-change-separator";
 import ActivityPanel from "@/app/components/hermes/activity-panel";
-import AssistantResponseNotice from "@/app/components/assistant-response-notice";
+import { isExternalAgentRunMessage } from "@/app/components/hermes/use-agent-session";
+import { applyAutoHumanizeOutcome, useAutoHumanize, type NaturalRewriteActivity } from "@/app/components/humanizer/use-auto-humanize";
 import type { ClarificationPrompt } from "@/app/components/hermes/use-agent-session";
 import {
   splitLeadingCommandTokens,
@@ -108,6 +113,11 @@ import GardenSettingsDialog, {
 } from "@/app/components/garden-settings-dialog";
 import { useLegacyAgentActivity } from "@/app/components/hermes/use-legacy-agent-activity";
 import { isRecoverableAgentStreamDisconnect } from "@/app/components/hermes/agent-stream-watchdog";
+import {
+  gardenTurnCompletedOnServer,
+  readGardenResponseData,
+  type GardenTurnObserver,
+} from "@/lib/hermes/garden-response-stream";
 import type {
   ActivityItem,
   ConnectionState,
@@ -121,10 +131,12 @@ import {
   delegatedAgentCompletedLabelForMessage,
   delegatedAgentOutcomeLabelForMessage,
   delegatedWorkersForMessage,
+  interruptedDelegationMessage,
   delegatedWorkersOutcome,
   delegatedWorkersOutcomeNote,
   delegatedContinuationPreamble,
   delegatedThinkingUpdates,
+  delegatedResearchProgressForMessage,
   delegatedAgentStartedAtForMessage,
   delegatedTurnCarriedDurationMs,
   delegatedTurnTotalUsage,
@@ -156,6 +168,7 @@ import {
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
   isChatHighlightColor,
+  normalizeChatHighlightNote,
   type ChatHighlightColor,
 } from "@/lib/chat-highlights";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
@@ -178,16 +191,18 @@ import ArtifactPanel, {
   ArtifactArchiveIcon,
   GARDEN_DOCUMENTS_CHANGED_EVENT,
 } from "@/app/components/hermes/artifact-panel";
+import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
+import { filterArtifactsForArchive } from "@/lib/hermes/artifact-search";
 import GardenArtifactDock from "@/app/components/hermes/garden-artifact-dock";
 import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "@/app/components/hermes/artifact-ai-edit";
 import InlineAgentBrowserRun from "@/app/components/hermes/inline-agent-browser-run";
 import InlineArtifactCards, {
   InlineArtifactCardsProvider,
-  InlineArtifactEmptyState,
   useInlineArtifactPrefetch,
 } from "@/app/components/hermes/inline-artifact-cards";
 import InlineDeepResearchRun from "@/app/components/hermes/inline-deep-research-run";
 import InlineMaxResearchRun from "@/app/components/hermes/inline-max-research-run";
+import { useMaxResearchProgress } from "@/app/components/hermes/use-max-research-progress";
 import InlineOpenCodeRun from "@/app/components/hermes/inline-opencode-run";
 import InlineRufloRun from "@/app/components/hermes/inline-ruflo-run";
 import InlineAgentReachRun from "@/app/components/hermes/inline-agent-reach-run";
@@ -197,7 +212,6 @@ import InlineDeepTutorRun from "@/app/components/hermes/inline-deep-tutor-run";
 import InlineMusicProducerRun from "@/app/components/hermes/inline-music-producer-run";
 import InlineCareerOpsRun from "@/app/components/hermes/inline-career-ops-run";
 import InlineOpenExecutiveRun from "@/app/components/hermes/inline-openexecutive-run";
-import InlineOpenGymRun from "@/app/components/hermes/inline-open-gym-run";
 import InlineTradingAgentsRun from "@/app/components/hermes/inline-tradingagents-run";
 import InlineVibeTradingRun from "@/app/components/hermes/inline-vibe-trading-run";
 import InlineStockAnalystRun from "@/app/components/hermes/inline-stock-analyst-run";
@@ -341,6 +355,7 @@ import {
   chatMessageAttachments,
   extractChatAttachments,
   reusableChatAttachments,
+  unreusableChatAttachmentNames,
   visibleChatMessageText,
   type ChatAttachment,
   type ChatMessageAttachment,
@@ -370,8 +385,10 @@ import {
   hasLiveGardenUploadRequest,
   registerGardenUploadSink,
   removeGardenUploadTask,
+  resumeGardenUploadRecovery,
   startGardenUploadTask,
   subscribeGardenUploads,
+  type GardenUploadRecovery,
 } from "@/lib/garden-upload-store";
 import {
   agentBrowserStartFailure,
@@ -381,13 +398,14 @@ import {
 import {
   desktopTabsBridge,
   openBrowserAgentRunInDesktop,
+  sendDesktopTabsCommand,
 } from "@/lib/desktop-browser-tabs";
 import {
   directDeepResearchInvocation,
   deepResearchUserMessage,
   parseResearchRequest,
 } from "@/lib/deep-research/identity";
-import { maxResearchUserMessage } from "@/lib/max-research/identity.ts";
+import { maxResearchInvocation, maxResearchUserMessage } from "@/lib/max-research/identity.ts";
 import { loadAgentSettings } from "@/lib/agent-settings/client.ts";
 import { deepResearchDefaults } from "@/lib/agent-settings/defaults.ts";
 import {
@@ -438,12 +456,6 @@ import {
   openExecutiveUserMessage,
   taskFromOpenExecutiveCommand,
 } from "@/lib/openexecutive/identity.ts";
-import {
-  OPEN_GYM_AGENT_ID,
-  openGymUserMessage,
-  taskFromOpenGymCommand,
-} from "@/lib/open-gym/identity.ts";
-import { shouldRouteOpenGymFromSuperAgent } from "@/lib/open-gym/routing-client.ts";
 import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
@@ -499,6 +511,7 @@ import {
   useAgentLaunchQueue,
   type AgentLaunchRequestPayload,
 } from "@/app/components/hermes/use-agent-launch-queue";
+import { originatingAgentLaunchSession } from "@/app/components/hermes/agent-launch-scope";
 import AgentLaunchPrompt from "@/app/components/hermes/agent-launch-prompt";
 import {
   OPENCODE_AGENT_ID,
@@ -520,6 +533,7 @@ import {
 } from "@/lib/ruflo/identity";
 import {
   assistantExternalAgentRunId,
+  reconcileExternalAgentMessages,
   externalAgentCardContent,
   externalAgentResponseDurationMs,
   type ExternalAgentActivityEntry,
@@ -537,7 +551,8 @@ import {
   takeChatNotificationReply,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
-import { LEARN_ACTIVE_STAGE_LABELS } from "@/lib/learn-stage-labels";
+import { isLearnRunningStatus, LEARN_ACTIVE_STAGE_LABELS } from "@/lib/learn-stage-labels";
+import { learnOperationActivity } from "@/lib/learn-operation-activity";
 import {
   abortGardenTurnCheckpoint,
   reserveGardenTurnCheckpoint,
@@ -558,6 +573,12 @@ import {
 } from "@/lib/generative-ui/contracts.ts";
 
 interface Message {
+  humanizerReview?: import("@/lib/humanizer/review-types").HumanizerReviewPresentation;
+  contentVersions?: import("@/app/components/hermes/use-agent-session").AgentMessage["contentVersions"];
+  failed?: boolean;
+  interrupted?: boolean;
+  pending?: boolean;
+  runtimeError?: string;
   id?: string;
   artifactMessageId?: string;
   /** Set on messages that live in a retry branch; see conversation-branches. */
@@ -620,7 +641,6 @@ interface Message {
   careerOpsRun?: { runId: string; task: string };
   musicProducerRun?: { runId: string; task: string };
   openExecutiveRun?: { runId: string; task: string };
-  openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
   stockAnalystRun?: { runId: string; task: string };
@@ -722,6 +742,9 @@ interface ChatSession {
   created_at: string;
   updated_at: string;
   messages: Message[];
+  /** Off-record chats remain readable only in the view that created them. */
+  temporary?: boolean;
+  branchGroups?: Record<string, ConversationBranchGroup<Message>>;
   ownerUsername?: string;
   isOwn?: boolean;
   /**
@@ -762,6 +785,21 @@ function latestAssistantResponse(messages: readonly Message[]): string | undefin
   return undefined;
 }
 
+function chatSaveFailureLabel(
+  sessionId: number,
+  title: string | undefined,
+  messages: readonly Message[],
+  gardenName: string,
+): string {
+  const namedTitle = title?.trim();
+  const firstQuestion = messages.find(message => message.role === "user" && !message.internalAgentContinuation && message.content.trim())?.content;
+  const source = namedTitle && namedTitle.toLowerCase() !== "new chat"
+    ? namedTitle : firstQuestion || `Chat ${sessionId}`;
+  const compact = source.replace(/\s+/g, " ").trim();
+  const label = compact.length > 120 ? `${compact.slice(0, 119).trimEnd()}…` : compact;
+  return `“${label}” in “${gardenName}”`;
+}
+
 interface ExternalAgentSelection {
   id: string;
   name: string;
@@ -769,8 +807,8 @@ interface ExternalAgentSelection {
 
 /**
  * Retry branches are a reading of this transcript, not part of it: the chat row
- * stores the variant currently on screen, and the siblings live beside it in
- * this browser — the same arrangement the Terminal uses.
+ * stores the variant currently on screen. Siblings are saved before dispatch;
+ * browser storage remains a fallback for branches made by older versions.
  */
 const BRANCH_STORAGE_PREFIX = "breadboard:garden-conversation-branches:";
 
@@ -798,11 +836,44 @@ function loadBranchGroups(
   }
 }
 
+function useGardenResponseBranches(
+  activeChatId: number | null,
+  savedResponseBranches: Record<string, ConversationBranchGroup<Message>> | undefined,
+) {
+  const [branchGroups, setBranchGroups] = useState<
+    Record<string, ConversationBranchGroup<Message>>
+  >({});
+
+  useEffect(() => {
+    if (activeChatId === null) {
+      setBranchGroups({});
+      return;
+    }
+    setBranchGroups(loadBranchGroups(activeChatId));
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (!savedResponseBranches) return;
+    setBranchGroups(current => {
+      if (Object.entries(savedResponseBranches).every(([id, group]) => current[id] === group)) {
+        return current;
+      }
+      return { ...current, ...savedResponseBranches };
+    });
+  }, [activeChatId, savedResponseBranches]);
+
+  // New branches and branch selections are saved to the server before the UI
+  // changes. Browser storage is only a read fallback for older clients. Writing
+  // these full transcript snapshots on each refresh sent multi-megabyte IPC
+  // messages through Electron's shared I/O thread and stalled the whole app.
+  return [branchGroups, setBranchGroups] as const;
+}
+
 // ── Selected-text questions ("Ask in chat" / "Ask here") ─────────────────────
 // The same feature the Terminal has, against this workspace's legacy chat
-// store. Highlights and not-yet-asked selections live in localStorage per chat
-// id; answered threads restore from the `textSelection` metadata each turn
-// persists with its messages.
+// store. Highlights and not-yet-asked selections are saved to the durable
+// annotation store per chat id; answered threads also restore from the
+// `textSelection` metadata each turn persists with its messages.
 
 const INLINE_SELECTION_STORAGE_PREFIX =
   "breadboard:garden-chat-inline-selections:";
@@ -811,7 +882,8 @@ const DELETED_INLINE_SELECTION_STORAGE_PREFIX =
 const CHAT_HIGHLIGHT_STORAGE_PREFIX = "breadboard:garden-chat-highlights:";
 
 interface SavedChatHighlight extends Omit<ChatTextSelectionReference, "mode"> {
-  color: ChatHighlightColor;
+  color?: ChatHighlightColor;
+  note?: string;
 }
 
 interface InlineSelectionThread {
@@ -821,6 +893,8 @@ interface InlineSelectionThread {
   pending: boolean;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  responseCompletedAt?: string;
+  verification?: Message["verification"];
   startedAt?: string;
   /** The answer message's own id, so text inside the popover is selectable
    * and can host highlights and nested "Ask here" threads of its own. */
@@ -835,13 +909,8 @@ function messageSelectionSourceId(message: Message, messageIndex: number): strin
   return message.id ?? message.clientMessageId ?? `assistant-${messageIndex}`;
 }
 
-function loadInlineSelections(chatId: number): ChatTextSelectionReference[] {
+function normalizeInlineSelections(parsed: unknown): ChatTextSelectionReference[] {
   try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(
-        `${INLINE_SELECTION_STORAGE_PREFIX}${chatId}`,
-      ) ?? "[]",
-    ) as unknown[];
     if (!Array.isArray(parsed)) return [];
     const seen = new Set<string>();
     return parsed.flatMap((value) => {
@@ -857,23 +926,12 @@ function loadInlineSelections(chatId: number): ChatTextSelectionReference[] {
   }
 }
 
-function loadDeletedInlineSelectionIds(chatId: number): Set<string> {
-  try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(
-        `${DELETED_INLINE_SELECTION_STORAGE_PREFIX}${chatId}`,
-      ) ?? "[]",
-    ) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed.filter(
-        (value): value is string =>
-          typeof value === "string" && value.length > 0 && value.length <= 160,
-      ),
-    );
-  } catch {
-    return new Set();
-  }
+function normalizeDeletedInlineSelectionIds(parsed: unknown): string[] {
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (value): value is string =>
+      typeof value === "string" && value.length > 0 && value.length <= 160,
+  );
 }
 
 function normalizeSavedChatHighlight(value: unknown): SavedChatHighlight | null {
@@ -884,6 +942,7 @@ function normalizeSavedChatHighlight(value: unknown): SavedChatHighlight | null 
     mode: "chat",
   });
   if (!selection) return null;
+  const note = normalizeChatHighlightNote(candidate.note);
   return {
     id: selection.id,
     sourceMessageId: selection.sourceMessageId,
@@ -894,17 +953,13 @@ function normalizeSavedChatHighlight(value: unknown): SavedChatHighlight | null 
     suffix: selection.suffix,
     color: isChatHighlightColor(candidate.color)
       ? candidate.color
-      : DEFAULT_CHAT_HIGHLIGHT_COLOR,
+      : note ? undefined : DEFAULT_CHAT_HIGHLIGHT_COLOR,
+    ...(note ? { note } : {}),
   };
 }
 
-function loadChatHighlights(chatId: number): SavedChatHighlight[] {
+function normalizeChatHighlights(parsed: unknown): SavedChatHighlight[] {
   try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(
-        `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${chatId}`,
-      ) ?? "[]",
-    ) as unknown;
     if (!Array.isArray(parsed)) return [];
     const seen = new Set<string>();
     return parsed.flatMap((value) => {
@@ -1208,6 +1263,17 @@ interface LearnMapInfo {
 interface LearnStatusResponse {
   success?: boolean;
   job?: LearnJobInfo | null;
+  runtimeJob?: { jobId: string; jobType: string; state: string } | null;
+  /**
+   * Set when a Runtime Learn submission exists but Runtime job control could
+   * not be reached; the rest of the payload is the durable snapshot.
+   */
+  runtimeUnavailable?: {
+    runtimeJobId: string;
+    operation: string;
+    submittedAt: string;
+    reason: string;
+  } | null;
   publicationRecovery?: {
     active: true;
     requestedAt: string;
@@ -1709,7 +1775,6 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.musicProducerRun ||
       message.careerOpsRun ||
       message.openExecutiveRun ||
-      message.openGymRun ||
       message.tradingAgentsRun ||
       message.vibeTradingRun ||
       message.stockAnalystRun ||
@@ -1743,6 +1808,8 @@ function hasRunningExternalAgent(message: Message): boolean {
 }
 
 interface ChatTranscriptProps {
+  modelChangesFor: (message: Message, index: number) => string[];
+  naturalRewriteFor: (message: Message) => NaturalRewriteActivity | undefined;
   clusterName: string;
   clusterSlug: string;
   /** What a blank chat greets with — resolved by the workspace, garden-aware. */
@@ -1782,7 +1849,6 @@ interface ChatTranscriptProps {
   onTextSelection: (selection: ChatTextSelectionCandidate) => void;
   /** A painted highlight/answer anchor was clicked. */
   onOpenAnnotation: (annotationId: string, anchor: FloatingAnchorRect) => void;
-  inlineArtifactRetireVersion: number;
   /**
    * A model-delegated worker is somewhere in its hand-off — queued behind the
    * turn that asked for it, starting, running, or finished and waiting to be
@@ -1841,7 +1907,6 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
       storedMessage.textSelection?.mode === "inline" ||
       supersededDelegationAssistants.has(index) ||
       (storedMessage.delegatedAgentRun === true &&
-        !storedMessage.openGymRun &&
         !storedMessage.godsEyeRun &&
         messages[index + 1]?.internalAgentContinuation === true)
     ) {
@@ -1862,6 +1927,8 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
 }
 
 const ChatTranscript = memo(function ChatTranscript({
+  modelChangesFor,
+  naturalRewriteFor,
   clusterName,
   clusterSlug,
   greeting,
@@ -1889,7 +1956,6 @@ const ChatTranscript = memo(function ChatTranscript({
   annotationsByMessage,
   onTextSelection,
   onOpenAnnotation,
-  inlineArtifactRetireVersion,
   delegationInFlight,
   transcriptScrollRef,
   transcriptVirtual,
@@ -1923,7 +1989,6 @@ const ChatTranscript = memo(function ChatTranscript({
       message.role === "assistant" &&
       !(
         message.delegatedAgentRun === true &&
-        !message.openGymRun &&
         !message.godsEyeRun
       )
         ? index
@@ -1934,6 +1999,7 @@ const ChatTranscript = memo(function ChatTranscript({
     lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
   const newestAssistantVisibleContent = assistantVisibleContent(
     newestAssistant?.content ?? "",
+    newestAssistant,
   );
   const transcriptRevealKey = String(chatSessionId ?? "new");
   // The newest answer's text is revealed at a readable pace rather than drawn
@@ -1950,6 +2016,7 @@ const ChatTranscript = memo(function ChatTranscript({
   // visible assistant message — resolved there so a row's measured height and
   // its drawn height come from the same text.
   const transcriptRows = buildTranscriptRows(messages);
+  const maxResearchProgress = useMaxResearchProgress(messages);
 
   useEffect(
     () => () => {
@@ -1992,7 +2059,15 @@ const ChatTranscript = memo(function ChatTranscript({
     if (userIndex < 0) return null;
     const groupId =
       message.branchGroupId ?? messageBranchId(messages[userIndex], userIndex);
-    const group = branchGroups[groupId];
+    // Older clients did not label the replacement pair. A durable snapshot
+    // can still identify that turn after a reload or a later compatibility save.
+    const user = messages[userIndex];
+    const group = branchGroups[groupId] ?? Object.values(branchGroups).find(candidate =>
+      candidate.variants.some(variant => variant.some(saved => saved.role === "user" &&
+        saved.branchGroupId === candidate.id && (
+          (user.clientMessageId && saved.clientMessageId === user.clientMessageId) ||
+          (user.id && saved.id === user.id)
+        ))));
     return group && group.variants.length > 1 ? group : null;
   }
 
@@ -2030,7 +2105,6 @@ const ChatTranscript = memo(function ChatTranscript({
     <InlineArtifactCardsProvider
       legacyChatSessionId={chatSessionId}
       gardenSlug={clusterSlug}
-      retireVersion={inlineArtifactRetireVersion}
     >
       {/* w-full is load-bearing, not decoration: auto inline margins cancel a
         flex item's stretch, so this column is sized to its content — and every
@@ -2072,7 +2146,10 @@ const ChatTranscript = memo(function ChatTranscript({
             resetKey={chatSessionId}
             getItemKey={transcriptRowKey}
             estimateSize={transcriptRowHeight}
-            renderItem={({ message: msg, index: i }) => {
+            renderItem={({ message: originalMessage, index: i }) => {
+              const delegatedWorkers = delegatedWorkersForMessage(messages, i);
+              const msg = interruptedDelegationMessage(originalMessage, delegatedWorkers);
+              const delegationInterrupted = msg !== originalMessage;
               const messageInteractionId = msg.id ?? `user-message-${i}`;
               const externalRun =
                 msg.agentBrowserRun ??
@@ -2088,7 +2165,6 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.musicProducerRun ??
                 msg.careerOpsRun ??
                 msg.openExecutiveRun ??
-                msg.openGymRun ??
                 msg.tradingAgentsRun ??
                 msg.vibeTradingRun ??
                 msg.stockAnalystRun ??
@@ -2122,9 +2198,11 @@ const ChatTranscript = memo(function ChatTranscript({
               );
               const continuationPreamble =
                 delegatedContinuationPreamble(messages, i);
+              const researchProgress = delegatedResearchProgressForMessage(messages, i, maxResearchProgress);
               const thinkingUpdates = delegatedThinkingUpdates(
                 msg,
                 continuationPreamble,
+                researchProgress,
               );
               // Every earlier phase is hidden behind this row, so their time
               // belongs to this clock. Counting only the adjacent worker still
@@ -2139,11 +2217,25 @@ const ChatTranscript = memo(function ChatTranscript({
               );
               const storedAssistantContent = assistantVisibleContent(
                 msg.content,
+                msg,
               );
-              const visibleAssistantContent =
-                i === lastAssistantIndex
+              const continuation = delegatedResponsePresentation(messages, i, {
+                streaming: i === lastAssistantIndex && isStreaming,
+                failed: i === lastAssistantIndex && connection === "error",
+                interrupted: delegationInterrupted,
+              });
+              const responseFailed = Boolean(msg.failed || msg.runtimeError || continuation.failed);
+              const responseInterrupted = Boolean(delegationInterrupted || msg.interrupted);
+              // Rewriting keeps a complete answer visible, including while the
+              // original's streamed reveal would otherwise still be catching up.
+              const visibleAssistantContent = continuation.fallbackContent || (responseInterrupted ? "Interrupted" :
+                (naturalRewriteFor(msg) || messageRewriteReview(msg)
+                  ? storedAssistantContent
+                  : i === lastAssistantIndex && storedAssistantContent
                   ? revealedAssistantContent
-                  : storedAssistantContent;
+                  : storedAssistantContent) || (!isStreaming ? storedAssistantContent : "") ||
+                (!externalRun && (responseFailed || (i === lastAssistantIndex && connection === "error"))
+                  ? "Response failed." : ""));
               const visibleUserContent = visibleChatMessageText(
                 msg.content,
                 msg.attachments,
@@ -2152,7 +2244,6 @@ const ChatTranscript = memo(function ChatTranscript({
               // The hidden workers this row delegated to: the only record of
               // how the hand-off ended. Stopped or failed with no hand-back
               // used to read exactly like a finished answer.
-              const delegatedWorkers = delegatedWorkersForMessage(messages, i);
               const delegatedWorkerOutcome =
                 delegatedWorkersOutcome(delegatedWorkers);
               const delegatedAgentCompleted =
@@ -2169,24 +2260,23 @@ const ChatTranscript = memo(function ChatTranscript({
               // not produced a run yet and the result not yet handed back;
               // both used to settle this row into its past tense and stop its
               // timer while the work carried on.
-              const delegatedAgentActive =
+              const delegatedAgentActive = !delegationInterrupted && (
                 Boolean(
                   msg.delegatedAgentPreamble &&
                     externalRun &&
                     (msg.externalAgentOutcome ?? "running") === "running",
                 ) ||
                 (i === lastVisibleAssistantIndex && delegationInFlight) ||
-                delegatedWorkerOutcome === "running";
+                delegatedWorkerOutcome === "running");
               // Past tense while it runs read as an answer that had stopped
               // mid-thought.
               const delegatedAgentLabel = delegatedAgentActive
-                ? delegatedAgentActivityLabelForMessage(msg) ??
-                  delegatedAgentCompleted
+                ? [delegatedAgentActivityLabelForMessage(msg) ?? delegatedAgentCompleted, researchProgress.stage].filter(Boolean).join(" · ")
                 : delegatedAgentCompleted;
               // A row a hand-back has superseded never reaches this map —
               // buildTranscriptRows drops it — so the note is only ever for the
               // row that nothing followed.
-              const delegatedOutcomeNote = !delegatedAgentActive
+              const delegatedOutcomeNote = !delegationInterrupted && !delegatedAgentActive
                 ? delegatedWorkersOutcomeNote(delegatedWorkers)
                 : undefined;
               const focusedSlugSet = new Set(msg.focusedDocumentSlugs ?? []);
@@ -2211,7 +2301,7 @@ const ChatTranscript = memo(function ChatTranscript({
                     className={`${msg.role === "user" ? "group " : ""}flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
                   >
                     {msg.role === "user" ? (
-                      <div className="flex flex-col items-end gap-1 max-w-[80%]">
+                      <div className={`flex min-w-0 flex-col items-end gap-1 ${editingMessageId === messageInteractionId ? "w-full" : "max-w-[80%]"}`}>
                         <ChatMessageAttachments
                           attachments={msg.attachments}
                           sourceAttachments={focusedSourceAttachments}
@@ -2229,7 +2319,7 @@ const ChatTranscript = memo(function ChatTranscript({
                         {visibleUserContent ? (
                           editingMessageId === messageInteractionId ? (
                             <form
-                              className="neu-chat-message neu-chat-message-user min-w-64 rounded-[22px] p-2"
+                              className="neu-chat-message neu-chat-message-user w-full min-w-0 rounded-[22px] p-3"
                               onSubmit={(event) => {
                                 event.preventDefault();
                                 saveMessageEdit(i);
@@ -2249,18 +2339,12 @@ const ChatTranscript = memo(function ChatTranscript({
                                     event.currentTarget.form?.requestSubmit();
                                   }
                                 }}
-                                rows={Math.min(
-                                  6,
-                                  Math.max(
-                                    2,
-                                    messageEditText.split("\n").length,
-                                  ),
-                                )}
-                                className="max-h-40 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-[var(--ink)] outline-none"
+                                rows={3}
+                                className="block max-h-[60vh] min-h-24 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-sm leading-6 text-[var(--ink)] outline-none [field-sizing:content]"
                                 aria-label="Edit message"
                                 autoFocus
                               />
-                              <div className="mt-1 flex justify-end gap-2">
+                              <div className="mt-2 flex justify-end gap-2">
                                 <button
                                   type="button"
                                   onClick={() => setEditingMessageId(null)}
@@ -2454,18 +2538,26 @@ const ChatTranscript = memo(function ChatTranscript({
                             inline run widgets otherwise stretch to the full
                             virtualized row even though the answer stops at 90%. */}
                         <MessageActionsSlot
+                          branch={!(isStreaming && i === lastAssistantIndex) ? (() => {
+                            const branch = branchForAssistant(msg, i);
+                            return branch ? {
+                              current: branch.activeIndex + 1,
+                              total: branch.variants.length,
+                              onPrevious: () => onSwitchBranch(branch.id, -1),
+                              onNext: () => onSwitchBranch(branch.id, 1),
+                            } : undefined;
+                          })() : undefined}
                           responseStartedAt={msg.createdAt}
                           responseDurationMs={msg.responseDurationMs}
                           responseCompletedAt={msg.responseCompletedAt}
                         >
                           {msg.delegatedAgentPreamble &&
-                          !msg.openGymRun &&
                           !msg.godsEyeRun ? (
                             <ActivityPanel
                               activities={[]}
                               progressNotes={thinkingUpdates}
                               reasoning={msg.thinking}
-                              answerContent={msg.content}
+                              answerContent={storedAssistantContent}
                               connection={
                                 delegatedAgentActive ? "streaming" : "idle"
                               }
@@ -2503,13 +2595,13 @@ const ChatTranscript = memo(function ChatTranscript({
                               }
                               progressNotes={thinkingUpdates}
                               reasoning={msg.thinking}
-                              answerContent={msg.content}
+                              answerContent={storedAssistantContent}
                               connection={
                                 // A worker running behind this row keeps it
                                 // alive even though the chat connection is
                                 // idle: the turn is not over until its
                                 // delegation is.
-                                delegatedAgentActive
+                                delegationInterrupted ? "idle" : delegatedAgentActive
                                   ? "streaming"
                                   : i === lastAssistantIndex
                                     ? connection
@@ -2540,13 +2632,12 @@ const ChatTranscript = memo(function ChatTranscript({
                               onPermissionDecision={onPermissionDecision}
                               onClarificationAnswer={onClarificationAnswer}
                               completedLabel={delegatedAgentLabel}
+                              stateFailed={responseInterrupted || responseFailed}
                               stateLabel={
-                                delegatedAgentActive && delegatedAgentLabel
+                                responseInterrupted ? "Interrupted" : responseFailed ? "Response interrupted" : delegatedAgentActive && delegatedAgentLabel
                                   ? delegatedAgentLabel
                                   : isAgentContinuationResponse
-                                    ? i === lastAssistantIndex && isStreaming
-                                      ? "Synthesizing research"
-                                      : "Research synthesized"
+                                    ? continuation.stateLabel
                                     : undefined
                               }
                             />
@@ -2555,14 +2646,12 @@ const ChatTranscript = memo(function ChatTranscript({
                             <div
                               className={
                                 msg.delegatedAgentRun &&
-                                !msg.openGymRun &&
                                 !msg.godsEyeRun
                                   ? "hidden"
                                   : "contents"
                               }
                               aria-hidden={
                                 (msg.delegatedAgentRun &&
-                                  !msg.openGymRun &&
                                   !msg.godsEyeRun) ||
                                 undefined
                               }
@@ -2595,6 +2684,9 @@ const ChatTranscript = memo(function ChatTranscript({
                                   persistedContent={msg.content}
                                   persistedOutcome={msg.externalAgentOutcome}
                                   persistedDurationMs={msg.responseDurationMs}
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(msg.maxResearchRun!.runId, result)
+                                  }
                                 />
                               ) : msg.deepResearchRun ? (
                                 <InlineDeepResearchRun
@@ -2880,25 +2972,6 @@ const ChatTranscript = memo(function ChatTranscript({
                                       msg.openExecutiveRun!.runId,
                                       result,
                                     )
-                                  }
-                                />
-                              ) : msg.openGymRun ? (
-                                <InlineOpenGymRun
-                                  runId={msg.openGymRun.runId}
-                                  task={msg.openGymRun.task}
-                                  quiet={
-                                    msg.openGymRun.quiet === true ||
-                                    msg.delegatedAgentRun === true
-                                  }
-                                  persistedContent={externalAgentCardContent(msg)}
-                                  persistedOutcome={msg.externalAgentOutcome}
-                                  onRetry={
-                                    i === lastAssistantIndex && !isStreaming
-                                      ? () => onRetryAssistant(i)
-                                      : undefined
-                                  }
-                                  onTerminal={(result) =>
-                                    onExternalAgentTerminal(msg.openGymRun!.runId, result)
                                   }
                                 />
                               ) : msg.socialsManagerRun ? (
@@ -3357,6 +3430,7 @@ const ChatTranscript = memo(function ChatTranscript({
                           {msg.uiResources?.length ? (
                             <GenerativeUiRenderer
                               resources={msg.uiResources}
+                              legacyChatSessionId={chatSessionId}
                               onAction={onGenerativeUiAction}
                               activeProductComparison={activeProductComparison}
                             />
@@ -3366,37 +3440,20 @@ const ChatTranscript = memo(function ChatTranscript({
                               ownerMessageId={
                                 msg.artifactMessageId ?? msg.id ?? null
                               }
+                              thinking={
+                                delegatedAgentActive || hasRunningExternalAgent(msg) ||
+                                (isStreaming && i === lastAssistantIndex)
+                              }
                             />
                           ) : null}
                           {!externalRun &&
                           !delegatedAgentActive &&
-                          !visibleAssistantContent && !msg.uiResources?.length && !msg.artifactMessageId &&
-                          i === lastAssistantIndex && !isStreaming && (connection === "idle" || connection === "error") ? (
-                            <InlineArtifactEmptyState ownerMessageId={msg.artifactMessageId ?? msg.id ?? null}>
-                              <AssistantResponseNotice kind={connection === "error" ? "failed" : "empty"} onRetry={() => onRetryAssistant(i)} />
-                            </InlineArtifactEmptyState>
-                          ) : null}
-                          {!externalRun &&
-                          !delegatedAgentActive &&
-                          !visibleAssistantContent.trim() &&
-                          !(isStreaming && i === lastAssistantIndex) ? (() => {
-                            const branch = branchForAssistant(msg, i);
-                            return branch ? <AssistantResponseBranchNavigation branch={{
-                              current: branch.activeIndex + 1,
-                              total: branch.variants.length,
-                              onPrevious: () => onSwitchBranch(branch.id, -1),
-                              onNext: () => onSwitchBranch(branch.id, 1),
-                            }} /> : null;
-                          })() : null}
-                          {!externalRun &&
-                          !delegatedAgentActive &&
-                          Boolean(visibleAssistantContent.trim()) &&
+                          Boolean(visibleAssistantContent.trim() || branchForAssistant(msg, i)) &&
                           !(isStreaming && i === lastAssistantIndex) ? (
                             <AssistantMessageActions
-                              content={
-                                msg.content ||
-                                "Response unavailable"
-                              }
+                              content={visibleAssistantContent}
+                              humanizerReview={messageRewriteReview(msg)}
+                              naturalRewrite={naturalRewriteFor(msg)}
                               verification={msg.verification}
                               branch={(() => {
                                 const branch = branchForAssistant(msg, i);
@@ -3422,6 +3479,7 @@ const ChatTranscript = memo(function ChatTranscript({
                       </div>
                     )}
                   </div>
+                  <ChatModelChangeSeparators labels={modelChangesFor(originalMessage, i)} visible={!(isStreaming && i === lastVisibleAssistantIndex)} />
                 </div>
               );
             }}
@@ -3429,7 +3487,9 @@ const ChatTranscript = memo(function ChatTranscript({
         ) : null}
         {chatSessionId ? (
           <div className="bb-garden-assistant-response w-full max-w-[90%]">
-            <InlineArtifactCards ownerMessageId={null} />
+            <InlineArtifactCards ownerMessageId={null} thinking={
+              isStreaming || delegationInFlight || messages.some(hasRunningExternalAgent)
+            } />
           </div>
         ) : null}
       </div>
@@ -3579,6 +3639,7 @@ export default function WorkspaceClient({
   showNavbarFlowers,
 }: Props) {
   const router = useRouter();
+  useGardenTitle(clusterSlug, clusterName);
   const { toasts, addToast, dismissToast, dismissChatToasts, dismissLearnToasts } = useToast();
   // Every artifact entry point in this workspace—archive rows and inline chat
   // cards alike—opens into one overlay bounded by the workspace body. Keeping
@@ -3595,6 +3656,9 @@ export default function WorkspaceClient({
   const [movingSlug, setMovingSlug] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [loadingDocs, setLoadingDocs] = useState(true);
+  // Failed uploads the server kept (bytes + request) so they can be resumed
+  // without uploading again; listed above the source documents.
+  const [uploadRecoveries, setUploadRecoveries] = useState<GardenUploadRecovery[]>([]);
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
@@ -3603,6 +3667,7 @@ export default function WorkspaceClient({
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
+  const [artifactCount, setArtifactCount] = useState(0);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");
@@ -3642,17 +3707,13 @@ export default function WorkspaceClient({
   // The rail's deletes ask in the app's own sheet; `confirmDialog` is rendered
   // beside the other dialogs at the foot of the page.
   const { confirm: confirmDestructive, confirmDialog } = useConfirmDialog();
-  const [unreadChats, setUnreadChats] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-  const chatActivity = useRef<ReadonlyMap<string, boolean>>(new Map());
+  const { unreadChats, forgetUnreadChats } = useUnreadChats(clusterSlug);
   const latestAssistantVersions = useRef<ReadonlyMap<string, string | null>>(
     new Map(),
   );
   // A local response emits immediately; its next durable rail cursor is only
   // an acknowledgement of that notice and must not create a second one.
   const locallyAnnouncedChatResponses = useRef<Set<string>>(new Set());
-  const unreadRestored = useRef(false);
   const [savingFlagSlug, setSavingFlagSlug] = useState<string | null>(null);
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
     [],
@@ -3669,10 +3730,23 @@ export default function WorkspaceClient({
   // Chat
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  const [temporaryChat, setTemporaryChat] = useState(false);
+  // Leaving temporary mode returns to the saved chat the reader stepped away
+  // from, matching the Terminal's detour rather than discarding their place.
+  const chatBeforeTemporary = useRef<number | null>(null);
   // The chat this rail minted out of its own blank state, so an unsent draft
   // can follow it there and nowhere else. See useChatDraft.
   const [createdChatId, setCreatedChatId] = useState<number | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
+  // Selecting a transcript is view state, not work state. Async chat creation
+  // may finish after the reader has moved elsewhere, so its result must only
+  // take the foreground when this epoch still belongs to the view that sent it.
+  const chatSelectionEpochRef = useRef(0);
+  const selectChat = useCallback((chatId: number | null) => {
+    if (activeChatIdRef.current !== chatId) chatSelectionEpochRef.current += 1;
+    activeChatIdRef.current = chatId;
+    setActiveChatId(chatId);
+  }, []);
   // A reply written in a background-answer notice is handed to the normal
   // composer pipeline after that exact chat becomes the selected transcript.
   const pendingNotificationReplyRef = useRef<{
@@ -3716,12 +3790,6 @@ export default function WorkspaceClient({
   // Retrying an answer opens a sibling branch here exactly as it does in the
   // Terminal: the transcript being replaced is kept as a variant of the same
   // user message instead of being resent underneath it.
-  const [branchGroups, setBranchGroups] = useState<
-    Record<string, ConversationBranchGroup<Message>>
-  >({});
-  const [branchStorageChatId, setBranchStorageChatId] = useState<number | null>(
-    null,
-  );
   // A retried external-agent turn re-enters through the launchers, which append
   // to whatever the transcript holds. This is how they learn the retried turn
   // is being replaced rather than followed — the Terminal does the same thing
@@ -3729,10 +3797,11 @@ export default function WorkspaceClient({
   const retryBranchRef = useRef<{
     chatId: number;
     historyLength: number;
+    groupId: string;
   } | null>(null);
-  const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] =
-    useState(0);
+  const savingResponseBranchRef = useRef(false);
   const [loadingChats, setLoadingChats] = useState(true);
+  useStartupLoading(loadingDocs || linksLoading || loadingChats);
   const [viewPublicChats, setViewPublicChats] = useState(false);
   // Renaming and delete confirmation live inside the rail: it owns the input
   // and freezes its own order while one is open, and it asks before deleting.
@@ -3747,6 +3816,7 @@ export default function WorkspaceClient({
     createdSessionId: createdChatId === null ? null : String(createdChatId),
     value: input,
     onRestore: setInput,
+    enabled: !temporaryChat,
   });
   const [agentBrowserAgent, setAgentBrowserAgent] =
     useState<ExternalAgentSelection | null>(null);
@@ -3813,7 +3883,6 @@ export default function WorkspaceClient({
     | "career-ops"
     | "music-producer"
     | "openexecutive"
-    | "open-gym"
     | "trading-agent"
     | "vibe-trading"
     | "stock-analyst"
@@ -3856,7 +3925,6 @@ export default function WorkspaceClient({
     | "career-ops"
     | "music-producer"
     | "openexecutive"
-    | "open-gym"
     | "trading-agent"
     | "vibe-trading"
     | "stock-analyst"
@@ -3885,12 +3953,12 @@ export default function WorkspaceClient({
     | "ruflo"
     | null
   >(null);
-  const openGymRoutingRef = useRef(false);
   const [externalAgentStatus, setExternalAgentStatus] = useState("");
   const [streamingChatIds, setStreamingChatIds] = useState<Set<number>>(
     () => new Set(),
   );
   const streamingChatIdsRef = useRef<Set<number>>(new Set());
+  const gardenTurnObserversRef = useRef(new Map<number, GardenTurnObserver>());
   const setChatStreaming = useCallback((sessionId: number, active: boolean) => {
     const next = new Set(streamingChatIdsRef.current);
     if (active) next.add(sessionId);
@@ -3902,20 +3970,15 @@ export default function WorkspaceClient({
     setStreamingChatIds(next);
   }, []);
   const agentActivity = useLegacyAgentActivity();
+  const inlineQuestionRunsRef = useRef(new Map<string, { clientMessageId: string; controller: AbortController }>());
   const activeGardenTurnRef = useRef<{
     sessionId: number;
     clientMessageId: string;
     conversationId: string | null;
   } | null>(null);
-  const stopActiveGardenTurn = useCallback(async () => {
-    const turn = activeGardenTurnRef.current;
-    await Promise.all([
-      agentActivity.abort(turn?.conversationId),
-      turn
-        ? abortGardenTurnCheckpoint(turn.sessionId, turn.clientMessageId)
-        : Promise.resolve(),
-    ]);
-  }, [agentActivity]);
+  const stoppingGardenChatsRef = useRef(new Set<number | null>());
+  const [stoppingGardenChats, setStoppingGardenChats] = useState(new Set<number | null>());
+  const stoppedExternalLaunchesRef = useRef(new Set<number>());
   // The Thinking an external agent launch raises the moment its turn goes up.
   // It is owned by the launch rather than by any one runtime request, so it is
   // held here and put down wherever the launch's real rows land.
@@ -3941,6 +4004,23 @@ export default function WorkspaceClient({
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+  // The desktop persists a tab by URL. Keep that URL pointed at the transcript
+  // actually on screen so a reconnect, refresh, or remount cannot reopen the
+  // most recently updated *other* chat and appear to navigate on its own.
+  useEffect(() => {
+    if (loadingChats) return;
+    const url = new URL(window.location.href);
+    // A temporary conversation must not leave a reload/deep-link pointer. The
+    // server keeps it out of history; keeping its numeric id in the address
+    // bar would create a second, accidental restore path.
+    if (activeChatId === null || temporaryChat) url.searchParams.delete("chat");
+    else url.searchParams.set("chat", String(activeChatId));
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) {
+      window.history.replaceState(window.history.state, "", next);
+    }
+  }, [activeChatId, loadingChats, temporaryChat]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const handleGenerativeUiAction = useCallback(
     (action: GenerativeUiAction) => {
@@ -4016,7 +4096,7 @@ export default function WorkspaceClient({
   );
   const chatGreeting = useChatGreeting({
     scope: "mine",
-    temporary: false,
+    temporary: temporaryChat,
     garden: greetingGarden,
   });
   // An opener is a starting point, not a message: it fills the composer and
@@ -4050,6 +4130,39 @@ export default function WorkspaceClient({
     return () => {
       if (timer !== null) window.clearTimeout(timer);
       window.removeEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    };
+  }, [clusterSlug]);
+
+  // The archive itself only mounts when opened, but its accordion count should
+  // be available at first glance and stay current while the section is closed.
+  useEffect(() => {
+    const controller = new AbortController();
+    let latestRequest = 0;
+    const refreshArtifactCount = async () => {
+      const request = ++latestRequest;
+      try {
+        const query = new URLSearchParams({
+          gardenSlug: clusterSlug,
+          sourceSurface: "garden_chat",
+        });
+        const response = await fetch(`/api/hermes/artifacts?${query}`, {
+          signal: controller.signal,
+        });
+        const data = (await response.json().catch(() => ({}))) as {
+          artifacts?: PresentedArtifact[];
+        };
+        if (!response.ok || !Array.isArray(data.artifacts) || request !== latestRequest) return;
+        setArtifactCount(filterArtifactsForArchive(data.artifacts).length);
+      } catch (cause) {
+        if (cause instanceof Error && cause.name === "AbortError") return;
+      }
+    };
+    const onArtifactChange = () => void refreshArtifactCount();
+    void refreshArtifactCount();
+    window.addEventListener(ARTIFACT_BROWSER_EVENT, onArtifactChange);
+    return () => {
+      controller.abort();
+      window.removeEventListener(ARTIFACT_BROWSER_EVENT, onArtifactChange);
     };
   }, [clusterSlug]);
 
@@ -4124,10 +4237,29 @@ export default function WorkspaceClient({
     useState<LearnDestructiveAction | null>(null);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
-  const [humanizerEnabled, setHumanizerEnabled] = useHumanizerMode();
+  const [humanizerEnabled, setHumanizerEnabled] = useLearnHumanizerMode();
   const [learnHumanizerRequestBusy, setLearnHumanizerRequestBusy] =
     useState(false);
-  const previousHumanizerPreferenceRef = useRef(humanizerEnabled);
+  const {
+    active: learnOperationActive,
+    humanizerActive: learnHumanizerActive,
+    cancelJobId: learnCancelJobId,
+  } = learnOperationActivity(learnState, learnHumanizerRequestBusy);
+  const learnTabActive =
+    learnBusy ||
+    isLearnRunningStatus(learnState?.job?.status ?? "idle") ||
+    learnHumanizerRequestBusy ||
+    learnState?.humanizer?.status === "running" ||
+    learnState?.humanizer?.status === "restoring_ai";
+
+  useEffect(() => {
+    void sendDesktopTabsCommand({ type: "learn-activity", gardenId: clusterSlug, active: learnTabActive });
+  }, [clusterSlug, learnTabActive]);
+
+  useEffect(() => () => {
+    void sendDesktopTabsCommand({ type: "learn-activity", gardenId: clusterSlug, active: false });
+  }, [clusterSlug]);
+
   const pendingFinishedLearnHumanizerRef = useRef<boolean | null>(null);
   const [learnIncludedSourceSlugs, setLearnIncludedSourceSlugs] = useState<
     string[] | null
@@ -4172,7 +4304,15 @@ export default function WorkspaceClient({
     reasoningEffort,
     setReasoningEffort,
     intelligenceModes,
-  } = useAssistantIntelligence();
+  } = useAssistantIntelligence({
+    scope: `garden_chat:${clusterSlug}`,
+    sessionId: activeChatId,
+    createdSessionId: createdChatId,
+    persist: !temporaryChat,
+    shared: true,
+  });
+  const { model: learnModel, setModel: setLearnModel, resetModel: resetLearnModel } =
+    useAssistantIntelligence({ scope: `learn:${clusterSlug}` });
 
   // Prompts
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -4273,6 +4413,28 @@ export default function WorkspaceClient({
   useEffect(() => {
     void fetchSavedLinks();
   }, [fetchSavedLinks]);
+
+  const fetchUploadRecoveries = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/ingest-recovery`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as { recoveries?: unknown };
+      setUploadRecoveries(
+        Array.isArray(data.recoveries)
+          ? (data.recoveries as GardenUploadRecovery[])
+          : [],
+      );
+    } catch {
+      // The list is advisory; the next refresh retries.
+    }
+  }, [clusterSlug]);
+
+  useEffect(() => {
+    void fetchUploadRecoveries();
+  }, [fetchUploadRecoveries]);
 
   useEffect(() => {
     const refresh = (event: Event) => {
@@ -4391,13 +4553,18 @@ export default function WorkspaceClient({
       refreshAfterTask: () => {
         void fetchDocuments();
         void fetchLearnStatus();
+        void fetchUploadRecoveries();
         setSourceDocsExpanded(true);
         setGraphRefreshVersion((value) => value + 1);
+      },
+      refreshRecoveries: () => {
+        void fetchUploadRecoveries();
+        setSourceDocsExpanded(true);
       },
       isTaskStatusVisible: (taskId) =>
         showUploadRef.current && selectedUploadTaskIdRef.current === taskId,
     });
-  }, [addToast, clusterSlug, fetchDocuments, fetchLearnStatus]);
+  }, [addToast, clusterSlug, fetchDocuments, fetchLearnStatus, fetchUploadRecoveries]);
 
   const switchFinishedLearnHumanizer = useCallback(
     async (enabled: boolean) => {
@@ -4460,10 +4627,8 @@ export default function WorkspaceClient({
   );
 
   useEffect(() => {
-    if (previousHumanizerPreferenceRef.current !== humanizerEnabled) {
-      previousHumanizerPreferenceRef.current = humanizerEnabled;
-      pendingFinishedLearnHumanizerRef.current = humanizerEnabled;
-    }
+    // Only a click on the Learn switch queues a finished-copy operation.
+    // Preference hydration and changes in other tabs must not launch work.
     const desired = pendingFinishedLearnHumanizerRef.current;
     if (
       desired === null ||
@@ -4659,30 +4824,49 @@ export default function WorkspaceClient({
         // The rail's marks come from its own feed and are not in this answer,
         // so whatever it already established stays put.
         const cached = new Map(previous.map((item) => [item.id, item]));
-        return sessions.map((session) => ({
-          ...session,
-          messages:
-            inFlightChatMessagesRef.current.get(session.id) ?? session.messages,
-          pinned: cached.get(session.id)?.pinned ?? false,
-          highlight: cached.get(session.id)?.highlight ?? null,
-          active: session.active ?? cached.get(session.id)?.active ?? false,
-        }));
+        const visible = sessions.map((session) => {
+          const inFlight = inFlightChatMessagesRef.current.get(session.id);
+          const messages = reconcileInlineQuestionMessages(preserveInlineQuestionMessages(
+            inFlight ? reconcileExternalAgentMessages(inFlight, session.messages) : session.messages,
+            cached.get(session.id)?.messages ?? [],
+          ), session.messages);
+          if (inFlight) inFlightChatMessagesRef.current.set(session.id, messages);
+          return {
+            ...session,
+            messages,
+            pinned: cached.get(session.id)?.pinned ?? false,
+            highlight: cached.get(session.id)?.highlight ?? null,
+            active: session.active ?? cached.get(session.id)?.active ?? false,
+          };
+        });
+        const mountedTemporary = previous.find(
+          (session) =>
+            session.temporary === true &&
+            session.id === activeChatIdRef.current,
+        );
+        return mountedTemporary && !visible.some((session) => session.id === mountedTemporary.id)
+          ? [mountedTemporary, ...visible]
+          : visible;
       });
-      // Landing on the newest chat because the list loaded is not a creation:
-      // whatever is in the composer belongs to the blank chat it was typed in,
-      // not to this one.
-      setCreatedChatId(null);
-      setActiveChatId((current) => {
-        if (pendingNewChatRef.current) return null;
-        if (current && sessions.some((s) => s.id === current)) return current;
-        return sessions[0]?.id ?? null;
-      });
+      if (!pendingNewChatRef.current) {
+        const selected = activeChatIdRef.current;
+        if (
+          selected === null ||
+          (!temporaryChat && !sessions.some((session) => session.id === selected))
+        ) {
+          // Landing on the newest chat because the list loaded is not a
+          // creation: whatever is in the composer belongs to the blank chat it
+          // was typed in, not to this one.
+          setCreatedChatId(null);
+          selectChat(sessions[0]?.id ?? null);
+        }
+      }
     } catch {
       addToast("Failed to load chats");
     } finally {
       setLoadingChats(false);
     }
-  }, [addToast, canViewPublicChats, clusterSlug, viewPublicChats]);
+  }, [addToast, canViewPublicChats, clusterSlug, selectChat, temporaryChat, viewPublicChats]);
 
   /**
    * Re-read one server-owned transcript without loading every chat in the
@@ -4705,18 +4889,31 @@ export default function WorkspaceClient({
       const data = (await res.json()) as { sessions?: ChatSession[] };
       const refreshed = data.sessions?.[0];
       if (!refreshed || deletingChatIds.current.has(refreshed.id)) return;
+      const observer = gardenTurnObserversRef.current.get(refreshed.id);
+      if (observer && gardenTurnCompletedOnServer(refreshed, observer.clientMessageId)) {
+        // The saved terminal turn also retires a viewer that missed [DONE].
+        // Recover before selecting messages so the stale in-flight snapshot
+        // cannot hide the final answer that justified the notification.
+        observer.recover();
+      }
       setChatSessions((previous) =>
         previous.map((session) => {
           if (session.id !== refreshed.id) return session;
           const inFlight = inFlightChatMessagesRef.current.get(refreshed.id);
+          const messages = reconcileInlineQuestionMessages(preserveInlineQuestionMessages(
+            inFlight ? reconcileExternalAgentMessages(inFlight, refreshed.messages) : refreshed.messages,
+            session.messages,
+          ), refreshed.messages);
+          if (inFlight) inFlightChatMessagesRef.current.set(refreshed.id, messages);
           return {
             ...refreshed,
-            messages: inFlight ?? refreshed.messages,
+            messages,
             pinned: session.pinned ?? false,
             highlight: session.highlight ?? null,
           };
         }),
       );
+      return refreshed;
     } catch {
       // The rail keeps polling. A transient reconciliation failure must not
       // turn a healthy background run into a visible chat error.
@@ -4746,7 +4943,7 @@ export default function WorkspaceClient({
       const rows = Array.isArray(data.sessions) ? data.sessions : [];
       setChatSessions((previous) => {
         const cached = new Map(previous.map((item) => [item.id, item]));
-        return rows.map((row) => ({
+        const visible = rows.map((row) => ({
           // A chat whose transcript has not been read yet keeps one shared
           // empty array, so its identity is stable between polls.
           ...(cached.get(row.id) ?? { messages: NO_MESSAGES }),
@@ -4764,6 +4961,14 @@ export default function WorkspaceClient({
           highlight: row.highlight,
           active: row.active,
         }));
+        const mountedTemporary = previous.find(
+          (session) =>
+            session.temporary === true &&
+            session.id === activeChatIdRef.current,
+        );
+        return mountedTemporary && !visible.some((session) => session.id === mountedTemporary.id)
+          ? [mountedTemporary, ...visible]
+          : visible;
       });
       setRailError(null);
     } catch {
@@ -4791,7 +4996,9 @@ export default function WorkspaceClient({
   // The rail's rows. Ids are strings because that is what the shared rail and
   // its search, upload and process controls all speak; this surface's chats are
   // numbered, so the number is carried as its own decimal string throughout.
-  const sidebarChats: TerminalSidebarChat[] = chatSessions.map((session) => ({
+  const sidebarChats: TerminalSidebarChat[] = chatSessions
+    .filter((session) => session.temporary !== true)
+    .map((session) => ({
     id: String(session.id),
     title: session.title,
     updatedAt: session.updated_at,
@@ -4801,12 +5008,14 @@ export default function WorkspaceClient({
     pinned: session.pinned === true,
     highlight: session.highlight ?? null,
     unread: unreadChats.has(String(session.id)),
-  }));
+    }));
   // The first turn creates the durable garden chat, but the draft already
   // represents a conversation to the person typing it. Show that selected row
   // immediately; sending replaces it with the real numbered chat.
   const pendingChatVisible =
-    activeChatId === null && (input.trim().length > 0 || draftMessages !== null);
+    !temporaryChat &&
+    activeChatId === null &&
+    (input.trim().length > 0 || draftMessages !== null);
   const railChats: TerminalSidebarChat[] = pendingChatVisible
     ? [
         {
@@ -4825,21 +5034,19 @@ export default function WorkspaceClient({
 
   // A chat counts as read while its transcript is the one on screen.
   const viewingChatId = activeChatId === null ? null : String(activeChatId);
+  const viewingConversationId = chatSessions.find(chat => String(chat.id) === viewingChatId)?.conversationId ?? undefined;
 
   useEffect(() => {
-    if (!viewingChatId) return;
+    if (!viewingChatId || temporaryChat) return;
     recordLastOpenedChat(
       window.localStorage,
       "garden_chat",
       viewingChatId,
       clusterSlug,
     );
-  }, [clusterSlug, viewingChatId]);
+  }, [clusterSlug, temporaryChat, viewingChatId]);
 
   useEffect(() => {
-    setUnreadChats(readUnreadChats(window.localStorage, clusterSlug));
-    unreadRestored.current = false;
-    chatActivity.current = new Map();
     latestAssistantVersions.current = new Map();
     locallyAnnouncedChatResponses.current.clear();
   }, [clusterSlug]);
@@ -4888,11 +5095,8 @@ export default function WorkspaceClient({
     });
   }, [clusterSlug]);
 
-  // One pass per refresh of the rail: raise the dot on every chat that stopped
-  // running out of sight, and take it off the one being read.
+  // Announce durable answers from detached turns when the rail refreshes.
   useEffect(() => {
-    const previousActive = chatActivity.current;
-    chatActivity.current = chatActivityById(sidebarChats);
     const previousAssistantVersions = latestAssistantVersions.current;
     const currentAssistantVersions = new Map(
       sidebarChats.map((chat) => [
@@ -4919,32 +5123,24 @@ export default function WorkspaceClient({
       // fast turn that starts and finishes between two activity polls.
       void notifyFinishedGardenChat(chat.id, chat.title);
     }
-    setUnreadChats((current) => {
-      const next = nextUnreadChats({
-        unread: current,
-        previousActive,
-        chats: sidebarChats,
-        viewingChatId,
-      });
-      return sameChatIds(current, next) ? current : next;
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [railActivityKey, viewingChatId]);
 
   // A notice is only an invitation to visit an unseen answer. Selecting that
   // conversation by any route makes every notice belonging to it disappear.
   useEffect(() => {
-    const target: ChatNotificationTarget | null = viewingChatId
+    const target: ChatNotificationTarget | null = viewingChatId && !temporaryChat
       ? {
           surface: "garden_chat",
           gardenSlug: clusterSlug,
           chatId: viewingChatId,
+          conversationId: viewingConversationId,
         }
       : null;
     setActiveChatNotificationTarget(target);
     if (target) dismissChatToasts(target);
     return () => setActiveChatNotificationTarget(null);
-  }, [clusterSlug, dismissChatToasts, viewingChatId]);
+  }, [clusterSlug, dismissChatToasts, temporaryChat, viewingChatId, viewingConversationId]);
 
   // The Learn panel shows the run's stage, progress and outcome itself, so a
   // Learn notice for this Garden must not repeat it in the corner while the
@@ -4956,28 +5152,6 @@ export default function WorkspaceClient({
     return () => setActiveLearnNotificationGarden(null);
   }, [clusterSlug, dismissLearnToasts, learnPanelOpen]);
 
-  useEffect(() => {
-    if (!unreadRestored.current) {
-      // The first commit carries the empty starting value rather than anything
-      // that happened, and the restore above has not landed yet: writing it
-      // would erase the dots this browser was still holding.
-      unreadRestored.current = true;
-      return;
-    }
-    writeUnreadChats(window.localStorage, unreadChats, clusterSlug);
-  }, [unreadChats, clusterSlug]);
-
-  // Deleting a chat takes its dot with it. The pass above cannot be relied on
-  // for this: it deliberately leaves the set alone when the list arrives empty,
-  // which is exactly what deleting the last chat produces.
-  const forgetUnreadChats = useCallback((ids: Iterable<string>) => {
-    setUnreadChats((current) => {
-      const next = new Set(current);
-      for (const id of ids) next.delete(id);
-      return sameChatIds(current, next) ? current : next;
-    });
-  }, []);
-
   /** Open a chat by the id every rail control hands back. */
   const openChatById = useCallback((chatId: string) => {
     const id = Number(chatId);
@@ -4988,13 +5162,15 @@ export default function WorkspaceClient({
       chatId,
     });
     pendingNewChatRef.current = false;
+    chatBeforeTemporary.current = null;
+    setTemporaryChat(false);
     setProductPanel(null);
     setSidePanel(null);
-    setActiveChatId(id);
+    selectChat(id);
     // An existing chat, so nothing typed in the blank composer belongs to it.
     setCreatedChatId(null);
     setDraftMessages(null);
-  }, [clusterSlug, dismissChatToasts]);
+  }, [clusterSlug, dismissChatToasts, selectChat]);
 
   useEffect(() => {
     const requested = initialChatId?.trim() ?? "";
@@ -5060,13 +5236,19 @@ export default function WorkspaceClient({
   }, [canViewPublicChats]);
 
   const activeChat = chatSessions.find((s) => s.id === activeChatId) ?? null;
+  const [branchGroups, setBranchGroups] = useGardenResponseBranches(
+    activeChatId,
+    activeChat?.branchGroups,
+  );
   const persistedMessages = activeChat?.messages ?? EMPTY_MESSAGES;
   // The draft only ever stands in for an empty transcript, so a real message
   // arriving retires it without a frame where both could be on screen.
   const showingDraft = persistedMessages.length === 0 && draftMessages !== null;
   const messages = useMemo(() => {
-    const selectedMessages =
-      showingDraft && draftMessages ? draftMessages : persistedMessages;
+    const selectedMessages = showingDraft && draftMessages ? draftMessages
+      : Object.values(activeChat?.branchGroups ?? {}).reduce(
+          (current, group) => restoreBranchAnchor(current, group), persistedMessages,
+        );
     // On a reopened tab the browser no longer owns the original response
     // stream, but the rail can prove the durable runtime is still active. Draw
     // the same pending assistant row from the last user's original timestamp
@@ -5085,29 +5267,14 @@ export default function WorkspaceClient({
     return recoveredAssistantMessage
       ? [...selectedMessages, recoveredAssistantMessage]
       : selectedMessages;
-  }, [activeChat?.active, draftMessages, persistedMessages, showingDraft]);
+  }, [activeChat?.active, activeChat?.branchGroups, draftMessages, persistedMessages, showingDraft]);
+  const { changeModel, labelsFor: modelChangesFor } = useChatModelChanges({
+    scope: `garden_chat:${clusterSlug}`, sessionId: activeChatId, createdSessionId: createdChatId,
+    conversationId: activeChat?.conversationId, messages, model, onModelChange: setModel, persist: !temporaryChat,
+  });
   useEffect(() => {
     retryBranchRef.current = null;
-    if (activeChatId === null) {
-      setBranchGroups({});
-      setBranchStorageChatId(null);
-      return;
-    }
-    setBranchGroups(loadBranchGroups(activeChatId));
-    setBranchStorageChatId(activeChatId);
   }, [activeChatId]);
-
-  useEffect(() => {
-    if (activeChatId === null || branchStorageChatId !== activeChatId) return;
-    try {
-      window.localStorage.setItem(
-        `${BRANCH_STORAGE_PREFIX}${activeChatId}`,
-        JSON.stringify(branchGroups),
-      );
-    } catch {
-      // Branch switching still works for this page even if storage is full.
-    }
-  }, [activeChatId, branchGroups, branchStorageChatId]);
 
   // Selecting a chat is enough to ask for its artifacts; waiting for the
   // transcript to mount its cards is what made them appear a beat late.
@@ -5125,34 +5292,36 @@ export default function WorkspaceClient({
   // Agent selection/health checks happen before the concrete launcher's flag
   // rises. Keep the originating assistant turn active across that whole gap.
   const [delegatedAgentLaunching, setDelegatedAgentLaunching] = useState(false);
-  const [pendingImmediateInlineQuestion, setPendingImmediateInlineQuestion] =
-    useState<{
-      chatId: number | null;
-      question: string;
-      selection: ChatTextSelectionReference;
-    } | null>(null);
-  const [stoppingForInlineQuestion, setStoppingForInlineQuestion] =
-    useState(false);
-  const [inlineSelectionRunId, setInlineSelectionRunId] = useState<
-    string | null
-  >(null);
   // A drafted turn is already under way even though no session id exists yet
   // to mark as streaming, so the thinking row comes up with the message rather
   // than after the chat has been created.
   const chatTurnStreaming =
     showingDraft ||
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
-    activeChat?.active === true;
+    (activeChat?.active === true && (
+      !messages.some(message => message.textSelection?.mode === "inline" && message.pending) ||
+      messages.some(message => message.role === "assistant" && message.textSelection?.mode !== "inline" && message.pending)
+    ));
   const isStreaming =
     chatTurnStreaming || hasRunningExternalAgentInActiveChat;
-  const respondingToInlineSelection =
-    chatTurnStreaming &&
-    (inlineSelectionRunId !== null ||
-      messages.at(-1)?.textSelection?.mode === "inline");
+  const respondingToInlineSelection = false;
   // Inline answers live in their highlight cards. They must not seize the
   // transcript's follow mode or make the main dialogue look like it is the
   // surface producing the answer.
   const transcriptResponding = isStreaming && !respondingToInlineSelection;
+  const naturalRewriteFor = useAutoHumanize({
+    conversationId: viewingConversationId,
+    messages,
+    active: isStreaming || delegatedAgentLaunching || agentActivity.connection === "connecting" ||
+      agentActivity.connection === "streaming" || agentActivity.connection === "waiting",
+    blocked: activeChat?.isOwn === false,
+    isEligible: (message) => !isExternalAgentRunMessage(message),
+    onComplete: (message, outcome) => {
+      if (activeChatId !== null) {
+        updateChatMessages(activeChatId, (current) => applyAutoHumanizeOutcome(current, message, outcome));
+      }
+    },
+  });
 
   useEffect(() => {
     let pending = pendingNotificationReplyRef.current;
@@ -5241,18 +5410,19 @@ export default function WorkspaceClient({
     useState<ChatTextSelectionCandidate | null>(null);
   const [composerSelection, setComposerSelection] =
     useState<ChatTextSelectionReference | null>(null);
-  const [savedInlineSelections, setSavedInlineSelections] = useState<
-    ChatTextSelectionReference[]
-  >([]);
-  const [savedChatHighlights, setSavedChatHighlights] = useState<
-    SavedChatHighlight[]
-  >([]);
-  const [deletedInlineSelectionIds, setDeletedInlineSelectionIds] = useState<
-    Set<string>
-  >(() => new Set());
-  const [selectionStorageChatId, setSelectionStorageChatId] = useState<
-    number | null
-  >(null);
+  const [savedInlineSelections, setSavedInlineSelections, inlineHighlightSaveError] = useTextHighlights(
+    activeChatId === null ? null : `${INLINE_SELECTION_STORAGE_PREFIX}${activeChatId}`, normalizeInlineSelections,
+  );
+  const [savedChatHighlights, setSavedChatHighlights, highlightSaveError] = useTextHighlights(
+    activeChatId === null ? null : `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${activeChatId}`, normalizeChatHighlights,
+  );
+  const [deletedInlineIds, setDeletedInlineIds, deletedHighlightSaveError] = useTextHighlights(
+    activeChatId === null ? null : `${DELETED_INLINE_SELECTION_STORAGE_PREFIX}${activeChatId}`, normalizeDeletedInlineSelectionIds,
+  );
+  const deletedInlineSelectionIds = useMemo(() => new Set(deletedInlineIds), [deletedInlineIds]);
+  const setDeletedInlineSelectionIds = useCallback((action: Set<string> | ((previous: Set<string>) => Set<string>)) => {
+    setDeletedInlineIds(previous => [...(typeof action === "function" ? action(new Set(previous)) : action)]);
+  }, [setDeletedInlineIds]);
   const [openInlineAnswers, setOpenInlineAnswers] = useState<Array<{
     id: string;
     anchor: FloatingAnchorRect;
@@ -5263,54 +5433,8 @@ export default function WorkspaceClient({
   useEffect(() => {
     setSelectionMenu(null);
     setComposerSelection(null);
-    setPendingImmediateInlineQuestion(null);
-    setInlineSelectionRunId(null);
     setOpenInlineAnswers([]);
-    if (activeChatId === null) {
-      setSavedInlineSelections([]);
-      setSavedChatHighlights([]);
-      setDeletedInlineSelectionIds(new Set());
-      setSelectionStorageChatId(null);
-      return;
-    }
-    const deletedIds = loadDeletedInlineSelectionIds(activeChatId);
-    setDeletedInlineSelectionIds(deletedIds);
-    setSavedInlineSelections(
-      loadInlineSelections(activeChatId).filter(
-        (selection) => !deletedIds.has(selection.id),
-      ),
-    );
-    setSavedChatHighlights(loadChatHighlights(activeChatId));
-    setSelectionStorageChatId(activeChatId);
   }, [activeChatId]);
-
-  useEffect(() => {
-    if (activeChatId === null || selectionStorageChatId !== activeChatId) {
-      return;
-    }
-    try {
-      window.localStorage.setItem(
-        `${INLINE_SELECTION_STORAGE_PREFIX}${activeChatId}`,
-        JSON.stringify(savedInlineSelections),
-      );
-      window.localStorage.setItem(
-        `${DELETED_INLINE_SELECTION_STORAGE_PREFIX}${activeChatId}`,
-        JSON.stringify([...deletedInlineSelectionIds]),
-      );
-      window.localStorage.setItem(
-        `${CHAT_HIGHLIGHT_STORAGE_PREFIX}${activeChatId}`,
-        JSON.stringify(savedChatHighlights),
-      );
-    } catch {
-      // The message metadata still restores completed inline answers.
-    }
-  }, [
-    activeChatId,
-    deletedInlineSelectionIds,
-    savedChatHighlights,
-    savedInlineSelections,
-    selectionStorageChatId,
-  ]);
 
   // Selections persisted with their turns come back on reload even where
   // localStorage did not survive.
@@ -5376,11 +5500,13 @@ export default function WorkspaceClient({
           current.startedAt = message.createdAt;
         }
       } else {
-        current.answer = message.content || undefined;
-        current.pending = isStreaming && messageIndex === messages.length - 1;
+        current.answer = message.content || message.runtimeError || (message.interrupted ? "Stopped." : message.failed ? "Could not answer this highlight." : undefined);
+        current.pending = message.pending === true;
         current.usage = message.usage;
         current.responseDurationMs = message.responseDurationMs;
         current.startedAt = message.createdAt;
+        current.responseCompletedAt = message.responseCompletedAt;
+        current.verification = message.verification;
         current.answerMessageId = messageSelectionSourceId(
           message,
           messageIndex,
@@ -5406,21 +5532,15 @@ export default function WorkspaceClient({
     return byMessage;
   }, [inlineSelectionThreads, savedChatHighlights]);
 
-  const selectionIsHighlighted = Boolean(
-    selectionMenu &&
-      savedChatHighlights.some(
-        (highlight) =>
-          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
-          chatTextSelectionsOverlap(highlight, selectionMenu),
-      ),
-  );
-  const selectionHighlightColor = selectionMenu
+  const selectedChatHighlight = selectionMenu
     ? savedChatHighlights.find(
         (highlight) =>
           highlight.sourceMessageId === selectionMenu.sourceMessageId &&
           chatTextSelectionsOverlap(highlight, selectionMenu),
-      )?.color
+      )
     : undefined;
+  const selectionIsHighlighted = Boolean(selectedChatHighlight?.color);
+  const selectionHighlightColor = selectedChatHighlight?.color;
 
   const receiveTextSelection = useCallback(
     (selection: ChatTextSelectionCandidate) => {
@@ -5466,6 +5586,11 @@ export default function WorkspaceClient({
   function applySelectionHighlight(color: ChatHighlightColor) {
     if (!selectionMenu) return;
     setSavedChatHighlights((current) => {
+      const existing = current.find(
+        (highlight) =>
+          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
+          chatTextSelectionsOverlap(highlight, selectionMenu),
+      );
       const withoutOverlap = current.filter(
         (highlight) =>
           highlight.sourceMessageId !== selectionMenu.sourceMessageId ||
@@ -5474,7 +5599,7 @@ export default function WorkspaceClient({
       return [
         ...withoutOverlap,
         {
-          id: crypto.randomUUID(),
+          id: existing?.id ?? crypto.randomUUID(),
           sourceMessageId: selectionMenu.sourceMessageId,
           start: selectionMenu.start,
           end: selectionMenu.end,
@@ -5482,6 +5607,47 @@ export default function WorkspaceClient({
           prefix: selectionMenu.prefix,
           suffix: selectionMenu.suffix,
           color,
+          ...(existing?.note ? { note: existing.note } : {}),
+        },
+      ];
+    });
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  }
+
+  function saveSelectionNote(value: string | null) {
+    if (!selectionMenu) return;
+    const note = normalizeChatHighlightNote(value);
+    setSavedChatHighlights((current) => {
+      const existing = current.find(
+        (highlight) =>
+          highlight.sourceMessageId === selectionMenu.sourceMessageId &&
+          chatTextSelectionsOverlap(highlight, selectionMenu),
+      );
+      if (!note && !existing) return current;
+      const withoutOverlap = current.filter(
+        (highlight) =>
+          highlight.sourceMessageId !== selectionMenu.sourceMessageId ||
+          !chatTextSelectionsOverlap(highlight, selectionMenu),
+      );
+      if (!note && existing) {
+        if (!existing.color) return withoutOverlap;
+        const withoutNote = { ...existing };
+        delete withoutNote.note;
+        return [...withoutOverlap, withoutNote];
+      }
+      return [
+        ...withoutOverlap,
+        {
+          id: existing?.id ?? crypto.randomUUID(),
+          sourceMessageId: selectionMenu.sourceMessageId,
+          start: selectionMenu.start,
+          end: selectionMenu.end,
+          quote: selectionMenu.quote,
+          prefix: selectionMenu.prefix,
+          suffix: selectionMenu.suffix,
+          ...(existing?.color ? { color: existing.color } : {}),
+          note,
         },
       ];
     });
@@ -5618,13 +5784,60 @@ export default function WorkspaceClient({
     question: string,
   ) {
     const trimmed = question.trim();
-    if (!trimmed || isStreaming || chatContentLoading || !canAskSelection) {
+    if (!trimmed || chatContentLoading || !canAskSelection) {
       return;
     }
-    setInlineSelectionRunId(selection.id);
-    void handleSubmit(trimmed, undefined, [], false, undefined, {
-      textSelection: selection,
-    });
+    void sendInlineQuestion(trimmed, selection, []);
+  }
+
+  async function sendInlineQuestion(question: string, selection: ChatTextSelectionReference, attachments: readonly ChatAttachment[]) {
+    const session = activeChat;
+    if (!session || session.isOwn === false) return;
+    const key = `${session.id}:${selection.id}`;
+    if (inlineQuestionRunsRef.current.has(key)) return;
+    const run = { clientMessageId: crypto.randomUUID(), controller: new AbortController() };
+    inlineQuestionRunsRef.current.set(key, run);
+    const mark = document.querySelector<HTMLElement>(`[data-chat-selection-id="${CSS.escape(selection.id)}"]`);
+    if (mark) {
+      const rect = mark.getBoundingClientRect();
+      setOpenInlineAnswers(current => current.some(item => item.id === selection.id) ? current : [
+        ...current, { id: selection.id, anchor: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height } },
+      ]);
+    }
+    try {
+      await runGardenInlineQuestion({
+        sessionId: session.id, clusterSlug, clientMessageId: run.clientMessageId,
+        question, selection, attachments, model, reasoningEffort,
+        sourceResponse: messages.find((message, index) => messageSelectionSourceId(message, index) === selection.sourceMessageId)?.content,
+        selectedDocumentSlugs, signal: run.controller.signal,
+        publish: pair => updateChatMessages(session.id, current => {
+          const others = current.filter(message => message.clientMessageId !== run.clientMessageId);
+          return [...others, ...pair];
+        }),
+      });
+    } catch {
+      updateChatMessages(session.id, current => current.filter(message => message.clientMessageId !== run.clientMessageId));
+      if (activeChatIdRef.current === session.id) {
+        setInput(question);
+        setChatAttachments([...attachments]);
+        setComposerSelection(selection);
+      }
+      addToast("The highlight question could not be saved. Please try again.", "error");
+    } finally {
+      if (inlineQuestionRunsRef.current.get(key) === run) inlineQuestionRunsRef.current.delete(key);
+      void refreshChatSession(session.id);
+    }
+  }
+
+  async function stopInlineQuestion(selectionId: string) {
+    if (activeChatId === null) return;
+    const run = inlineQuestionRunsRef.current.get(`${activeChatId}:${selectionId}`);
+    const assistant = messages.findLast(message => message.role === "assistant" && message.textSelection?.id === selectionId);
+    const clientMessageId = run?.clientMessageId ?? assistant?.clientMessageId;
+    if (!clientMessageId) return;
+    await abortGardenTurnCheckpoint(activeChatId, clientMessageId);
+    run?.controller.abort();
+    void refreshChatSession(activeChatId);
   }
 
   /** The composer's submit: a held selected-text question rides the turn. */
@@ -5635,30 +5848,26 @@ export default function WorkspaceClient({
     }
     const question = input.trim();
     if (!question || chatContentLoading) return;
-    const replacesActiveTurn =
-      composerSelection.mode === "inline" &&
-      steerableTurnActive &&
-      !externalRunHoldsQueue;
-    if (isStreaming && !replacesActiveTurn) return;
     const selection = composerSelection;
     setComposerSelection(null);
     setSelectionMenu(null);
     if (selection.mode === "chat") setOpenInlineAnswers([]);
-    if (selection.mode === "inline") setInlineSelectionRunId(selection.id);
-    setInput("");
-    if (replacesActiveTurn) {
-      setPendingImmediateInlineQuestion({
-        chatId: activeChatId,
-        question,
-        selection,
-      });
-      setStoppingForInlineQuestion(true);
-      void stopActiveGardenTurn().finally(() =>
-        setStoppingForInlineQuestion(false),
-      );
+    if (selection.mode === "inline") {
+      const attachments = [...chatAttachments];
+      setInput("");
+      setChatAttachments([]);
+      void sendInlineQuestion(question, selection, attachments);
       return;
     }
-    void handleSubmit(question, undefined, [], false, undefined, {
+    if (isStreaming || externalRunHoldsQueue || stoppingGardenChat) {
+      queueFollowUp(question, chatAttachments, selection);
+      setInput("");
+      setChatAttachments([]);
+      return;
+    }
+    // Keep this a composer send so uploaded files reach the checkpoint and
+    // the complete draft can be restored if saving fails.
+    void handleSubmit(undefined, undefined, undefined, false, undefined, {
       textSelection: selection,
     });
   }
@@ -5742,7 +5951,10 @@ export default function WorkspaceClient({
     request: AgentLaunchRequestPayload,
   ): Promise<void> {
     const workerClientMessageId = agentLaunchWorkerClientMessageId(request);
-    if (!request.originClientMessageId?.trim()) {
+    if (!originatingAgentLaunchSession(chatSessions.map((session) => ({
+      ...session,
+      messages: inFlightChatMessagesRef.current.get(session.id) ?? session.messages,
+    })), request)) {
       awaitedLaunchesRef.current.delete(workerClientMessageId);
       setExternalAgentStatus(
         `${request.agentName} could not start because the originating assistant message is missing.`,
@@ -5852,9 +6064,6 @@ export default function WorkspaceClient({
           if (!openExecutiveAgent) await selectOpenExecutive();
           await launchOpenExecutive(request.brief);
           return;
-        case "open-gym":
-          await launchOpenGym(request.brief, { quiet: true });
-          return;
         case "trading-agent": {
           const parsed = tradingAgentsRequestFromBrief(request.brief);
           if (!parsed.ok) {
@@ -5961,10 +6170,7 @@ export default function WorkspaceClient({
       agentActivity.connection !== "streaming" &&
       agentActivity.connection !== "waiting",
     onLaunched: (request) => {
-      // openGym presents its own visible result. Waiting for a private hand-back
-      // would append a second Thinking/synthesis row after the card finishes.
       if (
-        request.agentId === OPEN_GYM_AGENT_ID ||
         request.agentId === GODS_EYE_AGENT_ID
       ) {
         awaitedLaunchesRef.current.delete(
@@ -5996,7 +6202,9 @@ export default function WorkspaceClient({
     },
   });
   const agentLaunchScopeRef = useRef(activeChatId);
-  useEffect(() => {
+  // Clear the old scope before the layout effect below recovers this chat's
+  // completed workers. A passive reset would erase its newly queued hand-back.
+  useLayoutEffect(() => {
     if (agentLaunchScopeRef.current === activeChatId) return;
     agentLaunchScopeRef.current = activeChatId;
     awaitedLaunchesRef.current.clear();
@@ -6025,72 +6233,86 @@ export default function WorkspaceClient({
     hasRunningExternalAgentInActiveChat ||
     delegationInFlight ||
     launchingExternalAgent !== null;
-  // A Hermes chat turn this tab is streaming — the one thing a queued message
-  // can steer, and the one thing the composer's stop square can abort. An
-  // external agent run is neither: its card owns its own stop, so while only
-  // an agent is working the composer keeps its send button and queues.
+  // Steering needs this tab's stream. Stopping uses the durable conversation,
+  // including restored turns and delegated workers without a local stream.
   const steerableTurnActive =
+    chatTurnStreaming &&
+    activeGardenTurnRef.current?.sessionId === activeChatId && (
     agentActivity.connection === "connecting" ||
     agentActivity.connection === "streaming" ||
-    agentActivity.connection === "waiting";
+    agentActivity.connection === "waiting");
+  const stoppingGardenChat = stoppingGardenChats.has(activeChatId);
+  const canStopGardenChat = isStreaming || externalRunHoldsQueue || stoppingGardenChat;
+  const newChatPageSelected =
+    !chatContentLoading &&
+    messages.length === 0 &&
+    !canStopGardenChat &&
+    activeChat?.isOwn !== false;
+
+  async function stopActiveGardenTurn() {
+    const sessionId = activeChatId;
+    if (stoppingGardenChatsRef.current.has(sessionId)) return;
+    stoppingGardenChatsRef.current.add(sessionId);
+    setStoppingGardenChats(new Set(stoppingGardenChatsRef.current));
+    setExternalAgentStatus("");
+    const turn = activeGardenTurnRef.current?.sessionId === sessionId
+      ? activeGardenTurnRef.current : null;
+    const conversationId = activeChat?.conversationId ?? turn?.conversationId;
+    // Stop also discards this conversation's pending delegations and handbacks.
+    // Other chats' queues and transports keep their own ownership.
+    agentLaunchQueue.reset(sessionId);
+    for (const key of awaitedLaunchesRef.current.keys()) continuedDelegatedRunsRef.current.add(key);
+    for (const message of messages) {
+      if (message.delegatedAgentRun && message.clientMessageId) {
+        continuedDelegatedRunsRef.current.add(message.clientMessageId);
+      }
+    }
+    awaitedLaunchesRef.current.clear();
+    setPendingLaunchContinuations([]);
+    if (sessionId !== null && (launchingExternalAgent !== null || delegatedAgentLaunching)) {
+      stoppedExternalLaunchesRef.current.add(sessionId);
+    }
+    try {
+      const [stopped] = await Promise.all([
+        // With no saved chat this aborts only the local preparation. Never use
+        // another chat's last-started turn as the selected chat's stop target.
+        conversationId || sessionId === null
+          ? agentActivity.abort(conversationId)
+          : Promise.resolve(false),
+        turn ? abortGardenTurnCheckpoint(turn.sessionId, turn.clientMessageId) : Promise.resolve(),
+      ]);
+      if (!stopped) {
+        setExternalAgentStatus("Could not stop the conversation. Try Stop again.");
+        return;
+      }
+      if (sessionId !== null) {
+        gardenTurnObserversRef.current.get(sessionId)?.recover();
+        setChatStreaming(sessionId, false);
+        await refreshChatSession(sessionId);
+      } else {
+        setDraftMessages(null);
+      }
+    } finally {
+      stoppingGardenChatsRef.current.delete(sessionId);
+      setStoppingGardenChats(new Set(stoppingGardenChatsRef.current));
+    }
+  }
   const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
     useQueuedFollowUps({
       conversationKey: activeChatId === null ? null : String(activeChatId),
-      runInFlight: isStreaming || externalRunHoldsQueue,
+      runInFlight: isStreaming || externalRunHoldsQueue || stoppingGardenChat,
       steerableRunActive: steerableTurnActive,
       externalRunActive: externalRunHoldsQueue,
       onSteer: steerActiveResponse,
-      onRestoreDraft: (text, attachments) => {
+      onRestoreDraft: (text, attachments, selection) => {
         restoreQueuedFollowUpDraft(text, setInput, textareaRef);
         setChatAttachments([...attachments]);
+        setComposerSelection(selection ?? null);
       },
-      onSendQueued: async (text, attachments) => {
-        await handleSubmit(text, undefined, attachments);
+      onSendQueued: async (text, attachments, textSelection) => {
+        await handleSubmit(text, undefined, attachments, false, undefined, { textSelection });
       },
     });
-
-  // An inline question is a new turn, not a queued follow-up or a correction
-  // to the response it quotes. Once that response is fully stopped, dispatch
-  // the held question with its selection metadata intact.
-  useEffect(() => {
-    if (
-      !pendingImmediateInlineQuestion ||
-      stoppingForInlineQuestion ||
-      isStreaming ||
-      chatContentLoading
-    ) {
-      return;
-    }
-    if (pendingImmediateInlineQuestion.chatId !== activeChatId) {
-      setPendingImmediateInlineQuestion(null);
-      return;
-    }
-    const { question, selection } = pendingImmediateInlineQuestion;
-    setPendingImmediateInlineQuestion(null);
-    void handleSubmit(question, undefined, [], false, undefined, {
-      textSelection: selection,
-    });
-    // handleSubmit is a render-local dispatcher; the readiness flags above are
-    // the only values that should retry this one-shot handoff.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeChatId,
-    chatContentLoading,
-    isStreaming,
-    pendingImmediateInlineQuestion,
-    stoppingForInlineQuestion,
-  ]);
-
-  useEffect(() => {
-    if (
-      isStreaming ||
-      pendingImmediateInlineQuestion ||
-      stoppingForInlineQuestion
-    ) {
-      return;
-    }
-    setInlineSelectionRunId(null);
-  }, [isStreaming, pendingImmediateInlineQuestion, stoppingForInlineQuestion]);
 
   // Bind the launch to the run it started. The queue never has two in flight, so
   // the first run id that was not already in the transcript is this one's — and
@@ -6126,12 +6348,8 @@ export default function WorkspaceClient({
       const runId = assistantExternalAgentRunId(message);
       const continuationKey =
         message.clientMessageId ?? runId ?? message.id ?? `delegated-${index}`;
-      if (message.openGymRun) {
-        continuedDelegatedRunsRef.current.add(continuationKey);
-        awaitedLaunchesRef.current.delete(continuationKey);
-        continue;
-      }
       const agentName = message.externalAgentName ?? "The delegated agent";
+      if (continuedDelegatedRunsRef.current.has(continuationKey)) continue;
       if (message.externalAgentOutcome === "aborted") {
         continuedDelegatedRunsRef.current.add(continuationKey);
         awaitedLaunchesRef.current.delete(continuationKey);
@@ -6229,7 +6447,8 @@ export default function WorkspaceClient({
   // across page/chat switches without repeatedly loading every chat in a large
   // garden.
   const activeServerChatIds = chatSessions
-    .filter((session) => session.active === true)
+    .filter((session) => session.active === true || streamingChatIds.has(session.id) || session.messages.some(message =>
+      hasRunningExternalAgent(message) || (message.textSelection?.mode === "inline" && message.pending)))
     .map((session) => session.id);
   const activeServerChatKey = activeServerChatIds.join(",");
   useEffect(() => {
@@ -6556,6 +6775,40 @@ export default function WorkspaceClient({
     setUploadFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function resumeUploadRecovery(recovery: GardenUploadRecovery) {
+    const taskId = resumeGardenUploadRecovery({ clusterSlug, recovery });
+    setUploadRecoveries((current) =>
+      current.map((candidate) =>
+        candidate.recoveryId === recovery.recoveryId
+          ? { ...candidate, resumedJobId: candidate.resumedJobId ?? "pending" }
+          : candidate,
+      ),
+    );
+    selectedUploadTaskIdRef.current = taskId;
+    setSelectedUploadTaskId(taskId);
+    setShowUpload(true);
+    setSourceDocsExpanded(true);
+  }
+
+  async function discardUploadRecovery(recovery: GardenUploadRecovery) {
+    setUploadRecoveries((current) =>
+      current.filter((candidate) => candidate.recoveryId !== recovery.recoveryId),
+    );
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/ingest-recovery/${encodeURIComponent(recovery.recoveryId)}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok && res.status !== 404) {
+        addToast(`${recovery.filename}: the kept upload could not be discarded`);
+        void fetchUploadRecoveries();
+      }
+    } catch {
+      addToast(`${recovery.filename}: the kept upload could not be discarded`);
+      void fetchUploadRecoveries();
+    }
+  }
+
   function handleUpload(e: React.FormEvent) {
     e.preventDefault();
     if (uploadFiles.length === 0) return;
@@ -6719,10 +6972,17 @@ export default function WorkspaceClient({
 
   async function handleDocumentDelete(doc: DocInfo) {
     const isSource = doc.type === "source-document";
-    const prompt = isSource
-      ? `Delete "${doc.title ?? doc.name}" and all lesson pages from this source?`
-      : `Delete "${doc.title ?? doc.name}"?`;
-    if (!window.confirm(prompt)) return;
+    const confirmed = await confirmDestructive({
+      title: isSource ? "Delete this source?" : "Delete this document?",
+      subject: doc.title ?? doc.name,
+      body: isSource
+        ? "This will permanently delete this source and all lesson pages created from it."
+        : "This will permanently delete this document from your garden.",
+      detail: "This action cannot be undone.",
+      confirmLabel: isSource ? "Delete source" : "Delete document",
+      tone: "danger",
+    });
+    if (!confirmed) return;
 
     const previousDocuments = documents;
     setDeletingDocumentSlug(doc.slug);
@@ -6762,8 +7022,8 @@ export default function WorkspaceClient({
     setChatSessions((previous) =>
       previous.map((session) => {
         if (session.id !== sessionId) return session;
-        const nextMessages =
-          typeof updater === "function" ? updater(session.messages) : updater;
+        const nextMessages = typeof updater === "function" ? updater(session.messages)
+          : preserveInlineQuestionMessages(updater, session.messages);
         if (streamingChatIdsRef.current.has(sessionId)) {
           inFlightChatMessagesRef.current.set(sessionId, nextMessages);
         }
@@ -6779,21 +7039,26 @@ export default function WorkspaceClient({
   async function createChatSession(
     title = "New chat",
   ): Promise<ChatSession | null> {
+    const selectionEpoch = chatSelectionEpochRef.current;
     try {
       const res = await fetch("/api/chat-sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clusterSlug, title }),
+        body: JSON.stringify({ clusterSlug, title, temporary: temporaryChat }),
       });
       const data = await res.json();
       if (!res.ok || !data.session)
         throw new Error(data.error ?? "Failed to create chat");
       const session = data.session as ChatSession;
-      pendingNewChatRef.current = false;
       chatHistoryEpoch.current += 1;
       setChatSessions((previous) => [session, ...previous]);
-      setActiveChatId(session.id);
-      setCreatedChatId(session.id);
+      // The turn still belongs to this new session if the reader left while
+      // the POST was pending, but the reader's newly chosen transcript wins.
+      if (chatSelectionEpochRef.current === selectionEpoch) {
+        pendingNewChatRef.current = false;
+        selectChat(session.id);
+        setCreatedChatId(session.id);
+      }
       return session;
     } catch {
       addToast("Failed to create chat");
@@ -6805,10 +7070,18 @@ export default function WorkspaceClient({
     sessionId: number,
     nextMessages: Message[],
     title?: string,
-    options: { updateLocal?: boolean } = {},
+    options: {
+      updateLocal?: boolean;
+      branchGroups?: Record<string, ConversationBranchGroup<Message> | null>;
+    } = {},
   ): Promise<boolean> {
-    const body: { messages: Message[]; title?: string } = {
-      messages: nextMessages,
+    const saveFailureLabel = chatSaveFailureLabel(
+      sessionId, title ?? chatSessions.find(session => session.id === sessionId)?.title,
+      nextMessages, clusterName,
+    );
+    const body: { messages: Message[]; title?: string; branchGroups?: typeof options.branchGroups } = {
+      messages: preserveInlineQuestionMessages(nextMessages, inFlightChatMessagesRef.current.get(sessionId) ?? nextMessages),
+      ...(options.branchGroups ? { branchGroups: options.branchGroups } : {}),
     };
     if (title) body.title = title;
     const version = (chatPersistenceVersionsRef.current.get(sessionId) ?? 0) + 1;
@@ -6834,7 +7107,7 @@ export default function WorkspaceClient({
                   ? {
                       ...session,
                       title: title ?? session.title,
-                      messages: nextMessages,
+                      messages: preserveInlineQuestionMessages(nextMessages, session.messages),
                       updated_at: new Date().toISOString(),
                     }
                   : session,
@@ -6844,7 +7117,7 @@ export default function WorkspaceClient({
         }
         return true;
       } catch {
-        addToast("Chat was not saved");
+        addToast(saveFailureLabel, "error", "Chat was not saved", String(sessionId));
         return false;
       }
     });
@@ -6863,7 +7136,7 @@ export default function WorkspaceClient({
     // New chat never leaves empty rows in Recents.
     pendingNewChatRef.current = true;
     chatHistoryEpoch.current += 1;
-    setActiveChatId(null);
+    selectChat(null);
     setCreatedChatId(null);
     setDraftMessages(null);
     setSidePanel(null);
@@ -6898,6 +7171,33 @@ export default function WorkspaceClient({
     setFormsmithAgent(null);
     setRufloAgent(null);
     textareaRef.current?.focus();
+  }
+
+  /**
+   * The rail's New chat always returns to an ordinary saved conversation. A
+   * temporary chat is deliberately absent from that rail, so this is also the
+   * permanent way out after its first turn has been sent.
+   */
+  function handleNewSavedChat() {
+    chatBeforeTemporary.current = null;
+    setTemporaryChat(false);
+    handleNewChat();
+  }
+
+  /** Switch modes by changing conversations, never by relabelling one. */
+  function toggleTemporaryChat() {
+    if (canStopGardenChat || chatContentLoading) return;
+    if (temporaryChat) {
+      const previous = chatBeforeTemporary.current;
+      chatBeforeTemporary.current = null;
+      setTemporaryChat(false);
+      if (previous !== null) openChatById(String(previous));
+      else handleNewChat();
+      return;
+    }
+    chatBeforeTemporary.current = activeChatId;
+    setTemporaryChat(true);
+    handleNewChat();
   }
 
   async function handleForkCluster() {
@@ -6963,7 +7263,7 @@ export default function WorkspaceClient({
     chatHistoryEpoch.current += 1;
     const remaining = chatSessions.filter((s) => s.id !== targetId);
     setChatSessions(remaining);
-    if (activeChatId === targetId) setActiveChatId(remaining[0]?.id ?? null);
+    if (activeChatId === targetId) selectChat(remaining[0]?.id ?? null);
     return sendChatDelete(targetId);
   }
 
@@ -7006,7 +7306,7 @@ export default function WorkspaceClient({
     const remaining = chatSessions.filter((s) => !targetIds.has(s.id));
     setChatSessions(remaining);
     if (activeChatId !== null && targetIds.has(activeChatId))
-      setActiveChatId(remaining[0]?.id ?? null);
+      selectChat(remaining[0]?.id ?? null);
     // Chats this reader may not delete never left the rail, so they count as
     // failures without a request being sent.
     let failed = chats.length - targets.length;
@@ -7254,6 +7554,10 @@ export default function WorkspaceClient({
       // Pause and Resume act on the run already on screen, so they neither open
       // the panel nor claim the Learn-start busy flag.
       const isPauseAction = endpoint === "pause" || endpoint === "resume";
+      if (!isCancel && !isPauseAction && learnHumanizerActive) {
+        setLearnPanelOpen(true);
+        return false;
+      }
       if (!isCancel && !isPauseAction) {
         setLearnPanelOpen(true);
       }
@@ -7289,6 +7593,9 @@ export default function WorkspaceClient({
               skipManualReview:
                 endpoint === "plan" ? false : learnSkipManualReviewRef.current,
               userInstruction: learnUserInstruction.trim() || undefined,
+              // A reviewed map keeps its planning model even if the profile default changes.
+              model: (endpoint === "confirm" || endpoint === "generate") && typeof body.expectedModel === "string"
+                ? body.expectedModel : learnModel,
               ...body,
             }),
           },
@@ -7299,6 +7606,7 @@ export default function WorkspaceClient({
           throw new Error(data.error ?? "Learn action failed");
         }
         learnRequiresReplanRef.current = false;
+        if (["plan", "regenerate", "rebuild"].includes(endpoint)) resetLearnModel();
 
         if (isPauseAction) {
           await fetchLearnStatus();
@@ -7400,6 +7708,9 @@ export default function WorkspaceClient({
       documents,
       fetchDocuments,
       fetchLearnStatus,
+      learnHumanizerActive,
+      learnModel,
+      resetLearnModel,
       learnIncludedSourceSlugs,
       learnSourceOnly,
       learnSyllabusSlug,
@@ -7429,13 +7740,8 @@ export default function WorkspaceClient({
     learnState?.sourceSetChanged === true;
 
   async function handleCancelLearn() {
-    const status = learnState?.job?.status;
-    if (
-      learnCancelBusy ||
-      (!isLearnActive(status) && status !== "awaiting_confirmation")
-    )
-      return;
-    await postLearnAction("cancel", { expectedJobId: learnState?.job?.id });
+    if (learnCancelBusy || !learnCancelJobId) return;
+    await postLearnAction("cancel", { expectedJobId: learnCancelJobId });
   }
 
   async function handlePauseLearn() {
@@ -7455,7 +7761,7 @@ export default function WorkspaceClient({
   }
 
   async function handleLearnPrimary() {
-    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
+    if (learnBusy || learnCancelBusy || learnOperationActive)
       return;
     if (learnUserInstruction.trim() && hasExistingLearnContent) {
       await postLearnAction("plan");
@@ -7555,7 +7861,7 @@ export default function WorkspaceClient({
   }
 
   async function handleConfirmAndGenerate() {
-    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnOperationActive) return;
     if (
       hasExistingLearnContent &&
       learnState?.job?.mode !== "update_sources"
@@ -7591,12 +7897,12 @@ export default function WorkspaceClient({
   }
 
   async function handleRegenerateLearningMap() {
-    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnOperationActive) return;
     await postLearnAction("plan");
   }
 
   async function handleRepairIssues() {
-    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
+    if (learnBusy || learnCancelBusy || learnOperationActive)
       return;
     if (learnUserInstruction.trim() && hasExistingLearnContent) {
       await postLearnAction("plan");
@@ -7617,7 +7923,7 @@ export default function WorkspaceClient({
       !instruction ||
       learnBusy ||
       learnCancelBusy ||
-      isLearnActive(learnState?.job?.status)
+      learnOperationActive
     ) {
       return;
     }
@@ -7632,19 +7938,19 @@ export default function WorkspaceClient({
   }
 
   function handleFullRebuild() {
-    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnOperationActive) return;
     setLearnConfirmationAction("full_rebuild");
   }
 
   function handleClearLearnData() {
-    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
+    if (learnBusy || learnCancelBusy || learnOperationActive)
       return;
     setLearnConfirmationAction("clear");
   }
 
   async function handleConfirmLearnDestructiveAction() {
     const action = learnConfirmationAction;
-    if (!action || learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (!action || learnBusy || learnOperationActive) return;
     setLearnConfirmationAction(null);
     if (action === "full_rebuild") {
       await postLearnAction("rebuild", {
@@ -7705,12 +8011,13 @@ export default function WorkspaceClient({
    * of this user message and the new attempt becomes another, so nothing is
    * lost and nothing is duplicated.
    */
-  function handleRetryAssistant(messageIndex: number) {
-    if (isStreaming || !activeChat) return;
+  async function handleRetryAssistant(messageIndex: number) {
+    if (isStreaming || !activeChat || activeChat.isOwn === false || savingResponseBranchRef.current) return;
     const userIndex = retryTargetUserMessageIndex(messages, messageIndex);
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== "user") return;
     const retryAttachments = reusableChatAttachments(previousUser.attachments);
+    warnAboutUnreusableAttachments(previousUser);
     const retryFocusedDocumentNames = normalizeFocusedDocumentNames(
       previousUser.focusedDocumentNames,
     );
@@ -7736,6 +8043,7 @@ export default function WorkspaceClient({
     // the turn in place rather than parking a blank variant the switcher would
     // keep offering. Only safe for the last message, since retrying an earlier
     // one relies on the snapshot to preserve everything after it.
+    const groupId = messageBranchId(previousUser, userIndex);
     if (!attemptDiedEmpty) {
       const branch = createConversationBranch<Message>({
         messages,
@@ -7750,6 +8058,19 @@ export default function WorkspaceClient({
           sources: [],
         }),
       });
+      savingResponseBranchRef.current = true;
+      let saved = false;
+      try {
+        saved = await persistChatSession(activeChat.id, messages, undefined, {
+          updateLocal: false,
+          branchGroups: { ...branchGroups, [branch.groupId]: branch.group },
+        });
+      } finally {
+        savingResponseBranchRef.current = false;
+      }
+      // A failed save must leave the original answer visible. A chat switch
+      // during the save must not dispatch this retry into the new selection.
+      if (!saved || activeChatIdRef.current !== activeChat.id) return;
       setBranchGroups((current) => ({
         ...current,
         [branch.groupId]: branch.group,
@@ -7761,8 +8082,8 @@ export default function WorkspaceClient({
     retryBranchRef.current = {
       chatId: activeChat.id,
       historyLength: userIndex,
+      groupId,
     };
-    setInlineArtifactRetireVersion((current) => current + 1);
     void handleSubmit(
       previousUser.content,
       messages.slice(0, userIndex),
@@ -7783,8 +8104,8 @@ export default function WorkspaceClient({
     return session.messages.slice(0, pending.historyLength);
   }
 
-  function switchBranch(groupId: string, direction: -1 | 1) {
-    if (isStreaming || !activeChat) return;
+  async function switchBranch(groupId: string, direction: -1 | 1) {
+    if (isStreaming || !activeChat || savingResponseBranchRef.current) return;
     const group = branchGroups[groupId];
     if (!group) return;
     const targetIndex = Math.min(
@@ -7793,20 +8114,25 @@ export default function WorkspaceClient({
     );
     if (targetIndex === group.activeIndex) return;
 
+    const anchoredMessages = restoreBranchAnchor(messages, group);
     const variants = group.variants.map((variant) => cloneMessages(variant));
-    variants[group.activeIndex] = cloneMessages(messages);
-    setBranchGroups((current) => ({
-      ...current,
-      [groupId]: { ...group, activeIndex: targetIndex, variants },
-    }));
+    variants[group.activeIndex] = cloneMessages(anchoredMessages);
+    const nextGroup = { ...group, activeIndex: targetIndex, variants };
     const nextMessages = applyBranchVariant({
-      messages,
+      messages: anchoredMessages,
       variant: variants[targetIndex],
       groupId,
     });
-    setInlineArtifactRetireVersion((current) => current + 1);
+    savingResponseBranchRef.current = true;
+    let saved = false;
+    try {
+      saved = await persistChatSession(activeChat.id, nextMessages, undefined, {
+        updateLocal: false, branchGroups: { [groupId]: nextGroup },
+      });
+    } finally { savingResponseBranchRef.current = false; }
+    if (!saved || activeChatIdRef.current !== activeChat.id) return;
+    setBranchGroups(current => ({ ...current, [groupId]: nextGroup }));
     updateChatMessages(activeChat.id, nextMessages);
-    void persistChatSession(activeChat.id, nextMessages);
   }
 
   /**
@@ -7839,7 +8165,27 @@ export default function WorkspaceClient({
       return next;
     });
     updateChatMessages(activeChat.id, nextMessages);
-    void persistChatSession(activeChat.id, nextMessages);
+    void persistChatSession(activeChat.id, nextMessages, undefined, {
+      branchGroups: { [groupId]: null },
+    });
+  }
+
+  /**
+   * A file that was sent before Breadboard kept unclassified uploads has no
+   * stored copy to resend. Say so rather than let the retry drop it in
+   * silence; the person can attach it again.
+   */
+  function warnAboutUnreusableAttachments(previousUser: Message) {
+    const missing = unreusableChatAttachmentNames(
+      previousUser.attachments,
+      previousUser.attachmentNames,
+    );
+    if (missing.length === 0) return;
+    addToast(
+      `${missing.join(", ")} ${missing.length === 1 ? "was" : "were"} not kept when first sent, so this turn goes out without ${missing.length === 1 ? "it" : "them"}. Attach ${missing.length === 1 ? "it" : "them"} again to include ${missing.length === 1 ? "it" : "them"}.`,
+      "error",
+      "Some files could not be resent",
+    );
   }
 
   function handleEditUserMessage(messageIndex: number, text: string) {
@@ -7847,7 +8193,7 @@ export default function WorkspaceClient({
     const previousUser = messages[messageIndex];
     if (!previousUser || previousUser.role !== "user") return;
     const editedAttachments = reusableChatAttachments(previousUser.attachments);
-    setInlineArtifactRetireVersion((current) => current + 1);
+    warnAboutUnreusableAttachments(previousUser);
     void handleSubmit(text, messages.slice(0, messageIndex), editedAttachments);
   }
 
@@ -7858,6 +8204,7 @@ export default function WorkspaceClient({
   async function steerActiveResponse(
     text: string,
     attachments: readonly ChatAttachment[],
+    textSelection?: ChatTextSelectionReference,
   ): Promise<boolean> {
     const correction = text.trim() || attachmentOnlyMessageText(attachments);
     const context = activeSteerContextRef.current;
@@ -7865,7 +8212,7 @@ export default function WorkspaceClient({
 
     let accepted = false;
     try {
-      accepted = await agentActivity.steer(correction, attachments);
+      accepted = await agentActivity.steer(correction, attachments, textSelection);
     } catch (error) {
       addToast(
         error instanceof Error
@@ -7879,6 +8226,7 @@ export default function WorkspaceClient({
     const correctionMessage: Message = {
       role: "user",
       content: correction,
+      ...(textSelection ? { textSelection } : {}),
       createdAt: new Date().toISOString(),
       ...(attachments.length > 0
         ? {
@@ -8750,13 +9098,18 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
   ) {
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
     if (delegatedAgentLaunchRef.current) {
-      if (!writableActiveChat) {
+      const originSession = originatingAgentLaunchSession(chatSessions.map((session) => ({
+        ...session,
+        messages: inFlightChatMessagesRef.current.get(session.id) ?? session.messages,
+      })), delegatedAgentLaunchRef.current);
+      if (!originSession) {
         setExternalAgentStatus(
           "The delegated agent could not find its originating chat message.",
         );
         return null;
       }
-      return { session: writableActiveChat, title: undefined };
+      stoppedExternalLaunchesRef.current.delete(originSession.id);
+      return { session: originSession, title: undefined };
     }
     // A launch is the slowest send in the app: naming the chat, a health probe
     // and creating the run all happen before a single row is committed. Put the
@@ -8782,12 +9135,14 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
     // itself is what is being waited on, and creating the chat is already part
     // of it. Raised before the rows so both land in one render, or the empty
     // answer draws a finished "Thought" for as long as the chat takes to exist.
-    externalTurnSignalRef.current = agentActivity.start();
+    if (writableActiveChat) stoppedExternalLaunchesRef.current.delete(writableActiveChat.id);
+    externalTurnSignalRef.current = agentActivity.start(writableActiveChat?.conversationId);
+    const launchSignal = externalTurnSignalRef.current;
     // A blank chat has no session to write to yet, so the stand-in carries the
     // turn until one exists.
     if (!writableActiveChat) setDraftMessages(pendingTurn());
     const session = writableActiveChat ?? (await createChatSession());
-    if (!session) {
+    if (!session || launchSignal.aborted) {
       setDraftMessages(null);
       settleExternalTurnActivity();
       // No turn will be written, so a retry waiting to replace one must not be
@@ -8795,25 +9150,44 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
       retryBranchRef.current = null;
       return null;
     }
+    agentActivity.bindSession(session.conversationId ?? null);
     updateChatMessages(session.id, [
       ...transcriptForRetriedTurn(session),
       ...pendingTurn(),
     ]);
     // The real transcript now holds this turn; the stand-in has done its job.
     setDraftMessages(null);
-    return {
-      session,
-      // Only the turn that opens a chat names it; a launch into a chat that
-      // already holds messages leaves the existing name alone.
-      title:
-        session.messages.length === 0 && !options.serverNamesTheChat
-          ? ((await requestChatTitleFromFirstMessage(userContent, model)) ??
-            undefined)
-          : undefined,
-    };
+    // Only the turn that opens a chat names it.
+    const title = session.messages.length === 0 && !options.serverNamesTheChat
+      ? ((await requestChatTitleFromFirstMessage(userContent, model)) ?? undefined)
+      : undefined;
+    if (launchSignal.aborted) return null;
+    return { session, title };
   }
 
   async function commitExternalAgentTurn(
+    session: ChatSession,
+    userContent: string,
+    assistantMessage: Message,
+    title?: string,
+    userMessageFields: Pick<Message, "attachmentNames" | "attachments"> = {},
+  ) {
+    await persistExternalAgentTurn(session, userContent, assistantMessage, title, userMessageFields);
+    // Stop can arrive while the launch POST is still allocating its run id.
+    // Once those rows exist, repeat cancellation against their actual owner.
+    if (stoppedExternalLaunchesRef.current.has(session.id)) {
+      const refreshed = await refreshChatSession(session.id);
+      const conversationId = refreshed?.conversationId ?? session.conversationId;
+      if (conversationId && await agentActivity.abort(conversationId)) {
+        stoppedExternalLaunchesRef.current.delete(session.id);
+        await refreshChatSession(session.id);
+      } else {
+        setExternalAgentStatus("Could not stop the conversation. Try Stop again.");
+      }
+    }
+  }
+
+  async function persistExternalAgentTurn(
     session: ChatSession,
     userContent: string,
     assistantMessage: Message,
@@ -8951,10 +9325,13 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
       await persistChatSession(session.id, nextMessages);
       return;
     }
+    const branchGroupId = retryBranchRef.current?.chatId === session.id
+      ? retryBranchRef.current.groupId : undefined;
     const nextMessages: Message[] = [
       ...transcriptForRetriedTurn(session),
-      { role: "user", content: userContent, createdAt, ...(assistantMessage.clientMessageId ? { clientMessageId: assistantMessage.clientMessageId } : {}), ...userMessageFields },
-      { ...assistantMessage, createdAt },
+      { role: "user", content: userContent, createdAt, ...(assistantMessage.clientMessageId ? { clientMessageId: assistantMessage.clientMessageId } : {}), ...userMessageFields,
+        ...(branchGroupId ? { branchGroupId } : {}) },
+      { ...assistantMessage, createdAt, ...(branchGroupId ? { branchGroupId } : {}) },
     ];
     // The retried turn now has its replacement; a later launch appends again.
     retryBranchRef.current = null;
@@ -10650,85 +11027,6 @@ async function launchCareerOps(task: string) {
     }
   }
 
-  async function launchOpenGym(
-    task: string,
-    options: { userContent?: string; quiet?: boolean } = {},
-  ) {
-    if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Tell openGym what exercise or program you need.");
-      return;
-    }
-    externalAgentLaunchRef.current = "open-gym";
-    setLaunchingExternalAgent("open-gym");
-    setExternalAgentStatus("");
-    const normalizedTask = task.trim();
-    const userContent =
-      options.userContent?.trim() || openGymUserMessage(normalizedTask);
-    const launchClientMessageId = crypto.randomUUID();
-    const prepared = await prepareExternalAgentSession(userContent);
-    if (!prepared) {
-      externalAgentLaunchRef.current = null;
-      setLaunchingExternalAgent(null);
-      return;
-    }
-    updateChatMessages(prepared.session.id, [
-      ...transcriptForRetriedTurn(prepared.session),
-      {
-        id: `open-gym-pending-${crypto.randomUUID()}`,
-        role: "user",
-        content: userContent,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    try {
-      const response = await fetch("/api/open-gym/runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          task: normalizedTask,
-          model,
-          reasoningEffort,
-          chatSessionId: prepared.session.id,
-          clientMessageId: launchClientMessageId,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.run?.runId) {
-        throw new Error(typeof data?.error === "string" ? data.error : "The openGym run could not start.");
-      }
-      setChatStreaming(prepared.session.id, true);
-      await commitExternalAgentTurn(
-        prepared.session,
-        userContent,
-        {
-          role: "assistant",
-          content: "",
-          openGymRun: {
-            runId: String(data.run.runId),
-            task: normalizedTask,
-            ...(options.quiet === true ? { quiet: true } : {}),
-          },
-          externalAgentOutcome: "running",
-        },
-        prepared.title,
-      );
-    } catch (error) {
-      await commitExternalAgentTurn(
-        prepared.session,
-        userContent,
-        {
-          role: "assistant",
-          content: `openGym could not start: ${error instanceof Error ? error.message : "unknown error"}`,
-        },
-        prepared.title,
-      );
-    } finally {
-      externalAgentLaunchRef.current = null;
-      setLaunchingExternalAgent(null);
-      textareaRef.current?.focus();
-    }
-  }
-
   async function launchParametricCad(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief)
@@ -12363,7 +12661,7 @@ async function launchCareerOps(task: string) {
     // or the second completion would overwrite the first one.
     const baseMessages =
       inFlightChatMessagesRef.current.get(session.id) ?? session.messages;
-    const completedAtMs = Date.now();
+    const completedAtMs = result.terminalAtMs ?? Date.now();
     const nextMessages = baseMessages.map((message) => {
       if (!ownsRun(message)) return message;
       const responseDurationMs = externalAgentResponseDurationMs({
@@ -12408,7 +12706,7 @@ async function launchCareerOps(task: string) {
       (message) => ownsRun(message) && message.role === "assistant",
     );
     const continuationKey = owner?.clientMessageId ?? runId;
-    if (owner?.openGymRun) {
+    if (result.outcome === "aborted") {
       continuedDelegatedRunsRef.current.add(continuationKey);
       awaitedLaunchesRef.current.delete(continuationKey);
       return;
@@ -12454,30 +12752,38 @@ async function launchCareerOps(task: string) {
       textSelection?: ChatTextSelectionReference;
       focusedDocumentNames?: string[];
       focusedDocumentSlugs?: string[];
+      /** A composer draft held while the preceding inline answer stops. */
+      fromComposer?: boolean;
     },
   ) {
     const textSelection = turnOptions?.textSelection;
+    const branchGroupId = historyOverride !== undefined && retryBranchRef.current?.chatId === activeChat?.id
+      ? retryBranchRef.current?.groupId : undefined;
+    const composerSend = textOverride === undefined || turnOptions?.fromComposer === true;
     // Only a retry sets the branch it is replacing, and only a retry passes a
     // history. Anything else that reaches a launcher appends as usual.
     if (historyOverride === undefined) retryBranchRef.current = null;
     const text = (textOverride ?? input).trim();
+    // Capture the switches with the send, before preparing the chat or files.
+    // The same mode must decide routing and reach the server's capability broker.
+    const superAgentEnabled = isSuperAgentEnabled();
+    const yoloModeEnabled = isYoloModeEnabled();
     const pendingAttachments: ChatAttachment[] = attachmentOverride
       ? [...attachmentOverride]
-      : textOverride === undefined
+      : composerSend
         ? chatAttachments
         : [];
     if (
       (!text && pendingAttachments.length === 0) ||
       (internalAgentContinuation ? steerableTurnActive : isStreaming) ||
-      launchingExternalAgent ||
-      openGymRoutingRef.current
+      launchingExternalAgent
     )
       return;
 
     // Only the composer calls this with no override, so this is the one place
     // that knows a human is speaking: it ends whatever hand-off chain was
     // running and drops any launch still waiting to be confirmed.
-    if (textOverride === undefined) {
+    if (composerSend) {
       launchHopsRef.current = 0;
       launchRoundOriginsRef.current.clear();
       awaitedLaunchesRef.current.clear();
@@ -12527,6 +12833,14 @@ async function launchCareerOps(task: string) {
       return;
     }
     setExternalAgentStatus("");
+
+    const maxResearch = maxResearchInvocation(text, superAgentEnabled);
+    if (maxResearch) {
+      setInput("");
+      setChatAttachments([]);
+      await launchMaxResearch(maxResearch.question, text);
+      return;
+    }
 
     const codexTask = taskFromCodexCommand(text);
     if (codexTask !== null) {
@@ -12737,13 +13051,6 @@ const careerOpsTask = taskFromCareerOpsCommand(text);
       return;
     }
 
-    const openGymTask = taskFromOpenGymCommand(text);
-    if (openGymTask !== null) {
-      setInput("");
-      setChatAttachments([]);
-      void launchOpenGym(openGymTask);
-      return;
-    }
 
     const hardwareBrief = taskFromHardwareBlueprintCommand(text);
     if (hardwareBrief !== null) {
@@ -13031,31 +13338,6 @@ if (careerOpsAgent) {
       return;
     }
 
-    // Super Agent cannot opt out of a registered exercise presentation. Resolve
-    // likely form/program requests before the model turn; a catalogue match
-    // starts the quiet openGym result while preserving the user's own wording
-    // in the transcript. Internal hand-back turns and attachment workflows are
-    // excluded so this routing boundary cannot consume another capability.
-    if (
-      !internalAgentContinuation &&
-      isSuperAgentEnabled() &&
-      text &&
-      pendingAttachments.length === 0
-    ) {
-      openGymRoutingRef.current = true;
-      let routeToOpenGym = false;
-      try {
-        routeToOpenGym = await shouldRouteOpenGymFromSuperAgent(text);
-      } finally {
-        openGymRoutingRef.current = false;
-      }
-      if (routeToOpenGym) {
-        setInput("");
-        setChatAttachments([]);
-        await launchOpenGym(text, { userContent: text, quiet: true });
-        return;
-      }
-    }
     }
 
     const responseStartedAt = performance.now();
@@ -13094,6 +13376,7 @@ if (careerOpsAgent) {
     const clientMessageId = crypto.randomUUID();
     const userMsg: Message = {
       clientMessageId,
+      ...(branchGroupId ? { branchGroupId } : {}),
       role: "user",
       content: displayText,
       createdAt: turnCreatedAt,
@@ -13111,7 +13394,6 @@ if (careerOpsAgent) {
     // a round trip. Empty the composer and put the message up first so a send
     // reads as instant; both are undone if the turn never starts.
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
-    const composerSend = textOverride === undefined;
     const showedDraft = !writableActiveChat && !internalAgentContinuation;
     if (composerSend) {
       setInput("");
@@ -13194,6 +13476,7 @@ if (careerOpsAgent) {
     const nextMessages = [...history, userMsg];
     const assistantMsg: Message = {
       clientMessageId,
+      ...(branchGroupId ? { branchGroupId } : {}),
       role: "assistant",
       content: "",
       createdAt: turnCreatedAt,
@@ -13261,7 +13544,10 @@ if (careerOpsAgent) {
       );
       checkpointSaved = true;
     } catch {
-      addToast("Chat was not saved");
+      addToast(
+        chatSaveFailureLabel(sessionId, session.title, nextMessages, clusterName),
+        "error", "Chat was not saved", String(sessionId),
+      );
     }
     if (!checkpointSaved) {
       setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
@@ -13410,6 +13696,20 @@ if (careerOpsAgent) {
     // detached pump. A browser stream disappearing only retires this viewer; it
     // is not an assistant answer and must never be written into the transcript.
     let viewerDetached = false;
+    let recoveredFromServer = false;
+    const viewerRecovery = new AbortController();
+    const observer: GardenTurnObserver = {
+      clientMessageId,
+      recover: () => {
+        if (gardenTurnObserversRef.current.get(sessionId) !== observer) return;
+        gardenTurnObserversRef.current.delete(sessionId);
+        recoveredFromServer = true;
+        viewerDetached = true;
+        setChatStreaming(sessionId, false);
+        agentActivity.finish(false, agentSignal);
+        viewerRecovery.abort();
+      },
+    };
     // The checkpoint above and the Garden adapter both reserve this turn by
     // clientMessageId. They must see the same user content or an attachment-only
     // turn (and every selected-text turn) looks like an idempotency collision.
@@ -13419,6 +13719,8 @@ if (careerOpsAgent) {
       // A drafted turn already raised Thinking when the message went up.
       agentSignal =
         agentSignal ?? agentActivity.start(session.conversationId ?? null);
+      gardenTurnObserversRef.current.set(sessionId, observer);
+      const viewerSignal = AbortSignal.any([agentSignal, viewerRecovery.signal]);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -13446,6 +13748,8 @@ if (careerOpsAgent) {
             : {}),
           adhdMode: isDirectModeEnabled(),
           personalize: isPersonalizeEnabled(),
+          superAgent: superAgentEnabled,
+          yoloMode: yoloModeEnabled,
           // A worker's result is handed back on a hidden turn, and that turn is
           // the visible answer. Say so, or its evidence panel cannot name the
           // agent whose run it is reporting.
@@ -13453,7 +13757,7 @@ if (careerOpsAgent) {
             ? { internalAgentContinuation: true }
             : {}),
         }),
-        signal: agentSignal,
+        signal: viewerSignal,
       });
 
       if (!res.ok || !res.body) {
@@ -13481,168 +13785,153 @@ if (careerOpsAgent) {
           "Hermes failed at runtime. HERMES_MODE=preferred allowed this visible legacy ChatMock fallback.\n";
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      for await (const payload of readGardenResponseData(res.body, viewerSignal)) {
+        if (payload === "[DONE]") {
+          agentCompleted = true;
+          break;
+        }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6);
-          if (payload === "[DONE]") {
-            agentCompleted = true;
-            break;
-          }
-
-          try {
-            const event = JSON.parse(payload) as
-              | { type: "sources"; sources: string[] }
-              | { type: "delta"; text: string }
-              | { type: "provisional"; text: string }
-              | { type: "replace"; text: string }
-              | { type: "segment"; text: string; streamed: boolean }
-              | { type: "thinking"; text: string; detailMode?: "append" | "replace" }
-              | {
-                  type: "tool";
-                  toolName?: string;
-                  status?: string;
-                  details?: unknown;
-                  uiResources?: unknown;
-                }
-              | { type: "permission"; description?: string; requestId?: string }
-              | { type: "error"; error?: string }
-              | { type: "runtime"; backend: string; fallback: boolean }
-              | { type: "verification"; verification: VerificationSummary }
-              | { type: "usage"; usage: unknown }
-              | {
-                  type: "agent_launch";
-                  requestId: string;
-                  agentId: string;
-                  agentName: string;
-                  command: string;
-                  brief: string;
-                  reason: string;
-                  awaitResult: boolean;
-                }
-              | {
-                  type: `artifact.${string}`;
-                  artifactId: string;
-                  runId: string;
-                  conversationId: string;
-                  gardenId: string | null;
-                  assistantMessageId: string | null;
-                  status: string;
-                  version: number;
-                  metadata?: Record<string, unknown>;
-                };
-
-            agentActivity.handleEvent(
-              event as unknown as Record<string, unknown>,
-              agentSignal,
-            );
-
-            // Queued, never launched from here: this turn is still streaming,
-            // and its own submit would be refused.
-            if (agentLaunchQueue.handleEvent(event)) continue;
-
-            if (event.type === "sources") {
-              assistantMsg.sources = event.sources;
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "tool" && event.status === "completed") {
-              if (event.toolName === "garden_import_source") handleGardenSourceImportResult(event.details);
-              const resources = normalizeGenerativeUiResources(event.uiResources);
-              if (resources.length) {
-                assistantMsg.uiResources = [
-                  ...(assistantMsg.uiResources ?? []).filter(
-                    (current) => !resources.some((next) => next.id === current.id),
-                  ),
-                  ...resources,
-                ];
-                finalMessages = messagesWithAssistant();
-                updateChatMessages(sessionId, finalMessages);
+        try {
+          const event = JSON.parse(payload) as
+            | { type: "sources"; sources: string[] }
+            | { type: "delta"; text: string }
+            | { type: "provisional"; text: string }
+            | { type: "replace"; text: string }
+            | { type: "segment"; text: string; streamed: boolean }
+            | { type: "thinking"; text: string; detailMode?: "append" | "replace" }
+            | {
+                type: "tool";
+                toolName?: string;
+                status?: string;
+                details?: unknown;
+                uiResources?: unknown;
               }
-            } else if (event.type === "delta" || event.type === "thinking") {
-              Object.assign(
-                assistantMsg,
-                applyGardenStableTextEvent(assistantMsg, event),
-              );
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "provisional") {
-              Object.assign(
-                assistantMsg,
-                applyGardenStableTextEvent(assistantMsg, event),
-              );
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "replace") {
-              Object.assign(
-                assistantMsg,
-                applyGardenStableTextEvent(assistantMsg, event),
-              );
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "segment") {
-              Object.assign(
-                assistantMsg,
-                applyGardenStableTextEvent(assistantMsg, event),
-              );
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "usage") {
-              const usage = normalizeChatTokenUsage(event.usage);
-              if (usage) {
-                assistantMsg.usage = {
-                  ...usage,
-                  responseDurationMs: Math.round(
-                    performance.now() - responseStartedAt,
-                  ),
-                };
-                finalMessages = messagesWithAssistant();
-                updateChatMessages(sessionId, finalMessages);
+            | { type: "permission"; description?: string; requestId?: string }
+            | { type: "error"; error?: string }
+            | { type: "runtime"; backend: string; fallback: boolean }
+            | { type: "verification"; verification: VerificationSummary }
+            | { type: "usage"; usage: unknown }
+            | {
+                type: "agent_launch";
+                requestId: string;
+                agentId: string;
+                agentName: string;
+                command: string;
+                brief: string;
+                reason: string;
+                awaitResult: boolean;
               }
-            } else if (event.type === "error") {
-              agentReportedError = true;
-              assistantMsg.content += `\n\n${event.error ?? "Hermes reported an error."}`;
+            | {
+                type: `artifact.${string}`;
+                artifactId: string;
+                runId: string;
+                conversationId: string;
+                gardenId: string | null;
+                assistantMessageId: string | null;
+                status: string;
+                version: number;
+                metadata?: Record<string, unknown>;
+              };
+
+          agentActivity.handleEvent(
+            event as unknown as Record<string, unknown>,
+            agentSignal,
+          );
+
+          // Queued, never launched from here: this turn is still streaming,
+          // and its own submit would be refused.
+          if (agentLaunchQueue.handleEvent(event, sessionId)) continue;
+
+          if (event.type === "sources") {
+            assistantMsg.sources = event.sources;
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "tool" && event.status === "completed") {
+            if (event.toolName === "garden_import_source") handleGardenSourceImportResult(event.details);
+            const resources = normalizeGenerativeUiResources(event.uiResources);
+            if (resources.length) {
+              assistantMsg.uiResources = [
+                ...(assistantMsg.uiResources ?? []).filter(
+                  (current) => !resources.some((next) => next.id === current.id),
+                ),
+                ...resources,
+              ];
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "verification") {
-              assistantMsg.verification = event.verification;
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "runtime" && event.fallback) {
-              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`;
-              finalMessages = messagesWithAssistant();
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type.startsWith("artifact.")) {
-              if (
-                "assistantMessageId" in event &&
-                typeof event.assistantMessageId === "string"
-              ) {
-                assistantMsg.artifactMessageId = event.assistantMessageId;
-                finalMessages = messagesWithAssistant();
-                updateChatMessages(sessionId, finalMessages);
-              }
-              window.dispatchEvent(
-                new CustomEvent(ARTIFACT_BROWSER_EVENT, { detail: event }),
-              );
             }
-          } catch {
-            // malformed event — skip
+          } else if (event.type === "delta" || event.type === "thinking") {
+            Object.assign(
+              assistantMsg,
+              applyGardenStableTextEvent(assistantMsg, event),
+            );
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "provisional") {
+            Object.assign(
+              assistantMsg,
+              applyGardenStableTextEvent(assistantMsg, event),
+            );
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "replace") {
+            Object.assign(
+              assistantMsg,
+              applyGardenStableTextEvent(assistantMsg, event),
+            );
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "segment") {
+            Object.assign(
+              assistantMsg,
+              applyGardenStableTextEvent(assistantMsg, event),
+            );
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "usage") {
+            const usage = normalizeChatTokenUsage(event.usage);
+            if (usage) {
+              assistantMsg.usage = {
+                ...usage,
+                responseDurationMs: Math.round(
+                  performance.now() - responseStartedAt,
+                ),
+              };
+              finalMessages = messagesWithAssistant();
+              updateChatMessages(sessionId, finalMessages);
+            }
+          } else if (event.type === "error") {
+            agentReportedError = true;
+            assistantMsg.content += `\n\n${event.error ?? "Hermes reported an error."}`;
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "verification") {
+            assistantMsg.verification = event.verification;
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type === "runtime" && event.fallback) {
+            assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`;
+            finalMessages = messagesWithAssistant();
+            updateChatMessages(sessionId, finalMessages);
+          } else if (event.type.startsWith("artifact.")) {
+            if (
+              "assistantMessageId" in event &&
+              typeof event.assistantMessageId === "string"
+            ) {
+              assistantMsg.artifactMessageId = event.assistantMessageId;
+              finalMessages = messagesWithAssistant();
+              updateChatMessages(sessionId, finalMessages);
+            }
+            window.dispatchEvent(
+              new CustomEvent(ARTIFACT_BROWSER_EVENT, { detail: event }),
+            );
           }
+        } catch {
+          // malformed event — skip
         }
       }
     } catch (error) {
       const aborted = error instanceof Error && error.name === "AbortError";
-      viewerDetached = isRecoverableAgentStreamDisconnect(error);
+      viewerDetached = recoveredFromServer || isRecoverableAgentStreamDisconnect(error);
       if (!viewerDetached) {
         agentFailed = !aborted;
         assistantMsg.content = aborted
@@ -13654,14 +13943,19 @@ if (careerOpsAgent) {
         updateChatMessages(sessionId, finalMessages);
       }
     } finally {
+      if (gardenTurnObserversRef.current.get(sessionId) === observer) {
+        gardenTurnObserversRef.current.delete(sessionId);
+      }
       agentActivity.finish(agentFailed, agentSignal);
       if (viewerDetached) {
-        // Drop the stale browser snapshot before reconciling. Keeping it in the
-        // in-flight map would hide the server-owned checkpoint and, eventually,
-        // the real completed answer.
-        setChatStreaming(sessionId, false);
-        await refreshChatSession(sessionId);
-        void refreshRail();
+        // A polling recovery already installed the durable result and released
+        // this viewer. Other disconnects must drop the stale browser snapshot
+        // before reconciling, or it would hide the server's completed answer.
+        if (!recoveredFromServer) {
+          setChatStreaming(sessionId, false);
+          await refreshChatSession(sessionId);
+          void refreshRail();
+        }
       } else {
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
@@ -13669,15 +13963,24 @@ if (careerOpsAgent) {
         assistantMsg.responseCompletedAt = new Date().toISOString();
         finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
-        await persistChatSession(sessionId, finalMessages, title);
+        // The terminal frame settles this turn immediately. A rail poll can
+        // still say active, and saving the transcript can wait behind earlier
+        // writes; neither should keep a finished answer in Thinking.
+        setChatSessions((previous) => previous.map((chat) =>
+          chat.id === sessionId && chat.messages.filter(message => message.textSelection?.mode !== "inline").at(-1)?.clientMessageId === clientMessageId
+            ? { ...chat, active: chat.messages.some(message => message.role === "assistant" && message.textSelection?.mode === "inline" && message.pending) }
+            : chat,
+        ));
+        setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
+        // The transcript is already updated above. A delayed save must not
+        // overwrite another turn the user starts while this write is pending.
+        await persistChatSession(sessionId, finalMessages, title, { updateLocal: false });
       }
       // Only a first turn names a chat, and the name it gets is generated on
       // the server during that turn, so this is the one send worth asking for.
       if (history.length === 0) void refreshChatTitles();
-      if (!viewerDetached) {
-        setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
-      }
       if (
+        !viewerDetached &&
         agentCompleted &&
         !agentReportedError &&
         assistantMsg.content.trim()
@@ -13791,6 +14094,10 @@ if (careerOpsAgent) {
   const activeUploadTasks = uploadTasks.filter(
     (task) => task.state === "uploading",
   );
+  const resumingRecoveryIds = new Set(
+    activeUploadTasks.flatMap((task) => Object.values(task.resumingRecoveryIds)),
+  );
+  const modalUploadRecoveryIds = selectedUploadTask?.recoveryIds ?? {};
   const activeLinkImportTasks = linkImportTasks.filter(
     (task) => task.status === "importing",
   );
@@ -14056,7 +14363,7 @@ if (careerOpsAgent) {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, model: learnModel }),
         },
       );
       const data = await res
@@ -14138,15 +14445,12 @@ if (careerOpsAgent) {
     const status = job?.status ?? "idle";
     const publicationRecoveryActive =
       learnState?.publicationRecovery?.active === true;
-    const active = isLearnActive(status) || publicationRecoveryActive;
+    const runtimeUnavailable = learnState?.runtimeUnavailable ?? null;
+    const active = learnOperationActive;
     const hasLearnUserInstruction = Boolean(learnUserInstruction.trim());
     const learnHumanizerStatus = learnState?.humanizer?.status;
     const learnHumanizerRunning = learnHumanizerStatus === "running";
     const learnHumanizerRestoring = learnHumanizerStatus === "restoring_ai";
-    const learnHumanizerActive =
-      learnHumanizerRequestBusy ||
-      learnHumanizerRunning ||
-      learnHumanizerRestoring;
     const learnHumanizerStatusMessage = learnHumanizerRunning
       ? "Humanizing completed lessons..."
       : learnHumanizerRestoring
@@ -14189,10 +14493,8 @@ if (careerOpsAgent) {
       !publicationRecoveryActive && (paused || isLearnPausable(status));
     // While a run is in flight the chip must name the model actually placing
     // the calls, which is fixed for the life of that run. Once it settles the
-    // chip names the model the next run will use, so changing the Intelligence
-    // picker in the chat bar is reflected here immediately instead of leaving
-    // the last run's model on screen.
-    const learnPanelModel = active ? (job?.model ?? model) : model;
+    // chip names the independent Learn selection for the next run.
+    const learnPanelModel = active ? (job?.model ?? learnModel) : learnModel;
     const learnPanelModelGroups = groupAssistantModels(
       Array.from(new Set([learnPanelModel, ...models])),
     );
@@ -15215,9 +15517,11 @@ if (careerOpsAgent) {
                   <button
                     type="button"
                     onClick={handleCancelLearn}
-                    disabled={learnCancelBusy}
+                    disabled={learnCancelBusy || !learnCancelJobId}
                     className="neu-button-destructive flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-red-900/60 bg-red-950/30 px-3 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
-                    title="Cancel this Learn run and roll back what it wrote"
+                    title={learnHumanizerActive
+                      ? "Stop switching the finished lesson copy"
+                      : "Cancel this Learn run and roll back what it wrote"}
                   >
                     {learnCancelBusy ? (
                       <Spinner className="h-3.5 w-3.5" />
@@ -15280,6 +15584,25 @@ if (careerOpsAgent) {
               </p>
             ) : null}
           </div>
+        )}
+
+        {runtimeUnavailable && (
+          <p
+            className="mt-2 text-xs leading-5 text-amber-300"
+            role="status"
+            title={runtimeUnavailable.reason}
+          >
+            Runtime is not reachable, so the state of the Learn{" "}
+            {runtimeUnavailable.operation === "plan"
+              ? "planning"
+              : runtimeUnavailable.operation === "humanizer"
+                ? "humanizer"
+                : "generation"}{" "}
+            run submitted at{" "}
+            {new Date(runtimeUnavailable.submittedAt).toLocaleTimeString()} is
+            unknown. This shows the last saved state; it refreshes once Runtime
+            is back.
+          </p>
         )}
 
         {(statusMessage || statusDetails.length > 0) && (
@@ -15380,7 +15703,7 @@ if (careerOpsAgent) {
                 value={learnPanelModel}
                 groups={learnPanelModelGroups}
                 onOpen={loadModels}
-                onChange={setModel}
+                onChange={setLearnModel}
                 disabled={learnDocumentSelectionLocked}
                 title={
                   active
@@ -15396,7 +15719,10 @@ if (careerOpsAgent) {
             aria-checked={humanizerEnabled}
             aria-busy={learnHumanizerActive}
             disabled={learnHumanizerActive}
-            onClick={() => setHumanizerEnabled(!humanizerEnabled)}
+            onClick={() => {
+              pendingFinishedLearnHumanizerRef.current = !humanizerEnabled;
+              setHumanizerEnabled(!humanizerEnabled);
+            }}
             className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap text-gray-400 transition-colors hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
             title={
               learnHumanizerRunning
@@ -16417,6 +16743,82 @@ if (careerOpsAgent) {
               </div>
             )}
             <div className="max-h-44 overflow-y-auto">
+              {uploadRecoveries.length > 0 && (
+                <div
+                  className="border-b border-gray-800/70 py-1"
+                  data-testid="upload-recoveries"
+                >
+                  {uploadRecoveries.map((recovery) => {
+                    const resuming =
+                      resumingRecoveryIds.has(recovery.recoveryId) ||
+                      recovery.resumedJobId !== null;
+                    return (
+                      <div
+                        key={recovery.recoveryId}
+                        className="flex w-full items-center gap-2.5 px-3 py-2"
+                        title={`${recovery.failure.message}${recovery.lastStep ? `\nStopped at: ${recovery.lastStep}` : ""}`}
+                      >
+                        {resuming ? (
+                          <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
+                        ) : (
+                          <span
+                            className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-amber-400"
+                            aria-hidden="true"
+                          >
+                            !
+                          </span>
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <OverflowMarquee className="text-xs text-gray-300">
+                            {recovery.filename}
+                          </OverflowMarquee>
+                          <span className="block truncate text-[11px] text-amber-300/90">
+                            {resuming
+                              ? "Resuming from the kept upload…"
+                              : recovery.failure.kind === "provider-quota"
+                                ? "Upload kept — the model was rate-limited or out of credits"
+                                : "Upload kept — processing failed"}
+                          </span>
+                        </span>
+                        {!resuming && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => resumeUploadRecovery(recovery)}
+                              className="shrink-0 rounded-md border border-gray-700 px-2 py-0.5 text-[11px] font-medium text-gray-200 transition-colors hover:border-gray-500 hover:text-white"
+                              aria-label={`Resume upload of ${recovery.filename}`}
+                              title="Resume with the current model; OCR progress is restored"
+                            >
+                              Resume
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void discardUploadRecovery(recovery)}
+                              className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-white"
+                              aria-label={`Discard kept upload of ${recovery.filename}`}
+                              title="Discard the kept upload"
+                            >
+                              <svg
+                                className="h-3.5 w-3.5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M6 18 18 6M6 6l12 12"
+                                />
+                              </svg>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {activeUploadTasks.length > 0 && (
                 <div className="border-b border-gray-800/70 py-1">
                   {activeUploadTasks.flatMap((task) =>
@@ -16486,7 +16888,7 @@ if (careerOpsAgent) {
                   <Spinner className="w-4 h-4 text-gray-700" />
                 </div>
               ) : documentSourceDocuments.length === 0 ? (
-                !isUploading && (
+                !isUploading && uploadRecoveries.length === 0 && (
                   <div className="flex flex-col items-center py-6 px-4 text-center">
                     <p className="text-xs text-gray-600 mb-2">
                       No source documents yet
@@ -16841,6 +17243,7 @@ if (careerOpsAgent) {
           <div className="flex items-center gap-2">
             <ArtifactArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             Artifacts
+            {artifactCount > 0 ? ` (${artifactCount})` : ""}
           </div>
           <svg
             className={`w-3.5 h-3.5 transition-transform duration-200 ${artifactsExpanded ? "" : "rotate-180"}`}
@@ -16866,6 +17269,7 @@ if (careerOpsAgent) {
               hideHeader
               gardenSlug={clusterSlug}
               sourceSurface="garden_chat"
+              onArchiveCountChange={setArtifactCount}
             />
           </div>
         ) : null}
@@ -16979,7 +17383,7 @@ if (careerOpsAgent) {
                     ? "Close Learn panel"
                     : learnBusy ||
                         learnCancelBusy ||
-                        isLearnActive(learnState?.job?.status)
+                        learnOperationActive
                       ? "Learn is running. Open Learn panel"
                       : "Open Learn panel"
                   : "Upload sources before learning"
@@ -16988,7 +17392,7 @@ if (careerOpsAgent) {
             >
               {learnBusy ||
               learnCancelBusy ||
-              isLearnActive(learnState?.job?.status) ? (
+              learnOperationActive ? (
                 <Spinner className="h-3.5 w-3.5" />
               ) : (
                 <svg
@@ -17081,7 +17485,7 @@ if (careerOpsAgent) {
           }
           openPanel={sidePanel}
           panels={GARDEN_PANELS}
-          onNewChat={handleNewChat}
+          onNewChat={handleNewSavedChat}
           onTogglePanel={(panel) => {
             setProductPanel(null);
             setSidePanel((current) => (current === panel ? null : panel));
@@ -17406,8 +17810,75 @@ if (careerOpsAgent) {
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-900"
           style={composerInset.style}
+          data-temporary-chat={temporaryChat ? "true" : undefined}
         >
+          {newChatPageSelected ? (
+            <button
+              type="button"
+              onClick={toggleTemporaryChat}
+              disabled={canStopGardenChat || chatContentLoading}
+              aria-pressed={temporaryChat}
+              className={`absolute right-3 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                temporaryChat
+                  ? "text-[var(--botanical)]"
+                  : "text-gray-500 hover:text-gray-200"
+              }`}
+              title={
+                temporaryChat
+                  ? "Temporary chat is on — click to return. This chat is not in your history and is not used or saved as memory."
+                  : "Temporary chat: start a chat kept out of your history and memory, both ways"
+              }
+              aria-label={
+                temporaryChat
+                  ? "Turn off temporary chat"
+                  : "Turn on temporary chat"
+              }
+            >
+              <svg
+                className="h-[26px] w-[26px]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.7}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  strokeDasharray="3.6 3"
+                  d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+                />
+                {temporaryChat ? (
+                  <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
+                ) : null}
+              </svg>
+            </button>
+          ) : null}
+          {temporaryChat ? (
+            <div
+              role="status"
+              className="flex shrink-0 items-center gap-2 border-b border-emerald-800/50 bg-emerald-950/30 py-2 pl-4 pr-12 text-[11px] text-emerald-300"
+            >
+              <svg
+                className="h-3.5 w-3.5 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  strokeDasharray="3.6 3"
+                  d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+                />
+              </svg>
+              <strong className="font-semibold">Temporary chat enabled</strong>
+            </div>
+          ) : null}
           {renderLearnPanel()}
+          <TextHighlightSaveStatus error={highlightSaveError || inlineHighlightSaveError || deletedHighlightSaveError} />
           {/* Positioning context for the jump control, so it floats at the foot
               of the transcript rather than below the composer. */}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -17416,6 +17887,8 @@ if (careerOpsAgent) {
               className="bb-chat-scroller bb-chat-scroll-tail flex flex-1 flex-col overflow-y-auto px-4 py-6"
             >
               <ChatTranscript
+                modelChangesFor={modelChangesFor}
+                naturalRewriteFor={naturalRewriteFor}
                 clusterName={clusterName}
                 clusterSlug={clusterSlug}
                 greeting={chatGreeting.greeting}
@@ -17452,7 +17925,6 @@ if (careerOpsAgent) {
                 annotationsByMessage={annotationsByMessage}
                 onTextSelection={receiveTextSelection}
                 onOpenAnnotation={openAnnotation}
-                inlineArtifactRetireVersion={inlineArtifactRetireVersion}
                 delegationInFlight={delegationInFlight}
                 transcriptScrollRef={transcriptScrollRef}
                 transcriptVirtual={transcriptVirtual}
@@ -17481,8 +17953,10 @@ if (careerOpsAgent) {
               selection={selectionMenu}
               highlighted={selectionIsHighlighted}
               highlightColor={selectionHighlightColor}
+              note={selectedChatHighlight?.note}
               onHighlightColor={applySelectionHighlight}
               onRemoveHighlight={removeSelectionHighlight}
+              onSaveNote={saveSelectionNote}
               onAskInChat={
                 canAskSelection
                   ? () => beginSelectionQuestion("chat")
@@ -17503,11 +17977,14 @@ if (careerOpsAgent) {
               <InlineSelectionAnswerPopover
                 key={openAnswer.id}
                 anchor={openAnswer.anchor}
+                selection={thread.selection}
                 question={thread.question}
                 answer={thread.answer}
                 pending={thread.pending}
                 usage={thread.usage}
                 responseDurationMs={thread.responseDurationMs}
+                responseCompletedAt={thread.responseCompletedAt}
+                verification={thread.verification}
                 startedAt={thread.startedAt}
                 answerMessageId={thread.answerMessageId}
                 annotations={
@@ -17529,12 +18006,12 @@ if (careerOpsAgent) {
                 }
                 onDelete={() => deleteInlineSelection(thread.selection.id)}
                 onStop={
-                  thread.pending && steerableTurnActive
-                    ? stopActiveGardenTurn
+                  thread.pending
+                    ? () => void stopInlineQuestion(thread.selection.id)
                     : undefined
                 }
                 onAskAgain={
-                  canAskSelection && !isStreaming && !chatContentLoading
+                  canAskSelection && !thread.pending && !chatContentLoading
                     ? (question: string) =>
                         askInlineSelectionAgain(thread.selection, question)
                     : undefined
@@ -17618,13 +18095,6 @@ if (careerOpsAgent) {
               className="hidden"
             />
 
-            {composerSelection ? (
-              <SelectionComposerContext
-                selection={composerSelection}
-                onCancel={cancelSelectionQuestion}
-                widthClassName="max-w-5xl"
-              />
-            ) : null}
             <AssistantComposer
               capabilitySessionId={activeChat?.conversationId ?? null}
               capabilitySurface="garden_chat"
@@ -17634,11 +18104,7 @@ if (careerOpsAgent) {
               onChange={setInput}
               onSubmit={submitComposer}
               onSubmitDuringRun={
-                composerSelection?.mode === "inline" &&
-                steerableTurnActive &&
-                !externalRunHoldsQueue
-                  ? submitComposer
-                  : undefined
+                composerSelection?.mode === "inline" ? submitComposer : undefined
               }
               onRunWorkflow={runWorkflowAutomation}
               history={sentMessages}
@@ -17653,13 +18119,25 @@ if (careerOpsAgent) {
               externalRunActive={
                 externalRunHoldsQueue || respondingToInlineSelection
               }
-              headerContent={queuedFollowUpsHeader}
+              headerContent={queuedFollowUpsHeader || composerSelection ? (
+                <>
+                  {queuedFollowUpsHeader}
+                  {composerSelection ? (
+                    <SelectionComposerContext
+                      selection={composerSelection}
+                      onCancel={cancelSelectionQuestion}
+                      widthClassName="max-w-5xl"
+                      attached
+                    />
+                  ) : null}
+                </>
+              ) : undefined}
               canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
               model={model}
               models={models}
               modelsLoading={modelsLoading}
               onLoadModels={() => void loadModels()}
-              onModelChange={setModel}
+              onModelChange={changeModel}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
               intelligenceModes={intelligenceModes}
@@ -17668,8 +18146,12 @@ if (careerOpsAgent) {
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
               voiceMessages={messages}
+              voiceConversationId={activeChatId}
+              voiceCreatedConversationId={createdChatId}
               runState={
-                !isStreaming || respondingToInlineSelection
+                stoppingGardenChat
+                  ? "stopping"
+                  : !isStreaming || respondingToInlineSelection
                   ? "idle"
                   : visibleAgentConnection === "waiting"
                     ? "waiting_for_permission"
@@ -17677,9 +18159,12 @@ if (careerOpsAgent) {
                       ? "connecting"
                       : "running"
               }
-              onQueueSteer={queueFollowUp}
+              onQueueSteer={(text, attachments) => {
+                queueFollowUp(text, attachments, composerSelection ?? undefined);
+                setComposerSelection(null);
+              }}
               onStop={
-                steerableTurnActive && !respondingToInlineSelection
+                canStopGardenChat
                   ? stopActiveGardenTurn
                   : undefined
               }
@@ -17703,7 +18188,6 @@ if (careerOpsAgent) {
               openPlanterAgent={openPlanterAgent}
               onSelectOpenPlanter={() => void selectOpenPlanter()}
               onSelectSocialsManager={() => {}}
-              onSelectOpenGym={() => {}}
               onSelectHardwareBlueprint={() => {}}
               onSelectParametricCad={() => {}}
               onSelectHyperframes={() => {}}
@@ -18765,6 +19249,29 @@ onClearCareerOps={() => {
                           {status === "error" && error && (
                             <p className="mt-1.5 pl-6 text-[11px] leading-4 text-red-300">
                               {error}
+                              {modalUploadRecoveryIds[key] && (
+                                <>
+                                  {" "}
+                                  <span className="text-gray-400">
+                                    The upload was kept.
+                                  </span>{" "}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const recovery = uploadRecoveries.find(
+                                        (candidate) =>
+                                          candidate.recoveryId ===
+                                          modalUploadRecoveryIds[key],
+                                      );
+                                      if (recovery) resumeUploadRecovery(recovery);
+                                      else void fetchUploadRecoveries();
+                                    }}
+                                    className="text-white underline underline-offset-2 transition-colors hover:text-gray-200"
+                                  >
+                                    Resume with the current model
+                                  </button>
+                                </>
+                              )}
                             </p>
                           )}
                         </div>

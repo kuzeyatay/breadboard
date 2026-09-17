@@ -27,6 +27,7 @@ const eslintConfig = defineConfig([
     "db/**",
     "goal-mode/**",
     "hyperframes-cli/**",
+    "hyperframes-browser/**",
     "hyperframes-runs/**",
     "loopx-goals/**",
     "openscience-cli/**",

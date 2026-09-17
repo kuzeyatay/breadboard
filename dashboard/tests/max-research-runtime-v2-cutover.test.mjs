@@ -25,6 +25,17 @@ const dashboardRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const source = (relativePath) =>
   fs.readFileSync(path.join(dashboardRoot, relativePath), "utf8").replace(/\r\n/g, "\n");
 
+test("research interruption preserves its terminal outcome and runtime timestamp", () => {
+  assert.deepEqual(terminalResultFromEvents([{
+    sequenceNumber: 697,
+    type: "run.aborted",
+    payload: { interrupted: true, summary: "Interrupted" },
+    at: "2026-09-06T20:18:28.852Z",
+  }]), {
+    outcome: "aborted", content: "Interrupted", terminalAtMs: 1788725908852,
+  });
+});
+
 function request(overrides = {}) {
   return {
     question: "What evidence explains the observed change?",

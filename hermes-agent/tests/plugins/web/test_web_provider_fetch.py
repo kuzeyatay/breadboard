@@ -174,3 +174,120 @@ def test_policy_blocked_host_never_reaches_the_network(
     result = _provider().extract(["https://blocked.example/page"])[0]
     assert result["error"] == "Blocked by website policy"
     assert result["blocked_by_policy"]["rule"] == "denylist"
+
+
+# ---------------------------------------------------------------------------
+# NCBI page URLs are served from E-utilities, not from the page front end
+# ---------------------------------------------------------------------------
+
+PUBMED_RECORD = (
+    "1. Commun Biol. 2024 Oct 23;7(1):1376. doi: 10.1038/s42003-024-07026-3.\n\n"
+    "Rapid modulation in music supports attention in listeners with attentional \n"
+    "difficulties.\n\n"
+    "Woods KJP(1), Sampaio G(2).\n\n"
+    "Background music is widely used to sustain attention.\n\n"
+    "DOI: 10.1038/s42003-024-07026-3\nPMID: 39443657\n"
+)
+
+PMC_ARTICLE = (
+    '<?xml version="1.0"?><pmc-articleset><article><front><journal-meta>'
+    "<journal-title>Commun Biol</journal-title></journal-meta><article-meta>"
+    "<title-group><article-title>Rapid <italic>modulation</italic> in music</article-title>"
+    "</title-group></article-meta></front>"
+    "<abstract><p>Background music is widely used.</p></abstract>"
+    "<body><sec><title>Results</title><p>Modulated music improved SART scores.</p>"
+    "<table-wrap><table><tr><td>cell noise</td></tr></table></table-wrap></sec></body>"
+    "<back><ref-list><ref>Reference noise</ref></ref-list></back>"
+    "</article></pmc-articleset>"
+)
+
+
+class _Reply:
+    def __init__(self, text: str, status_code: int = 200) -> None:
+        self.text = text
+        self.status_code = status_code
+
+
+def _eutils(monkeypatch: pytest.MonkeyPatch, replies: dict[str, _Reply]) -> list[dict]:
+    """Patch ``httpx.get`` to answer efetch by ``db`` and record the calls."""
+    import httpx
+
+    calls: list[dict] = []
+
+    def fake_get(url: str, params: dict | None = None, **kwargs):
+        assert url.startswith("https://eutils.ncbi.nlm.nih.gov/")
+        calls.append(dict(params or {}))
+        return replies[(params or {})["db"]]
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    return calls
+
+
+def test_pubmed_page_url_is_read_through_eutils(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PubMed's HTML front answers every non-browser client with a bare 403."""
+
+    def forbidden(url: str):  # pragma: no cover — the front end must not be asked
+        raise AssertionError("PubMed page was fetched directly")
+
+    monkeypatch.setattr("plugins.web.fetch.provider._fetch", forbidden)
+    calls = _eutils(monkeypatch, {"pubmed": _Reply(PUBMED_RECORD)})
+
+    result = _provider().extract(["https://pubmed.ncbi.nlm.nih.gov/39443657/"])[0]
+
+    assert calls == [
+        {"db": "pubmed", "id": "39443657", "rettype": "abstract", "retmode": "text"}
+    ]
+    assert result["title"] == (
+        "Rapid modulation in music supports attention in listeners with attentional difficulties."
+    )
+    assert "Background music is widely used" in result["content"]
+    assert result["metadata"]["via"] == "ncbi-eutils"
+    assert "error" not in result
+
+
+def test_pmc_article_url_is_read_as_full_text_jats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both PMC URL spellings resolve to the same efetch call, and the JATS
+    apparatus (tables, references) is left out of the readable text."""
+    monkeypatch.setattr("plugins.web.fetch.provider._fetch", lambda url: (_ for _ in ()).throw(AssertionError(url)))
+    calls = _eutils(monkeypatch, {"pmc": _Reply(PMC_ARTICLE)})
+
+    results = _provider().extract(
+        [
+            "https://pmc.ncbi.nlm.nih.gov/articles/PMC11499863/",
+            "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11499863",
+        ]
+    )
+
+    assert calls == [{"db": "pmc", "id": "11499863", "retmode": "xml"}] * 2
+    for result in results:
+        assert result["title"] == "Rapid modulation in music"
+        assert "Modulated music improved SART scores." in result["content"]
+        assert "Background music is widely used." in result["content"]
+        assert "cell noise" not in result["content"]
+        assert "Reference noise" not in result["content"]
+
+
+def test_unknown_ncbi_id_falls_through_to_the_page_and_reports_its_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _eutils(monkeypatch, {"pubmed": _Reply("1. \n")})
+
+    def forbidden(url: str):
+        raise RuntimeError("The page returned HTTP 403")
+
+    monkeypatch.setattr("plugins.web.fetch.provider._fetch", forbidden)
+
+    result = _provider().extract(["https://pubmed.ncbi.nlm.nih.gov/999999999999/"])[0]
+    assert result["error"] == "The page returned HTTP 403"
+
+
+def test_other_ncbi_pages_still_use_the_plain_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("eutils asked")))
+    monkeypatch.setattr(
+        "plugins.web.fetch.provider._fetch",
+        lambda url: (url, "text/html", PAGE),
+    )
+    result = _provider().extract(["https://www.ncbi.nlm.nih.gov/books/NBK1234/"])[0]
+    assert result["title"] == "Student teams"

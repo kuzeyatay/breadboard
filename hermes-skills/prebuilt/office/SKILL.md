@@ -1,6 +1,6 @@
 ---
 name: office
-description: Create, inspect and edit real Office documents — Word (.docx), Excel (.xlsx), PowerPoint (.pptx) — with the OfficeCLI document DOM, then hand the finished file to the user as an artifact. Use for "make me a report/deck/spreadsheet", "fix the formatting in this docx", "add a chart", "build a pivot table", "turn these numbers into an xlsx".
+description: Create, inspect and edit real Office documents — Word (.docx), Excel (.xlsx), PowerPoint (.pptx) — with the OfficeCLI document DOM. Use for explicit file requests such as "make a Word document/deck/spreadsheet", "fix the formatting in this docx", "add a chart to this workbook", "turn these numbers into an xlsx". Writing prose from an attached PDF does not request an Office file.
 license: MIT
 allowed-tools:
   - office_run
@@ -10,6 +10,12 @@ allowed-tools:
 ---
 
 # Office
+
+Use file authoring and export only when the user requests a document or file,
+or asks to edit or convert an existing file. Requests to write or continue text,
+including a chapter or report based on an attached PDF, are answered in chat
+unless the user specifies file delivery. Automatic selection of this skill
+does not change the requested output. Read-only document work owes no export.
 
 Real .docx, .xlsx and .pptx files. OfficeCLI remains the authoring path for new
 documents: `office_run` executes one command and `office_export` hands the

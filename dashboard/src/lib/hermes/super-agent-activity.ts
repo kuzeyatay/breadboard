@@ -2,6 +2,8 @@ import {
   sumChatTokenUsage,
   type ChatTokenUsage,
 } from "../chat-token-usage.ts";
+import { assistantHandoffContent, type AssistantHandoffMessage } from "./assistant-visible-content.ts";
+import type { MaxResearchProgress } from "../max-research/progress.ts";
 
 const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   agent_launch: "Choosing an agent",
@@ -14,6 +16,7 @@ const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   tool_search: "Inspecting capabilities",
   tool_describe: "Inspecting capability",
   research_begin: "Planning research",
+  feynman_research: "Finding and ranking papers",
   research_record: "Recording research",
   research_status: "Checking research coverage",
   delegate_task: "Starting specialist",
@@ -106,20 +109,17 @@ interface DelegationPresentationMessage {
   internalAgentContinuation?: boolean;
   delegatedAgentRun?: boolean;
   delegatedAgentPreamble?: string;
-  openGymRun?: unknown;
   godsEyeRun?: unknown;
   modelChange?: unknown;
   textSelection?: { mode?: string };
+  maxResearchRun?: { runId: string };
 }
 
-// openGym and God's Eye answer with their own self-contained presentation — a
-// framed animation, a framed globe — so a delegation to them stays a visible
-// row instead of a hidden worker awaiting synthesis.
+// God's Eye presents its globe directly, so its delegation remains visible.
 function selfPresentingDelegation(message: {
-  openGymRun?: unknown;
   godsEyeRun?: unknown;
 }): boolean {
-  return Boolean(message.openGymRun || message.godsEyeRun);
+  return Boolean(message.godsEyeRun);
 }
 
 function visibleAssistantCandidate(
@@ -161,6 +161,14 @@ export function supersededDelegationAssistantIndices(
       visibleAssistantIndex >= 0
     ) {
       const visibleAssistant = messages[visibleAssistantIndex]!;
+      if (
+        selfPresentingDelegation(message) &&
+        delegatedWorkersForMessage(messages, visibleAssistantIndex).length > 0
+      ) {
+        // A sibling widget cannot speak for hidden research work. Keep its
+        // launching row (and progress) until a synthesis replaces that row.
+        continue;
+      }
       if (!selfPresentingDelegation(visibleAssistant)) {
         superseded.add(visibleAssistantIndex);
       }
@@ -205,13 +213,17 @@ export function delegatedThinkingUpdates(
   message: Pick<
     DelegationPresentationMessage,
     "progressNotes" | "delegatedAgentPreamble"
-  >,
+  > & AssistantHandoffMessage,
   inheritedPreamble = "",
+  researchProgress?: { priorNotes: string[]; currentNotes: string[] },
 ): string[] {
   return [
+    ...(researchProgress?.priorNotes.length ? [inheritedPreamble, ...researchProgress.priorNotes] : []),
     ...(message.progressNotes ?? []),
     message.delegatedAgentPreamble ?? "",
+    assistantHandoffContent(message),
     inheritedPreamble,
+    ...(researchProgress?.currentNotes ?? []),
   ].reduce<string[]>((updates, value) => {
     const update = value.trim();
     if (update && !updates.includes(update)) updates.push(update);
@@ -268,6 +280,25 @@ function delegatedContinuationPriorPhases(
   return containsDelegatedWorker ? phases.reverse() : [];
 }
 
+/** Keep research milestones with the answer through hand-back and reload. */
+export function delegatedResearchProgressForMessage(
+  messages: readonly (DelegationPresentationMessage & { externalAgentOutcome?: string })[],
+  assistantIndex: number,
+  progress: Readonly<Record<string, MaxResearchProgress>>,
+): { stage: string; priorNotes: string[]; currentNotes: string[] } {
+  const workers = delegatedWorkersForMessage(messages, assistantIndex);
+  const notesFor = (phases: readonly DelegationPresentationMessage[]) => phases.flatMap((phase) =>
+    phase.delegatedAgentRun && phase.maxResearchRun ? progress[phase.maxResearchRun.runId]?.notes ?? [] : [],
+  );
+  return {
+    stage: workers.filter((worker) => !worker.externalAgentOutcome || worker.externalAgentOutcome === "running")
+      .map((worker) => worker.maxResearchRun ? progress[worker.maxResearchRun.runId]?.stage : "")
+      .filter(Boolean).join(" · "),
+    priorNotes: notesFor(delegatedContinuationPriorPhases(messages, assistantIndex)),
+    currentNotes: notesFor(workers),
+  };
+}
+
 /** The elapsed time a hand-back inherits from all of its earlier phases. */
 export function delegatedTurnCarriedDurationMs(
   messages: readonly DelegatedContinuationPhaseMessage[],
@@ -302,10 +333,11 @@ export function delegatedTurnTotalUsage(
   assistantIndex: number,
   continuation: ChatTokenUsage | undefined,
 ): ChatTokenUsage | undefined {
-  const priorUsages = delegatedContinuationPriorPhases(messages, assistantIndex)
+  const phases = delegatedContinuationPriorPhases(messages, assistantIndex);
+  const priorUsages = phases
     .map((phase) => phase.usage)
     .filter((usage): usage is ChatTokenUsage => Boolean(usage));
-  if (priorUsages.length === 0) return continuation;
+  if (phases.length === 0 || (priorUsages.length === 0 && !continuation)) return continuation;
   const usages = continuation ? [...priorUsages, continuation] : priorUsages;
   const latestUsage = continuation ?? priorUsages.at(-1);
   const apiCalls =
@@ -316,6 +348,8 @@ export function delegatedTurnTotalUsage(
     // sumChatTokenUsage drops a legacy cumulative session snapshot rather than
     // double-counting rows it already covers; that rule holds here too.
     ...sumChatTokenUsage(usages),
+    ...(phases.some(phase => !phase.usage) || !continuation || usages.some(usage => usage.partial)
+      ? { partial: true } : {}),
     ...(latestUsage?.scope ? { scope: latestUsage.scope } : {}),
     ...(apiCalls !== undefined ? { apiCalls } : {}),
     ...(latestUsage?.contextUsedTokens !== undefined
@@ -339,13 +373,47 @@ interface DelegatedWorkerMessage {
   content: string;
   delegatedAgentRun?: boolean;
   delegatedAgentPreamble?: string;
-  openGymRun?: unknown;
   godsEyeRun?: unknown;
   internalAgentContinuation?: boolean;
   externalAgentOutcome?: string;
   externalAgentName?: string;
   externalAgentResult?: string;
   delegatedAgentReason?: string;
+  responseCompletedAt?: string;
+}
+
+/** Present a terminally interrupted hand-off as the existing assistant answer. */
+export function interruptedDelegationMessage<T extends DelegatedWorkerMessage & {
+  interrupted?: boolean;
+  responseStartedAt?: string;
+  createdAt?: string;
+  responseDurationMs?: number;
+}>(message: T, workers: readonly DelegatedWorkerMessage[]): T {
+  if (message.role !== "assistant" || delegatedWorkersOutcome(workers) === "running") {
+    return message;
+  }
+  const interrupted = workers.some((worker) =>
+    worker.externalAgentOutcome === "aborted" &&
+    worker.externalAgentResult?.trim() === "Interrupted",
+  );
+  if (!interrupted) return message;
+  const completedTimes = workers.map((worker) => Date.parse(worker.responseCompletedAt ?? ""))
+    .filter(Number.isFinite);
+  const completedAtMs = completedTimes.length ? Math.max(...completedTimes) : undefined;
+  const startedAtMs = Date.parse(message.responseStartedAt ?? message.createdAt ?? "");
+  return {
+    ...message,
+    content: "Interrupted",
+    interrupted: true,
+    failed: false,
+    runtimeError: undefined,
+    ...(completedAtMs !== undefined ? {
+      responseCompletedAt: new Date(completedAtMs).toISOString(),
+      ...(Number.isFinite(startedAtMs) ? {
+        responseDurationMs: Math.max(0, completedAtMs - startedAtMs),
+      } : {}),
+    } : {}),
+  };
 }
 
 /**
@@ -369,8 +437,8 @@ export function delegatedWorkersForMessage<T extends DelegatedWorkerMessage>(
       if (message.internalAgentContinuation === true) continue;
       break;
     }
-    if (message.delegatedAgentRun === true && !selfPresentingDelegation(message)) {
-      workers.push(message);
+    if (message.delegatedAgentRun === true) {
+      if (!selfPresentingDelegation(message)) workers.push(message);
       continue;
     }
     // A visible assistant — a hand-back or a later answer — closes the chain.

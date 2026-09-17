@@ -67,19 +67,36 @@ The same text is appended to the project's own `AGENTS.md`, under upstream's.
 
 ## The toolchain
 
-Three things are not bundled. Each resolves from an environment variable first,
-then from something already installed. The gear beside the palette entry opens a
-panel that reports all of them.
+The first video run automatically installs the CLI at the version pinned by the
+bundled HyperFrames source. Installation runs inside the supervised video worker,
+is cancelled when the run stops, and is reused by subsequent runs. Concurrent
+first runs reuse the first successfully published install. The gear beside the
+palette entry reports the tools and can prepare the CLI ahead of time.
 
 | Piece | Resolution order | Blocking |
 | --- | --- | --- |
-| HyperFrames CLI | `HYPERFRAMES_BIN` → built clone (`packages/cli/dist`) → Breadboard's npm prefix (`dashboard/hyperframes-cli`) → `hyperframes` on PATH | yes — the panel installs it, pinned to the clone's own version |
-| ffmpeg / ffprobe | `HYPERFRAMES_FFMPEG_PATH` → `agent-reach/.tools/bin` → PATH | yes — the CLI has no install path for it |
-| Chromium | `HYPERFRAMES_BROWSER_PATH` → installed Chrome or Edge | no — the CLI downloads a headless shell on first render |
+| HyperFrames CLI | `HYPERFRAMES_BIN` → built clone (`packages/cli/dist`) → Breadboard's npm prefix (`<data>/hyperframes-cli`) → `hyperframes` on PATH | prepared automatically on first use; requires network once |
+| ffmpeg / ffprobe | `HYPERFRAMES_FFMPEG_PATH` / `HYPERFRAMES_FFPROBE_PATH` → shared `FFMPEG_PATH` / `FFPROBE_PATH` → `desktop/resources/bin` → `agent-reach/.tools/bin` → PATH | both required; the desktop Runtime supplies its bundled media tools |
+| Chromium | explicit `HYPERFRAMES_BROWSER_PATH` → the CLI's compatible headless Chromium cache/download | no manual setup; system Edge is no longer forced as the renderer |
 | Coding runtime | `CODEX_BIN` → built `codex/` clone → `codex` on PATH | yes |
 
-Reusing Agent Reach's portable ffmpeg and the system Edge is deliberate: a
-working install needs no admin rights and no second copy of anything.
+The CLI lives under Breadboard's writable data directory, while the cloned source
+and skills remain untouched. A missing or invalid version pin blocks installation;
+setup never falls back to `latest`. Health checks only inspect the filesystem and
+Runtime's Codex probe; opening settings does not install anything.
+
+Desktop builds include npm beside Node and stage Codex with its matching command
+host and shell helpers for both video workers and the isolated health probe.
+Setup invokes npm through that Node directly,
+without relying on a user's PATH. Windows extended-length paths are normalized
+for Node entrypoints and shell commands while real junctions remain rejected.
+
+The worker prepares Chromium under `<data>/hyperframes-browser` using the CLI's
+`browser ensure` / `browser path` commands, then passes that executable into the
+isolated run environment. Subsequent runs reuse that cache instead of downloading
+a browser into every disposable home. An explicit browser override is honored.
+Browser profiles use a short, attempt-specific directory under
+`<data>/runtime-v2/temp` so Chromium does not exceed Windows' path-length limit.
 
 Every spawn also carries `HYPERFRAMES_SKIP_SKILLS=1`,
 `HYPERFRAMES_NO_UPDATE_CHECK=1` and telemetry off. Without the first,
@@ -136,8 +153,23 @@ fixed both, passed, rendered a 123 KB MP4, and answered in plain language with
 the colours and timings it chose. The run manager reported every stage, the
 artifact list, `render.completed`, and token usage.
 
-Not yet exercised: the browser auto-download path (a Chromium was always
-present), and the desktop build's service definitions.
+On 2026-09-12, the live desktop request path installed the pinned CLI and managed
+Chromium, authored and rendered a three-second 640×360 H.264 MP4, and served its
+artifact with HTTP 206 after restart. Regression coverage includes native Windows
+paths, shell invocation, missing npm and Codex helpers, and short browser profiles.
+The final temporary-directory default is also checked with real lint/check/render
+commands in a full-length Runtime workspace.
+
+Completed chat runs publish the verified `out/video.mp4` into the shared artifact
+store before the terminal callback finishes. The receipt is scoped to the run's
+user and conversation, checked against the exact Runtime attempt and file size,
+and copied byte-for-byte. Replays reuse the artifact; deleting it does not cause
+it to be recreated. Reopening an older conversation recovers missing imports.
+
+A single completed HyperFrames handback delivers that artifact directly from its
+durable worker receipt, without another model call. Internal worker output does
+not enter filesystem preflight or automatic CAD intent selection. This prevents
+the handback's download-link wording from becoming a new permission request.
 
 ## Known limits
 

@@ -16,14 +16,10 @@ import {
 } from "@/lib/hermes/runtime-store.ts";
 import { HUMANIZER_TOOLS } from "@/lib/hermes/tool-scopes.ts";
 import {
-  humanizerDevice,
-  humanizerMode,
-  humanizerModel,
-  humanizerRevision,
   HUMANIZER_MAX_TEXT_CHARS,
 } from "@/lib/humanizer/config.ts";
 import { describeWarnings, scoreReview } from "@/lib/humanizer/review.ts";
-import { humanizerHealth, humanizerRewrite } from "@/lib/humanizer/service.ts";
+import { humanizerToolStatus, humanizerRewrite } from "@/lib/humanizer/service.ts";
 import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
@@ -103,39 +99,7 @@ export async function POST(request: Request) {
 
     let data: unknown;
     if (toolName === "humanize_status") {
-      const health = await humanizerHealth();
-      const state =
-        humanizerMode() === "disabled"
-          ? "disabled"
-          : health.status === "unreachable"
-            ? "unavailable"
-            : health.status === "degraded"
-              ? "error"
-              : health.modelState === "not_installed"
-                ? "not_installed"
-                : "ready";
-      data = {
-        state,
-        ready: state === "ready",
-        modelId: health.modelId || humanizerModel(),
-        modelRevision: health.modelRevision || humanizerRevision(),
-        requestedDevice: humanizerDevice(),
-        device: health.device,
-        busy: health.busy,
-        // Sentences, because this is the thing the model has to relay when it
-        // cannot do what was asked. A status code alone gets paraphrased into
-        // something less true.
-        summary:
-          state === "ready"
-            ? `The local rewriter is ready (${health.modelId} on ${health.device}).`
-            : state === "not_installed"
-              ? "The rewriting model has not been downloaded on this machine. It is an explicit opt-in: `npm run setup:humanizer -- --download-model`."
-              : state === "disabled"
-                ? "Local rewriting is switched off in this installation's settings."
-                : state === "error"
-                  ? "The local rewriter is installed but not usable right now."
-                  : "The local rewriter is not running on this machine. It is an optional local service: `npm run setup:humanizer`, then start Breadboard again.",
-      };
+      data = await humanizerToolStatus();
     } else {
       const text = typeof args.text === "string" ? args.text : "";
       if (!text.trim()) {

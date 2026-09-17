@@ -96,6 +96,24 @@ test("a failed lookup names the action, not the tool", () => {
   assert.doesNotMatch(markup, /web_search/);
 });
 
+test("explanation review outcomes remain distinct from factual verification", () => {
+  const review = {
+    status: "repaired", reason: "One repair addressed the review's gaps. This is not independent factual verification.",
+    model: "gpt-5.6-sol", obligations: [], calls: 3, durationMs: 100,
+    coverage: [{ id: "m1", status: "missing", quotes: [], reason: "The initiating interaction was missing.", consequence: "The reader could infer the wrong order." }],
+  };
+  const repaired = render(summary({ explanationReview: review }));
+  assert.match(repaired, /Explanation coverage/);
+  assert.match(repaired, /Addressed:/);
+  assert.match(repaired, /not independent factual verification/);
+  const unavailable = render(summary({ explanationReview: { ...review, status: "unavailable", reason: "Review timed out; draft retained." } }));
+  assert.match(unavailable, /Review timed out/);
+  assert.match(unavailable, /Review concern:/);
+  const rejected = render(summary({ explanationReview: { ...review, status: "unavailable", repairConcerns: [{ quotes: ["Wrong direction."], reason: "The revision reversed the field direction." }] } }));
+  assert.match(rejected, /Rejected repair: The revision reversed the field direction/);
+  assert.doesNotMatch(render(summary()), /Explanation coverage/);
+});
+
 test("delegated runtime agents appear in the ledger", () => {
   const markup = render(
     summary({

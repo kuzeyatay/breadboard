@@ -7,8 +7,10 @@ import { removeConversationAudioBlobs } from "./audio-uploads.ts";
 import { removeConversationStoredFileBlobs } from "./stored-file-uploads.ts";
 import db from "../db.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
+import { stripEchoedAskHereWrapper } from "./message-context.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
+import { normalizeChatTextSelectionReference, type ChatTextSelectionReference } from "../chat-text-selection.ts";
 // memory.ts imports this module too. The cycle is safe: both sides only touch
 // each other's exports inside function bodies, never during module evaluation.
 import { compactConversationMemoryIfNeeded } from "./memory.ts";
@@ -176,6 +178,7 @@ export function ensureConversationForLegacyChatSession(
   chatSessionId: number,
   userId: number,
   database: Database.Database = db,
+  options: { temporary?: boolean } = {},
 ): ConversationRow {
   const ensure = database.transaction(() => {
     const session = database.prepare(`
@@ -233,14 +236,15 @@ export function ensureConversationForLegacyChatSession(
     const result = database.prepare(`
       INSERT INTO conversations
         (public_id, user_id, title, surface, scope_kind, default_garden_id,
-         legacy_chat_session_id, created_at, updated_at)
-      VALUES (?, ?, ?, 'garden_chat', 'garden', ?, ?, ?, ?)
+         legacy_chat_session_id, temporary, created_at, updated_at)
+      VALUES (?, ?, ?, 'garden_chat', 'garden', ?, ?, ?, ?, ?)
     `).run(
       publicId,
       userId,
       normalizeTitle(session.title),
       session.cluster_id,
       session.id,
+      options.temporary ? 1 : 0,
       session.created_at,
       session.updated_at,
     );
@@ -685,9 +689,11 @@ export function reserveConversationTurn(input: {
     const active = database.prepare(`
       SELECT client_message_id FROM conversation_messages
       WHERE conversation_id = ? AND role = 'assistant' AND status = 'pending'
+        AND COALESCE(json_extract(metadata, '$.textSelection.mode'), '') <> 'inline'
       LIMIT 1
     `).get(input.conversation.id) as { client_message_id: string } | undefined;
-    if (active && !input.allowActiveTurnWithinTransaction) {
+    const inlineQuestion = normalizeChatTextSelectionReference(input.metadata?.textSelection)?.mode === "inline";
+    if (active && !inlineQuestion && !input.allowActiveTurnWithinTransaction) {
       throw new ConversationStoreError(
         409,
         "conversation_turn_active",
@@ -767,6 +773,7 @@ export function reserveLegacyGardenAssistantTurn(input: {
   content: string;
 }, database: Database.Database = db): {
   clientMessageId: string;
+  userMessage: ConversationMessageRow;
   assistantMessage: ConversationMessageRow;
 } {
   const content = normalizeMessageContent(input.content);
@@ -804,6 +811,7 @@ export function reserveLegacyGardenAssistantTurn(input: {
       dualWriteAssistantMessage(input.conversation, existing, database);
       return {
         clientMessageId: user.client_message_id,
+        userMessage: user,
         assistantMessage: existing,
       };
     }
@@ -849,6 +857,7 @@ export function reserveLegacyGardenAssistantTurn(input: {
     dualWriteAssistantMessage(conversation, assistantMessage, database);
     return {
       clientMessageId: user.client_message_id,
+      userMessage: user,
       assistantMessage,
     };
   });
@@ -992,13 +1001,15 @@ export function cancelConversationTurn(input: {
 export function cancelLatestConversationTurn(
   conversationId: number,
   database: Database.Database = db,
+  excludeInline = false,
 ): ConversationMessageRow | null {
   const latest = database.prepare(`
     SELECT * FROM conversation_messages
     WHERE conversation_id = ? AND role = 'assistant'
+      AND (? = 0 OR COALESCE(json_extract(metadata, '$.textSelection.mode'), '') <> 'inline')
     ORDER BY order_index DESC
     LIMIT 1
-  `).get(conversationId) as ConversationMessageRow | undefined;
+  `).get(conversationId, excludeInline ? 1 : 0) as ConversationMessageRow | undefined;
   if (
     !latest ||
     (latest.status !== "pending" && !isPreDispatchReservedAssistant(latest))
@@ -1114,6 +1125,7 @@ export function appendConversationSteerMessage(input: {
   surface: HermesSurface;
   content: string;
   attachments?: readonly ChatMessageAttachment[];
+  textSelection?: ChatTextSelectionReference;
   /** The user is answering a question asked inside the active response. */
   clarificationAnswer?: boolean;
   targetClientMessageId?: string;
@@ -1137,6 +1149,7 @@ export function appendConversationSteerMessage(input: {
   }
   const metadata = JSON.stringify({
     courseCorrection: true,
+    ...(input.textSelection ? { textSelection: input.textSelection } : {}),
     ...(input.clarificationAnswer ? { clarificationAnswer: true } : {}),
     ...(input.attachments?.length
       ? {
@@ -1336,8 +1349,10 @@ function finishAssistantMessage(input: {
     // Every finished answer, on every surface and from every runtime, lands
     // here — which makes it the one place invisible-Unicode marks can be taken
     // out of what Breadboard says without asking each pipeline to remember.
-    // Only invisible characters are removed; the wording is untouched.
-    const content = scrubbed(input.content);
+    // Only invisible characters are removed; the wording is untouched. The one
+    // exception is an Ask here history note the model copied into its answer,
+    // which is not wording of its own.
+    const content = scrubbed(stripEchoedAskHereWrapper(input.content));
     if (
       mergedMetadata.delegatedAgentRun === true &&
       !(typeof mergedMetadata.delegatedAgentPreamble === "string" &&

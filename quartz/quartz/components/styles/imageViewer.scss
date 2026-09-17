@@ -1,0 +1,91 @@
+article.popover-hint img.quartz-image-zoom {
+  cursor: zoom-in;
+
+  &:focus-visible {
+    outline: 2px solid var(--secondary);
+    outline-offset: 4px;
+  }
+}
+
+dialog.quartz-image-viewer {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 4.5rem 1.5rem;
+  border: 0;
+  background: transparent;
+  color: white;
+  overflow: hidden;
+  overscroll-behavior: contain;
+
+  &[open] {
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 0.75rem;
+  }
+
+  &::backdrop {
+    background: rgb(0 0 0 / 88%);
+    backdrop-filter: blur(4px);
+  }
+
+  .quartz-image-viewer-image {
+    display: block;
+    width: min(calc(100vw - 3rem), calc((100dvh - 9rem) * var(--image-aspect, 1)));
+    height: auto;
+    max-width: 100%;
+    max-height: calc(100dvh - 9rem);
+    margin: 0;
+    border-radius: 6px;
+    object-fit: contain;
+    content-visibility: visible;
+  }
+
+  .quartz-image-viewer-close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    display: grid;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    padding: 0;
+    border: 1px solid rgb(255 255 255 / 25%);
+    border-radius: 50%;
+    background: rgb(255 255 255 / 10%);
+    color: white;
+    font: 2rem / 1 var(--bodyFont);
+    cursor: pointer;
+
+    &:hover {
+      background: rgb(255 255 255 / 20%);
+    }
+
+    &:focus-visible {
+      outline: 2px solid white;
+      outline-offset: 3px;
+    }
+  }
+
+  .quartz-image-viewer-caption {
+    position: absolute;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    left: 1.5rem;
+    max-width: min(70ch, calc(100vw - 3rem));
+    margin: 0 auto;
+    overflow: hidden;
+    color: rgb(255 255 255 / 85%);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

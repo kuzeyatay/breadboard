@@ -6,6 +6,7 @@ import { artifactFile, getArtifactForUser, ArtifactStoreError } from "@/lib/herm
 import { presentArtifact } from "@/lib/hermes/artifact-store.ts";
 import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-pdf-save.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
+import { withInteractiveVisualizerWheelZoom } from "@/lib/hermes/interactive-visualizer-wheel.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,7 @@ const INTERACTIVE_PREVIEW_GUARDS = `<style data-breadboard-visualizer-guards>
  * sandbox stays immutable on disk and the downloaded artifact is untouched.
  */
 function guardInteractiveVisualizerPreview(source: string): string {
+  source = withInteractiveVisualizerWheelZoom(source);
   if (source.includes("data-breadboard-visualizer-guards")) return source;
   return /<\/head\s*>/i.test(source)
     ? source.replace(/<\/head\s*>/i, `${INTERACTIVE_PREVIEW_GUARDS}</head>`)

@@ -374,6 +374,60 @@ class CouncilRuntimeTests(unittest.TestCase):
         self.assertEqual(len(run.candidates), 1)
         self.assertEqual(len(run.reviews), 1)
 
+    def test_lite_council_seats_follow_the_requested_model(self) -> None:
+        # A Learn revision asked for Gemini and got three ChatGPT calls of ~30k
+        # tokens each — candidate, critic, chair — because the unconfigured
+        # bench was always the ChatGPT default. That emptied a Plus account's
+        # weekly window in an evening. The caller's model is the bench.
+        self.config = CouncilConfig()
+        runtime, router = self._runtime()
+        run = runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "revise this paragraph"}],
+                task_type="small_revision",
+                requested_model="cliproxy/gemini-3.6-flash-high",
+            )
+        )
+        self.assertEqual(run.council_mode, "lite_council")
+        self.assertEqual(len(router.calls), 3)
+        self.assertEqual({call.model for call in router.calls}, {"cliproxy/gemini-3.6-flash-high"})
+
+    def test_full_council_seats_follow_the_resolved_model_when_default_was_asked(self) -> None:
+        self.config = CouncilConfig()
+        runtime, router = self._runtime()
+        run = runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "x" * 3000}],
+                council_mode_override="full_council",
+                requested_model_alias="default",
+                requested_model="cliproxy/gemini-3.6-flash-high",
+                resolved_model="cliproxy/gemini-3.6-flash-high",
+            )
+        )
+        self.assertEqual(run.council_mode, "full_council")
+        self.assertEqual({call.model for call in router.calls}, {"cliproxy/gemini-3.6-flash-high"})
+
+    def test_a_configured_bench_still_wins_over_the_requested_model(self) -> None:
+        # An operator who set COUNCIL_MODELS chose the bench on purpose.
+        self.config = CouncilConfig(
+            council_models=["gpt-test-a", "gpt-test-b"],
+            chairman_model="gpt-test-chairman",
+            council_models_configured=True,
+            chairman_configured=True,
+        )
+        runtime, router = self._runtime()
+        runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "revise this paragraph"}],
+                task_type="small_revision",
+                requested_model="cliproxy/gemini-3.6-flash-high",
+            )
+        )
+        self.assertEqual(
+            [call.model for call in router.calls],
+            ["gpt-test-a", "gpt-test-b", "gpt-test-chairman"],
+        )
+
     def test_full_council_produces_candidates_reviews_ranking_and_answer(self) -> None:
         runtime, _ = self._runtime()
         run = runtime.run(

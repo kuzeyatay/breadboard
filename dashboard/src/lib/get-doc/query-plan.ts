@@ -14,8 +14,10 @@
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import type { DocumentHit } from "./types.ts";
 import { summarizeAbstract } from "./search.ts";
+import { createLongHeaderTimeoutFetch } from "../chatmock-client.ts";
 
-const MODEL_TIMEOUT_MS = 90_000;
+const MODEL_TIMEOUT_MS = 5 * 60_000;
+const modelFetch = createLongHeaderTimeoutFetch({timeoutMs: MODEL_TIMEOUT_MS});
 
 export interface SearchPlan {
   /** Search strings to send to the catalogs, best first. */
@@ -43,11 +45,12 @@ async function complete(input: {
   model: string;
   reasoningEffort: string;
   messages: ChatMessage[];
+  timeoutMs?: number;
 }): Promise<{ content: string; usage: ModelUsage }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), Math.max(1, input.timeoutMs ?? MODEL_TIMEOUT_MS));
   try {
-    const response = await fetch(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const response = await modelFetch(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -62,9 +65,10 @@ async function complete(input: {
     });
     if (!response.ok) throw new Error(`ChatMock returned ${response.status}`);
     const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
+      choices?: Array<{ finish_reason?: string; message?: { content?: string | null } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    if (data.choices?.[0]?.finish_reason === "length") throw new Error("The catalog review was truncated.");
     return {
       content: data.choices?.[0]?.message?.content ?? "",
       usage: {
@@ -127,6 +131,8 @@ Answer with JSON only, in this shape:
 
 Rules:
 - 1 to 3 queries. The first must be the best single query.
+- For a request with several distinct evidence needs, use complementary queries covering those needs. Keep each query focused; do not concatenate every sub-question into one long keyword string or spend all queries on near-synonyms of the first topic.
+- For topical searches, normally use 3 to 8 precise keywords per query, including the actual subject in each. Search each evidence need separately instead of appending a list of generic study types and all desired outcomes. An exact named paper title can be longer.
 - Queries are keyword strings for a scholarly search engine (OpenAlex, arXiv, Europe PMC). No boolean operators, no field prefixes, no quotes around the whole string.
 - When a specific paper is named, the first query is its exact title, or the closest phrasing you are confident about. Never invent a title you are unsure of — use the user's own words instead.
 - Set yearFrom/yearTo only when the request states or clearly implies a period. Otherwise null.
@@ -184,14 +190,14 @@ const DESCRIBE_SYSTEM = `You write one-sentence descriptions of academic papers 
 You are given what the person is looking for, and a numbered list of papers with their real metadata and abstracts.
 
 Answer with JSON only:
-{"documents": [{"id": "doc_1", "description": "...", "bearing": "direct" | "adjacent" | "none"}]}
+{"documents": [{"id": "doc_1", "title": "exact supplied title", "description": "...", "bearing": "direct" | "adjacent" | "none"}]}
 
 Rules:
 - One sentence per paper, at most 30 words: what the paper does, and how it relates to what was asked for.
-- Ground every word in the metadata and abstract you were given. If a paper has no abstract, describe it from its title and venue and say no abstract was published.
+- Ground every word in the metadata and abstract you were given. If the record contains no abstract, describe it from its title and venue and say the catalog record did not supply an abstract; do not infer that none was published.
 - Never state a finding, a number, or a claim that is not in the text you were given.
 - "bearing" says how the paper bears on what is being looked for: "direct" when it studies that question or population, "adjacent" when it informs it (same mechanism, neighbouring population, a method the question needs), "none" when it merely shares words with it — a catalog keyword match on "winter", "gas" or "competition" that is about something else. Be strict about "none": a paper set aside costs one line; a paper on the wrong subject presented as evidence costs the reader's trust.
-- Keep the ids exactly as given, and include every paper.`;
+- Copy each id AND its exact title together, and include every paper. Never renumber when omitting or setting aside another paper; each description must refer to that exact title.`;
 
 /**
  * Replace the abstract-derived descriptions with ones written against what the
@@ -204,9 +210,22 @@ export async function describeDocuments(input: {
   reasoningEffort: string;
   intent: string;
   documents: DocumentHit[];
-}): Promise<{ documents: DocumentHit[]; usage: ModelUsage }> {
-  if (!input.documents.length) return { documents: input.documents, usage: NO_USAGE };
-  const catalog = input.documents
+  /** Test transport; normal runs always use the authenticated bounded client. */
+  completeImpl?: typeof complete;
+}): Promise<{ documents: DocumentHit[]; usage: ModelUsage; calls: number }> {
+  if (!input.documents.length) return { documents: input.documents, usage: NO_USAGE, calls: 0 };
+  const deadline = Date.now() + MODEL_TIMEOUT_MS;
+  const written = new Map<string, string>();
+  const bearings = new Map<string, DocumentHit["bearing"]>();
+  const usage = {inputTokens: 0, outputTokens: 0};
+  let calls = 0;
+  const titleKey = (title: string) => title.normalize("NFKC").replace(/\s+/g, " ").trim();
+  const titles = new Map(input.documents.map(document => [document.id, titleKey(document.title)]));
+  // One focused retry repairs omissions without accepting a shifted paper ID.
+  for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt++) {
+    const pending = input.documents.filter(document => !bearings.has(document.id));
+    if (!pending.length) break;
+    const catalog = pending
     .map((document) =>
       [
         `${document.id}:`,
@@ -214,16 +233,18 @@ export async function describeDocuments(input: {
         `  authors: ${document.authors.slice(0, 6).join(", ") || "unknown"}`,
         `  year: ${document.year ?? "unknown"}`,
         `  venue: ${document.venue ?? "unknown"}`,
-        `  abstract: ${summarizeAbstract(document.abstract, 900) || "(none published)"}`,
+        `  abstract: ${summarizeAbstract(document.abstract, 900) || "(not supplied by the catalog)"}`,
       ].join("\n"),
     )
     .join("\n\n");
 
-  try {
-    const { content, usage } = await complete({
+    try {
+    calls++;
+    const result = await (input.completeImpl ?? complete)({
       baseUrl: input.baseUrl,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
+      timeoutMs: deadline - Date.now(),
       messages: [
         { role: "system", content: DESCRIBE_SYSTEM },
         {
@@ -232,34 +253,35 @@ export async function describeDocuments(input: {
         },
       ],
     });
-    const parsed = extractJson(content);
+    usage.inputTokens += result.usage.inputTokens;
+    usage.outputTokens += result.usage.outputTokens;
+    const parsed = extractJson(result.content);
     const entries = Array.isArray(parsed)
       ? parsed
       : Array.isArray((parsed as Record<string, unknown> | null)?.documents)
         ? ((parsed as Record<string, unknown>).documents as unknown[])
         : [];
-    const written = new Map<string, string>();
-    const bearings = new Map<string, DocumentHit["bearing"]>();
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
       const row = entry as Record<string, unknown>;
       const id = typeof row.id === "string" ? row.id.trim() : "";
+      if (!titles.has(id) || bearings.has(id) || typeof row.title !== "string" || titles.get(id) !== titleKey(row.title)) continue;
       const description = typeof row.description === "string" ? row.description.trim() : "";
-      if (id && description) written.set(id, description.replace(/\s+/g, " ").slice(0, 400));
       const bearing = typeof row.bearing === "string" ? row.bearing.trim().toLowerCase() : "";
-      if (id && (bearing === "direct" || bearing === "adjacent" || bearing === "none")) {
+      if (description && (bearing === "direct" || bearing === "adjacent" || bearing === "none")) {
+        written.set(id, description.replace(/\s+/g, " ").slice(0, 400));
         bearings.set(id, bearing);
       }
     }
-    return {
+    } catch { break; }
+  }
+  return {
       documents: input.documents.map((document) => ({
         ...document,
         description: written.get(document.id) ?? document.description,
         ...(bearings.has(document.id) ? { bearing: bearings.get(document.id) } : {}),
       })),
       usage,
+      calls,
     };
-  } catch {
-    return { documents: input.documents, usage: NO_USAGE };
-  }
 }

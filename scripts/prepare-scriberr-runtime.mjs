@@ -28,11 +28,24 @@ const GO_RELEASE = Object.freeze({
   sha256: "b751a1136cb9d8a2e7ebb22c538c4f02c09b98138c7c8bfb78a54a4566c013b1",
 });
 
+// YouTube changes its player often enough that a yt-dlp build older than a
+// couple of months starts failing with "HTTP Error 403: Forbidden" on the media
+// fetch while metadata still works (2026.07.04 did exactly that by mid
+// September). Bump this pin whenever YouTube downloads start failing that way;
+// the sha256 comes from the release's SHA2-256SUMS.
 const YTDLP_RELEASE = Object.freeze({
-  version: "2026.07.04",
-  url: "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe",
-  sha256: "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
+  version: "2026.08.19",
+  url: "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
+  sha256: "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
 });
+
+// Portable configuration yt-dlp reads from the directory that holds the
+// binary. Scriberr spawns `yt-dlp` with a fixed argument list, so this is the
+// only place Breadboard can hand it options. YouTube's n/sig challenges need a
+// JavaScript runtime and only deno is enabled by default; the runtime-root PATH
+// already carries the bundled Node, so name it here. Without a runtime yt-dlp
+// still works but logs a deprecation warning and may miss formats.
+const YTDLP_PORTABLE_CONFIG = ["--js-runtimes node", ""].join("\n");
 
 function log(message) {
   process.stdout.write(`[prepare-transcription] ${message}\n`);
@@ -230,6 +243,13 @@ export async function prepareScriberrRuntime({ outputDir = defaultOutputDir } = 
       log(`downloading yt-dlp ${YTDLP_RELEASE.version}`);
       await downloadVerified(YTDLP_RELEASE.url, ytdlpTarget, YTDLP_RELEASE.sha256);
     }
+    const ytdlpConfigTarget = path.join(outputDir, "yt-dlp.conf");
+    if (
+      !fs.existsSync(ytdlpConfigTarget) ||
+      fs.readFileSync(ytdlpConfigTarget, "utf8") !== YTDLP_PORTABLE_CONFIG
+    ) {
+      fs.writeFileSync(ytdlpConfigTarget, YTDLP_PORTABLE_CONFIG, "utf8");
+    }
 
     const ffmpegSource = requireFromDesktop("ffmpeg-static");
     const ffprobeSource = requireFromDesktop("ffprobe-static").path;
@@ -251,7 +271,11 @@ export async function prepareScriberrRuntime({ outputDir = defaultOutputDir } = 
         sourceFingerprint: fingerprint,
         executableSha256: sha256(scriberrTarget),
       },
-      ytdlp: { version: YTDLP_RELEASE.version, sha256: YTDLP_RELEASE.sha256 },
+      ytdlp: {
+        version: YTDLP_RELEASE.version,
+        sha256: YTDLP_RELEASE.sha256,
+        configSha256: sha256(ytdlpConfigTarget),
+      },
       ffmpeg: { sha256: sha256(path.join(outputDir, "ffmpeg.exe")) },
       ffprobe: { sha256: sha256(path.join(outputDir, "ffprobe.exe")) },
       uv: { sha256: sha256(path.join(outputDir, "uv.exe")) },

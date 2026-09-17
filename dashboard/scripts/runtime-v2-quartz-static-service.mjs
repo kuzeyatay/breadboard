@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { withCanonicalQuartzReader } from "./quartz-canonical-reader-bridge.mjs";
 
 const MAX_URL_BYTES = 8 * 1024;
 const MIME_TYPES = new Map([
@@ -95,6 +96,33 @@ function trailingSlashRedirect(root, requestPath) {
   return publicFile(root, `${slashless}.html`) ? slashless : null;
 }
 
+// Older dashboard bundles and saved links can still use a Markdown filename.
+// Resolve those only to an existing published page, using Quartz's filename
+// rules (quartz/quartz/util/path.ts). Exact files always take precedence.
+function publishedPageRedirect(root, requestPath) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(requestPath);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("\0") || decoded.includes("\\")) return null;
+  const segments = decoded.split("/").filter(Boolean);
+  if (segments.some((segment) => segment === "." || segment === "..")) return null;
+  const canonical = "/" + segments.map((segment, index) => {
+    const name = index === segments.length - 1
+      ? segment.replace(/\.(md|html)$/u, "").replace(/^_index$/u, "index")
+      : segment;
+    return encodeURIComponent(name
+      .replace(/\s/gu, "-")
+      .replace(/&/gu, "-and-")
+      .replace(/%/gu, "-percent")
+      .replace(/[?#]/gu, ""));
+  }).join("/");
+  if (canonical === requestPath.replace(/\/+$/u, "")) return null;
+  return publicFile(root, `${canonical}.html`) ? canonical : null;
+}
+
 function sendJson(response, status, value) {
   const body = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
   response.writeHead(status, {
@@ -134,7 +162,9 @@ const server = http.createServer((request, response) => {
     return;
   }
   const file = publicFile(publicRoot, url.pathname);
-  const redirectPath = file ? null : trailingSlashRedirect(publicRoot, url.pathname);
+  const redirectPath = file ? null : (
+    trailingSlashRedirect(publicRoot, url.pathname) ?? publishedPageRedirect(publicRoot, url.pathname)
+  );
   if (redirectPath) {
     response.writeHead(302, {
       "cache-control": "no-store",
@@ -146,8 +176,11 @@ const server = http.createServer((request, response) => {
     return;
   }
   if (!file) {
+    const message = fs.existsSync(path.join(publicRoot, "index.html"))
+      ? "This Garden page could not be found."
+      : "This Garden has not been published yet.";
     const body = Buffer.from(
-      "<!doctype html><meta charset=utf-8><title>Breadboard</title><p>Your garden is being prepared.</p>",
+      `<!doctype html><meta charset=utf-8><title>Breadboard</title><p>${message}</p><p><a href="">Retry</a> · <a href="/">Open Gardens</a></p>`,
       "utf8",
     );
     response.writeHead(404, {
@@ -160,14 +193,29 @@ const server = http.createServer((request, response) => {
     return;
   }
   const contentType = MIME_TYPES.get(path.extname(file.path).toLowerCase()) ?? "application/octet-stream";
+  // Install the refresh bridge on existing publications too. The dashboard
+  // waits for its acknowledgement before considering the saved page current.
+  let htmlBody;
+  if (contentType.startsWith("text/html")) {
+    try {
+      htmlBody = Buffer.from(withCanonicalQuartzReader(fs.readFileSync(file.path, "utf8")), "utf8");
+    } catch {
+      sendJson(response, 500, { ok: false, error: "page_read_failed" });
+      return;
+    }
+  }
   response.writeHead(200, {
     "cache-control": contentType.startsWith("text/html") ? "no-cache" : "public, max-age=300",
-    "content-length": String(file.size),
+    "content-length": String(htmlBody?.byteLength ?? file.size),
     "content-type": contentType,
     "x-content-type-options": "nosniff",
   });
   if (request.method === "HEAD") {
     response.end();
+    return;
+  }
+  if (htmlBody) {
+    response.end(htmlBody);
     return;
   }
   const stream = fs.createReadStream(file.path);

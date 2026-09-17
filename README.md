@@ -50,6 +50,7 @@ can still send the content you ask them to process to their respective services.
 | **Visual HTML editing** | A sandboxed Vvveb editor for point-and-click changes while preserving artifact history. |
 | **Specialized agents** | Research, coding, browser, office, visualization, media, CAD, and other bounded workflows. Availability depends on local setup. |
 | **Connected tools** | MCP servers and optional connected apps, scoped through authenticated brokered routes. |
+| **Feynman research** | PaperRank reading priorities and evidence critiques from public literature, available in chat and Max Research with no new API keys. [Details](docs/FEYNMAN_INTEGRATION.md). |
 | **Desktop runtime** | An Electron shell with a Rust-based Runtime V2 supervisor for service health, recovery, limits, logging, and shutdown. |
 
 ## Development Status

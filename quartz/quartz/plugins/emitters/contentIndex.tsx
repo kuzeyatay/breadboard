@@ -7,6 +7,8 @@ import { QuartzEmitterPlugin } from "../types"
 import { toHtml } from "hast-util-to-html"
 import { write } from "./helpers"
 import { i18n } from "../../i18n"
+import { isScopedBuild } from "../../util/scope"
+import { fileOf } from "../../processors/treeSpill"
 
 export type ContentIndexMap = Map<FullSlug, ContentDetails>
 export type ContentDetails = {
@@ -114,7 +116,8 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
             ? [value]
             : []
 
-      for (const [tree, file] of content) {
+      for (const entry of content) {
+        const file = fileOf(entry)
         const slug = file.data.slug!
         const relativePath = String(file.data.relativePath ?? "").replace(/\\/g, "/")
         const pathSegments = relativePath.split("/").filter(Boolean)
@@ -145,7 +148,7 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
             locations: toStringArray(fm?.locations),
             content: file.data.text ?? "",
             richContent: opts?.rssFullHtml
-              ? escapeHTML(toHtml(tree as Root, { allowDangerousHtml: true }))
+              ? escapeHTML(toHtml(entry[0] as Root, { allowDangerousHtml: true }))
               : undefined,
             date: date,
             description: file.data.description ?? "",
@@ -153,7 +156,11 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
         }
       }
 
-      if (opts?.enableSiteMap) {
+      // A scoped build indexes only its own pages. The publisher merges this
+      // partial index into the previous site-wide one; the sitemap and feed
+      // have no such merge, so they are carried over unchanged.
+      const scoped = isScopedBuild(ctx.argv.scope)
+      if (opts?.enableSiteMap && !scoped) {
         yield write({
           ctx,
           content: generateSiteMap(cfg, linkIndex),
@@ -162,7 +169,7 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
         })
       }
 
-      if (opts?.enableRSS) {
+      if (opts?.enableRSS && !scoped) {
         yield write({
           ctx,
           content: generateRSSFeed(cfg, linkIndex, opts.rssLimit),

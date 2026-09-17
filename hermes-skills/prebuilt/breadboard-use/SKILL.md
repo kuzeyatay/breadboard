@@ -1,6 +1,6 @@
 ---
 name: breadboard-use
-description: Operate Breadboard tabs, pages, browser, and voice mode; launch Clicky for screen guidance.
+description: Operate Breadboard tabs, pages, Profile settings and switches, browser, and voice mode; launch Clicky for screen guidance.
 license: MIT
 allowed-tools:
   - breadboard_use
@@ -62,6 +62,7 @@ State also includes `clicky` availability and its platform-specific message.
 | Open browser and search | `{"action":"open","surface":"browser","query":"sourdough recipes"}` |
 | Open a website | `{"action":"open","surface":"browser","url":"https://example.com"}` |
 | Open Garden | `{"action":"open","surface":"garden"}` |
+| Open Profile settings | `{"action":"open","surface":"profile"}` (also works with tab navigation off) |
 | Open another page | `action: "open"`, `surface: "home", "dashboard", "settings", "calendar", "plan", "workflows", "processes"` |
 | Close voice assistant | `{"action":"close_voice"}` |
 | Launch Clicky | `{"action":"launch_clicky"}` (no targetId) |
@@ -70,6 +71,7 @@ State also includes `clicky` availability and its platform-specific message.
 | Read controls and text | `action: "snapshot"`, `targetId` |
 | See the page | `action: "screenshot"`, `targetId` |
 | Click a control | `action: "click"`, `targetId`, `snapshotId`, `ref` |
+| Turn a switch on or off | `action: "set_checked"`, `targetId`, `snapshotId`, `ref`, `checked: true` or `false` |
 | Replace field text / select an option | `action: "fill"`, `targetId`, `snapshotId`, `ref`, `text` |
 | Press a key | `action: "press"`, `targetId`, `snapshotId`, `key`, optional `ref` to focus first |
 | Scroll | `action: "scroll"`, `targetId`, `snapshotId`, `direction: "up", "down", "top", "bottom"`, optional `ref` |
@@ -78,6 +80,32 @@ Keys: Enter, Escape, Tab, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
 Backspace, Delete. `fill` replaces a text field's contents; on a select it takes
 an option value returned in the snapshot. Password and file inputs require the
 user's interaction. For a named Garden, open Garden and choose its observed link.
+
+## Profile settings
+
+Use this tool for reading or changing any Profile control: theme, location,
+startup sound, browser navigation, navbar shortcuts and flowers, voice assistant,
+clap and finger-snap controls and actions, review delivery, and profile fields.
+Understand “turn off”, “disable”, “stop”, or “close” a named switch as setting it
+to false; “turn on” or “enable” means true. An ordinary request to change these
+settings is sufficient to operate their controls. A question about current
+settings calls for inspection only.
+
+Open `surface: "profile"`, read state, then snapshot its app target. Settings
+may appear after a long activity chart: when `nextOffset` is not null, snapshot
+again with that `offset` until the requested control is found. Every snapshot
+has fresh refs, including paginated snapshots. Names, section headings,
+descriptions, `checked`, range bounds and select options identify the controls.
+Use `set_checked` for explicit on/off so an already correct switch stays as it
+is. Use `fill` for text, numeric sliders (as text within min/max/step), and an
+observed enabled select option; click the section's Save button when needed.
+
+Take a fresh snapshot of the same controls after each change. Wait for a busy
+control to finish, inspect inline save errors, and report success only when the
+saved state matches the request. Do not change a disabled control or treat a
+microphone/location permission failure as enabled functionality. Password and
+file inputs still require the user's interaction. If a choice requires a linked
+account or a missing device, report that specific prerequisite.
 
 ## Procedure
 

@@ -1,3 +1,5 @@
+import { isNotificationPageActive } from './notification-view-presence.ts';
+
 export const TASK_COMPLETION_NOTIFICATION_EVENT =
   "breadboard:task-completed";
 
@@ -71,17 +73,14 @@ export function chatResponseNotification(
 export function isTaskChatActivelyViewed(
   options: TaskCompletionNotificationOptions = {},
 ): boolean {
-  if (typeof document === "undefined") return false;
+  if (!isNotificationPageActive()) return false;
 
-  // A turn that belongs to the chat on screen announces itself in the
-  // transcript, so a toast for it is never wanted -- not even when the window
-  // is behind another one. Window focus only decides the case of a run with no
-  // chat to be compared against.
+  // A selected conversation in a background tab is not being viewed.
   if (options.chatId !== undefined && options.chatId !== null) {
     if (options.activeChatId === undefined || options.activeChatId === null) return false;
     return String(options.chatId) === String(options.activeChatId);
   }
-  return document.visibilityState === "visible" && document.hasFocus();
+  return true;
 }
 
 export function notifyTaskCompleted(

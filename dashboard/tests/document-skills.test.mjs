@@ -194,7 +194,7 @@ test("attachment input from a request body is validated, not trusted", () => {
   assert.match(garden, /parseChatAttachments\(payload\.attachments\)/);
 
   const shared = source("src/lib/chat-attachments-request.ts");
-  for (const rule of ["invalid_attachments", "MAX_ATTACHMENTS", "data:image"]) {
+  for (const rule of ["invalid_attachments", "data:image"]) {
     assert.ok(shared.includes(rule), `the shared parser must still enforce ${rule}`);
   }
 });

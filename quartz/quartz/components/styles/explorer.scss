@@ -328,6 +328,7 @@ button.desktop-explorer {
   flex-direction: row;
   display: flex;
   align-items: center;
+  min-height: 1.75rem;
   user-select: none;
 
   & div > a {
@@ -336,7 +337,7 @@ button.desktop-explorer {
     font-size: 0.95rem;
     font-weight: $mediumWeight;
     line-height: 1.5rem;
-    display: inline-block;
+    display: block;
   }
 
   & div > a:hover {
@@ -349,11 +350,13 @@ button.desktop-explorer {
     border: none;
     text-align: left;
     cursor: pointer;
-    padding-left: 0;
-    padding-right: 0;
+    margin: 0;
+    padding: 0;
     display: flex;
     align-items: center;
     font-family: var(--headerFont);
+    font-size: 0.95rem;
+    line-height: 1.5rem;
 
     & span {
       font-size: 0.95rem;
@@ -369,6 +372,9 @@ button.desktop-explorer {
 }
 
 .folder-title-clip {
+  // Links and collapse buttons share one line box, without inline descenders.
+  display: flex;
+  align-items: center;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;

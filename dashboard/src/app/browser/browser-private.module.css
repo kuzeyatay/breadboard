@@ -20,12 +20,3 @@
   min-height: 0;
   margin-bottom: 16px;
 }
-
-.note {
-  max-width: 440px;
-  margin: -4px auto 20px;
-  color: var(--ink-muted);
-  font-size: 14px;
-  line-height: 1.5;
-  text-align: center;
-}

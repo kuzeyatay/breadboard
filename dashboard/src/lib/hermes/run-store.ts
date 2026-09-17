@@ -3,6 +3,8 @@ import db from "../db.ts";
 import { isRuntimeRunAbandoned } from "./run-liveness.ts";
 import type { TurnCapabilitySelection } from "./capability-usage.ts";
 import type { ExternalAgentCall } from "./evidence.ts";
+import type { ExplanationReviewResult } from "./explanation-review.ts";
+import type { ExplanationTurnContext } from "./explanation-turn.ts";
 
 export type RuntimeRunStatus = "active" | "completed" | "cancelled" | "error";
 
@@ -27,6 +29,9 @@ export interface RuntimeArtifactRequirement {
 }
 
 export interface RuntimeRunDispatch {
+  explanationContext?: ExplanationTurnContext;
+  /** Durable answer and review receipt, reused when finalization reconnects. */
+  explanationReview?: { inputHash: string; result: ExplanationReviewResult };
   conversationPublicId?: string;
   clientMessageId?: string;
   runtimeText?: string;
@@ -170,6 +175,31 @@ export function getRuntimeRun(id: string): RuntimeRunRow | null {
     .prepare("SELECT * FROM hermes_runs WHERE id = ?")
     .get(id) as RuntimeRunRow | undefined;
   return row ?? null;
+}
+
+/**
+ * External workers own their lifecycle outside the chat runtime. Record their
+ * artifact provenance once output is ready without reserving the chat's one
+ * active turn (which may be the parent that delegated this work).
+ */
+export function recordRuntimeArtifactRun(input: {
+  id: string;
+  runtimeSessionId: number;
+  instruction: string;
+  dispatch: RuntimeRunDispatch;
+}): RuntimeRunRow {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO hermes_runs
+       (id, runtime_session_id, instruction, status, dispatch_json, started_at, finished_at)
+     VALUES (?, ?, ?, 'completed', ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run(input.id, input.runtimeSessionId, input.instruction, JSON.stringify(input.dispatch), now, now);
+  const run = getRuntimeRun(input.id)!;
+  if (run.runtime_session_id !== input.runtimeSessionId) {
+    throw new Error("Artifact run belongs to another runtime session.");
+  }
+  return run;
 }
 
 export function getActiveRuntimeRun(

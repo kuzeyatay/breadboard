@@ -855,7 +855,7 @@ export class VideoTranscriptionRunner {
         youtubeVideoId: job.youtubeVideoId,
         mediaSha256: job.mediaSha256,
         mediaFilePath:
-          job.inputKind === "upload" ? job.mediaTempPath : null,
+          job.inputKind === "upload" && job.retainMedia ? job.mediaTempPath : null,
         mediaKind,
         jobId,
         onProgress: (step: string) => {
@@ -898,6 +898,29 @@ export class VideoTranscriptionRunner {
     jobId: string,
     { sourceSlug, sourceRelPath }: { sourceSlug: string; sourceRelPath: string },
   ): Promise<void> {
+    const pending = this.deps.store.getJob(jobId);
+    if (pending?.analysis === "watch") {
+      // The transcript source is written; what the video shows is added by the
+      // dashboard-side visual analysis (it needs the Runtime job owner, which
+      // this worker's environment does not carry). Temp media stays until that
+      // step has read it.
+      this.deps.store.transition(jobId, "analyzing_visuals", {
+        currentStage: "Waiting for visual analysis",
+        progressPercent: 96,
+        outputRelativePath: sourceRelPath,
+        sourceSlug,
+        errorCode: null,
+        errorMessage: null,
+      });
+      if (pending.scriberrJobId && this.deps.config.deleteScriberrJobs) {
+        try {
+          await this.deps.createScriberrClient().deleteJob(pending.scriberrJobId);
+        } catch {
+          // Scriberr-side cleanup is best-effort by design.
+        }
+      }
+      return;
+    }
     this.deps.store.transition(jobId, "completed", {
       currentStage: "Complete",
       progressPercent: 100,

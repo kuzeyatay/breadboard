@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { KeyboardEvent } from "react";
 import dynamic from "next/dynamic";
+import { Settings2 } from "lucide-react";
 import type {
   CommandHubItem,
   CommandHubItemKind,
@@ -40,7 +41,6 @@ import { AGENT_REACH_COMMAND } from "@/lib/agent-reach/identity.ts";
 import { MUSIC_PRODUCER_COMMAND } from "@/lib/music-producer/identity.ts";
 import { CAREER_OPS_COMMAND } from "@/lib/career-ops/identity.ts";
 import { OPENEXECUTIVE_COMMAND } from "@/lib/openexecutive/identity.ts";
-import { OPEN_GYM_COMMAND } from "@/lib/open-gym/identity.ts";
 import { VIBE_TRADING_COMMAND } from "@/lib/vibe-trading/identity.ts";
 import { STOCK_ANALYST_COMMAND } from "@/lib/stock-analyst/identity.ts";
 import { DEER_FLOW_COMMAND } from "@/lib/deer-flow/identity.ts";
@@ -162,6 +162,8 @@ const AgentSettingsDialog = dynamic(
   { ssr: false },
 );
 
+const AgentPreferencesDialog = dynamic(() => import("./agent-preferences-dialog"), { ssr: false });
+
 const LEGACY_PROMPTS_KEY = "sb_prompts_v1";
 const RECENTS_KEY = "breadboard:command-hub:recents:v1";
 const FAVORITES_KEY = "breadboard:command-hub:favorites:v1";
@@ -262,8 +264,6 @@ interface Props {
   onSelectCareerOps?: () => void;
   /** When provided, selecting OpenExecutive inserts its canonical command. */
   onSelectOpenExecutive?: () => void;
-  /** When provided, selecting openGym inserts its canonical command. */
-  onSelectOpenGym?: () => void;
   /**
    * Kept for composer compatibility with direct `/agents:trading-agent`
    * invocations. Trading Agent is intentionally not a user-selectable palette
@@ -490,7 +490,6 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectMusicProducer,
       onSelectCareerOps,
       onSelectOpenExecutive,
-      onSelectOpenGym,
       onSelectShorts,
       onSelectFormsmith,
       onSelectVibeTrading,
@@ -566,6 +565,8 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [inboxZeroSettingsOpen, setInboxZeroSettingsOpen] = useState(false);
     // The agent whose generic settings panel is open, if any.
     const [agentSettingsFor, setAgentSettingsFor] = useState<string | null>(null);
+    const [agentPreferencesOpen, setAgentPreferencesOpen] = useState(false);
+    const agentPreferencesTriggerRef = useRef<HTMLButtonElement>(null);
     const [recents, setRecents] = useState<string[]>([]);
     const [favorites, setFavorites] = useState<string[]>([]);
     const [highlightColors, setHighlightColors] = useState<Record<string, string>>({});
@@ -1062,14 +1063,6 @@ const showCareerOps =
         SPOTIFY_AGENT_COMMAND,
         "music playback song track artist album playlist library queue pause resume skip volume now playing spotify connect",
       );
-    const showOpenGym =
-      surface !== "quartz_ai" &&
-      Boolean(onSelectOpenGym) &&
-      matchesAgentSearch(
-        "openGym",
-        OPEN_GYM_COMMAND,
-        "fitness exercise workout gym training program routine plan strength calisthenics form technique animation demonstration",
-      );
     const showAgencyDirectory =
       agencyDirectoryItems.length > 0 ||
       matchesAgentSearch(
@@ -1126,7 +1119,6 @@ const showCareerOps =
       showMusicProducer ||
       showCareerOps ||
       showOpenExecutive ||
-      showOpenGym ||
       showVibeTrading ||
       showStockAnalyst ||
       showDeerFlow ||
@@ -1236,6 +1228,7 @@ const showCareerOps =
     }
 
     function handleKeyDown(event: KeyboardEvent<HTMLElement>): boolean {
+      if (agentPreferencesOpen) return false;
       if (!open) return false;
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1566,11 +1559,12 @@ const showCareerOps =
                       placeholder={
                         tab === "agent" ? "Search agents" : "Search prompts"
                       }
-                      className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]"
+                      className={`neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 ${tab === "agent" ? "pr-12" : "pr-3"} text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]`}
                       aria-label={
                         tab === "agent" ? "Search agents" : "Search prompts"
                       }
                     />
+                    {tab === "agent" ? <button ref={agentPreferencesTriggerRef} type="button" onClick={() => setAgentPreferencesOpen(true)} aria-label="Agent selection settings" title="Agent selection settings" aria-haspopup="dialog" className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] active:scale-[0.97]"><Settings2 size={16} strokeWidth={1.6} /></button> : null}
                   </div>
                 ) : null}
                 {tab === "skill" && !detail ? (
@@ -1984,34 +1978,6 @@ const showCareerOps =
                           color={highlightColorForId("agent:openexecutive")}
                           onColorChange={(color) => setHighlightId("agent:openexecutive", color)}
                           label="Choose OpenExecutive highlight color"
-                        />
-                      </li>
-                      ) }]
-                      : []),
-                    ...(showOpenGym
-                      ? [{ name: "openGym", node: (
-                      <li key="open-gym"
-                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
-                        style={capabilityHighlightStyle(highlightColorForId("agent:open-gym"))}
-                      >
-                        <button
-                          id="open-gym-entry"
-                          type="button"
-                          onClick={() => {
-                            onSelectOpenGym?.();
-                            onOpenChange(false);
-                          }}
-                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
-                        >
-                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPEN_GYM_COMMAND}</span>
-                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Builds and remembers training programs from openGym&apos;s 1,324-exercise library. Ask how to perform a registered exercise and its animation plays right in chat.
-                          </span>
-                        </button>
-                        <FavoriteBox
-                          color={highlightColorForId("agent:open-gym")}
-                          onColorChange={(color) => setHighlightId("agent:open-gym", color)}
-                          label="Choose openGym highlight color"
                         />
                       </li>
                       ) }]
@@ -2685,7 +2651,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MAX_RESEARCH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Puts all six research agents on one question — the indexed web, the open internet, the papers, a workspace that runs things, and an autonomous R&amp;D project — then reconciles what they found into one answer. Long.
+                            Combines web research, Feynman-ranked papers, experiments and an autonomous R&amp;D project, then reconciles the findings into one answer. Takes tens of minutes.
                           </span>
                         </button>
                         <FavoriteBox
@@ -3323,6 +3289,7 @@ const showCareerOps =
             ) : null}
           </>
         ) : null}
+        {agentPreferencesOpen ? <AgentPreferencesDialog returnFocusTo={agentPreferencesTriggerRef.current} onClose={() => setAgentPreferencesOpen(false)} /> : null}
         {surface === "quartz_ai" ? null : browserOperatorOpen ? (
           <BrowserOperatorDialog onClose={() => setBrowserOperatorOpen(false)} />
         ) : null}

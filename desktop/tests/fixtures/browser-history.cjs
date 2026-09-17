@@ -105,10 +105,12 @@ app.whenReady().then(async () => {
     const page = await pageAt(site + "/shortcut");
     await until(() => saved()[0]?.title === "ChatGPT", "shortcut title persisted");
     assert.deepEqual(saved().map(entry => entry.url), [site + "/shortcut"], "iframe is excluded");
-    await page.executeJavaScript("document.querySelector('#inside').click()");
+    // This represents a user's click. Passive shell setup must not supply the
+    // activation that Chromium uses to distinguish real visits from redirects.
+    await page.executeJavaScript("document.querySelector('#inside').click()", true);
     await pageAt(site + "/conversation?model=test#message");
     const longRoute = site + "/c/spa?query=" + "a".repeat(340) + "#full-link";
-    await page.executeJavaScript(`history.pushState({}, '', ${JSON.stringify(longRoute)}); document.title = 'Conversation in progress';`);
+    await page.executeJavaScript(`history.pushState({}, '', ${JSON.stringify(longRoute)}); document.title = 'Conversation in progress';`, true);
     await until(() => saved()[0]?.url === longRoute && saved()[0]?.title === "Conversation in progress", "SPA URL and title persisted");
     page.navigationHistory.goBack();
     await pageAt(site + "/conversation?model=test#message");

@@ -26,7 +26,7 @@ The run itself is small and executes in-process (`run-manager.ts`):
    model usage is copied onto the terminal event so the standard response meta
    line shows input, output, cached, reasoning, and total tokens.
 3. The terminal summary carries the view invisibly as an HTML-comment marker
-   (`GODS_EYE_VIEW:` in `view.ts`, the openGym pattern), so a reloaded card
+   (`GODS_EYE_VIEW:` in `view.ts`), so a reloaded card
    re-frames the globe with no server-side memory.
 
 ## The frame
@@ -62,10 +62,10 @@ spins up Cesium.
 
 ## Super Agent mode
 
-A delegated God's Eye is a *self-presenting delegation*, like openGym: the
+A delegated God's Eye is a *self-presenting delegation*: the
 worker row stays visible, the card renders in `quiet` mode (no
 `bb-agent-run-card` chrome — meta line, the summary, the framed globe), and no
-synthesis continuation is queued (`GODS_EYE_AGENT_ID` joins openGym's guard in
+synthesis continuation is queued (`GODS_EYE_AGENT_ID` guards this in
 both surfaces' `onLaunched`). `super-agent.ts` carries a routing rule; the
 selection brief lives in `runtime-agent-briefs.ts`.
 

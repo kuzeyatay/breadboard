@@ -1,3 +1,4 @@
+import { selectedModelForUser } from "@/lib/selected-model";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth-options";
@@ -111,7 +112,8 @@ export async function POST(request: Request) {
     const prepareOnly = body.prepareOnly === true;
     // Same server-owned engine resolution as the terminal: the provider is
     // fixed and unknown model/effort values are rejected with a 400.
-    const engine = resolveHermesEngine(body.model, body.reasoningEffort);
+    const model = body.model ?? selectedModelForUser(userId);
+    const engine = resolveHermesEngine(model, body.reasoningEffort);
 
     // Access control + rate limiting (public readers).
     const { cluster } = authorizeQuartzAccess(gardenId, userId);
@@ -158,6 +160,7 @@ export async function POST(request: Request) {
         surface: "quartz_ai",
         scopeKind: "page",
         defaultGardenId: cluster.id,
+        temporary: body.temporary === true,
       });
 
       if (prepareOnly) {
@@ -194,7 +197,7 @@ export async function POST(request: Request) {
           graphContext: context.graph,
           authorizedContext: systemContext,
         },
-        model: body.model,
+        model,
         reasoningEffort: body.reasoningEffort,
         retry: body.retry === true,
       });

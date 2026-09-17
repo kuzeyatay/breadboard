@@ -4,12 +4,15 @@ import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/
 
 import { speechRequest } from "@/lib/speech/request-client";
 import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { Hand } from "lucide-react";
+import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
+import { ContextMenuSurface, CONTEXT_MENU_ITEM_CLASS, OpenInNewTabItem } from "./link-context-menu";
+import { openVoiceWindow } from "@/lib/speech/voice-window";
 import { CLAP_SETTINGS_EVENT, CLAP_STATUS_EVENT, clapWakeEnabled, clapWakeIssue, holdClapWake, setClapWakeEnabled } from "@/lib/speech/clap-wake";
 import { registerClapTarget } from '@/lib/speech/clap/targets';
 import { subscribeClapControls } from '@/lib/speech/clap/client';
 import BreadboardLoader from "@/app/components/breadboard-loader";
-import MusicRecognitionButton from "@/app/components/music-recognition-button";
 import MicrophonePermissionHelp from "./microphone-permission-help";
 import { describeMicrophoneBlock, type MicrophoneFix } from "@/lib/speech/microphone-access";
 import {
@@ -54,8 +57,10 @@ interface SpeechDictationButtonProps {
    * alone, and there is no double-tap window to wait out.
    */
   onOpenVoiceMode?: (greet?: boolean) => void;
-  /** Existing runtime session, used only to retain a direct recognition result in chat. */
+  /** Existing runtime session, used to scope clap targets and microphone requests. */
   runtimeSessionId?: string | number | null;
+  /** Detached voice views stay attached to this composer's conversation. */
+  voiceChatKey?: string;
 }
 
 type PcmCapture = {
@@ -190,6 +195,7 @@ function MicrophoneMenuItem({
   onClick,
   accent = false,
   disabled = false,
+  ...buttonProps
 }: {
   title: string;
   hint: string;
@@ -197,9 +203,10 @@ function MicrophoneMenuItem({
   onClick: () => void;
   accent?: boolean;
   disabled?: boolean;
-}) {
+} & Omit<React.ComponentProps<"button">, "title" | "onClick">) {
   return (
     <button
+      {...buttonProps}
       type="button"
       role="menuitem"
       onClick={onClick}
@@ -235,6 +242,7 @@ export default function SpeechDictationButton({
   textareaRef,
   onOpenVoiceMode,
   runtimeSessionId,
+  voiceChatKey,
 }: SpeechDictationButtonProps) {
   const [state, setState] = useState<DictationState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -257,15 +265,16 @@ export default function SpeechDictationButton({
   const mountedRef = useRef(true);
   const tapTimerRef = useRef<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [musicBusy, setMusicBusy] = useState(false);
   const clapEnabled = useSyncExternalStore(subscribeClapSetting, clapWakeEnabled, () => false);
   const clapIssue = useSyncExternalStore(subscribeClapSetting, clapWakeIssue, () => null);
+  const clapIssueId = useId();
   useEffect(() => {
-    if (state === 'idle' && !musicBusy) return;
+    if (state === 'idle') return;
     return holdClapWake();
-  }, [state, musicBusy]);
+  }, [state]);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
+  const voiceContextMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const pauseButtonRef = useRef<HTMLButtonElement>(null);
@@ -355,10 +364,11 @@ export default function SpeechDictationButton({
   useEffect(() => {
     if (!menuOpen) return;
     function closeOnOutsidePointer(event: PointerEvent) {
-      if (!shellRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      const target = event.target as Node;
+      if (!shellRef.current?.contains(target) && !voiceContextMenuRef.current?.contains(target)) setMenuOpen(false);
     }
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape" && !event.defaultPrevented) setMenuOpen(false);
     }
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     window.addEventListener("keydown", closeOnEscape);
@@ -783,6 +793,14 @@ export default function SpeechDictationButton({
     onOpenVoiceMode?.();
   }
 
+  async function openVoiceWindowFromMenu() {
+    setMenuOpen(false);
+    setError(null);
+    setBlocked(null);
+    try { await openVoiceWindow(voiceChatKey); }
+    catch (error) { setError(speechErrorMessage(error, "Voice could not open. Try again.")); }
+  }
+
   /**
    * One tap opens the microphone's options, two still go straight to voice
    * mode. The menu appears on the first tap so nothing feels delayed — a second
@@ -791,12 +809,6 @@ export default function SpeechDictationButton({
    * acts immediately and never opens a menu.
    */
   function handleTap() {
-    if (musicBusy) {
-      // Closing the menu unmounts the recognition controller, whose cleanup
-      // aborts the request and stops every microphone track immediately.
-      setMenuOpen(false);
-      return;
-    }
     if (state === "recording" || state === "paused") {
       stopRecording();
       return;
@@ -831,9 +843,7 @@ export default function SpeechDictationButton({
   const dictationActive = state === "recording" || state === "paused";
   const popupPosition = placement === "below" ? "top-full mt-2" : "bottom-full mb-2";
   const label =
-    musicBusy
-      ? "Cancel song identification"
-      : dictationActive
+    dictationActive
       ? "Stop dictation — words appear as you speak"
       : state === "transcribing"
         ? "Finishing dictation"
@@ -873,11 +883,11 @@ export default function SpeechDictationButton({
         disabled={disabled || busy}
         aria-label={label}
         title={label}
-        aria-pressed={dictationActive || musicBusy}
+        aria-pressed={dictationActive}
         aria-hidden={dictationActive}
         tabIndex={dictationActive ? -1 : undefined}
         className={`dictation-trigger-button neu-button-icon relative flex h-full w-full items-center justify-center rounded-full disabled:opacity-45 ${
-          dictationActive || musicBusy
+          dictationActive
             ? "bg-[#c96d6d]/15 text-[#b85353] ring-1 ring-[#c96d6d]/50"
             : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
         }`}
@@ -890,7 +900,7 @@ export default function SpeechDictationButton({
             <path strokeLinecap="round" strokeLinejoin="round" d="M5.75 10.5v.75a6.25 6.25 0 0 0 12.5 0v-.75M12 17.5V21m-3 0h6" />
           </svg>
         )}
-        {dictationActive || musicBusy ? (
+        {dictationActive ? (
           <span className="absolute right-1 top-1 h-2 w-2 animate-pulse rounded-full bg-[#c96d6d]" aria-hidden />
         ) : null}
       </button>
@@ -961,7 +971,6 @@ export default function SpeechDictationButton({
             title="Dictate live"
             hint="Words appear as you speak."
             onClick={dictateFromMenu}
-            disabled={musicBusy}
             icon={
               <>
                 <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -970,17 +979,10 @@ export default function SpeechDictationButton({
             }
           />
           <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
-          <MusicRecognitionButton
-            disabled={disabled || state !== "idle"}
-            runtimeSessionId={runtimeSessionId}
-            onBusyChange={setMusicBusy}
-          />
-          <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
           <MicrophoneMenuItem
             title="Transcribe a recording"
             hint="An audio or video file, read by the same model."
             onClick={chooseRecording}
-            disabled={musicBusy}
             icon={
               <path
                 strokeLinecap="round"
@@ -992,35 +994,59 @@ export default function SpeechDictationButton({
           {onOpenVoiceMode ? (
             <>
               <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
-              <MicrophoneMenuItem
-                title="Talk to the assistant"
-                hint="Double-tap the microphone for voice mode."
-                accent
-                onClick={openVoiceModeFromMenu}
-                disabled={musicBusy}
-                icon={
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M20 12a7 7 0 0 1-7 7H8l-4 2 1-3.5A7 7 0 0 1 11 5h2a7 7 0 0 1 7 7Z"
-                  />
+              <ContextMenuSurface
+                label="Talk to the assistant"
+                menu={
+                  <div ref={voiceContextMenuRef} onClick={() => setMenuOpen(false)}>
+                    <OpenInNewTabItem href={`/voice?view=full${voiceChatKey ? `&chat=${encodeURIComponent(voiceChatKey)}` : ''}`} />
+                    <ContextMenuPrimitive.Item
+                      className={CONTEXT_MENU_ITEM_CLASS}
+                      onSelect={() => void openVoiceWindowFromMenu()}
+                    >
+                      Open in new window
+                    </ContextMenuPrimitive.Item>
+                  </div>
                 }
-              />
+              >
+                <MicrophoneMenuItem
+                  title="Talk to the assistant"
+                  hint="Double-tap the microphone for voice mode."
+                  accent
+                  onClick={openVoiceModeFromMenu}
+                  icon={
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M20 12a7 7 0 0 1-7 7H8l-4 2 1-3.5A7 7 0 0 1 11 5h2a7 7 0 0 1 7 7Z"
+                    />
+                  }
+                />
+              </ContextMenuSurface>
             </>
           ) : null}
+          <span className="mx-2 block h-px bg-[var(--line)]" aria-hidden />
           <button
             type="button"
-            role="menuitemcheckbox"
+            role="switch"
+            aria-label="Clap shortcut"
             aria-checked={clapEnabled}
-            className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--paper-strong)]"
+            aria-describedby={clapEnabled && clapIssue ? clapIssueId : undefined}
+            title="Listen for two claps. Choose the action in Profile."
+            className="group flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--botanical)]"
             onClick={() => setClapWakeEnabled(!clapEnabled)}
           >
-            <span>
-              Two-clap shortcut
-              <span className="block text-xs text-[var(--ink-muted)]">{clapEnabled && clapIssue ? clapIssue : 'Uses your microphone. Choose the action in Profile.'}</span>
+            <Hand className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" strokeWidth={1.8} aria-hidden />
+            <span className="min-w-0 flex-1 text-xs font-medium text-[var(--ink-heading)]">Clap shortcut</span>
+            <span
+              aria-hidden
+              className={`relative h-5 w-9 shrink-0 rounded-full shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)] group-active:scale-95 ${clapEnabled ? "bg-[var(--botanical)]" : "bg-[var(--line)]"}`}
+            >
+              <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[var(--paper-raised)] shadow-sm transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none group-focus-visible:transition-none ${clapEnabled ? "translate-x-4" : "translate-x-0"}`} />
             </span>
-            <span>{clapEnabled ? 'On' : 'Off'}</span>
           </button>
+          {clapEnabled && clapIssue ? (
+            <p id={clapIssueId} role="status" className="pb-2 pl-[2.375rem] pr-3 text-[11px] leading-4 text-[var(--ink-muted)]">{clapIssue}</p>
+          ) : null}
         </div>
       ) : null}
       {state === "reading-file" ? (

@@ -52,6 +52,35 @@ function getAliasSlugs(aliases: string[]): FullSlug[] {
   return res
 }
 
+/**
+ * The alias and permalink slugs one file contributes to `ctx.allSlugs`, read
+ * from its raw text. The fused single-thread parser renders each file to HTML
+ * right after parsing it, so it registers every file's aliases up front to keep
+ * link resolution identical to the two-pass pipeline.
+ */
+export function aliasSlugsFromSource(source: Buffer, opts?: Partial<Options>): FullSlug[] {
+  const options = { ...defaultOptions, ...opts }
+  let data: { [key: string]: any }
+  try {
+    data = matter(source, {
+      ...options,
+      engines: {
+        yaml: (s) => yaml.load(s, { schema: yaml.JSON_SCHEMA }) as object,
+        toml: (s) => toml.parse(s) as object,
+      },
+    }).data
+  } catch {
+    return []
+  }
+  const slugs: FullSlug[] = []
+  const aliases = coerceToArray(coalesceAliases(data, ["aliases", "alias"]))
+  if (aliases) slugs.push(...getAliasSlugs(aliases))
+  if (data.permalink != null && data.permalink.toString() !== "") {
+    slugs.push(data.permalink.toString() as FullSlug)
+  }
+  return slugs
+}
+
 export const FrontMatter: QuartzTransformerPlugin<Partial<Options>> = (userOpts) => {
   const opts = { ...defaultOptions, ...userOpts }
   return {

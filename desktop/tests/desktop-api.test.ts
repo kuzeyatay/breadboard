@@ -142,6 +142,12 @@ test("preload API invokes only the declared IPC contract", async () => {
   );
 });
 
+test("the renderer reads the durable theme and override before publishing its own theme", async () => {
+  const ipc = new FakeIpcRenderer();
+  await createDesktopApi(ipc).getThemeState();
+  assert.deepEqual(ipc.calls, [{ channel: IPC_CHANNELS.getThemeState, args: [] }]);
+});
+
 test("startup subscriptions receive state and unsubscribe cleanly", () => {
   const ipc = new FakeIpcRenderer();
   const api = createDesktopApi(ipc);

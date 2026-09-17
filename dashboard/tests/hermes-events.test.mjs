@@ -1,5 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { hermesToolAccess } from "../src/lib/agent-runtime/hermes-tool-access.ts";
+
+test("legacy web denials reach native Hermes tools without mutating caller policy", () => {
+  const policy = { websearch: false, webfetch: false, attachment_image: true };
+  const access = hermesToolAccess(policy);
+  assert.equal(access.web_search, false); assert.equal(access.web_extract, false);
+  assert.equal(access.attachment_image, true); assert.equal(policy.web_search, undefined);
+  assert.equal(hermesToolAccess({ websearch: false, web_search: true }).web_search, true);
+});
 import {
   createHermesEventNormalizationState,
   normalizeHermesEvent,
@@ -7,6 +16,15 @@ import {
 
 const normalize = (raw, state = createHermesEventNormalizationState()) =>
   normalizeHermesEvent(raw, "live-1", "runtime-1", state);
+
+test("incremental usage retains turn identity without completing the assistant", () => {
+  const events = normalize({ type: "usage.update", session_id: "live-1",
+    payload: { turn_id: "turn-9", usage: { input: 12000, output: 150, total: 12150 } } });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "assistant.usage");
+  assert.equal(events[0].messageId, "turn-9");
+  assert.equal(events[0].payload.usage.total, 12150);
+});
 
 test("filters Hermes events to the live session", () => {
   assert.deepEqual(

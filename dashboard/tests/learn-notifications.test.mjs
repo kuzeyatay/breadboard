@@ -395,7 +395,7 @@ test("the inbox route and the corner card carry Learn notices end to end", () =>
   const toast = source("../src/app/components/toast.tsx");
   assert.match(toast, /progressPercent/);
   assert.match(toast, /role="progressbar"/);
-  assert.match(toast, /activeLearnNotificationGarden\(\)/);
+  assert.match(toast, /isChatNotificationTargetViewed\(record.target\)/);
   assert.match(toast, /LEARN_NOTIFICATION_OPENED_EVENT/);
   assert.match(toast, /dismissLearnToasts/);
   assert.doesNotMatch(toast, /localStorage/);

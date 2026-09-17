@@ -3,8 +3,18 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readTabSession, restoredTabUrl, saveTab, TAB_SESSION_FILE, writeTabSession } from "../src/main/tab-session";
+import { readTabSession, rebaseDashboardUrl, restoredTabUrl, saveTab, TAB_SESSION_FILE, writeTabSession } from "../src/main/tab-session";
 import { isTabsCommand } from "../src/shared/ipc-contract";
+
+test("live dashboard rebinding retains chat selection and ignores other origins", () => {
+  const previous = "http://127.0.0.1:64129";
+  const next = "http://127.0.0.1:59451/dashboard";
+  assert.equal(rebaseDashboardUrl(previous + "/gardens/health?chat=831#message-2", previous, next),
+    "http://127.0.0.1:59451/gardens/health?chat=831#message-2");
+  for (const value of ["https://example.com/path", "http://127.0.0.1:9999/service", "file:///recovery.html", ""]) {
+    assert.equal(rebaseDashboardUrl(value, previous, next), value);
+  }
+});
 
 test("Clicky never restores automatically with Breadboard tabs", () => {
   for (const url of ["/clicky", "/clicky/", "/clicky?theme=light"]) {

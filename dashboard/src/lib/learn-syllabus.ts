@@ -42,6 +42,14 @@ export interface SyllabusReferencedMaterial {
   kind: SyllabusMaterialKind;
   /** "ch. 3", "pp. 40-58", "Week 2" — the part of the work being assigned. */
   locator?: string;
+  /**
+   * The individual numbered sections the locator assigns, expanded by the
+   * reading model: "3.2 - 3.4" becomes ["3.2", "3.3", "3.4"] and "1.8, 1.9"
+   * becomes ["1.8", "1.9"]. A dash is an inclusive range in every syllabus
+   * this pipeline has met, but the expansion stays model-authored so a
+   * syllabus that means something else is read the way it was written.
+   */
+  sections?: string[];
   required: boolean;
 }
 
@@ -60,6 +68,8 @@ export interface SyllabusUnit {
 
 export interface SyllabusPlan {
   courseTitle?: string;
+  /** Course-level learning objectives stated outside any one unit. */
+  courseObjectives?: string[];
   units: SyllabusUnit[];
   referencedMaterials: SyllabusReferencedMaterial[];
 }
@@ -82,6 +92,25 @@ export interface SyllabusMaterialResolution {
   matchReason: string;
 }
 
+/**
+ * One assigned material as the planner sees it: the syllabus's own reading
+ * record joined with the coverage model's verdict on it. Absent from coverage
+ * persisted before this field existed; consumers treat that as an empty list.
+ */
+export interface SyllabusUnitAssignedMaterial {
+  materialId: string;
+  citation: string;
+  title?: string;
+  authors?: string[];
+  kind: SyllabusMaterialKind;
+  locator?: string;
+  sections?: string[];
+  required: boolean;
+  status: SyllabusMaterialStatus;
+  /** Garden documents the coverage model found this material in. */
+  sourceIds: string[];
+}
+
 export interface SyllabusUnitCoverage {
   unitId: string;
   label?: string;
@@ -89,6 +118,12 @@ export interface SyllabusUnitCoverage {
   objectives: string[];
   topics: string[];
   questionReferences: string[];
+  /**
+   * The readings the syllabus assigns to this unit, with each one's resolved
+   * status. When an available reading carries a `locator`/`sections`, those
+   * sections are where the unit's lessons must be grounded.
+   */
+  assignedMaterials?: SyllabusUnitAssignedMaterial[];
   /**
    * Exact selected documents that directly support this unit. This may record
    * partial support even when the model judges the full unit unteachable.
@@ -153,7 +188,28 @@ const SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS = 120_000;
 const SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE = 2_000;
 const SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE = 24_000;
 export const SYLLABUS_COVERAGE_RAW_PAGE_MAX_PAGES_PER_SOURCE = 8;
-const SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX = 8;
+// Five complete opening pages preserve the fixed identity evidence while
+// leaving room for a large garden's many selected sources inside the aggregate
+// 120k-character catalog envelope. Later pages remain available through the
+// bounded recovery rereview when the planner selects them explicitly.
+const SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX = 5;
+// A textbook's section headings, with the page each one sits on, let the
+// coverage model see that "3.2 GAUSS'S LAW" exists on page 47 without the
+// catalog carrying page 47 itself. Headings are verbatim lines copied from
+// the canonical raw pages; the bound is transport, not selection.
+export const SYLLABUS_COVERAGE_HEADING_INDEX_MAX_ENTRIES_PER_SOURCE = 800;
+export const SYLLABUS_COVERAGE_HEADING_INDEX_MAX_HEADING_CHARS = 160;
+const SYLLABUS_COVERAGE_HEADING_INDEX_TOTAL_CHARS = 80_000;
+
+export interface CanonicalSourceHeadingIndex {
+  /** Verbatim Markdown heading lines in document order, with their page.
+   * `pageNumber` is absent for a source that declares no canonical pages. */
+  entries: Array<{ pageNumber?: number; heading: string }>;
+  /** Headings present in the source; larger than `entries` when truncated. */
+  totalHeadingCount: number;
+  /** True when a transport bound omitted headings or shortened one. */
+  truncated: boolean;
+}
 
 export interface SyllabusCoverageCatalogSource {
   /** Exact selected-source identity exposed to the coverage model. */
@@ -536,17 +592,80 @@ export function boundedCanonicalSourcePageEvidence(
   };
 }
 
+const CANONICAL_PAGE_HEADING = /^#{2,6}[ \t]*Page(?:[ \t]*\d|[ \t]+|$)/i;
+const MARKDOWN_HEADING = /^#{1,6}[ \t]+\S/;
+
+/**
+ * Every Markdown heading in a source's canonical pages, tagged with the page
+ * it sits on. This is how a 600-page textbook tells the coverage model that
+ * "3.2 GAUSS'S LAW" exists and where, when the catalog can only afford to
+ * carry the book's first five pages verbatim. Headings are copied byte-for-
+ * byte (outside fences, the `## Page N` delimiters excluded); code does not
+ * decide which heading answers which locator.
+ */
+export function canonicalSourceHeadingIndex(
+  sourceId: string,
+  body: string | undefined,
+  options: { maxEntries?: number; maxChars?: number } = {},
+): CanonicalSourceHeadingIndex {
+  const maxEntries = options.maxEntries ?? SYLLABUS_COVERAGE_HEADING_INDEX_MAX_ENTRIES_PER_SOURCE;
+  const maxChars = options.maxChars ?? Number.MAX_SAFE_INTEGER;
+  const parsed = parseCanonicalSourceRawPages(sourceId, body);
+  const blocks: Array<{ pageNumber?: number; text: string }> = parsed.pages.length > 0
+    ? parsed.pages.map((page) => ({ pageNumber: page.pageNumber, text: page.exactText }))
+    : [{ text: canonicalSourceMaterialBody(body) }];
+  const headings: Array<{ pageNumber?: number; heading: string }> = [];
+  for (const block of blocks) {
+    for (const line of markdownLineRecords(block.text)) {
+      if (line.insideFence) continue;
+      const content = line.content.trim();
+      if (!MARKDOWN_HEADING.test(content) || CANONICAL_PAGE_HEADING.test(content)) continue;
+      headings.push({
+        ...(block.pageNumber !== undefined ? { pageNumber: block.pageNumber } : {}),
+        heading: content,
+      });
+    }
+  }
+  let truncated = false;
+  let chars = 0;
+  const entries: CanonicalSourceHeadingIndex["entries"] = [];
+  for (const entry of headings) {
+    if (entries.length >= maxEntries) {
+      truncated = true;
+      break;
+    }
+    let heading = entry.heading;
+    if (heading.length > SYLLABUS_COVERAGE_HEADING_INDEX_MAX_HEADING_CHARS) {
+      heading = heading.slice(0, SYLLABUS_COVERAGE_HEADING_INDEX_MAX_HEADING_CHARS);
+      truncated = true;
+    }
+    if (chars + heading.length > maxChars) {
+      truncated = true;
+      break;
+    }
+    chars += heading.length;
+    entries.push({ ...entry, heading });
+  }
+  return { entries, totalHeadingCount: headings.length, truncated };
+}
+
 /**
  * Copy exact authored locators into the coverage packet. They remain syllabus
  * input, not source evidence: code never turns one into a source-page choice
  * or a title/author/source match.
  */
 export function authoredSyllabusLocatorCatalog(
-  materials: readonly Pick<SyllabusReferencedMaterial, "id" | "locator">[],
-): Array<{ materialId: string; locator: string }> {
+  materials: readonly Pick<SyllabusReferencedMaterial, "id" | "locator" | "sections">[],
+): Array<{ materialId: string; locator: string; sections?: string[] }> {
   return materials.flatMap((material) =>
     typeof material.locator === "string"
-      ? [{ materialId: material.id, locator: material.locator }]
+      ? [{
+          materialId: material.id,
+          locator: material.locator,
+          ...(material.sections && material.sections.length > 0
+            ? { sections: [...material.sections] }
+            : {}),
+        }]
       : [],
   );
 }
@@ -573,6 +692,7 @@ export function buildSyllabusCoverageSourceCatalog(
   };
   canonicalRawSourceSha256: string;
   canonicalRawPageEvidence: CanonicalSourcePageEvidence;
+  canonicalHeadingIndex: CanonicalSourceHeadingIndex;
 }> {
   const sourceIds = new Set<string>();
   for (const source of sources) {
@@ -593,7 +713,7 @@ export function buildSyllabusCoverageSourceCatalog(
   );
   // Reserve each source's complete canonical identity prefix before allocating
   // generated planning context. Equal per-source slices are unsafe here: one
-  // textbook's first eight complete pages can be larger than another source's
+  // textbook's first five complete pages can be larger than another source's
   // entire note even though both prefixes fit comfortably in the catalog-wide
   // transport bound.
   const preparedSources = sources.map((source) => {
@@ -626,8 +746,27 @@ export function buildSyllabusCoverageSourceCatalog(
     (SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS - totalRawPageChars)
       / Math.max(1, sources.length),
   );
-  return preparedSources.map(({ source, rawMaterial, rawPageChars }) => {
+  // The heading budget is shared by need rather than split evenly: a
+  // textbook has hundreds of headings, a lecture transcript has a handful,
+  // and an even split would truncate the one source whose headings matter.
+  const fullHeadingIndexes = preparedSources.map(({ source }) =>
+    canonicalSourceHeadingIndex(source.slug, source.body),
+  );
+  const headingChars = (index: CanonicalSourceHeadingIndex): number =>
+    index.entries.reduce((sum, entry) => sum + entry.heading.length, 0);
+  const totalHeadingChars = fullHeadingIndexes.reduce((sum, index) => sum + headingChars(index), 0);
+  const headingBudgetFor = (index: CanonicalSourceHeadingIndex): number =>
+    totalHeadingChars <= SYLLABUS_COVERAGE_HEADING_INDEX_TOTAL_CHARS
+      ? Number.MAX_SAFE_INTEGER
+      : Math.floor(
+          (headingChars(index) / Math.max(1, totalHeadingChars))
+            * SYLLABUS_COVERAGE_HEADING_INDEX_TOTAL_CHARS,
+        );
+  return preparedSources.map(({ source, rawMaterial, rawPageChars }, index) => {
     const planningIndex = sourcePlanningIndexForCoverage(source.body, planningIndexChars);
+    const canonicalHeadingIndex = canonicalSourceHeadingIndex(source.slug, source.body, {
+      maxChars: headingBudgetFor(fullHeadingIndexes[index]!),
+    });
     return {
       id: source.slug,
       relPath: source.relPath,
@@ -642,6 +781,7 @@ export function buildSyllabusCoverageSourceCatalog(
       },
       canonicalRawSourceSha256: createHash("sha256").update(rawMaterial).digest("hex"),
       canonicalRawPageEvidence: boundedCanonicalSourcePageEvidence(source.slug, source.body, rawPageChars),
+      canonicalHeadingIndex,
     };
   });
 }
@@ -714,6 +854,9 @@ export function normalizeSyllabusPlan(raw: unknown): SyllabusPlan {
       authors: asTextList(record.authors, 10, 120),
       kind: MATERIAL_KINDS.has(kindText) ? kindText : "other",
       locator: asText(record.locator, 120) || undefined,
+      ...(Array.isArray(record.sections)
+        ? { sections: asTextList(record.sections, 60, 40) }
+        : {}),
       required: record.required !== false,
     });
     if (materials.length >= 200) break;
@@ -741,11 +884,30 @@ export function normalizeSyllabusPlan(raw: unknown): SyllabusPlan {
     if (units.length >= 100) break;
   }
 
+  const courseObjectives = asTextList(root.courseObjectives, 20, 400);
   return {
     courseTitle: asText(root.courseTitle, 200) || undefined,
+    ...(courseObjectives.length > 0 ? { courseObjectives } : {}),
     units,
     referencedMaterials: materials,
   };
+}
+
+/** An authored optional string: absent, or exact and non-empty. The reading
+ * prompt tells the model to leave `title` empty for a reference with no
+ * identifiable work, so `""` is accepted and projected as absent. */
+function optionalAuthoredString(value: unknown, path: string, problems: string[]): void {
+  if (value === undefined || value === "") return;
+  exactAuthoredString(value, path, problems);
+}
+
+function optionalAuthoredStringArray(value: unknown, path: string, problems: string[]): void {
+  if (value === undefined) return;
+  exactAuthoredStringArray(value, path, problems);
+}
+
+function presentString(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
 }
 
 function exactAuthoredString(value: unknown, path: string, problems: string[]): value is string {
@@ -779,9 +941,8 @@ export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
   const root = asRecord(value);
   if (!root) return ["syllabus plan must be a JSON object"];
   const problems: string[] = [];
-  if (root.courseTitle !== undefined) {
-    exactAuthoredString(root.courseTitle, "courseTitle", problems);
-  }
+  optionalAuthoredString(root.courseTitle, "courseTitle", problems);
+  optionalAuthoredStringArray(root.courseObjectives, "courseObjectives", problems);
   if (!Array.isArray(root.referencedMaterials)) {
     problems.push("referencedMaterials must be an array");
   }
@@ -801,8 +962,12 @@ export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
       materialIds.add(material.id);
     }
     exactAuthoredString(material.citation, `${prefix}.citation`, problems);
-    if (material.title !== undefined) exactAuthoredString(material.title, `${prefix}.title`, problems);
-    if (material.locator !== undefined) exactAuthoredString(material.locator, `${prefix}.locator`, problems);
+    optionalAuthoredString(material.title, `${prefix}.title`, problems);
+    optionalAuthoredString(material.locator, `${prefix}.locator`, problems);
+    optionalAuthoredStringArray(material.sections, `${prefix}.sections`, problems);
+    if (Array.isArray(material.sections) && material.sections.length > 0 && !presentString(material.locator)) {
+      problems.push(`${prefix}.sections requires the locator they expand`);
+    }
     exactAuthoredStringArray(material.authors, `${prefix}.authors`, problems);
     if (typeof material.kind !== "string" || !MATERIAL_KINDS.has(material.kind as SyllabusMaterialKind)) {
       problems.push(`${prefix}.kind is invalid`);
@@ -823,7 +988,7 @@ export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
       if (unitIds.has(unit.id)) problems.push(`${prefix}.id duplicates ${unit.id}`);
       unitIds.add(unit.id);
     }
-    if (unit.label !== undefined) exactAuthoredString(unit.label, `${prefix}.label`, problems);
+    optionalAuthoredString(unit.label, `${prefix}.label`, problems);
     exactAuthoredString(unit.title, `${prefix}.title`, problems);
     exactAuthoredStringArray(unit.objectives, `${prefix}.objectives`, problems);
     exactAuthoredStringArray(unit.topics, `${prefix}.topics`, problems);
@@ -845,19 +1010,25 @@ export function projectModelAuthoredSyllabusPlan(value: unknown): SyllabusPlan {
   }
   const root = value as Record<string, unknown>;
   return {
-    ...(root.courseTitle !== undefined ? { courseTitle: root.courseTitle as string } : {}),
+    ...(presentString(root.courseTitle) ? { courseTitle: root.courseTitle } : {}),
+    ...(Array.isArray(root.courseObjectives) && root.courseObjectives.length > 0
+      ? { courseObjectives: [...(root.courseObjectives as string[])] }
+      : {}),
     referencedMaterials: (root.referencedMaterials as Array<Record<string, unknown>>).map((material) => ({
       id: material.id as string,
       citation: material.citation as string,
-      ...(material.title !== undefined ? { title: material.title as string } : {}),
+      ...(presentString(material.title) ? { title: material.title } : {}),
       authors: [...(material.authors as string[])],
       kind: material.kind as SyllabusMaterialKind,
-      ...(material.locator !== undefined ? { locator: material.locator as string } : {}),
+      ...(presentString(material.locator) ? { locator: material.locator } : {}),
+      ...(Array.isArray(material.sections) && material.sections.length > 0
+        ? { sections: [...(material.sections as string[])] }
+        : {}),
       required: material.required as boolean,
     })),
     units: (root.units as Array<Record<string, unknown>>).map((unit) => ({
       id: unit.id as string,
-      ...(unit.label !== undefined ? { label: unit.label as string } : {}),
+      ...(presentString(unit.label) ? { label: unit.label } : {}),
       title: unit.title as string,
       objectives: [...(unit.objectives as string[])],
       topics: [...(unit.topics as string[])],
@@ -1083,8 +1254,29 @@ export function projectModelAuthoredSyllabusCoverage(
   }
   const decision = value as ModelAuthoredSyllabusCoverageDecision;
   const authoredUnits = new Map(decision.units.map((unit) => [unit.unitId, unit]));
+  const materialsById = new Map(plan.referencedMaterials.map((material) => [material.id, material]));
+  const resolutionsByMaterialId = new Map(
+    decision.resolutions.map((resolution) => [resolution.materialId, resolution]),
+  );
   const units: SyllabusUnitCoverage[] = plan.units.map((unit) => {
     const authored = authoredUnits.get(unit.id)!;
+    const assignedMaterials: SyllabusUnitAssignedMaterial[] = unit.materialIds.flatMap((materialId) => {
+      const material = materialsById.get(materialId);
+      const resolution = resolutionsByMaterialId.get(materialId);
+      if (!material || !resolution) return [];
+      return [{
+        materialId,
+        citation: material.citation,
+        ...(material.title !== undefined ? { title: material.title } : {}),
+        ...(material.authors && material.authors.length > 0 ? { authors: [...material.authors] } : {}),
+        kind: material.kind,
+        ...(material.locator !== undefined ? { locator: material.locator } : {}),
+        ...(material.sections && material.sections.length > 0 ? { sections: [...material.sections] } : {}),
+        required: material.required,
+        status: resolution.status,
+        sourceIds: [...resolution.sourceIds],
+      }];
+    });
     return {
       unitId: unit.id,
       label: unit.label,
@@ -1095,6 +1287,7 @@ export function projectModelAuthoredSyllabusCoverage(
       // Treat the absent field as an empty assignment instead of failing a
       // recovery/finalization pass while the plan is being upgraded.
       questionReferences: [...(unit.questionReferences ?? [])],
+      assignedMaterials,
       availableSourceIds: [...authored.availableSourceIds],
       missingCitations: [...authored.missingCitations],
       teachable: authored.teachable,

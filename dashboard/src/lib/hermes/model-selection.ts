@@ -1,7 +1,10 @@
 import {
+  CHAT_MODEL_SENTINEL,
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
   GLOBAL_MODEL_SENTINEL,
+  NO_MODEL_SENTINEL,
+  NO_DEFAULT_MODEL_MESSAGE,
   normalizeAssistantModelId,
 } from "../ai-models.ts";
 import {
@@ -19,10 +22,12 @@ const MAX_REASONING_MODELS = new Set([
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
-  // The sentinel stands in for whatever the background model is, so it must not
+  "gpt-5.6-luna-reserve",
+  // A sentinel stands in for whatever model it resolves to, so it must not
   // be pre-emptively downgraded here. ChatMock clamps the effort against the
   // model it actually resolves to.
   GLOBAL_MODEL_SENTINEL,
+  CHAT_MODEL_SENTINEL,
 ]);
 
 export interface HermesEngineSelection {
@@ -40,31 +45,37 @@ export interface HermesEngineSelection {
  * the ChatGPT ids. A provider model (`anthropic/claude-opus-4-5`) is not
  * declared there — declaring every model of every provider would mean
  * regenerating that config whenever a key is added. Instead such a choice is
- * sent as the `default` sentinel, which *is* declared: ChatMock expands it to
- * the background model, and the Intelligence menu sets the background model to
- * exactly the model that was picked. So the chat runs on the chosen model
- * without the runtime needing to know its name.
+ * sent as the `chat` sentinel: ChatMock expands it to the chat model, and the
+ * runtime pins that turn to exactly the model that was picked.
+ * So the chat runs on the chosen model without the runtime needing to know
+ * its name. The profile default remains the fallback for Learn and background
+ * work such as Thought Topology; explicit turn and run picks leave it intact.
  */
 function resolveModelId(value: unknown): string {
-  if (value === undefined || value === null || value === "") return DEFAULT_MODEL;
   if (typeof value !== "string") {
     throw new ApiError(400, "invalid_model", "The selected model is invalid.");
   }
   const modelId = value.trim();
-  if (HERMES_MODEL_IDS.includes(modelId) || modelId === GLOBAL_MODEL_SENTINEL) {
+  if (modelId === NO_MODEL_SENTINEL) {
+    throw new ApiError(400, "default_model_required", NO_DEFAULT_MODEL_MESSAGE);
+  }
+  if (
+    HERMES_MODEL_IDS.includes(modelId) ||
+    modelId === GLOBAL_MODEL_SENTINEL ||
+    modelId === CHAT_MODEL_SENTINEL
+  ) {
     return modelId;
   }
 
   // Only provider-prefixed ids take the indirection. They are the ones the
-  // runtime can never register per-model, and they only reach here after the
-  // Intelligence menu made them the background model — so the sentinel resolves
-  // to exactly the model that was asked for.
+  // runtime can never register per-model. The runtime pins the chat sentinel
+  // to the concrete selected model before starting the turn.
   //
   // A bare id like `gpt-5` is different: ChatMock serves it, but the runtime has
   // not registered it. Substituting the sentinel there would quietly answer with
   // some *other* model, so that stays an error the operator can see.
   if (modelId.includes("/") && normalizeAssistantModelId(modelId)) {
-    return GLOBAL_MODEL_SENTINEL;
+    return CHAT_MODEL_SENTINEL;
   }
 
   throw new ApiError(
@@ -95,8 +106,11 @@ function resolveReasoningEffort(value: unknown): AssistantReasoningEffort {
 export function resolveHermesEngine(
   modelValue: unknown,
   reasoningEffortValue: unknown,
+  defaultModel = DEFAULT_MODEL,
 ): HermesEngineSelection {
-  const modelID = resolveModelId(modelValue);
+  const requestedModel = modelValue === undefined || modelValue === null || modelValue === ""
+    ? defaultModel : modelValue;
+  const modelID = resolveModelId(requestedModel);
   const requestedReasoningEffort = resolveReasoningEffort(reasoningEffortValue);
   const variant = requestedReasoningEffort === "max" && !MAX_REASONING_MODELS.has(modelID)
     ? "xhigh"
@@ -105,11 +119,12 @@ export function resolveHermesEngine(
   return {
     model: { providerID: HERMES_CHATMOCK_PROVIDER_ID, modelID },
     selectedModelID:
-      typeof modelValue === "string" &&
-      modelValue.trim() &&
-      modelValue.trim() !== GLOBAL_MODEL_SENTINEL
-        ? modelValue.trim()
-        : modelID === GLOBAL_MODEL_SENTINEL
+      typeof requestedModel === "string" &&
+      requestedModel.trim() &&
+      requestedModel.trim() !== GLOBAL_MODEL_SENTINEL &&
+      requestedModel.trim() !== CHAT_MODEL_SENTINEL
+        ? requestedModel.trim()
+        : modelID === GLOBAL_MODEL_SENTINEL || modelID === CHAT_MODEL_SENTINEL
           ? DEFAULT_MODEL
           : modelID,
     variant,

@@ -2,12 +2,8 @@
 
 // The HyperFrames setup panel.
 //
-// Rendering video needs three things Breadboard does not ship — the CLI, ffmpeg
-// and a Chromium — plus the coding runtime that drives them. Each row says
-// whether that piece was found and where it came from, so "the video agent is
-// unavailable" is never the whole answer. Only the CLI has an install button:
-// it is the one piece with a package Breadboard can fetch into its own
-// directory without admin rights.
+// First runs prepare the CLI automatically. This panel also supports preparing
+// it ahead of time and diagnosing the shared rendering tools.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -24,6 +20,7 @@ interface ToolchainStatus {
   clone: { found: boolean; path: string; skills: number };
   cli: Piece & { installable: boolean };
   ffmpeg: Piece;
+  ffprobe: Piece;
   browser: Piece;
   codex: { found: boolean; version: string };
   targetVersion: string;
@@ -192,7 +189,7 @@ export default function HyperframesSettingsDialog({ onClose }: { onClose: () => 
                   status?.ready ? "bg-[var(--botanical)]" : "bg-amber-500"
                 }`}
               />
-              {status?.ready ? "Ready to render" : loading ? "Checking…" : "Setup needed"}
+              {status?.ready ? "Ready to make videos" : loading ? "Checking…" : "Setup needed"}
             </span>
             <button
               type="button"
@@ -221,9 +218,11 @@ export default function HyperframesSettingsDialog({ onClose }: { onClose: () => 
                 label="HyperFrames CLI"
                 ok={status.cli.found}
                 detail={`${status.cli.version || "installed"} · found via ${status.cli.source}`}
-                optional={`Not installed. Breadboard can fetch version ${status.targetVersion} into its own folder.`}
+                optional={status.cli.installable
+                  ? "Installs automatically when you make your first video. You can also prepare it now."
+                  : "The HyperFrames source is missing a valid CLI version. Repair the Breadboard installation."}
               >
-                {status.cli.found ? null : (
+                {status.cli.found || !status.cli.installable ? null : (
                   <button
                     type="button"
                     onClick={() => void installCli()}
@@ -238,13 +237,19 @@ export default function HyperframesSettingsDialog({ onClose }: { onClose: () => 
                 label="FFmpeg"
                 ok={status.ffmpeg.found}
                 detail={`${status.ffmpeg.path} · ${status.ffmpeg.source}`}
-                optional="Not found. Install FFmpeg and put it on PATH, or set HYPERFRAMES_FFMPEG_PATH — the frames cannot be encoded without it."
+                optional="Not found. Repair Breadboard’s media tools or install FFmpeg on this machine."
+              />
+              <Row
+                label="FFprobe"
+                ok={status.ffprobe.found}
+                detail={`${status.ffprobe.path} · ${status.ffprobe.source}`}
+                optional="Not found. Repair Breadboard’s media tools or install FFmpeg with FFprobe."
               />
               <Row
                 label="Chromium"
                 ok={status.browser.found}
                 detail={`${status.browser.path} · ${status.browser.source}`}
-                optional="No installed browser found. The first render downloads a headless Chrome, which takes a few minutes once."
+                optional="Managed automatically by HyperFrames. The first render downloads a compatible headless Chrome if needed."
               />
               <Row
                 label="Coding runtime"

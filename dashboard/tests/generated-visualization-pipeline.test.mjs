@@ -913,6 +913,93 @@ test("retained-workspace recovery reuses an exact published visual without a pro
   }
 });
 
+test("retained-workspace recovery reuses a native-skill visual on its own evidence shape", async () => {
+  // Native interactive-visualizer publications record one `published`
+  // lifecycle entry and per-viewport browser gates in runtimeTests. On the
+  // legacy evidence shape none of them was ever reusable, so every resumed
+  // Learn build regenerated visuals it had already published.
+  const plan = buildVisualizationPlan({ gardenId: "resume-native", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "resume-native",
+    targetPage: "learning/1/resume-native.md",
+    targetHeading: "Resume native",
+  };
+  const run = async (mutateTests, recoverySkill) => {
+    const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-resume-native-"));
+    const events = [];
+    let candidateCalls = 0;
+    const common = {
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "A source-grounded explanation.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      candidateProvider: async () => {
+        candidateCalls += 1;
+        return {
+          title: "Coupled state intervention",
+          explanation: "A source-grounded intervention explorer.",
+          sourceCode: validSource,
+          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
+          accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+          pedagogicalClaims: ["The propagated state changes with gain."],
+        };
+      },
+      criticProvider: async () => ({
+        approved: true,
+        checkedAt: new Date().toISOString(),
+        reason: "The visual passes every gate.",
+        requestedChanges: [],
+        scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+      }),
+      runBrowserTests: false,
+    };
+    try {
+      const published = await createGeneratedVisualization(common);
+      assert.equal(published.manifest?.version, 1, published.errors.join("; "));
+      const artifactDir = path.join(gardenDir, ".breadboard", "visuals", opportunity.id);
+      for (const dir of [artifactDir, path.join(artifactDir, "versions", "1")]) {
+        const manifestPath = path.join(dir, "manifest.json");
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, sourceSkill: "interactive-visualizer-in-chat", runtimeEngine: "breadboard-interactive-visualizer" }, null, 2));
+        fs.writeFileSync(path.join(dir, "lifecycle.json"), JSON.stringify([
+          { status: "published", at: manifest.generatedAt, attempt: 1, detail: "Native chat skill, animation/control browser gates and source critic passed." },
+        ], null, 2));
+        const testsPath = path.join(dir, "tests.json");
+        const tests = JSON.parse(fs.readFileSync(testsPath, "utf8"));
+        fs.writeFileSync(testsPath, JSON.stringify(mutateTests({
+          ...tests,
+          runtimeTests: [{ name: "desktop-light: animation changes primary scene", passed: true }],
+          browser: { executable: "msedge.exe", viewports: [{ name: "desktop-light", width: 1280 }], screenshotCreated: true },
+        }), null, 2));
+      }
+      const recovered = await createGeneratedVisualization({
+        ...common,
+        ...(recoverySkill ? { sourceSkill: recoverySkill } : {}),
+        runBrowserTests: true,
+        reusePublishedArtifactOnRecovery: true,
+        onEvent: (event) => events.push(event),
+      });
+      return { recovered, candidateCalls, events };
+    } finally {
+      fs.rmSync(gardenDir, { recursive: true, force: true });
+    }
+  };
+
+  // Recovered through the native route Learn actually uses: it must be
+  // reused before the native generator (which a stub client cannot drive).
+  const reused = await run((tests) => tests, "interactive-visualizer-in-chat");
+  assert.equal(reused.recovered.manifest?.version, 1, reused.recovered.errors.join("; "));
+  assert.equal(reused.candidateCalls, 1);
+  assert.equal(reused.events.find(({ type }) => type === "visual_resume_artifact_reused")?.data.providerInvocations, 0);
+
+  const ungated = await run((tests) => ({ ...tests, runtimeTests: [] }));
+  assert.equal(ungated.events.some(({ type }) => type === "visual_resume_artifact_reused"), false);
+  assert.equal(ungated.candidateCalls, 2);
+});
+
 test("retained-workspace recovery rejects a tampered published visual and regenerates it", async () => {
   const plan = buildVisualizationPlan({ gardenId: "resume-tamper", learningMap: learningMap([unit()]), learningUnits: [unit()] });
   const opportunity = {

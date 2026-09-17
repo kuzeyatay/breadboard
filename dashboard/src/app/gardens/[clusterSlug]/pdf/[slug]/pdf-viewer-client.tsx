@@ -9,7 +9,12 @@ import FastReadReader from "@/app/components/fastread-reader";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
+import { useStartupLoading } from "@/app/components/startup-readiness";
+import { beginInteraction } from "@/lib/performance/client";
 import PdfToolsPanel, { type PendingStamp } from "@/app/components/pdf-tools-panel";
+import PdfAssistant from "@/app/components/pdf-assistant";
+import { pdfAssistantDocumentKey } from "@/lib/pdf-assistant";
+import { pdfSaveQueue, PdfSaveSession } from "@/lib/pdf-save-client";
 import { stampImage } from "@/lib/pdf-tools";
 import {
   fetchFastReadNote,
@@ -67,6 +72,7 @@ type PdfViewerLike = {
   currentScaleValue: string;
   pagesCount: number;
   annotationEditorMode: { mode: number };
+  _layerProperties?: { annotationEditorUIManager?: { unselectAll(): void } | null };
   cleanup(): void;
   decreaseScale(): void;
   increaseScale(): void;
@@ -175,6 +181,59 @@ function downloadBytes(bytes: Uint8Array, fileName: string) {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+// Chromium's PDF viewer honours print() from inside a hidden iframe, which
+// keeps the print flow on this page instead of opening the file in a tab.
+function printBytes(bytes: Uint8Array): Promise<void> {
+  const blob = new Blob([bytesToArrayBuffer(bytes)], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  return new Promise((resolve, reject) => {
+    const frame = document.createElement("iframe");
+    frame.setAttribute("aria-hidden", "true");
+    frame.style.position = "fixed";
+    frame.style.right = "0";
+    frame.style.bottom = "0";
+    frame.style.width = "0";
+    frame.style.height = "0";
+    frame.style.border = "0";
+    frame.style.opacity = "0";
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("afterprint", onAfterPrint);
+      // Chromium keeps using the frame until the print dialog closes.
+      window.setTimeout(() => {
+        frame.remove();
+        URL.revokeObjectURL(url);
+      }, 60_000);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAfterPrint = () => finish();
+    window.addEventListener("afterprint", onAfterPrint);
+    frame.onload = () => {
+      try {
+        const frameWindow = frame.contentWindow;
+        if (!frameWindow) throw new Error("Could not open the print dialog.");
+        frameWindow.focus();
+        frameWindow.print();
+        // The PDF plugin does not fire afterprint on the parent in every
+        // build, so resolve once the dialog has had a chance to open.
+        window.setTimeout(() => finish(), 1_500);
+      } catch (printError) {
+        finish(
+          printError instanceof Error
+            ? printError
+            : new Error("Could not open the print dialog."),
+        );
+      }
+    };
+    frame.onerror = () => finish(new Error("Could not load the PDF for printing."));
+    frame.src = url;
+    document.body.append(frame);
+  });
 }
 
 function fileNameFromTitle(value: string): string {
@@ -289,8 +348,7 @@ export default function PdfViewerClient({
   const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
   const linkServiceRef = useRef<LinkServiceLike | null>(null);
   const findControllerRef = useRef<FindControllerLike | null>(null);
-  const saveAgainRef = useRef(false);
-  const saveInFlightRef = useRef(false);
+  const saveSessionRef = useRef<PdfSaveSession | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pointerSaveTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(
     new Set(),
@@ -302,13 +360,21 @@ export default function PdfViewerClient({
   const [pageCount, setPageCount] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scaleLabel, setScaleLabel] = useState("100%");
-  const [loading, setLoading] = useState(true);
+  // PDF-01: the viewer has several readinesses, not one. `documentReady` is
+  // the document being open enough to drive the controls; `pageReady` is the
+  // page the person asked for actually being on screen. Optional features
+  // (outline, edit history) report their own state and never gate either.
+  const [documentReady, setDocumentReady] = useState(false);
+  const [pageReady, setPageReady] = useState(false);
+  const [historyState, setHistoryState] = useState<"unknown" | "ready">("unknown");
+  const loading = !documentReady;
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outline, setOutline] = useState<PdfOutlineItem[]>([]);
   const [collapsedOutlineKeys, setCollapsedOutlineKeys] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
+  useStartupLoading(!error && (!documentReady || !pageReady));
   const [mode, setMode] = useState<PdfViewerMode>("select");
   const [query, setQuery] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("saved");
@@ -333,6 +399,8 @@ export default function PdfViewerClient({
     const params = new URLSearchParams({ clusterSlug });
     return `/api/documents/${encodeURIComponent(documentSlug)}/source-pdf?${params.toString()}`;
   }, [clusterSlug, documentSlug, sourceUrl]);
+
+  const saveQueue = useMemo(() => pdfSaveQueue(pdfUrl, title), [pdfUrl, title]);
 
   const historyUrl = useMemo(() => {
     if (readOnly || sourceUrl) return null;
@@ -395,93 +463,40 @@ export default function PdfViewerClient({
 
   const saveEditedPdfToServer = useCallback(async (): Promise<boolean> => {
     if (readOnly) return true;
-    const pdfDocument = pdfDocumentRef.current;
-    if (!pdfDocument) return true;
-
-    if (saveInFlightRef.current) {
-      saveAgainRef.current = true;
-      return false;
-    }
-
     clearScheduledSave();
-    saveInFlightRef.current = true;
-    setSaveState("saving");
-    setError("");
+    return saveSessionRef.current?.save() ?? true;
+  }, [clearScheduledSave, readOnly]);
 
-    try {
-      const savedHash = pdfDocument.annotationStorage.modifiedIds.hash;
-      const data = await pdfDocument.saveDocument();
-      const response = await fetch(pdfUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/pdf" },
-        body: bytesToArrayBuffer(data),
-      });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        const message = typeof body.error === "string"
-          ? body.error
-          : "Could not save the edited PDF.";
-        throw new Error(message);
-      }
-
-      const currentHash = pdfDocument.annotationStorage.modifiedIds.hash;
-      if (currentHash === savedHash) {
-        pdfDocument.annotationStorage.resetModified();
-        setSaveState("saved");
-        setLastSavedAt(
-          new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        );
-      } else {
-        saveAgainRef.current = true;
-        setSaveState("dirty");
-      }
-      return true;
-    } catch (saveError) {
-      setSaveState("error");
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Could not save the edited PDF.",
-      );
-      return false;
-    } finally {
-      saveInFlightRef.current = false;
-      if (saveAgainRef.current) {
-        saveAgainRef.current = false;
-        setSaveState("dirty");
-        saveTimeoutRef.current = setTimeout(() => {
-          void saveEditedPdfRef.current();
-        }, 0);
-      }
-    }
-  }, [clearScheduledSave, pdfUrl, readOnly]);
+  useEffect(() => {
+    if (readOnly) return;
+    return saveQueue.subscribe(snapshot => {
+      setSaveState(snapshot.state === "saved" && saveSessionRef.current?.dirty ? "dirty" : snapshot.state);
+      setLastSavedAt(snapshot.savedAt);
+      setError(snapshot.error);
+    });
+  }, [readOnly, saveQueue]);
 
   useEffect(() => {
     saveEditedPdfRef.current = saveEditedPdfToServer;
   }, [saveEditedPdfToServer]);
 
   const scheduleAutoSave = useCallback(() => {
-    if (readOnly) return;
+    if (readOnly || !saveSessionRef.current?.dirty) return;
     clearScheduledSave();
     setSaveState("dirty");
     saveTimeoutRef.current = setTimeout(() => {
       void saveEditedPdfRef.current();
-    }, artifactEditor ? 700 : 0);
+    }, artifactEditor ? 700 : 50);
   }, [artifactEditor, clearScheduledSave, readOnly]);
 
   const wireDocument = useCallback(
     (pdfDocument: PDFDocumentProxy) => {
+      saveSessionRef.current = new PdfSaveSession(pdfDocument, saveQueue);
       pdfDocument.annotationStorage.onSetModified = () => {
         scheduleAutoSave();
       };
-      pdfDocument.annotationStorage.onResetModified = () => {
-        if (!saveInFlightRef.current && !saveTimeoutRef.current) {
-          setSaveState("saved");
-        }
-      };
     },
-    [scheduleAutoSave],
+    [saveQueue, scheduleAutoSave],
   );
 
   const loadOutline = useCallback(async (pdfDocument: PDFDocumentProxy) => {
@@ -542,7 +557,10 @@ export default function PdfViewerClient({
   );
 
   const serverUndo = useCallback(async () => {
-    if (!historyUrl || serverHistoryCount <= 0) return;
+    // PDF-02: undo may only reach back into saved versions once the history
+    // read has actually answered. "Not loaded yet" is not "no history".
+    if (!historyUrl || historyState !== "ready" || serverHistoryCount <= 0) return;
+    if (!await saveEditedPdfToServer()) return;
     setSaveState("saving");
     try {
       const response = await fetch(historyUrl, { method: "DELETE" });
@@ -560,7 +578,7 @@ export default function PdfViewerClient({
       setSaveState("error");
       setError(undoError instanceof Error ? undoError.message : "Could not undo.");
     }
-  }, [serverHistoryCount, historyUrl, reloadFromBytes]);
+  }, [historyState, serverHistoryCount, historyUrl, reloadFromBytes, saveEditedPdfToServer]);
 
   useEffect(() => {
     serverUndoRef.current = serverUndo;
@@ -587,27 +605,25 @@ export default function PdfViewerClient({
   // reopens on the new bytes. A read-only PDF keeps the result in this tab only.
   const applyToolBytes = useCallback(
     async (bytes: Uint8Array) => {
+      const targetDocument = pdfDocumentRef.current;
       setError("");
       if (!readOnly) {
-        const response = await fetch(pdfUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "application/pdf" },
-          body: bytesToArrayBuffer(bytes),
-        });
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(
-            typeof body.error === "string" ? body.error : "Could not save the result.",
-          );
+        clearScheduledSave();
+        // Flush the pre-tool annotations first so teardown cannot queue them
+        // after the transformed PDF and overwrite the result.
+        void saveSessionRef.current?.save();
+        if (!await saveQueue.enqueue(() => Promise.resolve(bytes))) {
+          throw new Error(saveQueue.snapshot.error);
         }
         setLastSavedAt(
           new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         );
         await refreshHistoryCount();
       }
+      if (pdfDocumentRef.current !== targetDocument) return;
       await reloadFromBytes(bytes);
     },
-    [pdfUrl, readOnly, refreshHistoryCount, reloadFromBytes],
+    [clearScheduledSave, readOnly, refreshHistoryCount, reloadFromBytes, saveQueue],
   );
 
   const downloadToolBytes = useCallback(
@@ -740,7 +756,7 @@ export default function PdfViewerClient({
 
   useEffect(() => {
     if (readOnly) return;
-    const hasPendingSave = saveState === "dirty" || saveState === "saving";
+    const hasPendingSave = saveState === "dirty" || saveState === "saving" || saveState === "error";
     if (!hasPendingSave) return;
 
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -762,14 +778,20 @@ export default function PdfViewerClient({
     let workerBlobUrl: string | null = null;
     let pdfDocument: PDFDocumentProxy | null = null;
 
-    setLoading(true);
+    setDocumentReady(false);
+    setPageReady(false);
+    setHistoryState("unknown");
+    // Measured from this load starting to the first page and then to the
+    // page actually asked for (BASE-03).
+    const firstPage = beginInteraction("pdf-input-to-first-page");
+    const requestedPage = beginInteraction("pdf-input-to-requested-page");
     setError("");
     setPageCount(0);
     setPageNumber(1);
     setOutline([]);
     setCollapsedOutlineKeys(new Set());
     setMode("select");
-    setSaveState("saved");
+    setSaveState(readOnly ? "saved" : saveQueue.snapshot.state);
     setLastSavedAt("");
     restoredPageRef.current = false;
     clearScheduledSave();
@@ -796,6 +818,9 @@ export default function PdfViewerClient({
         pdfjsRef.current = pdfjs;
 
         const eventBus = new viewerModule.EventBus();
+        const onViewerEvent = (name: string, listener: (event: Record<string, unknown>) => void) => {
+          eventBus.on(name, event => { if (!cancelled) listener(event); });
+        };
         const linkService = new viewerModule.PDFLinkService({ eventBus });
         const findController = new viewerModule.PDFFindController({
           eventBus,
@@ -807,7 +832,8 @@ export default function PdfViewerClient({
           annotationEditorMode: pdfjs.AnnotationEditorType.NONE,
           annotationMode: pdfjs.AnnotationMode.ENABLE_FORMS,
           container: containerRef.current,
-          enableHighlightFloatingButton: true,
+          // The shared Breadboard palette owns selection actions, including Ask here.
+          enableHighlightFloatingButton: false,
           eventBus,
           findController,
           imageResourcesPath: PDFJS_IMAGE_RESOURCES_PATH,
@@ -822,14 +848,29 @@ export default function PdfViewerClient({
         linkServiceRef.current = linkService;
         findControllerRef.current = findController;
 
-        eventBus.on("pagesloaded", (event) => {
+        onViewerEvent("pagesloaded", (event) => {
           const count = Number(event.pagesCount);
           if (Number.isFinite(count)) setPageCount(count);
         });
-        eventBus.on("pagesinit", () => {
+        // PDF-03: the page the person asked for is on screen. A render from a
+        // replaced document cannot satisfy this one — `cancelled` closes over
+        // this load, and `onViewerEvent` drops events after cancellation.
+        onViewerEvent("pagerendered", (event) => {
+          const rendered = Number(event.pageNumber);
+          const wanted = pdfViewerRef.current?.currentPageNumber ?? 1;
+          if (!Number.isFinite(rendered)) return;
+          firstPage.end("usable");
+          if (rendered !== wanted) return;
+          setPageReady(true);
+          requestedPage.end("usable");
+        });
+        onViewerEvent("pagesinit", () => {
           const viewer = pdfViewerRef.current;
           restoredPageRef.current = true;
           if (!viewer) return;
+          // PDF.js cannot resolve page-width until its page views exist.
+          // Initializing it earlier leaves its internal scale at zero.
+          viewer.currentScaleValue = "page-width";
           const total = viewer.pagesCount || 0;
           const saved = readSavedPage();
           if (saved && total > 0 && saved <= total) {
@@ -841,23 +882,23 @@ export default function PdfViewerClient({
             setPageNumber(saved);
           }
         });
-        eventBus.on("pagechanging", (event) => {
+        onViewerEvent("pagechanging", (event) => {
           const nextPage = Number(event.pageNumber);
           if (!Number.isFinite(nextPage)) return;
           setPageNumber(nextPage);
           if (restoredPageRef.current) writeSavedPage(nextPage);
         });
-        eventBus.on("scalechanging", (event) => {
+        onViewerEvent("scalechanging", (event) => {
           const scale = Number(event.scale);
           if (Number.isFinite(scale)) setScaleLabel(`${Math.round(scale * 100)}%`);
         });
-        eventBus.on("updateviewarea", () => {
+        onViewerEvent("updateviewarea", () => {
           const scale = pdfViewerRef.current?.currentScale;
           if (typeof scale === "number") {
             setScaleLabel(`${Math.round(scale * 100)}%`);
           }
         });
-        eventBus.on("annotationeditormodechanged", (event) => {
+        onViewerEvent("annotationeditormodechanged", (event) => {
           const nextMode = Number(event.mode);
           if (nextMode === pdfjs.AnnotationEditorType.HIGHLIGHT) {
             setMode("highlight");
@@ -869,18 +910,28 @@ export default function PdfViewerClient({
             setMode("select");
           }
         });
-        eventBus.on("annotationeditorstateschanged", (event) => {
+        onViewerEvent("annotationeditorstateschanged", (event) => {
           hasInMemoryUndoRef.current = Boolean(event.hasSomethingToUndo);
           if (!readOnly) {
-            // Always schedule save — covers any undo-stack change PDF.js fires this for
+            // Ignore selection-only events; save actual annotation content changes.
             scheduleAutoSave();
           }
         });
 
-        loadingTask = pdfjs.getDocument({
-          url: pdfUrl,
-          withCredentials: true,
-        });
+        const pendingBytes = saveQueue.pendingBytes();
+        const pendingData = pendingBytes ? await pendingBytes : null;
+        if (cancelled) return;
+        loadingTask = pdfjs.getDocument(pendingData
+          ? { data: pendingData }
+          : {
+              url: pdfUrl,
+              withCredentials: true,
+              // The endpoint serves byte ranges, so fetch the pages someone
+              // is actually reading instead of streaming the whole document
+              // in the background (IO-02). A shelf of textbooks restored
+              // into tabs at startup used to pull every byte of every one.
+              disableAutoFetch: true,
+            });
         pdfDocument = await loadingTask.promise;
         if (cancelled) {
           void pdfDocument.destroy();
@@ -898,17 +949,31 @@ export default function PdfViewerClient({
         setPageNumber(
           initialPage && initialPage <= pdfDocument.numPages ? initialPage : 1,
         );
-        await loadOutline(pdfDocument);
+        // The document is open: the toolbar, navigation, and search work now.
+        firstPage.mark("document-open");
+        requestedPage.mark("document-open");
+        setDocumentReady(true);
 
-        // Fetch server history count so Ctrl+Z can fall back to it
+        // PDF-02: the outline and the edit history are optional. They start
+        // here, after the readable document, and each fails on its own. A
+        // slow or broken one used to hold the whole viewer in its cover.
+        void loadOutline(pdfDocument);
         if (historyUrl) {
-          const histResp = await fetch(historyUrl).catch(() => null);
-          if (!cancelled && histResp?.ok) {
-            const histData = await histResp.json().catch(() => ({ count: 0 }));
-            setServerHistoryCount(typeof histData.count === "number" ? histData.count : 0);
-          }
+          void fetch(historyUrl)
+            .then((response) => (response.ok ? response.json() : null))
+            .catch(() => null)
+            .then((histData) => {
+              if (cancelled) return;
+              const count = typeof histData?.count === "number" ? histData.count : 0;
+              setServerHistoryCount(count);
+              // Undo may only reach back to saved versions once we know
+              // there are some (PDF-02).
+              setHistoryState("ready");
+            });
         }
       } catch (loadError: unknown) {
+        firstPage.end(cancelled ? "cancelled" : "failed");
+        requestedPage.end(cancelled ? "cancelled" : "failed");
         if (cancelled) return;
         setError(
           loadError instanceof Error
@@ -916,7 +981,9 @@ export default function PdfViewerClient({
             : "Could not open this PDF.",
         );
       } finally {
-        if (!cancelled) setLoading(false);
+        // A failed open still has to release the controls, or the person is
+        // left with a disabled toolbar and no way to retry.
+        if (!cancelled) setDocumentReady(true);
       }
     }
 
@@ -931,6 +998,13 @@ export default function PdfViewerClient({
     // keyup: catches text edits and annotation deletions (Delete/Backspace).
     const container = containerRef.current;
     const viewerElement = viewerRef.current;
+    const resizeObserver = new ResizeObserver(() => {
+      const viewer = pdfViewerRef.current;
+      if (viewer?.pagesCount && ["page-width", "page-fit", "auto"].includes(viewer.currentScaleValue)) {
+        viewer.currentScaleValue = viewer.currentScaleValue;
+      }
+    });
+    if (container) resizeObserver.observe(container);
     const pointerSaveTimers = pointerSaveTimersRef.current;
     const inContainer = (event: Event) =>
       container != null && event.composedPath().includes(container);
@@ -953,24 +1027,45 @@ export default function PdfViewerClient({
 
     return () => {
       cancelled = true;
+      // A document replaced or closed before its page arrived is a real
+      // outcome for this measurement, not a missing sample.
+      firstPage.end("cancelled");
+      requestedPage.end("cancelled");
+      resizeObserver.disconnect();
       document.removeEventListener("pointerup", onPointerUp, { capture: true });
       document.removeEventListener("keyup", onKeyUp, { capture: true });
       for (const timer of pointerSaveTimers) clearTimeout(timer);
       pointerSaveTimers.clear();
+      // Commit the active text editor/drawing before PDF.js snapshots its storage.
+      // Capture now; uploads and lease retries belong to the app-level queue.
+      const viewer = pdfViewerRef.current;
+      const currentDocument = pdfDocumentRef.current;
+      const session = saveSessionRef.current;
+      viewer?._layerProperties?.annotationEditorUIManager?.unselectAll();
+      if (!readOnly) void session?.save();
+      if (currentDocument) {
+        currentDocument.annotationStorage.onSetModified = null;
+        currentDocument.annotationStorage.onResetModified = null;
+      }
       eventBusRef.current = null;
       viewerElement
         ?.querySelectorAll("canvas")
         .forEach((canvas) => releaseCanvasPixels(canvas));
-      pdfViewerRef.current?.setDocument(null);
-      pdfViewerRef.current?.cleanup();
+      viewer?.setDocument(null);
+      viewer?.cleanup();
       pdfViewerRef.current = null;
       pdfDocumentRef.current = null;
+      saveSessionRef.current = null;
       clearScheduledSave();
       linkServiceRef.current = null;
       findControllerRef.current = null;
-      void loadingTask?.destroy();
-      void pdfDocument?.destroy();
-      if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl);
+      const release = async () => {
+        await currentDocument?.destroy();
+        if (!currentDocument || pdfDocument !== currentDocument) await loadingTask?.destroy();
+        if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl);
+      };
+      // Keep the worker alive through serialization, including a failed save's retry.
+      void (session?.queue.whenIdle() ?? Promise.resolve()).then(release);
     };
   }, [
     clearScheduledSave,
@@ -979,31 +1074,18 @@ export default function PdfViewerClient({
     pdfUrl,
     readOnly,
     readSavedPage,
+    saveQueue,
     scheduleAutoSave,
     wireDocument,
     writeSavedPage,
   ]);
 
-  const goBack = useCallback(async () => {
-    if (readOnly) {
-      startNavigationProgress();
-      router.back();
-      return;
-    }
-    if (saveState === "saving") {
-      setError("Please wait for the PDF save to finish before leaving.");
-      return;
-    }
-
-    if (saveState === "dirty" || saveState === "error") {
-      const saved = await saveEditedPdfToServer();
-      if (!saved) return;
-    }
-
+  const goBack = useCallback(() => {
+    if (!readOnly) void saveEditedPdfToServer();
     startNavigationProgress();
-    if (artifactEditor) router.back();
+    if (readOnly || artifactEditor) router.back();
     else router.push(`/gardens/${clusterSlug}`);
-  }, [artifactEditor, clusterSlug, readOnly, router, saveEditedPdfToServer, saveState]);
+  }, [artifactEditor, clusterSlug, readOnly, router, saveEditedPdfToServer]);
 
   const askAiToEditArtifact = useCallback(async () => {
     if (!aiEditArtifact) return;
@@ -1152,29 +1234,47 @@ export default function PdfViewerClient({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const downloadEdited = useCallback(async () => {
-    const pdfDocument = pdfDocumentRef.current;
-    if (!pdfDocument) return;
+  const exportEdited = useCallback(
+    async (
+      deliver: (bytes: Uint8Array) => void | Promise<void>,
+      fallbackMessage: string,
+    ) => {
+      const pdfDocument = pdfDocumentRef.current;
+      if (!pdfDocument) return;
 
-    setExporting(true);
-    setError("");
-    try {
-      if (saveState !== "saved") {
-        const saved = await saveEditedPdfToServer();
-        if (!saved) return;
+      setExporting(true);
+      setError("");
+      try {
+        if (saveState !== "saved") {
+          const saved = await saveEditedPdfToServer();
+          if (!saved) return;
+        }
+        const data = await pdfDocument.saveDocument();
+        await deliver(data);
+      } catch (saveError) {
+        setError(
+          saveError instanceof Error ? saveError.message : fallbackMessage,
+        );
+      } finally {
+        setExporting(false);
       }
-      const data = await pdfDocument.saveDocument();
-      downloadBytes(data, editedFileName);
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Could not download the edited PDF.",
-      );
-    } finally {
-      setExporting(false);
-    }
-  }, [editedFileName, saveEditedPdfToServer, saveState]);
+    },
+    [saveEditedPdfToServer, saveState],
+  );
+
+  const downloadEdited = useCallback(
+    () =>
+      exportEdited(
+        (bytes) => downloadBytes(bytes, editedFileName),
+        "Could not download the edited PDF.",
+      ),
+    [editedFileName, exportEdited],
+  );
+
+  const printEdited = useCallback(
+    () => exportEdited(printBytes, "Could not print the PDF."),
+    [exportEdited],
+  );
 
   // Ingest writes the PDF's text into a markdown note beside the file, so that
   // note is what Fast-read reads: it keeps the headings, figures, and equations
@@ -1247,9 +1347,22 @@ export default function PdfViewerClient({
           <button
             type="button"
             onClick={goBack}
-            className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
+            aria-label="Back"
+            title="Back"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
           >
-            Back
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 16 16"
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M10 3 5 8l5 5" />
+            </svg>
           </button>
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-wider text-gray-600">
@@ -1357,17 +1470,11 @@ export default function PdfViewerClient({
           </div>
         </div>
         <div className="relative z-10 flex flex-wrap items-center gap-2">
-          {!readOnly ? (
+          {!readOnly && (saveState === "error" || saveState === "dirty") ? (
             <span
               aria-live="polite"
               className={`px-1 text-xs ${
-                saveState === "error"
-                  ? "text-red-300"
-                  : saveState === "dirty"
-                    ? "text-yellow-300"
-                    : saveState === "saving"
-                      ? "text-gray-300"
-                      : "text-gray-500"
+                saveState === "error" ? "text-red-300" : "text-yellow-300"
               }`}
             >
               {saveStatusText}
@@ -1405,12 +1512,6 @@ export default function PdfViewerClient({
               Source note
             </Link>
           ) : null}
-          <a
-            href={pdfUrl}
-            className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
-          >
-            Open PDF
-          </a>
           {!readOnly ? (
             <button
               type="button"
@@ -1434,7 +1535,9 @@ export default function PdfViewerClient({
           ) : null}
           <button
             type="button"
-            onClick={downloadEdited}
+            onClick={() => {
+              void printEdited();
+            }}
             disabled={
               loading ||
               exporting ||
@@ -1443,7 +1546,7 @@ export default function PdfViewerClient({
             }
             className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {exporting ? "Preparing" : "Download copy"}
+            {exporting ? "Preparing" : "Print"}
           </button>
         </div>
       </header>
@@ -1805,6 +1908,19 @@ export default function PdfViewerClient({
             />
           </div>
         )}
+        <PdfAssistant
+          key={pdfUrl}
+          documentKey={pdfAssistantDocumentKey(pdfUrl)}
+          title={documentTitle}
+          fileName={editedFileName}
+          pageNumber={pageNumber}
+          pageCount={pageCount}
+          loading={loading}
+          selectionEnabled={mode === "select" && !pendingStamp}
+          containerRef={containerRef}
+          pdfDocumentRef={pdfDocumentRef}
+          getBytes={currentPdfBytes}
+        />
       </section>
 
       {fastReadNote && (

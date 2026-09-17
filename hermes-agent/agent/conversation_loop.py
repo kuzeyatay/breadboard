@@ -1006,7 +1006,25 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    guardrail_final_attempt = False
+    guardrail_final_attempt_sent = False
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        if guardrail_final_attempt and guardrail_final_attempt_sent:
+            # Empty text and verification nudges must not restart exploration or
+            # spend another generation after the single answer-only attempt.
+            _turn_exit_reason = "guardrail_halt"
+            final_response = final_response or agent._toolguard_controlled_halt_response(
+                agent._tool_guardrail_halt_decision)
+            messages.append({"role": "assistant", "content": final_response})
+            if agent.stream_delta_callback:
+                try:
+                    agent.stream_delta_callback(final_response)
+                    agent.stream_delta_callback(None)
+                except Exception:
+                    pass
+            break
+        if guardrail_final_attempt:
+            guardrail_final_attempt_sent = True
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -1767,6 +1785,8 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                if guardrail_final_attempt and api_kwargs.get("tools"):
+                    api_kwargs["tool_choice"] = "none"
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -5701,6 +5721,13 @@ def run_conversation(
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
+                    if not guardrail_final_attempt:
+                        # One bounded answer-only request; keep the cached tool
+                        # schemas intact and enforce the stop in the executor too.
+                        guardrail_final_attempt = True
+                        agent._budget_grace_call = True
+                        agent._emit_status("Finishing with the available information")
+                        continue
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(

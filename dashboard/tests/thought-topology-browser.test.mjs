@@ -29,7 +29,7 @@ function serve(rootDirectory, topology) {
     <script>window.topologyRequests=[]; window.rejectTopology=false;
       window.topologyStatus={ state: "failed", message: "Showing the last available topology; the latest update failed." };
       addEventListener("message", (event) => {
-        window.topologyRequests.push({origin:event.origin,type:event.data?.type,clusterSlug:event.data?.clusterSlug});
+        window.topologyRequests.push({origin:event.origin,type:event.data?.type,clusterSlug:event.data?.clusterSlug,action:event.data?.action});
         const viewer = document.getElementById("viewer");
         const viewerOrigin = new URL(viewer.src).origin;
         if (event.source !== viewer.contentWindow) return;
@@ -39,7 +39,11 @@ function serve(rootDirectory, topology) {
           event.source.postMessage({ type: "breadboard:thought-topology-response", requestId: event.data.requestId, ok: false }, viewerOrigin);
           return;
         }
-        event.source.postMessage({ type: "breadboard:thought-topology-response", requestId: event.data.requestId, ok: true, payload: { enabled: true, mode: "thought-topology", topology: ${JSON.stringify(topology).replace(/</g, "\\u003c")}, status: window.topologyStatus } }, viewerOrigin);
+        if (event.data.action === "retry" && window.acceptRetry) {
+          window.retryAvailable = false;
+          window.topologyStatus = { state: "building", progress: 12, message: "Updating Thought Topology · 12%" };
+        }
+        event.source.postMessage({ type: "breadboard:thought-topology-response", requestId: event.data.requestId, ok: true, payload: { enabled: true, mode: "thought-topology", topology: ${JSON.stringify(topology).replace(/</g, "\\u003c")}, status: window.topologyStatus, retryAvailable: window.retryAvailable === true } }, viewerOrigin);
       });
     </script></body></html>`;
   const server = http.createServer((request, response) => {
@@ -357,6 +361,19 @@ test(
       0,
       "Thought Topology does not render page search",
     );
+    // Theme messages can arrive together while topology/Pixi initialization is
+    // awaiting work. Only the latest mount may own this container.
+    await frame.evaluate(() => {
+      for (let i = 0; i < 8; i++) {
+        document.dispatchEvent(new CustomEvent("themechange", { detail: { theme: "light" } }));
+      }
+    });
+    await frame.waitForTimeout(2_000);
+    assert.equal(
+      await frame.locator(".graph.home-knowledge-graph > .graph-outer canvas").count(),
+      1,
+      "overlapping theme updates must not leave duplicate graph renderers",
+    );
     const canvas = frame.locator(
       ".graph.home-knowledge-graph > .graph-outer canvas",
     );
@@ -446,6 +463,32 @@ test(
       { timeout: 12_000 },
     );
     assert.equal(await canvas.count(), 1);
+    // Repeated context eviction must stop retrying instead of creating a new
+    // context that evicts another canvas forever.
+    const recoveryStorm = await frame.evaluate(async () => {
+      const graph = document.querySelector(".graph.home-knowledge-graph .graph-container");
+      let replacements = 0;
+      const lose = (canvas) => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+      const observer = new MutationObserver((records) => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node.nodeName === "CANVAS") { replacements++; lose(node); }
+        }
+      });
+      observer.observe(graph, { childList: true });
+      lose(graph.querySelector("canvas"));
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      const before = replacements;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      observer.disconnect();
+      return { replacements, before, canvases: graph.querySelectorAll("canvas").length };
+    });
+    assert.ok(recoveryStorm.replacements <= 3, JSON.stringify(recoveryStorm));
+    assert.equal(recoveryStorm.replacements, recoveryStorm.before, "exhausted recovery stays stopped");
+    assert.equal(recoveryStorm.canvases, 0, "exhausted recovery releases its graphics context");
+    await frame.getByRole("button", { name: "Reload map", exact: true }).click();
+    await frame.waitForFunction(() =>
+      document.querySelectorAll(".graph.home-knowledge-graph > .graph-outer canvas").length === 1,
+    );
     assert.equal(
       await frame.locator(".graph-outer .thought-callout.visible").count(),
       0,
@@ -562,6 +605,9 @@ test(
     );
     assert.equal(frame.url(), pinnedUrl, "a right click must not navigate");
     const inspector = frame.locator(".graph-outer .thought-inspector");
+    await inspector.evaluate((element) =>
+      Promise.all(element.getAnimations().map((animation) => animation.finished)),
+    );
     const inspectorText = await inspector.innerText();
     assert.match(inspectorText, /Gauss law/);
     assert.match(inspectorText, /Divergence theorem/);
@@ -583,14 +629,12 @@ test(
       "active filters remain in the Filters control instead of being duplicated in the drawer",
     );
     assert.deepEqual(
-      await inspector
-        .locator(".thought-kicker, h3")
-        .evaluateAll((nodes) =>
-          nodes.map((node) => ({
-            text: node.textContent,
-            transform: getComputedStyle(node).textTransform,
-          })),
-        ),
+      await inspector.locator(".thought-kicker, h3").evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          text: node.textContent,
+          transform: getComputedStyle(node).textTransform,
+        })),
+      ),
       [
         { text: "Node connections", transform: "none" },
         { text: "Visible connections", transform: "none" },
@@ -610,7 +654,9 @@ test(
       "drawer title content stays in one full-width column",
     );
     assert.ok(
-      headerFlow.slice(1).every((item, index) => item.top > headerFlow[index].top),
+      headerFlow
+        .slice(1)
+        .every((item, index) => item.top > headerFlow[index].top),
       "drawer title content follows document order instead of collapsing into columns",
     );
     assert.ok(
@@ -618,14 +664,53 @@ test(
       "connection explanations in the drawer render formulas",
     );
 
-    const rightClickedConnection = await point(
-      "edges",
-      "edge:gauss-divergence",
+    // The narrow canvas uses a bottom drawer that covers this edge's midpoint.
+    // Hover its exposed segment after the drawer has finished opening.
+    const connectionSource = await point("nodes", "page:note-a");
+    const connectionTarget = await point("nodes", "page:note-b");
+    const rightClickedConnection = {
+      x: connectionSource.x + (connectionTarget.x - connectionSource.x) * 0.8,
+      y: connectionSource.y + (connectionTarget.y - connectionSource.y) * 0.8,
+    };
+    await page.mouse.move(
+      box.x + rightClickedConnection.x,
+      box.y + rightClickedConnection.y,
+    );
+    const connectionCallout = frame.locator(
+      '.graph-outer .thought-callout.visible[data-kind="edge"]',
+    );
+    await connectionCallout.waitFor();
+    assert.match(
+      await connectionCallout.innerText(),
+      /volume-to-surface transformation/,
+      "hovering a highlighted connection keeps its explanation available with the drawer open",
+    );
+    const connectionCalloutBox = await connectionCallout.boundingBox();
+    const inspectorBox = await inspector.boundingBox();
+    assert.ok(connectionCalloutBox && inspectorBox);
+    assert.ok(
+      connectionCalloutBox.x + connectionCalloutBox.width <= inspectorBox.x ||
+        connectionCalloutBox.y + connectionCalloutBox.height <= inspectorBox.y,
+      "the connection explanation stays outside the open drawer",
+    );
+    const unrelatedConnection = await point("edges", "edge:waves");
+    await page.mouse.move(
+      box.x + unrelatedConnection.x,
+      box.y + unrelatedConnection.y,
+    );
+    await connectionCallout.waitFor({ state: "hidden" });
+    assert.equal(
+      await frame.evaluate(
+        () => window.__breadboardThoughtTopologyDebug.selectedNodeId,
+      ),
+      "page:note-a",
+      "hovering unrelated connections preserves the inspected node",
     );
     await page.mouse.move(
       box.x + rightClickedConnection.x,
       box.y + rightClickedConnection.y,
     );
+    await connectionCallout.waitFor();
     await page.mouse.click(
       box.x + rightClickedConnection.x,
       box.y + rightClickedConnection.y,
@@ -899,16 +984,33 @@ test(
     );
     assert.deepEqual(
       await frame.evaluate(() => ({
-        folderLabelsOnly:
-          window.__breadboardThoughtTopologyDebug.folderLabelsOnly,
+        compactSidebar: window.__breadboardThoughtTopologyDebug.compactSidebar,
+        visibleLayers: window.__breadboardThoughtTopologyDebug.visibleLayers,
         labels: window.__breadboardThoughtTopologyDebug.labels,
       })),
       {
-        folderLabelsOnly: true,
+        compactSidebar: true,
+        visibleLayers: { nodes: true, connections: true, hierarchy: true },
         labels: { "folder:waves": "Module V Waves and Oscilations" },
       },
-      "the right sidebar paints folder text without page or Garden labels",
+      "the sidebar draws nodes and connections with only folder labels",
     );
+    const sidebarBounds = await frame
+      .locator(".right.sidebar .graph-container")
+      .boundingBox();
+    const sidebarNodes = await frame.evaluate(
+      () => window.__breadboardThoughtTopologyDebug.nodes,
+    );
+    assert.ok(sidebarBounds);
+    for (const [id, position] of Object.entries(sidebarNodes)) {
+      assert.ok(
+        position.x > 0 &&
+          position.x < sidebarBounds.width &&
+          position.y > 0 &&
+          position.y < sidebarBounds.height,
+        `sidebar node ${id} should fit inside the canvas`,
+      );
+    }
     assert.equal(
       await frame.evaluate(() =>
         Boolean(window.__breadboardThoughtTopologyDebug.nodes["page:note-a"]),
@@ -1036,14 +1138,20 @@ test(
       overlayBox.y + gardenPoint.y,
       { button: "right" },
     );
-    await frame.locator(".global-graph-outer .thought-inspector.open").waitFor();
+    await frame
+      .locator(".global-graph-outer .thought-inspector.open")
+      .waitFor();
     assert.equal(
-      await frame.locator(".global-graph-outer .global-graph-close").isVisible(),
+      await frame
+        .locator(".global-graph-outer .global-graph-close")
+        .isVisible(),
       false,
       "the full-screen close control is hidden while the drawer owns the close action",
     );
     assert.equal(
-      await frame.locator(".global-graph-outer .thought-inspector-close").isVisible(),
+      await frame
+        .locator(".global-graph-outer .thought-inspector-close")
+        .isVisible(),
       true,
     );
 
@@ -1156,6 +1264,32 @@ test(
       null,
       { timeout: 12_000 },
     );
+
+    // Paused maps keep their canvas and expose one quiet, keyboard-accessible retry.
+    await page.evaluate(() => {
+      window.retryAvailable = true;
+      window.topologyStatus = { state: "stale", message: "Thought Topology is out of date." };
+    });
+    await frame.evaluate(() => document.dispatchEvent(new CustomEvent("themechange")));
+    const retryButton = frame.locator('.graph > .thought-topology-meta .thought-topology-retry');
+    await retryButton.waitFor({ state: 'visible' });
+    assert.equal(await retryButton.innerText(), '', 'the retry is icon-only');
+    assert.equal(await frame.locator('.graph.home-knowledge-graph > .graph-outer canvas').count(), 1);
+    await page.waitForTimeout(2_100);
+    assert.equal(await page.evaluate(() => window.topologyRequests.filter(request => request.action === 'retry').length), 0);
+    await page.evaluate(() => { window.rejectTopology = true; });
+    await retryButton.click();
+    await frame.waitForFunction(() => document.querySelector('.thought-topology-status')?.textContent?.includes('Please try again'));
+    assert.equal(await retryButton.isEnabled(), true);
+    await page.evaluate(() => { window.rejectTopology = false; window.acceptRetry = true; });
+    await retryButton.focus();
+    await page.keyboard.press('Enter');
+    await retryButton.waitFor({ state: 'hidden' });
+    await frame.waitForFunction(() => document.querySelector('.graph.home-knowledge-graph')?.dataset.activeMode === 'topology-pending');
+    assert.equal(await page.evaluate(() => window.topologyRequests.filter(request => request.action === 'retry').length), 2);
+    await page.evaluate(() => { window.topologyStatus = null; });
+    await frame.waitForFunction(() => document.querySelector('.graph.home-knowledge-graph')?.dataset.activeMode === 'thought-topology');
+    assert.equal(await retryButton.isVisible(), false);
 
     // A topology transport failure must remain a topology surface. It may show
     // an error, but it must never instantiate or reveal the legacy map.

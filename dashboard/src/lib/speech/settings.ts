@@ -1,5 +1,8 @@
 import db from "@/lib/db";
 import { SPEECH_PROVIDERS, OPENAI_SPEECH_VOICES, type SpeechProvider, type OpenAISpeechVoice } from "./providers.ts";
+import { ELEVENLABS_SPEECH_MODELS, validElevenLabsVoiceId, type ElevenLabsSpeechModel } from "./providers.ts";
+import { parsePronunciations } from './pronunciation.ts';
+import { RouteError } from '@/lib/server-auth';
 
 export const SPEECH_LANGUAGES = [
   "en",
@@ -47,8 +50,11 @@ export type SpeechModelSize = (typeof SPEECH_MODEL_SIZES)[number];
 export type TranscriptionModel = (typeof TRANSCRIPTION_MODELS)[number];
 
 export interface SpeechSettings {
+  pronunciations: string;
   speechProvider: SpeechProvider;
   openaiVoice: OpenAISpeechVoice;
+  elevenlabsVoiceId: string;
+  elevenlabsModel: ElevenLabsSpeechModel;
   enabled: boolean;
   profileId: string | null;
   language: SpeechLanguage;
@@ -59,8 +65,11 @@ export interface SpeechSettings {
 }
 
 const DEFAULT_SETTINGS: SpeechSettings = {
+  pronunciations: '',
   speechProvider: "local",
   openaiVoice: "cove",
+  elevenlabsVoiceId: "",
+  elevenlabsModel: "eleven_flash_v2_5",
   enabled: true,
   profileId: null,
   language: "en",
@@ -87,17 +96,29 @@ db.exec(`
 // Preserve existing local profiles and preferences when upgrading an old database.
 db.transaction(() => {
   const columns = db.prepare("PRAGMA table_info(speech_user_settings)").all() as { name: string }[];
+  if (!columns.some((column) => column.name === 'pronunciations')) {
+    db.exec("ALTER TABLE speech_user_settings ADD COLUMN pronunciations TEXT NOT NULL DEFAULT ''");
+  }
   if (!columns.some((column) => column.name === "speech_provider")) {
     db.exec("ALTER TABLE speech_user_settings ADD COLUMN speech_provider TEXT NOT NULL DEFAULT 'local'");
   }
   if (!columns.some((column) => column.name === "openai_voice")) {
     db.exec("ALTER TABLE speech_user_settings ADD COLUMN openai_voice TEXT NOT NULL DEFAULT 'marin'");
   }
+  if (!columns.some((column) => column.name === "elevenlabs_voice_id")) {
+    db.exec("ALTER TABLE speech_user_settings ADD COLUMN elevenlabs_voice_id TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.some((column) => column.name === "elevenlabs_model")) {
+    db.exec("ALTER TABLE speech_user_settings ADD COLUMN elevenlabs_model TEXT NOT NULL DEFAULT 'eleven_flash_v2_5'");
+  }
 }).immediate();
 
 type SpeechSettingsRow = {
+  pronunciations: string;
   speech_provider: string;
   openai_voice: string;
+  elevenlabs_voice_id: string;
+  elevenlabs_model: string;
   enabled: number;
   profile_id: string | null;
   language: string;
@@ -114,9 +135,12 @@ function includes<T extends readonly string[]>(values: T, value: string): value 
 function rowToSettings(row: SpeechSettingsRow | undefined): SpeechSettings {
   if (!row) return { ...DEFAULT_SETTINGS };
   return {
+    pronunciations: row.pronunciations || '',
     // Upgrade the earlier API-key selection without activating any billed API.
     speechProvider: row.speech_provider === "openai" ? "chatgpt" : includes(SPEECH_PROVIDERS, row.speech_provider) ? row.speech_provider : "local",
     openaiVoice: includes(OPENAI_SPEECH_VOICES, row.openai_voice) ? row.openai_voice : "cove",
+    elevenlabsVoiceId: validElevenLabsVoiceId(row.elevenlabs_voice_id) ? row.elevenlabs_voice_id : "",
+    elevenlabsModel: ELEVENLABS_SPEECH_MODELS.find(([id]) => id === row.elevenlabs_model)?.[0] ?? DEFAULT_SETTINGS.elevenlabsModel,
     enabled: row.enabled === 1,
     profileId: row.profile_id,
     language: includes(SPEECH_LANGUAGES, row.language) ? row.language : DEFAULT_SETTINGS.language,
@@ -138,7 +162,7 @@ export function getSpeechSettings(userId: number): SpeechSettings {
   const row = db
     .prepare(
       `SELECT enabled, profile_id, language, engine, model_size,
-              transcription_language, transcription_model, speech_provider, openai_voice
+              transcription_language, transcription_model, speech_provider, openai_voice, elevenlabs_voice_id, elevenlabs_model, pronunciations
        FROM speech_user_settings
        WHERE user_id = ?`,
     )
@@ -151,11 +175,20 @@ export function updateSpeechSettings(
   input: Partial<SpeechSettings>,
 ): SpeechSettings {
   const current = getSpeechSettings(userId);
+  if (input.pronunciations !== undefined) {
+    if (typeof input.pronunciations !== 'string') throw new RouteError(400, 'Pronunciation corrections must be text.');
+    try { parsePronunciations(input.pronunciations); }
+    catch (error) { throw new RouteError(400, error instanceof Error ? error.message : 'Invalid pronunciation corrections.'); }
+  }
   const next: SpeechSettings = {
+    pronunciations: input.pronunciations?.trim() ?? current.pronunciations,
     speechProvider: typeof input.speechProvider === "string" && includes(SPEECH_PROVIDERS, input.speechProvider)
       ? input.speechProvider : current.speechProvider,
     openaiVoice: typeof input.openaiVoice === "string" && includes(OPENAI_SPEECH_VOICES, input.openaiVoice)
       ? input.openaiVoice : current.openaiVoice,
+    elevenlabsVoiceId: input.elevenlabsVoiceId === "" || validElevenLabsVoiceId(input.elevenlabsVoiceId)
+      ? input.elevenlabsVoiceId : current.elevenlabsVoiceId,
+    elevenlabsModel: ELEVENLABS_SPEECH_MODELS.find(([id]) => id === input.elevenlabsModel)?.[0] ?? current.elevenlabsModel,
     enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
     profileId:
       input.profileId === null || typeof input.profileId === "string"
@@ -189,8 +222,8 @@ export function updateSpeechSettings(
   db.prepare(
     `INSERT INTO speech_user_settings (
        user_id, enabled, profile_id, language, engine, model_size,
-       transcription_language, transcription_model, speech_provider, openai_voice, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       transcription_language, transcription_model, speech_provider, openai_voice, elevenlabs_voice_id, elevenlabs_model, pronunciations, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        enabled = excluded.enabled,
        profile_id = excluded.profile_id,
@@ -201,6 +234,9 @@ export function updateSpeechSettings(
        transcription_model = excluded.transcription_model,
        speech_provider = excluded.speech_provider,
        openai_voice = excluded.openai_voice,
+       elevenlabs_voice_id = excluded.elevenlabs_voice_id,
+       elevenlabs_model = excluded.elevenlabs_model,
+       pronunciations = excluded.pronunciations,
        updated_at = excluded.updated_at`,
   ).run(
     userId,
@@ -213,6 +249,9 @@ export function updateSpeechSettings(
     next.transcriptionModel,
     next.speechProvider,
     next.openaiVoice,
+    next.elevenlabsVoiceId,
+    next.elevenlabsModel,
+    next.pronunciations,
   );
   return next;
 }

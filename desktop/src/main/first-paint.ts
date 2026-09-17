@@ -81,6 +81,40 @@ interface PaintProbeTarget {
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
 }
 
+interface DocumentFrame {
+  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+}
+
+/** What a probe of the *current* document needs from a page. */
+export interface DocumentProbeTarget extends PaintProbeTarget {
+  readonly mainFrame?: DocumentFrame | null;
+}
+
+/**
+ * Evaluate in the document a page has right now.
+ *
+ * `webContents.executeJavaScript` is not that: Electron holds it back until
+ * `did-stop-loading` whenever the main frame is still loading, and a page can
+ * be DOM-ready yet loading for as long as it likes (an App Router response
+ * still streaming a Suspense boundary, a subresource that never answers). A
+ * probe queued behind that never runs, and each retry stacks another
+ * `did-stop-loading` listener on the page. The main frame's own
+ * `executeJavaScript` runs at once in whatever document the frame holds.
+ */
+export function runInDocument(
+  contents: DocumentProbeTarget,
+  code: string,
+  userGesture = false,
+): Promise<unknown> {
+  let frame: DocumentFrame | null | undefined;
+  try {
+    frame = contents.mainFrame;
+  } catch {
+    // A page mid-teardown has no frame to offer; the plain path rejects below.
+  }
+  return (frame ?? contents).executeJavaScript(code, userGesture);
+}
+
 async function settleWithin(action: Promise<unknown>, maxWaitMs: number): Promise<void> {
   let ceiling: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -126,12 +160,12 @@ export async function waitForFirstPaint(
  * settles.
  */
 export async function waitForRevealFrame(
-  contents: PaintProbeTarget | WebContents,
+  contents: DocumentProbeTarget | WebContents,
   maxWaitMs = REVEAL_FRAME_MAX_WAIT_MS,
 ): Promise<void> {
   if (contents.isDestroyed()) return;
   try {
-    await settleWithin(contents.executeJavaScript(REVEAL_FRAME_PROBE, true), maxWaitMs);
+    await settleWithin(runInDocument(contents, REVEAL_FRAME_PROBE, true), maxWaitMs);
   } catch {
     // Navigated, closed, or refused the evaluation. The outer ceiling on the
     // reveal still brings the tab forward.

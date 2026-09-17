@@ -6,7 +6,9 @@ import * as path from "node:path";
 import {
   browserAgentBootstrapUrl,
   browserAgentReceiptPath,
+  chooseBrowserAgentDebuggingPort,
   configureBrowserAgentDebugging,
+  parseExcludedPortRanges,
   isBrowserAgentBootstrapUrl,
   writeBrowserAgentSessionReceipt,
 } from "../src/main/browser-agent-session";
@@ -41,6 +43,27 @@ test("browser-agent debugging is loopback-only and clears only its stale port fi
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+test("the debugging port never lands in a range Windows has reserved", () => {
+  const netsh = [
+    "",
+    "Protocol tcp Port Exclusion Ranges",
+    "",
+    "Start Port    End Port      ",
+    "----------    --------      ",
+    "      8000        8000      ",
+    "     50000       50059     *",
+    "     59549       59648      ",
+    "",
+    "* - Administered port exclusions.",
+  ].join("\r\n");
+  const ranges = parseExcludedPortRanges(netsh);
+  assert.deepEqual(ranges, [[8_000, 8_000], [50_000, 50_059], [59_549, 59_648]]);
+  const picks = [59_618, 50_010, 59_700];
+  assert.equal(chooseBrowserAgentDebuggingPort(ranges, () => picks.shift()!), 59_700);
+  assert.equal(chooseBrowserAgentDebuggingPort([[49_152, 65_534]], () => 60_000), 65_535);
+  assert.equal(chooseBrowserAgentDebuggingPort([], () => 51_234), 51_234);
 });
 
 test("the desktop publishes one bounded receipt beneath its data root", () => {

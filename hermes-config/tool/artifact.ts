@@ -27,7 +27,7 @@ const provenance = tool.schema.object({
 }).optional()
 
 export const create = tool({
-  description: "Create a persistent text-backed artifact when a substantial reusable output is better than chat. Supported renderers are text, markdown, docx, pdf, sandboxed html, code, validated JSON, CSV, presentation HTML, and sanitized SVG. Set render=true to immediately produce a preview/download. Use artifact_import for original attached uploads and generated binary or native application files.",
+  description: "Create a persistent text-backed artifact only when the user explicitly requests a document, file, or artifact. Requests to write, continue, explain, summarize, or draft text belong in chat unless file output was requested; length and an attached PDF do not authorize an artifact. Supported renderers are text, markdown, docx, pdf, sandboxed html, code, validated JSON, CSV, presentation HTML, and sanitized SVG. Set render=true to immediately produce a preview/download. Use artifact_import for requested original uploads and requested generated binary or native application files.",
   args: {
     kind: tool.schema.enum(["text", "markdown", "document", "pdf", "html", "code", "data", "spreadsheet", "presentation", "diagram"]),
     renderer: tool.schema.enum(["text", "markdown", "docx", "pdf", "html", "code", "json", "csv", "presentation-html", "svg"]),

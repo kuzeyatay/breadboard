@@ -1,3 +1,6 @@
+import type { GenerativeUiResource } from '../generative-ui/contracts.ts';
+import { responseTextForSpeech } from './response-text.ts';
+
 /**
  * Voice mode — the hands-free conversation behind the composer's microphone.
  *
@@ -32,13 +35,10 @@ const MIN_SILENCE_LEVEL = 0.014;
 /**
  * Quiet time that ends a turn once the speaker has actually said something.
  *
- * This is the whole feel of the screen: too short and it takes the turn away
- * mid-thought, which is far worse than waiting. People stop for well over a
- * second in the middle of a sentence — to find a word, to draw breath, to pick
- * up a half-finished clause — so the hold is longer than a natural pause and
- * only a real handover ends the turn.
+ * Leave room for breaths between words, without adding several seconds to
+ * every exchange before transcription or model work can even begin.
  */
-export const VOICE_SILENCE_HOLD_MS = 2_200;
+export const VOICE_SILENCE_HOLD_MS = 1_100;
 /** Shorter than this is a cough, a click, or a chair — not a question. */
 export const VOICE_MIN_SPEECH_MS = 320;
 /** A single turn never runs longer than this, however long the sentence is. */
@@ -123,9 +123,71 @@ export function frameLevel(samples: Float32Array | number[]): number {
 export interface VoiceMessage {
   readonly role: 'user' | 'assistant';
   readonly content: string;
+  readonly clientMessageId?: string;
   /** Completed, user-visible narration shown in the thinking dropdown. */
   readonly progressNotes?: readonly string[];
   readonly delegatedAgentPreamble?: string;
+  readonly uiResources?: GenerativeUiResource[];
+}
+
+/** A complete spoken sign-off or request to close voice mode, not a mention
+ * of saying goodbye inside a task, quotation, or negated instruction. */
+export function isVoiceExitRequest(value: string): boolean {
+  const text = value.normalize('NFKC').toLowerCase()
+    .replace(/\[(?:sigh|sighs|laughs|laughter|chuckles|breathes|breathing)\]/g, ' ')
+    .replace(/[\u2018\u2019']/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ').trim()
+    .replace(/^(?:(?:okay|ok|alright|well|thanks|thank you|please|and|then|so)\s+)+/, '')
+    .replace(/(?:\s+(?:please|thanks|thank you))+$/, '');
+  const addressed = '(?: (?:bread|breadboard|assistant))?';
+  return new RegExp(`^(?:bye(?: bye)?|goodbye|good night|see you(?: later)?|talk to you later|catch you later|thats all|that is all|im done|i am done)${addressed}$`).test(text)
+    || /^(?:(?:you can|you may|can you|could you|would you) )?(?:please )?(?:close (?:yourself|voice(?: mode| assistant)?|the voice (?:mode|assistant)|this (?:voice )?(?:chat|conversation|window))|(?:end|exit|stop) (?:voice(?: mode)?|the voice (?:mode|assistant)|this (?:voice )?(?:chat|conversation)|the conversation))(?: now)?$/.test(text);
+}
+
+export interface VoiceTranscriptQuestion {
+  readonly requestId: string;
+  readonly question: string;
+  readonly messageIndex: number;
+  readonly contentBefore: string;
+  readonly answer?: string;
+}
+
+/** A tool answer lives after the assistant's row in the host log, while that
+ * same row keeps streaming. Split it at each question to preserve speaking order. */
+export function voiceTranscriptMessages(
+  messages: readonly VoiceMessage[],
+  questions: readonly VoiceTranscriptQuestion[],
+): VoiceMessage[] {
+  const transcript: VoiceMessage[] = [];
+  const append = (role: VoiceMessage['role'], content: string, uiResources?: GenerativeUiResource[]) => {
+    if (content.trim() || uiResources?.length) {
+      transcript.push({ role, content: content.trim(), ...(uiResources?.length ? { uiResources } : {}) });
+    }
+  };
+  const appendQuestion = (question: VoiceTranscriptQuestion) => {
+    if (transcript.at(-1)?.role !== 'assistant' || transcript.at(-1)?.content !== question.question.trim()) {
+      append('assistant', question.question);
+    }
+    const answer = messages.find(message => message.clientMessageId === `clarify:${question.requestId}`)?.content ?? question.answer;
+    if (answer) append('user', answer);
+  };
+  messages.forEach((message, index) => {
+    if (questions.some(question => message.clientMessageId === `clarify:${question.requestId}`)) return;
+    const interruptions = message.role === 'assistant' ? questions.filter(question => question.messageIndex === index) : [];
+    let offset = 0;
+    for (const question of interruptions) {
+      const end = message.content.startsWith(question.contentBefore) ? question.contentBefore.length : offset;
+      append(message.role, message.content.slice(offset, end));
+      appendQuestion(question);
+      offset = end;
+    }
+    // A resumed answer may be split around several questions. Its widgets
+    // belong to the final fragment, including a resource-only response.
+    append(message.role, message.content.slice(offset), message.role === 'assistant' ? message.uiResources : undefined);
+  });
+  for (const question of questions.filter(question => question.messageIndex < 0)) appendQuestion(question);
+  return transcript;
 }
 
 export interface VoiceNarration {
@@ -136,6 +198,9 @@ export interface VoiceNarration {
 /** One spoken turn: sealed progress notes first, then its settled answer. */
 export function createVoiceNarrationQueue(options: {
   startIndex: number;
+  /** A clarification resumes the same assistant message. Skip what it said
+   * before the question, but keep watching that message for its continuation. */
+  initialMessage?: VoiceMessage;
   speak: (item: VoiceNarration, signal: AbortSignal) => Promise<void>;
   onIdle: (answered: boolean) => void;
   onError: (error: unknown, item: VoiceNarration) => void;
@@ -143,6 +208,9 @@ export function createVoiceNarrationQueue(options: {
   const controller = new AbortController();
   const pending: VoiceNarration[] = [];
   const seen = new Set<string>();
+  for (const note of [...(options.initialMessage?.progressNotes ?? []), options.initialMessage?.delegatedAgentPreamble ?? '']) {
+    if (note.trim()) seen.add(`${options.startIndex}:${note.trim()}`);
+  }
   let running = false;
   let answerQueued = false;
 
@@ -175,7 +243,10 @@ export function createVoiceNarrationQueue(options: {
       for (let index = options.startIndex; index < messages.length; index += 1) {
         const message = messages[index];
         if (message.role !== 'assistant') continue;
-        latest = message;
+        const previous = index === options.startIndex ? options.initialMessage?.content : undefined;
+        latest = previous && message.content.startsWith(previous)
+          ? { ...message, content: message.content.slice(previous.length) }
+          : message;
         for (const note of [...(message.progressNotes ?? []), message.delegatedAgentPreamble ?? '']) {
           const text = note.trim();
           const key = `${index}:${text}`;
@@ -184,7 +255,7 @@ export function createVoiceNarrationQueue(options: {
           pending.push({ text, kind: 'progress' });
         }
       }
-      if (!busy && latest?.content.trim()) {
+      if (!busy && latest && (latest.content.trim() || latest.uiResources?.length)) {
         answerQueued = true;
         pending.push({ text: latest.content.trim(), kind: 'answer' });
       }
@@ -217,35 +288,13 @@ export function replyKey(messages: readonly VoiceMessage[]): string | null {
   return null;
 }
 
-const MAX_SPOKEN_CHARACTERS = 1_400;
-
 /**
  * Markdown reads badly out loud: fences become "backtick backtick backtick",
  * tables become punctuation soup, and link targets are noise. Strip the syntax
  * down to the sentences a person would actually say.
  */
-export function speakableText(markdown: string): string {
-  const spoken = markdown
-    // Fenced code and math blocks are described, not read.
-    .replace(/```[\s\S]*?```/g, ' (code omitted) ')
-    .replace(/\$\$[\s\S]*?\$\$/g, ' (formula omitted) ')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s{0,3}>\s?/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/^\s*\|.*\|\s*$/gm, ' ')
-    .replace(/(\*\*|__|\*|_|~~)/g, '')
-    .replace(/^\s*[-*_]{3,}\s*$/gm, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (spoken.length <= MAX_SPOKEN_CHARACTERS) return spoken;
-  // Cut on a sentence boundary rather than mid-word.
-  const clipped = spoken.slice(0, MAX_SPOKEN_CHARACTERS);
-  const lastStop = Math.max(clipped.lastIndexOf('. '), clipped.lastIndexOf('! '), clipped.lastIndexOf('? '));
-  return lastStop > MAX_SPOKEN_CHARACTERS * 0.5 ? clipped.slice(0, lastStop + 1) : clipped;
+export function speakableText(markdown: string, signal?: AbortSignal): Promise<string> {
+  return responseTextForSpeech(markdown, { signal });
 }
 
 export type VoiceStage =

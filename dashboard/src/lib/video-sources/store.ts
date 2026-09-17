@@ -11,8 +11,8 @@
 // every read verifies the file is still there, and an entry whose blob has been
 // swept is dropped rather than returned.
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   findVideoBlob,
   videoBlobRoot,

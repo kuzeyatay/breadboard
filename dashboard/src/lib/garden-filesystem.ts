@@ -22,6 +22,16 @@ import { dashboardDataDir } from "./runtime-paths.ts";
 import { normalizeGardenFolder } from "./garden-documents.ts";
 import { publishQuartzAfterMutation } from "./quartz-publish.ts";
 import { acquireGardenMutationLeaseWithIngestionRecovery } from "./garden-mutation-recovery.ts";
+import { assertGardenMutationWritePaths } from "./garden-mutation-lease-core.ts";
+import { isGardenUserPath } from "./garden-user-content.ts";
+import {
+  copyGardenFolderContents,
+  existingGardenFolder,
+  isAutomaticGardenFolder,
+  readGardenFolderTitle,
+  rewriteRenamedFolderLinks,
+  writeGardenFolderTitle,
+} from "./garden-folder-copy.ts";
 import {
   GardenFilesystemError,
   gardenContentRoot as contentRoot,
@@ -60,12 +70,14 @@ function acquireStructureMutationLease(
   contentPath: string,
   clusterSlug: string,
   operation: string,
+  paths?: readonly string[],
 ) {
   return acquireGardenMutationLeaseWithIngestionRecovery({
     contentPath,
     dataRoot: dashboardDataDir(),
     clusterSlug,
     operation,
+    options: { paths },
   });
 }
 
@@ -128,9 +140,11 @@ function walkFolders(clusterDir: string): string[] {
 
 /** Read canonical folder paths without scanning or rebuilding note contents. */
 export function listGardenFolders(clusterSlug: string): { folder: string; name: string }[] {
-  return walkFolders(gardenDirectory(clusterSlug)).map((folder) => ({
+  const clusterDir = gardenDirectory(clusterSlug);
+  return walkFolders(clusterDir).map((folder) => ({
     folder,
-    name: gardenFolderTitle(folder),
+    name: isAutomaticGardenFolder(folder) ? gardenFolderTitle(folder)
+      : readGardenFolderTitle(path.join(clusterDir, folder), gardenFolderTitle(folder)),
   }));
 }
 
@@ -177,6 +191,7 @@ export async function createGardenFolder(input: {
     contentPath,
     input.clusterSlug,
     "create-folder",
+    [folder],
   );
   try {
     const dir = resolveFolderDir(clusterDir, folder);
@@ -207,6 +222,46 @@ export async function createGardenFolder(input: {
   return { folder };
 }
 
+/** Copy to an unused user-owned folder, leaving generated paths intact. */
+export async function copyGardenFolder(input: {
+  userId: number;
+  clusterSlug: string;
+  folder: unknown;
+}): Promise<{ folder: string; newFolder: string; name: string }> {
+  const contentPath = contentRoot();
+  const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
+  const sourceFolder = existingGardenFolder(clusterDir, input.folder);
+  // A section copied inside Learning/ or Concepts/ would still belong to that
+  // generated tree. Lift those copies to the user namespace; user folders keep
+  // the normal sibling-copy behavior.
+  const parent = isGardenUserPath(sourceFolder) ? sourceFolder.split("/").slice(0, -1).join("/") : "";
+  const copyBase = [parent, `${sourceFolder.split("/").pop()}-copy`].filter(Boolean).join("/");
+  const lease = acquireStructureMutationLease(contentPath, input.clusterSlug, "copy-folder", [copyBase]);
+  let copied: { folder: string; newFolder: string; name: string };
+  try {
+    const folder = existingGardenFolder(clusterDir, input.folder);
+    const basename = folder.split("/").pop()!;
+    const title = isAutomaticGardenFolder(folder) ? gardenFolderTitle(folder)
+      : readGardenFolderTitle(path.join(clusterDir, folder), gardenFolderTitle(folder));
+    let number = 1;
+    const sibling = (n: number) => [parent, `${basename}-copy${n === 1 ? "" : `-${n}`}`].filter(Boolean).join("/");
+    let newFolder = sibling(number);
+    while (fs.existsSync(resolveFolderDir(clusterDir, newFolder))) newFolder = sibling(++number);
+    const name = `${title} copy${number === 1 ? "" : ` ${number}`}`;
+    assertGardenMutationWritePaths(lease, clusterDir, [newFolder]);
+    copyGardenFolderContents(clusterDir, folder, newFolder, slugify);
+    writeGardenFolderTitle(resolveFolderDir(clusterDir, newFolder), name);
+    refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
+    copied = { folder, newFolder, name };
+  } finally {
+    lease.release();
+  }
+  void publishQuartzAfterMutation(`copy folder ${input.clusterSlug}/${copied.folder} -> ${copied.newFolder}`, {
+    userId: input.userId, gardenSlug: input.clusterSlug,
+  }).catch(error => console.error("[garden] Folder copied; publication failed:", error));
+  return copied;
+}
+
 /**
  * Move one note (identified by its basename slug) into `toFolder`; an empty
  * destination means the Garden root. Notes keep their basename slug, so Quartz's
@@ -224,10 +279,14 @@ export async function moveGardenDocument(input: {
     throw new GardenFilesystemError("slug is required", 400);
   }
 
+  const requestedSlug = input.slug.replace(/\\/g, "/").split("/").pop()!.replace(/\.md$/i, "").trim();
+  const beforeMove = walkClusterMarkdown(clusterDir).find(item => item.entry.replace(/\.md$/i, "") === requestedSlug);
+
   const lease = acquireStructureMutationLease(
     contentPath,
     input.clusterSlug,
     "move-document",
+    [beforeMove?.relPath ?? "", normalizeGardenFolder(input.toFolder)],
   );
   let moved: { slug: string; folder: string; relPath: string };
   try {
@@ -247,6 +306,7 @@ export async function moveGardenDocument(input: {
     if (!found) throw new GardenFilesystemError("Document not found", 404);
 
     const destPath = path.join(targetDir, found.entry);
+    assertGardenMutationWritePaths(lease, clusterDir, [found.relPath, path.relative(clusterDir, destPath)]);
     if (path.resolve(destPath) === path.resolve(found.filePath)) {
       return { slug: wantSlug, folder, relPath: found.relPath };
     }
@@ -266,7 +326,7 @@ export async function moveGardenDocument(input: {
     );
 
     const relPath = path.relative(clusterDir, destPath).replace(/\\/g, "/");
-    refreshClusterIndex(contentPath, input.clusterSlug);
+    refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
     moved = { slug: wantSlug, folder, relPath };
   } finally {
     lease.release();
@@ -292,16 +352,25 @@ export async function renameGardenFolder(input: {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
 
+  const oldFolder = typeof input.folder === "string" ? input.folder.replace(/\\/g, "/") : "";
+  const renamedFolder = [...oldFolder.split("/").slice(0, -1), normalizeGardenFolder(input.name)].join("/");
+
   const lease = acquireStructureMutationLease(
     contentPath,
     input.clusterSlug,
     "rename-folder",
+    [oldFolder, renamedFolder],
   );
   let renamed: { folder: string; newFolder: string };
   try {
-    const folder = normalizeGardenFolder(input.folder);
-    if (!folder) throw new GardenFilesystemError("folder is required", 400);
+    const folder = existingGardenFolder(clusterDir, input.folder);
+    if (isAutomaticGardenFolder(folder)) {
+      throw new GardenFilesystemError("Automatically created folders cannot be renamed. You can copy this folder instead.", 400);
+    }
 
+    if (typeof input.name !== "string" || /[\\/]/.test(input.name)) {
+      throw new GardenFilesystemError("Folder name cannot contain slashes", 400);
+    }
     const newName = normalizeGardenFolder(input.name);
     if (!newName) throw new GardenFilesystemError("name is required", 400);
     if (newName.includes("/")) {
@@ -313,7 +382,10 @@ export async function renameGardenFolder(input: {
 
     const parent = folder.split("/").slice(0, -1).join("/");
     const newFolder = parent ? `${parent}/${newName}` : newName;
-    if (newFolder === folder) return { folder, newFolder };
+    assertGardenMutationWritePaths(lease, clusterDir, [folder, newFolder]);
+    if (isAutomaticGardenFolder(newFolder)) {
+      throw new GardenFilesystemError("That name is reserved for an automatically created folder", 400);
+    }
 
     const oldDir = resolveFolderDir(clusterDir, folder);
     const newDir = resolveFolderDir(clusterDir, newFolder);
@@ -323,7 +395,7 @@ export async function renameGardenFolder(input: {
     if (!fs.existsSync(oldDir)) {
       throw new GardenFilesystemError("Folder not found", 404);
     }
-    if (fs.existsSync(newDir)) {
+    if (newFolder !== folder && fs.existsSync(newDir)) {
       throw new GardenFilesystemError(
         "A folder with that name already exists",
         409,
@@ -331,33 +403,24 @@ export async function renameGardenFolder(input: {
     }
 
     fs.mkdirSync(path.dirname(newDir), { recursive: true });
-    fs.renameSync(oldDir, newDir);
+    if (newFolder !== folder) fs.renameSync(oldDir, newDir);
+    if (newFolder !== folder) rewriteRenamedFolderLinks(clusterDir, folder, newFolder);
 
     // Keep the Quartz folder title in sync with the new name.
-    const indexPath = path.join(newDir, "_index.md");
-    const newTitle = JSON.stringify(gardenFolderTitle(newFolder));
-    if (fs.existsSync(indexPath)) {
-      const raw = fs.readFileSync(indexPath, "utf-8");
-      const updated = /^title:.*$/m.test(raw)
-        ? raw.replace(/^title:.*$/m, `title: ${newTitle}`)
-        : raw.replace(/^---\r?\n/, (match) => `${match}title: ${newTitle}\n`);
-      fs.writeFileSync(indexPath, updated, "utf-8");
-    } else {
-      fs.writeFileSync(indexPath, `---\ntitle: ${newTitle}\n---\n\n`, "utf-8");
-    }
+    writeGardenFolderTitle(newDir, input.name.trim());
 
     // The old folder path (and every note inside it) has stale Quartz output.
-    removePublicArtifacts(contentPath, input.clusterSlug, folder);
+    if (newFolder !== folder) removePublicArtifacts(contentPath, input.clusterSlug, folder);
 
-    refreshClusterIndex(contentPath, input.clusterSlug);
+    refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
     renamed = { folder, newFolder };
   } finally {
     lease.release();
   }
-  await publishQuartzAfterMutation(
+  void publishQuartzAfterMutation(
     `rename folder ${input.clusterSlug}/${renamed.folder} -> ${renamed.newFolder}`,
     { userId: input.userId, gardenSlug: input.clusterSlug },
-  );
+  ).catch(error => console.error("[garden] Folder renamed; publication failed:", error));
   return renamed;
 }
 
@@ -379,6 +442,7 @@ export async function deleteGardenFolder(input: {
     contentPath,
     input.clusterSlug,
     "delete-folder",
+    [normalizeGardenFolder(input.folder)],
   );
   let deleted: { folder: string; deletedSlugs: string[] };
   try {
@@ -406,7 +470,7 @@ export async function deleteGardenFolder(input: {
         deleteSavedPdf.run(input.clusterId, slug);
     }
 
-    refreshClusterIndex(contentPath, input.clusterSlug);
+    refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
     deleted = { folder, deletedSlugs };
   } finally {
     lease.release();

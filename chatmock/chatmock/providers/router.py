@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Optional
 
 from .. import failover, provider_health
 from ..council.policy import CouncilConfig
 from ..model_telemetry import record_model_attempt
+from .. import usage_ledger
 from . import dispatch, registry
 from .chatgpt_upstream import ChatGptUpstreamProvider
 from .registry import resolve_model
@@ -166,7 +168,7 @@ class ProviderRouter:
         substitute happened to be tried last.
         """
         candidates = _observe(
-            lambda: list(registry.healthy_fallbacks(public)),
+            lambda: list(self._fallback_order(public)),
             default=[],
         )
         for candidate in candidates:
@@ -193,8 +195,41 @@ class ProviderRouter:
                 continue
         raise original
 
+    @staticmethod
+    def _fallback_order(public: str) -> list[str]:
+        """Stand-ins for an exhausted model, best first.
+
+        For any external model — subscription or API key — the other external
+        models stand in first, ordered as the passthrough path orders them
+        (one sibling of the same family, then the rest), and ChatGPT is the
+        last layer. It used to lead for API-key providers on the reasoning
+        that the configured default is the least surprising place to land;
+        that was the build's default, not the person's, and a burst of
+        OpenRouter stealth 429s on 2026-09-16 sent each one to an exhausted
+        ChatGPT account first. The 429s of a subscription model are mostly
+        per-request rate limits that flap under a burst — one Thought Topology
+        build produced 134 from one Gemini alias in seven minutes while the
+        same alias kept answering in between — which is the same reason in a
+        different provider's clothing.
+        """
+        healthy = list(registry.healthy_fallbacks(public))
+        exhausted = resolve_model(public)
+        if exhausted.is_chatgpt:
+            return healthy
+        external_first = [
+            candidate.public_model for candidate in dispatch.stand_ins(public)
+        ]
+        seen = set(external_first)
+        rest = [
+            candidate
+            for candidate in healthy
+            if candidate not in seen and resolve_model(candidate).is_chatgpt
+        ]
+        return external_first + rest
+
     def _attempt(self, call: ModelCall, resolved, *, fallback: bool) -> str:
         """Invoke one resolved model and retain its exact routing identity."""
+        started_at = time.time()
         try:
             result = self._invoke(call, resolved)
         except ProviderError as exc:
@@ -203,6 +238,15 @@ class ProviderRouter:
                 "quota_exhausted"
                 if _is_quota_error(status, str(exc))
                 else "failed"
+            )
+            self._record_usage(
+                call,
+                resolved,
+                outcome=outcome,
+                fallback=fallback,
+                started_at=started_at,
+                status_code=status,
+                error=str(exc),
             )
             self._record_attempt(
                 call,
@@ -219,6 +263,13 @@ class ProviderRouter:
                 websocket_close_code=getattr(exc, "websocket_close_code", None),
             )
             raise
+        self._record_usage(
+            call,
+            resolved,
+            outcome="succeeded",
+            fallback=fallback,
+            started_at=started_at,
+        )
         self._record_attempt(
             call,
             resolved,
@@ -230,6 +281,45 @@ class ProviderRouter:
         _observe(provider_health.note_success, resolved.provider.id)
         _observe(dispatch.clear_recovered_model, resolved)
         return result
+
+    @staticmethod
+    def _record_usage(
+        call: ModelCall,
+        resolved,
+        *,
+        outcome: str,
+        fallback: bool,
+        started_at: float,
+        status_code: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """One usage-ledger row per council seat call, naming who paid."""
+        try:
+            account = call.account_out
+            if not isinstance(account, dict):
+                account = usage_ledger.provider_account(
+                    resolved.provider.id,
+                    getattr(resolved.provider, "label", None),
+                )
+            usage_ledger.record_usage(
+                kind="council",
+                endpoint="council",
+                provider=resolved.provider.id,
+                model=resolved.upstream_model,
+                requested_model=call.client_requested_model or call.model,
+                request_id=call.request_id,
+                account=account,
+                origin=call.origin,
+                tokens=call.usage_out,
+                outcome=outcome,
+                status_code=status_code,
+                error=error,
+                started_at=started_at,
+                fallback=fallback,
+            )
+        except Exception:
+            # Observational only; never turns a model result into a failure.
+            return
 
     @staticmethod
     def _record_attempt(
@@ -292,6 +382,7 @@ class ProviderRouter:
             request_id=call.request_id,
             allow_account_failover=call.allow_account_failover,
             allow_transport_retry=call.allow_transport_retry,
+            origin=call.origin,
         )
         try:
             if resolved.is_chatgpt:
@@ -302,6 +393,7 @@ class ProviderRouter:
             # even when a routed model id required a replacement call object.
             call.reasoning_out = routed_call.reasoning_out
             call.usage_out = routed_call.usage_out
+            call.account_out = routed_call.account_out
             try:
                 call.transport_recoveries_out = list(
                     routed_call.transport_recoveries_out

@@ -2,6 +2,8 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { ArrowUpRight, X } from 'lucide-react';
+import ChatMarkdown from './chat-markdown';
 import { startNavigationProgress } from './navigation-progress';
 import {
   CHAT_RESPONSE_SEEN_EVENT,
@@ -14,18 +16,21 @@ import {
   LEARN_NOTIFICATION_ANY_JOB,
   LEARN_NOTIFICATION_OPENED_EVENT,
   activeChatNotificationTarget,
-  activeLearnNotificationGarden,
   chatNotificationHref,
   chatNotificationKind,
-  chatNotificationTargetKey,
   isChatNotificationRecord,
+  isChatNotificationRecordViewed,
   sameChatNotificationTarget,
   sendChatNotificationReply,
   type ChatNotificationRecord,
   type ChatNotificationTarget,
 } from '@/lib/chat-notification-inbox';
-import { publishDesktopNotificationToast, handleWebsiteNotification, respondToWebsiteNotificationPermission } from '@/lib/desktop-notification-overlay';
+import { publishDesktopNotificationToast, handleWebsiteNotification, respondToWebsiteNotificationPermission, openDesktopNotificationTarget, onDesktopNotificationOverlayVisibility } from '@/lib/desktop-notification-overlay';
+import { desktopTabsBridge } from '@/lib/desktop-browser-tabs';
 import { VOICE_ASSISTANT_CHANNEL } from '@/lib/speech/assistant-preferences';
+import { dismissNotificationSpeech, notificationRequestTime, publishNotificationSpeech, type NotificationInboxSnapshot, type NotificationSpeechNotice } from '@/lib/speech/notification-events';
+import { isNotificationPageActive, subscribeNotificationViews } from '@/lib/notification-view-presence';
+import { chimeForNotifications } from '@/lib/notification-sound';
 
 export interface ToastItem {
   id: string;
@@ -35,6 +40,7 @@ export interface ToastItem {
   chatId?: string;
   response?: string;
   notificationId?: string;
+  question?: boolean;
   website?: { id: string; origin: string };
   notificationPermission?: { id: string; origin: string };
   target?: ChatNotificationTarget;
@@ -46,20 +52,12 @@ interface ChatNotificationPollResponse {
   messages?: unknown;
 }
 
-let nextToastId = 0;
 const POLL_INTERVAL_MS = 4_000;
 const CHAT_NOTIFICATION_TOAST_PREFIX = 'chat-notification:';
-/**
- * How long after a chat was on screen its answers still count as seen. An
- * answer that finished while the chat was open reaches the database a moment
- * later than the page learns of it; this covers the poll that lands in
- * between, without letting a much later answer to that chat go unannounced.
- */
-const SEEN_TARGET_GRACE_MS = 20_000;
-const OPEN_BUTTON_CLASS =
-  'neu-button-icon flex h-8 w-8 items-center justify-center rounded-md text-base font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)] active:scale-[0.97]';
+const TOAST_ACTION_BUTTON_CLASS =
+  'bb-toast-action flex size-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] transition-[transform,background-color,color,border-color,box-shadow] duration-150 ease-out hover:text-[var(--ink-heading)] active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]';
 const TOAST_CARD_CLASS =
-  'pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] text-sm text-[var(--ink)] shadow-[0_8px_24px_rgba(54,67,58,0.13)]';
+  'bb-toast-card pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col rounded-[18px] border text-sm text-[var(--ink)]';
 
 function notificationToast(record: ChatNotificationRecord): ToastItem {
   if (chatNotificationKind(record) === 'learn') {
@@ -80,6 +78,7 @@ function notificationToast(record: ChatNotificationRecord): ToastItem {
     id: `${CHAT_NOTIFICATION_TOAST_PREFIX}${record.id}`,
     notificationId: record.id,
     message: record.chatTitle,
+    question: chatNotificationKind(record) === 'chat_question',
     title: record.title,
     type: record.type,
     chatId: record.target.chatId,
@@ -157,8 +156,9 @@ async function postChatNotificationDismissal(body: {
 /**
  * Corner notices.
  *
- * Plain notices (`addToast`) stay local in the browser build. The desktop
- * shell forwards them to its window-level overlay so no tab can cover them.
+ * Plain notices (`addToast`) also travel through the voice reader, which
+ * relays their complete contents to the UI and replays them after a reload.
+ * The desktop shell shows them in its window-level overlay so no tab can cover them.
  * Chat-response notices are a different thing: they are read from the
  * account's server-side inbox, so the same list appears in every window and
  * survives restarts, and dismissing one anywhere dismisses it everywhere.
@@ -174,12 +174,16 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
   const notificationsRef = useRef<ChatNotificationRecord[]>([]);
   // Dismissed here, awaiting the server's confirmation on a later poll.
   const hiddenIdsRef = useRef<Set<string>>(new Set());
-  // Chats seen on this page recently: target key → the time that stops counting.
-  const seenTargetsRef = useRef<Map<string, number>>(new Map());
   const pollInFlightRef = useRef(false);
+  const latestInboxRequestRef = useRef(0);
+  const dismissedLocalIdsRef = useRef(new Set<string>());
 
   const replaceNotifications = useCallback((next: ChatNotificationRecord[]) => {
     if (sameNotificationList(notificationsRef.current, next)) return;
+    const kept = new Set(next.map(record => record.id));
+    dismissNotificationSpeech(notificationsRef.current
+      .filter(record => !kept.has(record.id))
+      .map(record => `${CHAT_NOTIFICATION_TOAST_PREFIX}${record.id}`));
     notificationsRef.current = next;
     setNotifications(next);
   }, []);
@@ -199,6 +203,8 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
   }, [replaceNotifications]);
 
   const dismissToast = useCallback((id: string, notifySource = true) => {
+    dismissedLocalIdsRef.current.add(id);
+    dismissNotificationSpeech([id]);
     const notificationId = id.startsWith(CHAT_NOTIFICATION_TOAST_PREFIX)
       ? id.slice(CHAT_NOTIFICATION_TOAST_PREFIX.length)
       : null;
@@ -217,10 +223,7 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
 
   /** The person is looking at this chat (or Learn panel): every notice for it is read. */
   const dismissChatToasts = useCallback((target: ChatNotificationTarget) => {
-    seenTargetsRef.current.set(
-      chatNotificationTargetKey(target),
-      Date.now() + SEEN_TARGET_GRACE_MS,
-    );
+    if (!isNotificationPageActive()) return;
     hideNotifications((record) => targetCoversRecord(target, record));
     void postChatNotificationDismissal({ seen: target });
   }, [hideNotifications]);
@@ -238,11 +241,14 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
     response?: string,
     website?: { id: string; origin: string },
     notificationPermission?: { id: string; origin: string },
+    noticeId?: string,
   ) => {
-    const id = notificationPermission ? `website-permission:${notificationPermission.id}` : website ? `website:${website.id}` : `toast:${++nextToastId}`;
+    const id = notificationPermission ? `website-permission:${notificationPermission.id}` : website ? `website:${website.id}` : noticeId ?? `toast:${crypto.randomUUID()}`;
+    if (dismissedLocalIdsRef.current.has(id)) return;
+    if (!desktopOverlay) publishNotificationSpeech({ id, message, type, title, chatId, response, website, notificationPermission });
     if (
       !desktopOverlay &&
-      publishDesktopNotificationToast({ message, type, title, chatId, response, website, notificationPermission })
+      publishDesktopNotificationToast({ id, message, type, title, chatId, response, website, notificationPermission })
     ) {
       return;
     }
@@ -250,72 +256,101 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
       ...current.filter(toast => toast.id !== id),
       { id, message, type, title, chatId, response, website, notificationPermission },
     ]);
-    if (!desktopOverlay && typeof BroadcastChannel !== 'undefined') {
-      const channel = new BroadcastChannel(VOICE_ASSISTANT_CHANNEL);
-      channel.postMessage({ type: 'notification', notice: { message, title, response } }); channel.close();
-    }
   }, [desktopOverlay]);
+
+  const applyInboxSnapshot = useCallback(({ messages: incoming, requestedAt }: NotificationInboxSnapshot) => {
+    // Voice may have delivered a newer inbox while our own GET was waiting.
+    // An older response must never remove those newly visible messages.
+    if (requestedAt < latestInboxRequestRef.current) return;
+    latestInboxRequestRef.current = requestedAt;
+    const visible: ChatNotificationRecord[] = [];
+    const readAlready: string[] = [];
+    for (const record of incoming) {
+      if (hiddenIdsRef.current.has(record.id)) continue;
+      if (isChatNotificationRecordViewed(record)) {
+        hiddenIdsRef.current.add(record.id);
+        readAlready.push(record.id);
+      } else {
+        visible.push(record);
+      }
+    }
+    // The server has caught up with every dismissal it no longer returns.
+    const returned = new Set(incoming.map((record) => record.id));
+    for (const id of hiddenIdsRef.current) {
+      if (!returned.has(id)) hiddenIdsRef.current.delete(id);
+    }
+    replaceNotifications(visible);
+    if (readAlready.length > 0) {
+      void postChatNotificationDismissal({ dismiss: readAlready });
+    }
+  }, [replaceNotifications]);
 
   const pollChatNotifications = useCallback(async () => {
     if (pollInFlightRef.current) return;
     pollInFlightRef.current = true;
+    const requestedAt = notificationRequestTime();
     try {
-      const response = await fetch('/api/chat-notifications', {
-        cache: 'no-store',
-      });
+      const response = await fetch('/api/chat-notifications', { cache: 'no-store' });
       if (!response.ok) return;
       const data = (await response.json()) as ChatNotificationPollResponse;
-      const incoming = Array.isArray(data.messages)
-        ? data.messages.filter(isChatNotificationRecord)
-        : [];
-
-      const now = Date.now();
-      for (const [key, until] of seenTargetsRef.current) {
-        if (until <= now) seenTargetsRef.current.delete(key);
-      }
-      const activeTarget = activeChatNotificationTarget();
-      const activeLearnGarden = activeLearnNotificationGarden();
-      const visible: ChatNotificationRecord[] = [];
-      const readAlready: string[] = [];
-      for (const record of incoming) {
-        if (hiddenIdsRef.current.has(record.id)) continue;
-        const isLearn = record.target.surface === 'garden_learn';
-        const onScreen = isLearn
-          ? (activeLearnGarden !== null &&
-              activeLearnGarden === record.target.gardenSlug) ||
-            seenTargetsRef.current.has(
-              chatNotificationTargetKey(learnGardenTarget(record.target.gardenSlug ?? '')),
-            )
-          : (activeTarget !== null &&
-              sameChatNotificationTarget(record.target, activeTarget)) ||
-            seenTargetsRef.current.has(chatNotificationTargetKey(record.target));
-        if (onScreen) {
-          hiddenIdsRef.current.add(record.id);
-          readAlready.push(record.id);
-        } else {
-          visible.push(record);
-        }
-      }
-      // The server has caught up with every dismissal it no longer returns.
-      const returned = new Set(incoming.map((record) => record.id));
-      for (const id of hiddenIdsRef.current) {
-        if (!returned.has(id)) hiddenIdsRef.current.delete(id);
-      }
-      replaceNotifications(visible);
-      if (readAlready.length > 0) {
-        void postChatNotificationDismissal({ dismiss: readAlready });
-      }
+      applyInboxSnapshot({ requestedAt, messages: Array.isArray(data.messages) ? data.messages.filter(isChatNotificationRecord) : [] });
     } catch {
       // The next interval reads the same server-side inbox again.
     } finally {
       pollInFlightRef.current = false;
     }
-  }, [replaceNotifications]);
+  }, [applyInboxSnapshot]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(VOICE_ASSISTANT_CHANNEL);
+    channel.onmessage = event => {
+      const data = event.data;
+      if (data.type === 'notification-inbox' && Number.isFinite(data.requestedAt) && Array.isArray(data.messages)) {
+        applyInboxSnapshot({ requestedAt: data.requestedAt, messages: data.messages.filter(isChatNotificationRecord) });
+      }
+      if (data.type === 'notification-delivery' && (desktopOverlay || !desktopTabsBridge())) {
+        const notice = data.notice as NotificationSpeechNotice;
+        if (!notice || typeof notice.id !== 'string' || typeof notice.message !== 'string') return;
+        const id = notice.id;
+        if (notice.dismissed) dismissedLocalIdsRef.current.add(id);
+        setLocalToasts(current => {
+          const kept = current.filter(toast => toast.id !== id);
+          return dismissedLocalIdsRef.current.has(id) ? kept : [...kept, { ...notice, id, type: notice.type === 'error' ? 'error' : 'success' }];
+        });
+      }
+      if (data.type === 'notification-dismissed' && Array.isArray(data.ids)) {
+        const ids = new Set<string>(data.ids.filter((id: unknown): id is string => typeof id === 'string'));
+        for (const id of ids) {
+          dismissedLocalIdsRef.current.add(id);
+          if (id.startsWith(CHAT_NOTIFICATION_TOAST_PREFIX)) hiddenIdsRef.current.add(id.slice(CHAT_NOTIFICATION_TOAST_PREFIX.length));
+        }
+        hideNotifications(record => ids.has(`${CHAT_NOTIFICATION_TOAST_PREFIX}${record.id}`));
+        setLocalToasts(current => current.filter(toast => !ids.has(toast.id)));
+      }
+    };
+    // Recover notices that arrived before this overlay mounted or reloaded.
+    channel.postMessage({ type: 'notification-delivery-request' });
+    return () => channel.close();
+  }, [applyInboxSnapshot, desktopOverlay, hideNotifications]);
+
+  useEffect(() => {
+    // Pages and native overlays have separate JS realms. Retire a visible
+    // card as soon as any tab starts showing its target, without another poll.
+    const dismissViewed = () => {
+      const hidden = hideNotifications(record => isChatNotificationRecordViewed(record));
+      if (hidden.length) void postChatNotificationDismissal({ dismiss: hidden.map(record => record.id) });
+    };
+    const unsubscribe = subscribeNotificationViews(dismissViewed);
+    dismissViewed();
+    return unsubscribe;
+  }, [hideNotifications]);
 
   useEffect(() => {
     void pollChatNotifications();
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
+      // An empty native overlay can be hidden/offscreen until it has cards.
+      if (desktopOverlay || document.visibilityState === 'visible') {
         void pollChatNotifications();
       }
     }, POLL_INTERVAL_MS);
@@ -331,7 +366,7 @@ export function useToast({ desktopOverlay = false }: { desktopOverlay?: boolean 
       document.removeEventListener('visibilitychange', pollWhenVisible);
       window.removeEventListener('focus', pollWhenVisible);
     };
-  }, [pollChatNotifications]);
+  }, [desktopOverlay, pollChatNotifications]);
 
   useEffect(() => {
     const listener = (raw: Event) => {
@@ -469,7 +504,7 @@ function ToastCard({
   const [sendingReply, setSendingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
   const hasAssistantResponse = Boolean(toast.response);
-  const canReply = Boolean(hasAssistantResponse && toast.target);
+  const canReply = Boolean(hasAssistantResponse && toast.target && !toast.question);
   const progressPercent =
     typeof toast.progressPercent === 'number' && Number.isFinite(toast.progressPercent)
       ? Math.max(0, Math.min(100, Math.round(toast.progressPercent)))
@@ -481,7 +516,7 @@ function ToastCard({
     // Dismiss first: the durable dismissal has to be on its way before a
     // navigation unmounts this page.
     onDismiss(toast.id);
-    const handled = onOpenChat?.(toast.target) === true;
+    const handled = openDesktopNotificationTarget(toast.target) || onOpenChat?.(toast.target) === true;
     if (!handled) {
       const href = chatNotificationHref(toast.target);
       if (href !== `${window.location.pathname}${window.location.search}`) {
@@ -516,28 +551,28 @@ function ToastCard({
       }`}
       role={toast.type === 'error' ? 'alert' : 'status'}
     >
-      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
-        <span
-          className={`mt-1.5 size-2 shrink-0 rounded-full ${
-            toast.type === 'error'
-              ? 'bg-[var(--danger)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--danger)_14%,transparent)]'
-              : 'bg-[var(--botanical)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--botanical)_14%,transparent)]'
-          }`}
-          aria-hidden
-        />
-        <span className="min-w-0 flex-1">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+        <span className="min-w-0">
           {toast.website ? <span className="mb-1 block break-all text-[11px] text-[var(--ink-muted)]">{toast.website.origin}</span> : null}
-          {toast.title ? (
-            <span className="block text-xs font-semibold text-[var(--ink-heading)]">
-              {toast.title}
-            </span>
-          ) : null}
-          {!hasAssistantResponse ? (
+          <span className="flex min-w-0 items-center gap-2.5">
             <span
-              className={`block leading-5 ${
-                toast.title ? 'mt-0.5 text-xs text-[var(--ink-muted)]' : ''
+              className={`size-2 shrink-0 rounded-full ${
+                toast.type === 'error'
+                  ? 'bg-[var(--danger)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--danger)_14%,transparent)]'
+                  : 'bg-[var(--botanical)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--botanical)_14%,transparent)]'
               }`}
-            >
+              aria-hidden
+            />
+            {toast.title ? (
+              <span className="min-w-0 text-xs font-semibold leading-5 text-[var(--ink-heading)]">
+                {toast.title}
+              </span>
+            ) : !hasAssistantResponse ? (
+              <span className="min-w-0 leading-5">{toast.message}</span>
+            ) : null}
+          </span>
+          {!hasAssistantResponse && toast.title ? (
+            <span className="mt-0.5 block pl-[18px] text-xs leading-5 text-[var(--ink-muted)]">
               {toast.message}
             </span>
           ) : null}
@@ -558,38 +593,38 @@ function ToastCard({
             </span>
           ) : null}
         </span>
-        <span className="flex shrink-0 items-center gap-1">
-          {toast.website ? <button type="button" className={OPEN_BUTTON_CLASS} aria-label={`Open ${toast.website.origin}`} title="Open website"
-            onClick={() => { handleWebsiteNotification(toast.website!.id, 'click'); onDismiss(toast.id); }}><span aria-hidden>↗</span></button> : null}
+        <span className="flex shrink-0 items-center gap-1.5">
+          {toast.website ? <button type="button" className={TOAST_ACTION_BUTTON_CLASS} aria-label={`Open ${toast.website.origin}`} title="Open website"
+            onClick={() => { handleWebsiteNotification(toast.website!.id, 'click'); onDismiss(toast.id); }}><ArrowUpRight size={15} strokeWidth={1.8} aria-hidden /></button> : null}
           {toast.target && opensLearnPanel ? (
             <button
               type="button"
               onClick={openChat}
-              className={OPEN_BUTTON_CLASS}
+              className={TOAST_ACTION_BUTTON_CLASS}
               aria-label="Open the Learn panel"
               title="Open Learn panel"
             >
-              <span aria-hidden>↗</span>
+              <ArrowUpRight size={15} strokeWidth={1.8} aria-hidden />
             </button>
           ) : toast.target ? (
             <button
               type="button"
               onClick={openChat}
-              className={OPEN_BUTTON_CLASS}
-              aria-label="Open this chat"
-              title="Open chat"
+              className={TOAST_ACTION_BUTTON_CLASS}
+              aria-label={toast.question ? 'Open chat to answer' : 'Open this chat'}
+              title={toast.question ? 'Open chat to answer' : 'Open chat'}
             >
-              <span aria-hidden>↗</span>
+              <ArrowUpRight size={15} strokeWidth={1.8} aria-hidden />
             </button>
           ) : null}
           <button
             type="button"
             onClick={() => onDismiss(toast.id)}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-xl leading-none text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] active:scale-[0.97]"
+            className={TOAST_ACTION_BUTTON_CLASS}
             aria-label="Dismiss message"
             title="Dismiss"
           >
-            <span aria-hidden>×</span>
+            <X size={15} strokeWidth={1.8} aria-hidden />
           </button>
         </span>
       </div>
@@ -597,14 +632,18 @@ function ToastCard({
       {hasAssistantResponse ? (
         <div className="mt-3 flex min-h-0 flex-1 flex-col border-t border-[var(--line)] pt-3">
           <div
-            className="max-h-[min(42vh,24rem)] overflow-y-auto overscroll-contain pr-2 [scrollbar-width:thin]"
+            className="max-h-[min(42vh,24rem)] overflow-y-auto overscroll-contain pr-2 text-sm leading-6 text-[var(--ink)] [scrollbar-width:thin]"
             tabIndex={0}
-            aria-label="AI response"
+            aria-label={toast.question ? 'Question from Breadboard' : 'AI response'}
           >
-            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ink)]">
-              {toast.response}
-            </p>
+            <ChatMarkdown content={toast.response ?? ''} />
           </div>
+          {toast.question ? (
+            <button type="button" onClick={openChat}
+              className="mt-3 self-start text-xs font-medium text-[var(--ink-muted)] hover:text-[var(--ink)]">
+              Open chat to answer
+            </button>
+          ) : null}
 
           {canReply ? (
             <form
@@ -670,6 +709,57 @@ export function Toaster({
   onSizeChange?: (width: number, height: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // A hook can collect notices without rendering them. Only mounted cards
+    // may chime, and desktop pages leave announcements to their native overlay.
+    if (mode === 'page' && desktopTabsBridge()) return;
+    const host = hostRef.current;
+    if (!host || !toasts.length) return;
+    let nativeVisible = mode !== 'desktop-overlay';
+    const cards = new Map(toasts.map((toast, index) => [toast.id, host.children[index]]));
+    const isVisible = (id: string) => {
+      const card = cards.get(id);
+      if (!nativeVisible || document.visibilityState !== 'visible' || !card?.isConnected) return false;
+      const cssVisible = () => {
+        const style = getComputedStyle(card);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      };
+      let visible = false;
+      try { visible = typeof card.checkVisibility === 'function'
+        ? card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+        : cssVisible(); }
+      catch { visible = cssVisible(); }
+      if (!visible) return false;
+      const bounds = card.getBoundingClientRect();
+      const clip = host.getBoundingClientRect();
+      return Math.min(bounds.right, clip.right, innerWidth) > Math.max(bounds.left, clip.left, 0) &&
+        Math.min(bounds.bottom, clip.bottom, innerHeight) > Math.max(bounds.top, clip.top, 0);
+    };
+    const ids = toasts.filter(toast => !toast.notificationPermission).map(toast => toast.id);
+    const pending = new Set<() => void>();
+    const announce = () => { pending.add(chimeForNotifications(ids, isVisible)); };
+    const unsubscribe = mode === 'desktop-overlay' ? onDesktopNotificationOverlayVisibility(visible => {
+      nativeVisible = visible;
+      if (visible) announce();
+      else { for (const cancel of pending) cancel(); pending.clear(); }
+    }) : null;
+    const observer = new IntersectionObserver(announce, { threshold: 0.01 });
+    for (const card of cards.values()) if (card) observer.observe(card);
+    document.addEventListener('visibilitychange', announce);
+    // Cards materialize from opacity 0, so every check made while a card is
+    // mounting reads it as hidden and nothing else fires once it has faded in.
+    // The end of that entrance is the moment the card is actually shown.
+    host.addEventListener('animationend', announce);
+    announce();
+    return () => {
+      for (const cancel of pending) cancel();
+      unsubscribe?.();
+      observer.disconnect();
+      document.removeEventListener('visibilitychange', announce);
+      host.removeEventListener('animationend', announce);
+    };
+  }, [mode, toasts]);
 
   useEffect(() => {
     if (!onSizeChange) return;

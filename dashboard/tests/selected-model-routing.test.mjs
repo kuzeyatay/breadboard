@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { resolveLearnRequestModel, InvalidLearnRouteBodyError } from '../src/lib/learn-route-errors.ts';
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
@@ -57,11 +58,10 @@ test('the Learn panel runs on the selected model too', () => {
   }
 });
 
-test('a caller cannot steer ingestion or Learn onto another model', () => {
-  // The model comes from the stored preference, not from request input.
+test('ingestion uses the profile, while Learn accepts a validated run override', () => {
   assert.doesNotMatch(ingestRoute, /formData\.get\("model"\)/);
   for (const action of LEARN_ACTIONS) {
-    assert.doesNotMatch(learnRoute(action), /body\.model/);
+    assert.match(learnRoute(action), /resolveLearnRequestModel\(body, selectedModelForUser\(userId\)\)/);
   }
 });
 
@@ -72,4 +72,20 @@ test('the old pinning rationale is replaced, not silently left behind', () => {
     /It must not\s*\*? ?inherit the interactive assistant's currently selected model/,
   );
   assert.match(learn, /Fallback model for Learn/);
+});
+
+
+test('Learn overrides accept concrete model IDs and fall back only when omitted', () => {
+  assert.equal(resolveLearnRequestModel({}, 'gpt-5.6-sol'), 'gpt-5.6-sol');
+  assert.equal(resolveLearnRequestModel({model:' cliproxy/claude-opus-5 '}, 'gpt-5.6-sol'), 'cliproxy/claude-opus-5');
+  for (const model of [null, '', 42, {}, [], 'default', 'chat', 'AUTO', 'invalid model']) {
+    assert.throws(() => resolveLearnRequestModel({model}, 'gpt-5.6-sol'), InvalidLearnRouteBodyError);
+  }
+});
+
+test('Learn requires an explicit model when the profile default is disabled', () => {
+  for (const body of [{}, {model: 'none'}, {model: ' none '}]) {
+    assert.throws(() => resolveLearnRequestModel(body, 'none'), /No default model is selected/);
+  }
+  assert.equal(resolveLearnRequestModel({model: 'gpt-6-astra'}, 'none'), 'gpt-6-astra');
 });

@@ -94,6 +94,8 @@ export default function SettingsProviders() {
       (state?.providers ?? []).filter(
         (provider) =>
           provider.kind !== "chatgpt_oauth" &&
+          // The chatgpt.com tab has its own row in the account list above.
+          provider.kind !== "chatgpt_web" &&
           provider.id !== "cliproxy" &&
           (provider.id === "google" ||
             provider.id === "openrouter" ||
@@ -224,9 +226,8 @@ export default function SettingsProviders() {
           they unlock, and is the only place a sign-in starts. */}
 
       {/*
-        No background-model panel here. The Intelligence menu next to the
-        composer is the only place that setting lives; restating it made the tab
-        look like a second control for something it does not own.
+        The profile owns the default model. Each composer owns its chat override.
+        Provider settings only manage which models are available.
       */}
 
       {/* Named, because this section now follows two others on one page and an

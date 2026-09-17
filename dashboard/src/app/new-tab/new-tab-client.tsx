@@ -6,6 +6,7 @@ import { CalendarDays, ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, Panel
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import { BrowserSketchOutline } from "@/app/browser/browser-home-widgets";
 import LinkContextMenu from "@/app/components/link-context-menu";
+import NavigationLink from "@/app/components/navigation-link";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
@@ -14,6 +15,7 @@ import styles from "./new-tab-controls.module.css";
 import { useNewTabAddressee } from "./use-new-tab-addressee";
 import NewTabGreeting from "./new-tab-greeting";
 import NewTabNotepad from "./new-tab-notepad";
+import ProviderUsageNotch from "./provider-usage-notch";
 import PageAppearance from "@/app/components/page-appearance";
 import VoiceShortcut from "@/app/components/voice-shortcut";
 
@@ -71,10 +73,12 @@ function BrowserShortcut({ query }: { query: string }) {
 
   return (
     <>
-      <button type="button" className={styles.destinationButton} disabled={busy} aria-busy={busy} onClick={() => void openBrowser()}>
-        <Globe2 aria-hidden="true" size={15} />
-        Browser
-      </button>
+      <LinkContextMenu href="/browser" label="Browser">
+        <button type="button" className={styles.destinationButton} disabled={busy} aria-busy={busy} onClick={() => void openBrowser()}>
+          <Globe2 aria-hidden="true" size={15} />
+          Browser
+        </button>
+      </LinkContextMenu>
       {failed && <p role="alert" className={styles.browserError}>Couldn’t open Browser. Try again.</p>}
     </>
   );
@@ -151,12 +155,10 @@ export default function NewTabClient({
 
         <nav id="new-tab-places" aria-label="Places" className={styles.places}>
           {matchingPlaces.map(({ href, label, icon: Icon }) => (
-            <LinkContextMenu key={href} href={href} label={label}>
-              <Link href={href} className={styles.destinationButton}>
-                <Icon size={15} aria-hidden="true" />
-                {label}
-              </Link>
-            </LinkContextMenu>
+            <NavigationLink key={href} href={href} label={label} className={styles.destinationButton}>
+              <Icon size={15} aria-hidden="true" />
+              {label}
+            </NavigationLink>
           ))}
           <BrowserShortcut query={needle} />
           {"voice".includes(needle) && <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />}
@@ -218,6 +220,7 @@ export default function NewTabClient({
         </section>
       </div>
       <NewTabNotepad key={widgetOwnerKey} ownerKey={widgetOwnerKey} />
+      <ProviderUsageNotch key={`usage-${widgetOwnerKey}`} />
       <BrowserHomeAccessories ownerKey={widgetOwnerKey} />
     </main>
   );

@@ -34,6 +34,7 @@ interface BreadboardDesktopApiLocal {
   continueToDashboard(): Promise<void>;
   awaitDashboardReady(): Promise<void>;
   getStartupSound(): Promise<boolean>;
+  claimStartupSound(): Promise<boolean>;
 }
 
 interface WelcomeGreeting {
@@ -173,10 +174,9 @@ function showGreeting(greeting: WelcomeGreeting): void {
 }
 
 /**
- * The chime the greeting arrives over. It plays once, unprompted — the only
- * things that can refuse it are the person's own preference and an autoplay
- * policy, and a silent start is a complete outcome either way, so a rejection
- * is simply noted and dropped.
+ * The chime the greeting arrives over. The shell grants it once per launch,
+ * after the dashboard paints. The person's preference and autoplay policy can
+ * also keep it silent; a rejection is simply noted and dropped.
  *
  * `introPlaying` records that it was started rather than that it is still
  * sounding: what the rest of the screen needs to know is whether a chime is
@@ -218,8 +218,16 @@ function beginWelcomeGate(): void {
   stage = "preparing";
   document.body.dataset["stage"] = "preparing";
   const token = gateToken;
-  const open = () => {
-    if (token === gateToken) enterWelcome();
+  const open = async () => {
+    if (token !== gateToken) return;
+    // The shell owns the once-per-launch gate: renderer state is lost when a
+    // service failure reloads startup, and readiness can settle during recovery.
+    const mayPlay = introEnabled && await Promise.resolve()
+      .then(() => api.claimStartupSound())
+      .catch(() => false);
+    if (token !== gateToken) return;
+    introEnabled = mayPlay;
+    enterWelcome();
   };
   // The chime preference is settled first. It decides both whether a sound
   // plays and how long the greeting holds back for one, so an answer arriving
@@ -257,9 +265,8 @@ function enterWelcome(): void {
   }, introPlaying ? INTRO_WELCOME_REVEAL_DELAY_MS : WELCOME_REVEAL_DELAY_MS);
 }
 
-/** A service died after everything looked healthy: the failure card outranks
- *  the greeting, and its buttons must not sit under a full-screen click target.
- *  It also outranks a dashboard that is still loading towards one. */
+/** A service is no longer ready. Retire the greeting, chime, and outstanding
+ *  dashboard wait as soon as recovery starts, before a terminal failure. */
 function abandonWelcome(): void {
   if (stage !== "welcome" && stage !== "preparing") return;
   stopGreetings();
@@ -339,11 +346,11 @@ function stateLabel(state: string): string {
 function renderStartupState(state: StartupStateViewLocal): void {
   document.body.dataset["phase"] = state.phase;
   if (state.phase === "ready") beginWelcomeGate();
-  else if (state.phase === "failed") abandonWelcome();
+  else abandonWelcome();
   // The shell calls itself ready as soon as the services are, which is a whole
   // dashboard render before this screen is done. Announce what is happening.
   phaseMessage.textContent =
-    stage === "preparing" ? "Opening your workspace" : state.message;
+    stage === "preparing" ? "Loading your tabs and widgets" : state.message;
   serviceList.replaceChildren(
     ...state.services.map((service) => {
       const item = document.createElement("li");

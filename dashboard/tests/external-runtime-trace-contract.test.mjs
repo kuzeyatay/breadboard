@@ -72,17 +72,23 @@ const externalCloneModules = [
 ];
 
 const opaqueRuntimePathModules = [
+  "src/lib/agent-browser/browser-profile.ts",
+  "src/lib/agent-browser/opencli-extension.ts",
   "src/lib/aris/agent.ts",
   "src/lib/codex/run-manager.ts",
   "src/lib/code-index/index-service.ts",
   "src/lib/code-index/launcher.ts",
   "src/lib/code-index/runtime-build.ts",
   "src/lib/garden-mutation-lease.ts",
+  "src/lib/garden-mutation-lease-core.ts",
   "src/lib/hermes/agency-agents.ts",
   "src/lib/hermes/capability-policy.ts",
   "src/lib/hermes/config.ts",
   "src/lib/nango/catalog.ts",
   "src/lib/opencode/run-manager.ts",
+  "src/lib/openmontage/runtime.ts",
+  "src/lib/praxist/run-manager.ts",
+  "src/lib/praxist/runtime.ts",
   "src/lib/ruflo/run-manager.ts",
   "src/lib/runtime-sqlite-database.ts",
   "src/lib/runtime-paths.ts",
@@ -91,6 +97,21 @@ const opaqueRuntimePathModules = [
 ];
 
 const opaqueDataFilesystemModules = [
+  "src/lib/hermes/patent-disclosure-source.ts",
+  "src/lib/money-printer/credentials.ts",
+  "src/lib/openplanter/runtime.ts",
+  "src/lib/openwork/runtime-run-manager.ts",
+  "src/lib/stock-analyst/credentials.ts",
+  "src/lib/teach/compile.ts",
+  "src/lib/teach/windows-helper.ts",
+  "src/lib/thought-topology/projection.ts",
+  "src/lib/thought-topology/provenance.ts",
+  "src/lib/thought-topology/storage.ts",
+  "src/lib/usage-limits.ts",
+  "src/lib/vibe-trading/credentials.ts",
+  "src/lib/video-sources/store.ts",
+  "src/lib/vimax/video.ts",
+  "src/lib/watermarks/agent-query.ts",
   "src/app/actions/clusters.ts",
   "src/app/api/chat-attachments/audio/[blobId]/route.ts",
   "src/app/api/chat-attachments/documents/[blobId]/route.ts",
@@ -114,7 +135,6 @@ const opaqueDataFilesystemModules = [
   "src/app/api/markdown-images/route.ts",
   "src/app/api/markdown-to-pdf/route.ts",
   "src/app/api/markdown-videos/route.ts",
-  "src/app/api/open-gym/exercises/[exerciseId]/animation/route.ts",
   "src/app/api/openscience/runs/[runId]/deliverables/route.ts",
   "src/app/api/pdfjs/[...path]/route.ts",
   "src/app/api/quartz-graph-preview/route.ts",
@@ -158,6 +178,7 @@ const opaqueDataFilesystemModules = [
   "src/lib/hyperframes/runtime.ts",
   "src/lib/hyperframes/workspace.ts",
   "src/lib/knowledge.ts",
+  "src/lib/knowledge-write-transaction.ts",
   "src/lib/legal/runtime.ts",
   "src/lib/learn-build-workspace.ts",
   "src/lib/meeting-notes/uploads.ts",
@@ -559,7 +580,7 @@ test("the Quartz visual sandbox remains a live runtime read, not a traced source
   );
   assert.match(
     visuals,
-    /readFileSync\(\s*\/\* turbopackIgnore: true \*\/ sandboxRuntimePath\(\)/,
+    /readFileSync\(\s*\/\* turbopackIgnore: true \*\/ resolveGeneratedVisualSandboxRuntimePath\(\)/,
   );
 });
 

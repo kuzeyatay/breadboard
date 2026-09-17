@@ -26,10 +26,19 @@ const dashboardPage = read("src/app/dashboard/page.tsx");
 const dashboardShell = read("src/app/dashboard/dashboard-page-shell.tsx");
 const dashboardClient = read("src/app/dashboard/dashboard-client.tsx");
 
+test("one profile default supplies the fallback for chats and background generation", () => {
+  assert.match(client, /<DefaultModelPanel \/>/);
+  assert.equal(client.indexOf("<DefaultModelPanel />"), client.lastIndexOf("<DefaultModelPanel />"));
+  assert.doesNotMatch(client, /BackgroundModelPanel/);
+  const panel = read("src/app/profile/default-model-panel.tsx");
+  assert.match(panel, /background tasks, including Thought Topology/);
+  assert.match(panel, /Chat and Learn choices override this default/);
+});
+
 test("the profile chip is the way in, and it is a link rather than a label", () => {
   assert.match(navbar, /href="\/profile"/);
   assert.match(navbar, /\{username \|\| email\}/, "it still shows who you are");
-  assert.match(navbar, /<Link[\s\S]*?href="\/profile"/, "so it can be opened");
+  assert.match(navbar, /<NavigationLink newTab label="Profile"\s+href="\/profile"/, "opens in a tab and keeps its link menu");
 });
 
 test("the navbar no longer carries the account actions", () => {

@@ -12,6 +12,7 @@ export const ARTIFACT_KINDS = [
   "html", "code", "image", "audio", "video", "diagram", "data", "unknown",
   "gadget",
   "model",
+  "folder",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
@@ -37,6 +38,8 @@ export type ArtifactRendererId =
   | "data-file"
   | "model-file"
   | "archive-file"
+  | "binary-file"
+  | "folder-archive"
   | "text-file"
   | "markdown-file"
   | "html-file"

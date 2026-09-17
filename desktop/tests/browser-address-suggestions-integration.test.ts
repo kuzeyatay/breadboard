@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-test("address dropdown reserves its measured space and releases it on close", () => {
+test("address dropdown overlays the native page without moving or resizing it", () => {
   const desktop = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-address-suggestions-"));
   const env = { ...process.env };

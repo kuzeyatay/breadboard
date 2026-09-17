@@ -10,14 +10,21 @@
 // written from.
 //
 // So this is a separate call with one job: audit, and repair what it finds.
-// It may not research, may not add claims, and may not soften conclusions — the
-// draft's judgement stands, and only its accounting is at stake.
+// It uses the collected evidence to repair both accounting and usability,
+// including a conclusion or prescription the evidence does not support.
 
 import type { ParticipantResult } from "./participants.ts";
 import type { MaxResearchPlan } from "./plan.ts";
 
 /** What the audit looks for, in the order a reader would notice it. */
 export const REVIEW_CHECKS: readonly string[] = [
+  "A requested deliverable or supplied constraint is missing, or a plan lacks the concrete schedule, quantities, units, starting level, progression, adjustment or stopping rules needed to use it.",
+  "A calculation, total, date, unit conversion or decision threshold is inconsistent; reproduce the arithmetic from the stated inputs and correct it.",
+  "A practical prescription is presented as a proven optimum, or an estimate, assumption, modeled scenario or hoped-for outcome is presented as a fact or guarantee.",
+  "A recommendation conflicts with the user's starting capacity or constraints, or a material safety qualification is missing beside the action it affects.",
+  "A computed baseline is used to invent a personal safety floor, ceiling or guarantee that the underlying method does not establish; remove that inference and use supported monitoring or escalation criteria.",
+  "A practical plan offers competing defaults, repeats the same caveat, omits the time needed to follow it, or proposes increments disproportionate to the starting level; give one coherent default and alternatives only where a stated constraint warrants them.",
+  "Detailed causal or mechanistic claims outrun the actual supporting sources; retain the verified explanation and clearly identify or remove unsupported detail instead of attaching one blanket disclaimer to it.",
   "A participant returned evidence that appears nowhere in the answer, and is not dismissed in a clause either.",
   "A figure, date or quantity a reader might act on carries no citation, or names no publisher.",
   "A citation marker appears in the answer with no matching entry in a source list at the end, so the reader cannot resolve it.",
@@ -50,14 +57,14 @@ export function maxResearchReviewPrompt(input: {
   );
 
   return [
-    "You are auditing a research answer against the findings it was written from. You did not write it and you are not rewriting it: its conclusions, its structure and its voice stay as they are.",
+    "You are auditing a research answer against the original question and the collected evidence. Preserve accurate, useful content and its voice. Correct unsupported or inconsistent conclusions and repair missing requested deliverables. Reorganize only when needed for a coherent, usable answer.",
     "",
     `The question was: ${input.plan.question}`,
     "",
     "Check for each of these, in order:",
     ...REVIEW_CHECKS.map((check, index) => `${index + 1}. ${check}`),
     "",
-    "Then return the answer with every one you found repaired, and nothing else changed. Repair means: cite the claim, name the publisher, add the scope, state the disagreement, use the finding that was dropped or dismiss it in a clause, say what was missing. It does not mean adding claims, hedging a conclusion the evidence supports, or padding.",
+    "Return the complete answer with those defects repaired. Cite claims, add scope, resolve arithmetic errors and unsupported conclusions, restore missing requested details from the evidence, and state material uncertainty. Practical choices within supported ranges may be added as explicitly labeled judgment; derived numbers must show their inputs or assumptions. Do not invent sources or empirical findings, pad the answer or remove a usable plan merely because its exact combination was not tested in one study.",
     "",
     "You have only the findings below. If a figure, date, quantity or causal claim *about the world* that a reader might act on is not supported by any of them, do not invent a source for it — say in that sentence that it could not be traced to a source. Reserve that annotation for claims a reader would act on: general background a careful reader already holds does not need it, and a decorative sentence with no support is better deleted than annotated. A live audit stamped \"the run could not trace\" onto nearly every paragraph of an answer and buried the sourced findings under it; if you find yourself writing it more than a few times, the draft has too many unsupported sentences and the repair is to remove them.",
     "",
@@ -78,6 +85,11 @@ export function maxResearchReviewPrompt(input: {
       )
       .join("\n\n"),
     "</findings>",
+    "",
+    "<provisional_methodology_review>",
+    "These are same-family critique notes, not independent evidence. Check their concrete objections against the question and findings before applying them.",
+    input.results.find(result => result.status === "completed" && result.participant === "aris")?.output ?? "No critique was returned.",
+    "</provisional_methodology_review>",
     "",
     "<draft>",
     input.draft,

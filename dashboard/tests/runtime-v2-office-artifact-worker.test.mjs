@@ -17,6 +17,33 @@ import { officeCliEnv, resolveOfficeCli } from "../src/lib/office/officecli.ts";
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerPath = path.join(dashboardRoot, "scripts", "runtime-v2-office-artifact-worker.mjs");
 
+test("a fresh PDF conversion worker loads the real vendor closure and produces a DOCX", { timeout: 30_000 }, async () => {
+  const { PDFDocument, StandardFonts } = await import("@cantoo/pdf-lib");
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  pdf.addPage().drawText("Electric fields and current: conversion regression.", { font, x: 30, y: 500 });
+  const bytes = Buffer.from(await pdf.save());
+  const current = fixture({ operation: "command" });
+  try {
+    const request = { operation: "pdf-to-docx", sourceRelativeFile: "scan.pdf", output: null, title: "Converted notes", password: null };
+    fs.writeFileSync(path.join(current.jobRoot, "input.json"), JSON.stringify(request));
+    const relativePath = `runtime/jobs/${current.identity.jobId}/inputs/blob_pdf/payload`;
+    const inputPath = path.join(current.dataRoot, relativePath);
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, bytes);
+    const manifestPath = path.join(current.attemptRoot, "start.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.inputBlobs = [{ blobId: "blob_pdf", relativePath, sizeBytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), displayName: "scan.pdf", mediaType: "application/pdf" }];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const run = await runWorker(current);
+    assert.equal(run.exit.code, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8"));
+    assert.equal(result.result.operation, "pdf-to-docx");
+    assert.equal(result.result.pages, 1);
+    assert.equal(run.stdout.trim().split(/\r?\n/).map(JSON.parse).at(-1).type, "complete");
+  } finally { fs.rmSync(current.dataRoot, { recursive: true, force: true }); }
+});
+
 test("finite Office workers disable OfficeCLI auto-resident mode", () => {
   const environment = officeCliEnv({
     OFFICECLI_SKIP_UPDATE: "0",

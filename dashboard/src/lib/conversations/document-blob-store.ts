@@ -294,6 +294,7 @@ export function removeDocumentBlob(input: {
   const base = blob.path.slice(0, blob.path.length - path.extname(blob.path).length);
   try {
     fs.rmSync(blob.path, { force: true });
+    fs.rmSync(`${blob.path}.reading.json`, { force: true });
     fs.rmSync(
       documentFiguresDirectory({ userId: input.userId, blobId: input.blobId, root: input.root }),
       { recursive: true, force: true },

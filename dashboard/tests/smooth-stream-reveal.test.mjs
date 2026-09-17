@@ -289,7 +289,7 @@ const surfaces = [
     name: "garden workspace transcript",
     file: () =>
       read("app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
-    applied: /i === lastAssistantIndex\s*\?\s*revealedAssistantContent/,
+    applied: /i === lastAssistantIndex && storedAssistantContent\s*\?\s*revealedAssistantContent/,
   },
   {
     name: "garden assistant panel",

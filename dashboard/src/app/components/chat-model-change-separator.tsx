@@ -33,10 +33,27 @@ export default function ChatModelChangeSeparator({
       className="flex items-center gap-3 py-2"
     >
       <Wave />
-      <span className="shrink-0 text-xs font-normal text-[var(--ink-muted)]">
+      <span className="max-w-[75%] shrink-0 text-center text-xs font-normal text-[var(--ink-muted)] [overflow-wrap:anywhere]">
         {label}
       </span>
       <Wave />
+    </div>
+  );
+}
+
+export function ChatModelChangeSeparators({
+  labels,
+  visible = true,
+}: {
+  labels: readonly string[];
+  visible?: boolean;
+}) {
+  if (!visible || !labels.length) return null;
+  return (
+    <div className="mt-4 space-y-2">
+      {labels.map((label, index) => (
+        <ChatModelChangeSeparator key={`${index}:${label}`} modelName={label} />
+      ))}
     </div>
   );
 }

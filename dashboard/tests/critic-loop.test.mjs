@@ -990,6 +990,30 @@ describe("strict ChatMock critic response parsing", () => {
     assert.equal(parsed[0].id, "stale-caveat-1");
   });
 
+  test("a sentence of web-chat commentary before the report is dropped, nothing else", () => {
+    // Seen 2026-09-15: a complete 22-issue report opened with "I’m reading the
+    // pasted review packet as the request itself. ..." and failed the run.
+    assert.deepEqual(
+      parseCriticIssues("I’m reading the pasted review packet as the request itself.\n\n{\"issues\":[]}"),
+      [],
+    );
+    const parsed = parseCriticIssues(
+      `I’ll inspect the final garden and return only the JSON issue report.\n\n${JSON.stringify({
+        issues: [issue({ id: "stale-caveat-1", type: "stale_caveat", repairTarget: "planning_doc" })],
+      }, null, 2)}`,
+    );
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].id, "stale-caveat-1");
+    assert.throws(
+      () => parseCriticIssues('Here is the report. {"issues":[]} Let me know if you need more.'),
+      /Critic response validation failed: invalid JSON/,
+    );
+    assert.throws(
+      () => parseCriticIssues("I reviewed the garden and found no problems."),
+      /Critic response validation failed: invalid JSON/,
+    );
+  });
+
   test("malformed JSON and wrong top-level shapes fail closed", () => {
     assert.throws(
       () => parseCriticIssues('{"issues":['),
@@ -1364,6 +1388,27 @@ describe("Fix 2: ChatMock model repair", { skip }, () => {
     assert.equal(parseModelRepairOutput("not json", ".breadboard/visuals/v.json"), null);
     assert.equal(parseModelRepairOutput("null", ".breadboard/visuals/v.json"), null);
     assert.equal(parseModelRepairOutput("```json\nnull\n```", "learning/p.md"), null);
+    // A sentence of web-chat commentary before the object is dropped; a second
+    // object or an object that does not parse is still no candidate.
+    assert.deepEqual(
+      parseModelRepairOutput(
+        "I’m applying the repair conservatively.\n\n{\"learningUnits\":[{\"id\":\"U1\"}]}",
+        ".breadboard/learning-unit-contract.json",
+      ).revisedJson,
+      { learningUnits: [{ id: "U1" }] },
+    );
+    assert.equal(parseModelRepairOutput('Here it is. {"a":1} {"b":2}', ".breadboard/v.json"), null);
+    assert.equal(parseModelRepairOutput('Here it is. {"a": oops}', ".breadboard/v.json"), null);
+    assert.deepEqual(parseModelRepairOutput("[1,2]", ".breadboard/list.json").revisedJson, [1, 2]);
+    // The same commentary before a page's frontmatter is dropped too.
+    assert.equal(
+      parseModelRepairOutput("I'll return the repaired page.\n\n---\ntitle: x\n---\n\nbody", "learning/p.md").revisedMarkdown,
+      "---\ntitle: x\n---\n\nbody",
+    );
+    assert.match(
+      parseModelRepairOutput("# Heading first\n\n---\ntitle: x\n---\n\nbody", "learning/p.md").revisedMarkdown,
+      /^# Heading first/,
+    );
   });
 
   test("createChatMockModelRepair sends the repair prompt and parses output", async () => {

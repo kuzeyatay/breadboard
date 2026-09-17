@@ -91,24 +91,6 @@ test("every agent's run descriptor round-trips into a transcript field", () => {
   }
 });
 
-test("openGym's quiet Super Agent presentation survives persistence", () => {
-  const parsed = parseExternalAgentRun({
-    ...descriptorFor("open_gym"),
-    quiet: true,
-  });
-  assert.ok(parsed);
-  assert.equal(parsed.kind, "open_gym");
-  assert.equal(parsed.quiet, true);
-
-  const fields = externalAgentMessageFields({
-    externalAgent: true,
-    externalAgentRun: parsed,
-    externalAgentOutcome: "completed",
-    externalAgentResult: "Exercise guidance and animation metadata.",
-  });
-  assert.equal(fields.openGymRun?.quiet, true);
-});
-
 test("legacy delegated rows restore the Super Agent text without losing the worker result", () => {
   const fields = externalAgentMessageFields({
     externalAgent: true,
@@ -208,11 +190,11 @@ test("both chat surfaces render a card for every agent that can run there", () =
   // The two self-presenting delegations stay visible; everything else hides.
   assert.match(
     terminal,
-    /message\.delegatedAgentRun &&\s+!message\.openGymRun &&\s+!message\.godsEyeRun/,
+    /message\.delegatedAgentRun &&\s+!message\.godsEyeRun/,
   );
   assert.match(
     garden,
-    /msg\.delegatedAgentRun &&\s+!msg\.openGymRun &&\s+!msg\.godsEyeRun/,
+    /msg\.delegatedAgentRun &&\s+!msg\.godsEyeRun/,
   );
   assert.match(terminal, /externalAgentCardContent\(storedMessage\)/);
   assert.match(garden, /externalAgentCardContent\(storedMessage\)/);

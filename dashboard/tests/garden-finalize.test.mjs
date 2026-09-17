@@ -15,6 +15,33 @@ import {
 } from "../src/lib/garden-finalize.ts";
 import { runChecks, writeValidationReport } from "../../scripts/validate-breadboard-garden.ts";
 
+test("finalization and validation preserve independent lesson copies and their visual dependencies", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-user-copy-finalize-"));
+  try {
+    fs.mkdirSync(path.join(root, "sources"));
+    fs.mkdirSync(path.join(root, "learning"));
+    fs.mkdirSync(path.join(root, ".breadboard/visuals"), { recursive: true });
+    fs.mkdirSync(path.join(root, "my-revision/1. Fields"), { recursive: true });
+    fs.writeFileSync(path.join(root, "_index.md"), "---\ntitle: Physics\n---\n");
+    fs.writeFileSync(path.join(root, "sources/_index.md"), "---\ntitle: Sources\n---\n");
+    const lesson = "---\ntitle: Copied lesson\ngeneratedBy: learn_button\nknowledge_type: learning-page\nlearningUnitId: old-unit\nvisualIds: [\"copied-visual\"]\n---\nMy edits to an older lesson.\n";
+    const file = path.join(root, "my-revision/1. Fields/lesson.md");
+    const visual = path.join(root, ".breadboard/visuals/copied-visual.json");
+    fs.writeFileSync(file, lesson);
+    fs.writeFileSync(visual, '{"id":"copied-visual","sourceAnchors":[{"id":"old-source"}]}');
+    const visualBefore = fs.readFileSync(visual, "utf8");
+    const report = finalizeGardenExport({ gardenDir: root, gardenSlug: path.basename(root) });
+    assert.equal(fs.readFileSync(file, "utf8"), lesson);
+    assert.equal(fs.readFileSync(visual, "utf8"), visualBefore);
+    assert.equal(report.removed.some(file => file.startsWith("my-revision")), false);
+    const checks = runChecks(root, path.basename(root));
+    assert.equal(checks.find(check => check.id === 7).status, "PASS");
+    assert.equal(checks.flatMap(check => check.problems).some(problem => problem.includes("my-revision/") || problem.includes("copied-visual")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Exact source formula captions from the real garden (2510.27379v1).
 // ---------------------------------------------------------------------------
@@ -1843,11 +1870,11 @@ describe("finalize gates semantic defects", () => {
         fs.existsSync(path.join(dir, ".breadboard", "validation-report.md")),
         ".breadboard/validation-report.md must be written into the export",
       );
-      // The dirty top-level folders are gone (A).
+      // Managed internal output is hidden; independent folders are preserved.
       const top = fs.readdirSync(dir).sort();
       assert.deepEqual(
         top.filter((name) => !name.startsWith(".") || name === ".breadboard").sort(),
-        ["_index.md", ".breadboard", "assets", "learning", "sources"].sort(),
+        ["_index.md", ".breadboard", "assets", "learning", "sources", "1. spiking-neural-networks-the-future-of-brain-inspired-computing"].sort(),
       );
       assert.ok(!top.includes("Internal"), "Internal/ must not remain at top level");
     } finally {

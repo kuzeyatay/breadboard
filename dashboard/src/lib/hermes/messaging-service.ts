@@ -31,6 +31,7 @@ import {
   type ConversationRow,
 } from "../conversations/store.ts";
 import db from "../db.ts";
+import { conversationIsSameDay } from "../conversations/messaging-days.ts";
 import {
   explainSelfTargetFailure,
   resolveTelegramSelfTarget,
@@ -84,7 +85,7 @@ export interface SendOwnerMessageResult {
   channel: MessagingChannel;
   /** Where it went, in human terms. The raw chat id is never returned. */
   destination: string;
-  /** The fresh Terminal chat that owns replies to this outbound message. */
+  /** The daily Terminal chat containing this message and the user's replies. */
   continuationConversationId: string;
   characters: number;
   attachment: { filename: string; byteSize: number; rendered: boolean } | null;
@@ -372,11 +373,11 @@ function externalMessageMetadata(input: {
 }
 
 /**
- * Persist an already-delivered phone message as a fresh Terminal conversation
- * and make that conversation the continuation for the external chat.
+ * Append an already-delivered phone message to the external chat's daily
+ * Terminal conversation, alongside the user's messages and assistant replies.
  *
  * The transport send happens first. Once it succeeds, this transaction creates
- * the transcript and changes the chat binding together, so the next inbound
+ * or reuses the transcript and changes the chat binding together, so the next inbound
  * message can never see a binding whose reminder row is missing.
  */
 export async function recordDeliveredOwnerMessage(input: {
@@ -418,10 +419,17 @@ export async function recordDeliveredOwnerMessage(input: {
           isGroup: false,
         });
       }
-      const conversation = createConversation({
+      const bound = existing?.conversation_id != null
+        ? getConversationById(existing.conversation_id, db)
+        : null;
+      const dailyConversation = bound && bound.user_id === input.userId &&
+        bound.surface === "dashboard_terminal" && conversationIsSameDay(bound.created_at, new Date())
+        ? bound : null;
+      const conversation = dailyConversation ?? createConversation({
         userId: input.userId,
         title: outboundConversationTitle(channel, input.target.label, text),
         surface: "dashboard_terminal",
+        originLabel: "WhatsApp",
         scopeKind: "global",
       }, db);
       appendConversationAssistantMessage({
@@ -456,10 +464,17 @@ export async function recordDeliveredOwnerMessage(input: {
         isGroup: false,
       });
     }
-    const conversation = createConversation({
+    const bound = existing?.conversation_id != null
+      ? getConversationById(existing.conversation_id, db)
+      : null;
+    const dailyConversation = bound && bound.user_id === input.userId &&
+      bound.surface === "dashboard_terminal" && conversationIsSameDay(bound.created_at, new Date())
+      ? bound : null;
+    const conversation = dailyConversation ?? createConversation({
       userId: input.userId,
       title: outboundConversationTitle(channel, input.target.label, text),
       surface: "dashboard_terminal",
+      originLabel: "Telegram",
       scopeKind: "global",
     }, db);
     appendConversationAssistantMessage({
@@ -477,7 +492,7 @@ export async function recordDeliveredOwnerMessage(input: {
 
 /**
  * Persist a provider-handled exchange (currently a study-review answer) in the
- * Terminal conversation opened by its proactive message. Ordinary Telegram and
+ * daily Terminal conversation. Ordinary Telegram and
  * WhatsApp replies already go through `startConversationTurn`; this covers the
  * one path that intentionally intercepts a reply before the agent runtime.
  */
@@ -495,29 +510,34 @@ export async function recordDeliveredOwnerExchange(input: {
   const store = channel === "whatsapp"
     ? (await import("../whatsapp/instance.ts")).getWhatsAppStore()
     : (await import("../telegram/instance.ts")).getTelegramStore();
-  const chat = store.getChat(input.chatId);
-  if (!chat || chat.user_id !== input.userId || chat.conversation_id === null) return null;
-  const conversation = getConversationById(chat.conversation_id, db);
-  if (
-    !conversation ||
-    conversation.user_id !== input.userId ||
-    conversation.surface !== "dashboard_terminal"
-  ) {
-    return null;
-  }
-
   const metadata = externalMessageMetadata({
     channel,
     kind,
     direction: "inbound",
   });
   const persist = db.transaction(() => {
+    const chat = store.getChat(input.chatId);
+    if (!chat || chat.user_id !== input.userId || chat.conversation_id === null) return null;
+    const bound = getConversationById(chat.conversation_id, db);
+    if (!bound || bound.user_id !== input.userId || bound.surface !== "dashboard_terminal") return null;
+    const conversation = conversationIsSameDay(bound.created_at, new Date())
+      ? bound
+      : createConversation({
+        userId: input.userId,
+        title: outboundConversationTitle(channel, chat.contact_label, input.userText),
+        surface: "dashboard_terminal",
+        originLabel: channel === "whatsapp" ? "WhatsApp" : "Telegram",
+        scopeKind: "global",
+      }, db);
     reserveConversationTurn({
       conversation,
       clientMessageId: input.clientMessageId,
       surface: "dashboard_terminal",
       content: input.userText,
       metadata,
+      // The review reply is already complete and becomes terminal before
+      // this transaction commits, even if an ordinary agent turn is running.
+      allowActiveTurnWithinTransaction: true,
     }, db);
     completeAssistantMessage({
       conversationId: conversation.id,

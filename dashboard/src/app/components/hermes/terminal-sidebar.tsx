@@ -15,6 +15,7 @@ import { ArtifactArchiveIcon } from "./artifact-panel";
 import RailDivider from "./rail-divider";
 import type { RailResize } from "./use-rail-resize";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
+import { conversationDisplayTitle } from "@/lib/conversations/origin-label";
 import { useOverflowMarquee } from "../overflow-marquee";
 
 export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "processes";
@@ -447,6 +448,8 @@ interface ChatRowProps {
   onRenamingChange: (chatId: string, renaming: boolean) => void;
   onTogglePin: (chat: TerminalSidebarChat) => void;
   onDelete: (chat: TerminalSidebarChat) => void;
+  /** One chat's mark, chosen from the row menu's Highlight dialog. */
+  onHighlight: (chat: TerminalSidebarChat, highlight: string | null) => void;
 }
 
 /**
@@ -473,7 +476,8 @@ function chatRowPropsEqual(prev: ChatRowProps, next: ChatRowProps): boolean {
     prev.onRename === next.onRename &&
     prev.onRenamingChange === next.onRenamingChange &&
     prev.onTogglePin === next.onTogglePin &&
-    prev.onDelete === next.onDelete
+    prev.onDelete === next.onDelete &&
+    prev.onHighlight === next.onHighlight
   );
 }
 
@@ -509,8 +513,13 @@ const ChatRow = memo(function ChatRow({
   onRenamingChange,
   onTogglePin,
   onDelete,
+  onHighlight,
 }: ChatRowProps) {
   const [renaming, setRenaming] = useState(false);
+  // The Highlight dialog takes the menu's place: the menu closes as it opens,
+  // and it sits where the menu sat so the eye does not have to travel.
+  const [highlighting, setHighlighting] = useState(false);
+  const closeHighlightDialog = useCallback(() => setHighlighting(false), []);
   const [stopping, setStopping] = useState(false);
   const [draft, setDraft] = useState(chat.title);
   const [titleTransition, setTitleTransition] = useState<TitleTransition>({
@@ -645,7 +654,7 @@ const ChatRow = memo(function ChatRow({
             ? `Highlight ${chat.title}`
             : chat.pending
               ? chat.title
-              : `${chat.titlePrefix ? `${chat.titlePrefix}: ` : ""}${chat.title} · ${formatChatTime(chat.updatedAt)}`
+              : `${conversationDisplayTitle(chat.title, chat.titlePrefix)} · ${formatChatTime(chat.updatedAt)}`
         }
         className="min-w-0 flex-1 rounded-lg px-2.5 py-[7px] text-left"
       >
@@ -679,7 +688,7 @@ const ChatRow = memo(function ChatRow({
               } as CSSProperties
             }
           >
-            {chat.titlePrefix ? `${chat.titlePrefix}: ` : ""}{transitionTitle}
+            {conversationDisplayTitle(transitionTitle, chat.titlePrefix)}
           </span>
         </span>
       </button>
@@ -779,9 +788,24 @@ const ChatRow = memo(function ChatRow({
             onCloseMenu();
             onTogglePin(chat);
           }}
+          onHighlight={() => {
+            onCloseMenu();
+            setHighlighting(true);
+          }}
           onDelete={() => {
             onCloseMenu();
             onDelete(chat);
+          }}
+        />
+      ) : null}
+      {highlighting ? (
+        <HighlightDialog
+          chat={chat}
+          position={menuPosition}
+          onClose={closeHighlightDialog}
+          onPick={(highlight) => {
+            setHighlighting(false);
+            if (highlight !== chat.highlight) onHighlight(chat, highlight);
           }}
         />
       ) : null}
@@ -795,7 +819,10 @@ interface MenuPosition {
 }
 
 const MENU_WIDTH = 176;
-const MENU_HEIGHT = 132;
+const MENU_HEIGHT = 168;
+// Five swatches, a heading and the eraser row, so it clamps against its own
+// height rather than the shorter menu's.
+const HIGHLIGHT_DIALOG_HEIGHT = 244;
 
 /** Where the menu should sit given the button that opened it. */
 export function menuPositionFor(
@@ -839,6 +866,7 @@ function RowMenu({
   onClose,
   onRename,
   onTogglePin,
+  onHighlight,
   onDelete,
 }: {
   chat: TerminalSidebarChat;
@@ -846,6 +874,7 @@ function RowMenu({
   onClose: () => void;
   onRename: () => void;
   onTogglePin: () => void;
+  onHighlight: () => void;
   onDelete: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -882,6 +911,15 @@ function RowMenu({
       <button
         type="button"
         role="menuitem"
+        onClick={onHighlight}
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)]"
+      >
+        <HighlighterIcon className="h-4 w-4 text-[var(--ink-muted)]" />
+        Highlight chat
+      </button>
+      <button
+        type="button"
+        role="menuitem"
         onClick={onDelete}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[#9a4438] transition hover:bg-[color-mix(in_srgb,#9a4438_10%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -889,6 +927,88 @@ function RowMenu({
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 7h14M10 7V5.5A1.5 1.5 0 0 1 11.5 4h1A1.5 1.5 0 0 1 14 5.5V7m-6 0 .6 12.1A1.5 1.5 0 0 0 10.1 20.5h3.8a1.5 1.5 0 0 0 1.5-1.4L16 7" />
         </svg>
         Delete
+      </button>
+    </div>
+  );
+}
+
+/**
+ * One chat's highlight, picked from the row menu. The Recents menu's pen is
+ * for sweeping many chats; this is the single-chat path, so every color is
+ * named and the current one is checked rather than left to be inferred from
+ * the row's tint behind the dialog.
+ */
+function HighlightDialog({
+  chat,
+  position,
+  onClose,
+  onPick,
+}: {
+  chat: TerminalSidebarChat;
+  position: MenuPosition;
+  onClose: () => void;
+  onPick: (highlight: string | null) => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDismissOnOutside(dialogRef, onClose);
+  // Opened from the menu's measured spot, but taller than it, so re-clamp
+  // against the bottom of the viewport with the dialog's own height.
+  const top =
+    typeof window === "undefined"
+      ? position.top
+      : Math.max(8, Math.min(position.top, window.innerHeight - HIGHLIGHT_DIALOG_HEIGHT - 8));
+
+  return (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-label={`Highlight ${chat.title}`}
+      style={{ top, left: position.left }}
+      className="fixed z-[70] w-44 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] py-1 shadow-[0_10px_26px_rgba(0,0,0,0.18)]"
+    >
+      <div className="flex items-center gap-2 px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--ink-muted)]">
+        <HighlighterIcon className="h-3.5 w-3.5" />
+        Highlight
+      </div>
+      {CHAT_HIGHLIGHTS.map((highlight) => {
+        const current = chat.highlight === highlight.id;
+        return (
+          <button
+            key={highlight.id}
+            type="button"
+            onClick={() => onPick(highlight.id)}
+            aria-pressed={current}
+            className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)]"
+          >
+            <span
+              aria-hidden
+              className="h-3.5 w-3.5 shrink-0 rounded-full"
+              style={{ background: highlight.color }}
+            />
+            <span className="flex-1">{highlight.label}</span>
+            {current ? (
+              <svg className="h-3.5 w-3.5 text-[var(--ink-heading)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="m5 12.5 4.5 4.5L19 7.5" />
+              </svg>
+            ) : null}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={() => onPick(null)}
+        disabled={chat.highlight === null}
+        className="mt-1 flex w-full items-center gap-2.5 border-t border-[var(--line)] px-3 py-2 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)] disabled:cursor-default disabled:opacity-45 disabled:hover:bg-transparent"
+      >
+        <span
+          aria-hidden
+          className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-[var(--line-strong)] text-[var(--ink-muted)]"
+        >
+          <svg className="h-2 w-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} aria-hidden>
+            <path strokeLinecap="round" d="m6 6 12 12M18 6 6 18" />
+          </svg>
+        </span>
+        Remove highlight
       </button>
     </div>
   );
@@ -1239,6 +1359,9 @@ export default function TerminalSidebar({
   );
   const togglePinned = useEvent((chat: TerminalSidebarChat) => onTogglePin(chat));
   const deleteChat = useEvent((chat: TerminalSidebarChat) => onDeleteChat(chat));
+  const highlightChat = useEvent(
+    (chat: TerminalSidebarChat, highlight: string | null) => onHighlightChat(chat, highlight),
+  );
   const openMenu = useCallback(
     (chat: TerminalSidebarChat) => setMenuChatId(chat.id),
     [],
@@ -1269,6 +1392,7 @@ export default function TerminalSidebar({
       onRenamingChange={handleRenamingChange}
       onTogglePin={togglePinned}
       onDelete={deleteChat}
+      onHighlight={highlightChat}
     />
   );
 
@@ -1403,6 +1527,21 @@ export default function TerminalSidebar({
               action={
                 <>
                   {mode === "idle" ? recentsAction : null}
+                  {mode === "idle" ? (
+                    <button
+                      type="button"
+                      title="New chat"
+                      aria-label="New chat"
+                      disabled={newChatDisabled}
+                      onClick={() => {
+                        setRecentsMenu(null);
+                        onNewChat();
+                      }}
+                      className="mr-1 hidden shrink-0 rounded-md p-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] group-hover/section:block group-focus-within/section:block focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink-muted)] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <NewChatIcon className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
                   {workableRecents.length > 0 && mode === "idle" ? (
                     <SectionMenuButton
                       label="Recents"

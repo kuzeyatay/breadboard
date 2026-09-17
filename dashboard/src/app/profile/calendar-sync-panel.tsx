@@ -12,7 +12,8 @@
 // edit to a server, and the panel says plainly when it last spoke to one and
 // what happened.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
 import Badge from "./badge";
 import type { CalendarCollection } from "@/lib/calendar/types.ts";
@@ -99,18 +100,52 @@ export default function CalendarSyncPanel({
   const load = useCallback(async () => {
     try {
       const response = await fetch("/api/calendar/calendars", { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error("Could not load calendars. Try updating again.");
       const payload = await response.json();
+      setError(payload.syncError ?? null);
       setCalendars(
         (payload.calendars ?? []).filter(
-          (calendar: CalendarCollection) => calendar.sourceUrl || calendar.caldavUrl,
+          (calendar: CalendarCollection) => calendar.sourceUrl || calendar.caldavUrl || calendar.googleCalendarId,
         ),
       );
-    } catch {
-      // See the contacts panel: an unreachable endpoint leaves the card showing
-      // what it already had rather than shouting about it.
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load calendars.");
     }
   }, []);
+
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState !== "hidden") void load(); };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("breadboard:calendar:changed", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("breadboard:calendar:changed", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [load]);
+
+  async function updateGoogle() {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const payload = await call("/api/calendar/google?force=true", "POST") as {
+        calendars: CalendarCollection[]; synced: number; connected: boolean; error: string | null;
+      };
+      setCalendars(payload.calendars.filter((calendar) => calendar.sourceUrl || calendar.caldavUrl || calendar.googleCalendarId));
+      if (payload.error) setError(payload.error);
+      else setNote(payload.connected ? "Google calendars are up to date." : "Connect Google Calendar in Connections to see your events here.");
+      window.dispatchEvent(new Event("breadboard:calendar:changed"));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update Google Calendar.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function call(path: string, method: string, body?: unknown) {
     const response = await fetch(path, {
@@ -277,6 +312,7 @@ export default function CalendarSyncPanel({
 
   const subscriptions = calendars.filter((calendar) => calendar.sourceUrl);
   const caldavCalendars = calendars.filter((calendar) => calendar.caldavUrl);
+  const googleCalendars = calendars.filter((calendar) => calendar.googleCalendarId);
 
   return (
     <section className="neu-surface-raised rounded-2xl border border-gray-800 p-5">
@@ -286,6 +322,37 @@ export default function CalendarSyncPanel({
           Add a schedule from a link or connect your calendar account.
         </p>
       </header>
+
+      <div className="mb-5 border-b border-gray-800 pb-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-xs font-medium text-gray-200">Google Calendar</h3>
+          <button type="button" disabled={busy} onClick={() => void updateGoogle()}
+            className="neu-button rounded-lg border border-gray-700 px-2.5 py-1 text-[11px] text-gray-300 hover:text-white disabled:opacity-50">
+            Update now
+          </button>
+        </div>
+        <p className="mt-1 text-[11px] leading-5 text-gray-500">
+          Calendars connected in Connections appear here automatically. Manage their events in Google Calendar.
+        </p>
+        {googleCalendars.map((calendar) => (
+          <div key={calendar.id} className="neu-inset mt-2 rounded-xl px-3 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2">
+                <span aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ background: calendar.color }} />
+                <span className="truncate text-xs font-medium text-gray-200">{calendar.name}</span>
+              </span>
+              <Badge tone={calendar.syncError ? "warn" : "derived"}>
+                {calendar.syncError ? "Needs attention" : whenSynced(calendar.lastSyncedAt)}
+              </Badge>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-gray-500">
+              <span>View only{!calendar.visible ? " · Hidden in calendar" : ""}</span>
+              <Link href="/plan?view=calendar" className="text-gray-300 hover:text-white">View calendar ↗</Link>
+            </div>
+            {calendar.syncError ? <p className="mt-2 text-[11px] leading-5 text-[#a45f56]">{calendar.syncError}</p> : null}
+          </div>
+        ))}
+      </div>
 
       <div>
         <h3 className="text-xs font-medium text-gray-200">Add from a link</h3>

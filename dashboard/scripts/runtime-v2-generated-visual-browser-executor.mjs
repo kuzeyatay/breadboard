@@ -43,12 +43,14 @@ export function validateGeneratedVisualBrowserRequest(value) {
     !exactRecord(value, [
       "protocolVersion", "operation", "slug", "width", "height",
       "reducedMotion", "screenshot", "timeoutMs",
+      ...(value?.nativeSimulation !== undefined ? ["nativeSimulation"] : []),
     ]) ||
     value.protocolVersion !== 1 || value.operation !== "render-generated-visual" ||
     !SLUG.test(value.slug) ||
     !Number.isSafeInteger(value.width) || value.width < 240 || value.width > 4_096 ||
     !Number.isSafeInteger(value.height) || value.height < 240 || value.height > 4_096 ||
     typeof value.reducedMotion !== "boolean" ||
+    (value.nativeSimulation !== undefined && typeof value.nativeSimulation !== "boolean") ||
     typeof value.screenshot !== "boolean" ||
     !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs < 5_000 || value.timeoutMs > 90_000
   ) fail("The generated visual browser request is invalid.");
@@ -233,17 +235,21 @@ export async function executeGeneratedVisualBrowserOperation(launch, signal) {
   const args = [
     `--user-data-dir=${profileDir}`,
     "--headless=new",
-    "--disable-gpu",
+    ...(launch.request.nativeSimulation
+      ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--hide-scrollbars"]
+      : ["--disable-gpu"]),
     "--disable-gpu-shader-disk-cache",
     "--disable-skia-graphite",
-    "--disable-features=SkiaGraphiteUsePersistentCache",
+    launch.request.nativeSimulation
+      ? "--disable-features=SkiaGraphiteUsePersistentCache,IsolateSandboxedIframes"
+      : "--disable-features=SkiaGraphiteUsePersistentCache",
     "--disable-extensions",
     "--disable-background-networking",
     "--disable-dev-shm-usage",
     "--no-first-run",
     ...(launch.request.reducedMotion ? ["--force-prefers-reduced-motion"] : []),
     `--window-size=${launch.request.width},${launch.request.height}`,
-    "--virtual-time-budget=2500",
+    launch.request.nativeSimulation ? "--virtual-time-budget=6500" : "--virtual-time-budget=2500",
     "--dump-dom",
     ...(screenshotPath ? [`--screenshot=${screenshotPath}`] : []),
     pathToFileURL(htmlPath).href,

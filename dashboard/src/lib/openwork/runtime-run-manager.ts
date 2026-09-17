@@ -2,8 +2,8 @@ if (typeof window !== "undefined") {
   throw new Error("OpenWork Runtime control is server-only.");
 }
 
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";

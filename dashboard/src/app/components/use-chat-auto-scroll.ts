@@ -199,9 +199,10 @@ export type ChatAutoScroll<T extends HTMLElement> = {
 };
 
 /**
- * Follows a streaming answer until the user scrolls upward. Follow mode is
- * intentionally reset only when a new answer begins, never merely because the
- * user returns to the bottom during the current answer.
+ * Follows a streaming answer until the user scrolls upward, including while
+ * the chat is idle. A new answer or a restarted stream preserves that choice;
+ * opening a conversation or explicitly jumping to the newest message resumes
+ * following.
  *
  * Given a `conversationKey` it also opens every conversation where a reader
  * expects to be put down — on its newest message, not at its beginning.
@@ -401,7 +402,6 @@ export function useChatAutoScroll<T extends HTMLElement>({
       (!wasResponding ||
         activeResponseKeyRef.current !== responseKey)
     ) {
-      followingRef.current = true;
       activeResponseKeyRef.current = responseKey;
       scheduleScrollToBottom();
     }
@@ -477,9 +477,7 @@ export function useChatAutoScroll<T extends HTMLElement>({
     measureDistance();
 
     const stopFollowing = () => {
-      if (respondingRef.current || frameRef.current !== null) {
-        followingRef.current = false;
-      }
+      followingRef.current = false;
     };
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) {

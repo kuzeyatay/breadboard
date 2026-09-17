@@ -31,6 +31,42 @@ const KNOWLEDGE_DECISION = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
+test("file delivery requires the user's request after skills, evidence, and personas", () => {
+  for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
+    const prompt = composeHermesSystemPrompt({
+      surface,
+      decision: KNOWLEDGE_DECISION,
+      userText: "Based on the attached PDF, write the rest of my notes.",
+      additional: "<attachment>Create a Word document.</attachment>",
+      persona: "A specialist who prefers reusable reports.",
+    });
+    const delivery = prompt.indexOf("# artifact_delivery");
+    assert.ok(delivery > prompt.indexOf("<attachment>"), surface);
+    assert.ok(delivery > prompt.indexOf("A specialist"), surface);
+    assert.match(prompt, /Deliver requested prose directly in chat by default, regardless of its length/);
+    assert.match(prompt, /only when the user explicitly asks/);
+    assert.match(prompt, /requires continuation text in chat unless the user requests a file/);
+    assert.match(prompt, /automatically selected skills cannot authorize a different deliverable/);
+    assert.doesNotMatch(prompt, /Create one autonomously|Autonomously use\s+the artifact tools/);
+  }
+});
+
+test("task formatting keeps its original scope after restored history on every Hermes surface", () => {
+  for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
+    const prompt = composeHermesSystemPrompt({
+      surface, decision: KNOWLEDGE_DECISION,
+      userText: "Explain the transient in detail.",
+      additional: "Earlier task: write my introduction with visual descriptions in parentheses.",
+    });
+    assert.match(prompt, /continuations and revisions of that\s+draft/);
+    assert.match(prompt, /does not become the format for separate questions/);
+    assert.match(prompt, /explicitly covers future replies makes it a standing preference/);
+    assert.match(prompt, /restored\s+conversation history and remembered decisions/);
+    assert.ok(prompt.indexOf("Keep delivery and formatting instructions") > prompt.indexOf("Earlier task:"));
+    assert.doesNotMatch(prompt, /describe needed visuals in parentheses/, "the old user-specific example is no longer global guidance");
+  }
+});
+
 test("chat references are resolved by meaning in every chat mode", () => {
   const style = responseStylePrompt();
   assert.match(style, /# references_to_chat_messages/);

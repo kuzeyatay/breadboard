@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 
 import { clearLearnDatabaseRecords } from "../src/lib/learn-clear-database.ts";
 import { clearGeneratedLearnState } from "../src/lib/learn-clear.ts";
+import { copyGardenFolderContents } from "../src/lib/garden-folder-copy.ts";
 
 function temporaryGarden() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-learn-clear-"));
@@ -42,6 +43,40 @@ function learnerMarkdown({ title, unitId, visualIds = [], generatedBy = true }) 
     "",
   ].join("\n");
 }
+
+test("Learn clear preserves reader copies after rename, including their shared visuals", () => {
+  const garden = temporaryGarden();
+  try {
+    const lesson = learnerMarkdown({ title: "Fields", unitId: "U1", visualIds: ["shared-field"] });
+    write(garden, "learning/_index.md", "---\ntitle: Learning\ngeneratedBy: learn_button\n---\n");
+    write(garden, "learning/1. Fields/lesson.md", lesson);
+    write(garden, "learning/1. Fields/_index.md", "---\ntitle: Fields\ngenerated_by: learn_button\n---\n");
+    write(garden, "learning/1. Fields/plain.md", "# My addition\n");
+    write(garden, ".breadboard/visual-index.json", JSON.stringify({
+      "shared-field": { id: "shared-field", pageId: "page:U1" },
+    }));
+    const visual = write(garden, ".breadboard/visuals/shared-field.json", '{"id":"shared-field","pageId":"page:U1"}');
+    copyGardenFolderContents(garden, "learning", "learning-copy", value => value.toLowerCase());
+    fs.renameSync(path.join(garden, "learning-copy"), path.join(garden, "my-revision"));
+    const paths = ["_index.md", "1. Fields/_index.md", "1. Fields/lesson-copy.md", "1. Fields/plain-copy.md"];
+    const before = paths.map(file => fs.readFileSync(path.join(garden, "my-revision", file), "utf8"));
+    for (const content of before) assert.match(content, /^garden_copy: true$/m);
+    assert.equal(fs.readFileSync(path.join(garden, "learning/1. Fields/lesson.md"), "utf8"), lesson);
+
+    // Pre-marker copies must also survive clearing the original generation.
+    write(garden, "learning-copy-2/1. Fields/lesson-copy-2.md", lesson);
+    const result = clearGeneratedLearnState(garden);
+    assert.equal(exists(garden, "learning"), false);
+    paths.forEach((file, i) => assert.equal(fs.readFileSync(path.join(garden, "my-revision", file), "utf8"), before[i]));
+    assert.equal(fs.readFileSync(path.join(garden, "learning-copy-2/1. Fields/lesson-copy-2.md"), "utf8"), lesson);
+    assert.deepEqual(result.removedLearnerPagePaths.filter(file => !file.startsWith("learning/")), []);
+    assert.deepEqual(result.removedVisualIds, []);
+    assert.equal(fs.existsSync(visual), true);
+    assert.ok(readJson(garden, ".breadboard/visual-index.json")["shared-field"]);
+  } finally {
+    fs.rmSync(garden, { recursive: true, force: true });
+  }
+});
 
 test("full Learn filesystem clear preserves durable inputs and prunes only learner-owned state", () => {
   const garden = temporaryGarden();
@@ -159,8 +194,8 @@ test("full Learn filesystem clear preserves durable inputs and prunes only learn
     const result = clearGeneratedLearnState(garden);
 
     assert.equal(exists(garden, "learning"), false);
-    assert.equal(exists(garden, "notes/generated.md"), false);
-    assert.equal(exists(garden, "archive/canonical-page.md"), false);
+    assert.equal(exists(garden, "notes/generated.md"), true);
+    assert.equal(exists(garden, "archive/canonical-page.md"), true);
     assert.equal(exists(garden, "notes/manual.md"), true);
     assert.equal(exists(garden, "_index.md"), true);
     assert.equal(exists(garden, "sources/paper.md"), true);
@@ -190,22 +225,23 @@ test("full Learn filesystem clear preserves durable inputs and prunes only learn
     assert.equal(result.resetSourceVisualCount, 1);
 
     const nextIndex = readJson(garden, ".breadboard/visual-index.json");
-    assert.deepEqual(Object.keys(nextIndex).sort(), ["manual-only", "shared-manual"]);
+    assert.deepEqual(Object.keys(nextIndex).sort(), ["canonical-learn", "manual-only", "outside-learn", "shared-manual"]);
     assert.equal(exists(garden, ".breadboard/visuals/learn-only.json"), false);
-    assert.equal(exists(garden, ".breadboard/visuals/outside-learn.json"), false);
-    assert.equal(exists(garden, ".breadboard/visuals/canonical-learn.json"), false);
+    assert.equal(exists(garden, ".breadboard/visuals/outside-learn.json"), true);
+    assert.equal(exists(garden, ".breadboard/visuals/canonical-learn.json"), true);
     assert.equal(exists(garden, ".breadboard/visuals/orphan-learn"), false);
     assert.equal(exists(garden, ".breadboard/visuals/shared-manual.json"), true);
     assert.equal(exists(garden, ".breadboard/visuals/manual-only.json"), true);
     assert.equal(exists(garden, ".breadboard/visuals/manual-module"), true);
-    assert.deepEqual(result.removedVisualIds, ["canonical-learn", "learn-only", "orphan-learn", "outside-learn"]);
+    assert.deepEqual(result.removedVisualIds, ["learn-only", "orphan-learn"]);
 
     const eventLines = fs.readFileSync(path.join(garden, ".breadboard/events.jsonl"), "utf8").trim().split("\n");
-    assert.equal(result.removedEventCount, 4);
-    assert.equal(eventLines.length, 3);
-    assert.match(eventLines[0], /manual_note_updated/);
-    assert.match(eventLines[1], /manual_visual_updated/);
-    assert.equal(eventLines[2], "not-json-but-preserved");
+    assert.equal(result.removedEventCount, 3);
+    assert.equal(eventLines.length, 4);
+    assert.match(eventLines[0], /source_figure_linked/);
+    assert.match(eventLines[1], /manual_note_updated/);
+    assert.match(eventLines[2], /manual_visual_updated/);
+    assert.equal(eventLines[3], "not-json-but-preserved");
 
     assert.deepEqual(result.modifiedPaths, [
       ".breadboard/events.jsonl",
@@ -213,8 +249,8 @@ test("full Learn filesystem clear preserves durable inputs and prunes only learn
       ".breadboard/visual-index.json",
     ]);
     assert.ok(result.removedPaths.includes("learning"));
-    assert.ok(result.removedPaths.includes("notes/generated.md"));
-    assert.ok(result.removedPaths.includes("archive/canonical-page.md"));
+    assert.ok(!result.removedPaths.includes("notes/generated.md"));
+    assert.ok(!result.removedPaths.includes("archive/canonical-page.md"));
     assert.ok(result.removedPaths.includes(".breadboard/planning"));
     assert.ok(result.removedPaths.includes(".breadboard/learn-run-snapshots"));
     assert.ok(result.removedPaths.includes(".breadboard/learn-build.lock.json"));
@@ -224,10 +260,8 @@ test("full Learn filesystem clear preserves durable inputs and prunes only learn
     assert.ok(result.removedPaths.includes(".breadboard/visualization-coverage.md"));
     assert.ok(result.removedPaths.includes(".breadboard/visualization-events.json"));
     assert.deepEqual(result.removedLearnerPagePaths, [
-      "archive/canonical-page.md",
       "learning/1. Section/_index.md",
       "learning/1. Section/1.1 Lesson.md",
-      "notes/generated.md",
     ]);
 
     const idempotent = clearGeneratedLearnState(garden);
@@ -249,7 +283,7 @@ test("schema-versioned visual indexes are filtered without discarding manual ent
   try {
     write(
       garden,
-      "archive/generated.md",
+      "learning/generated.md",
       learnerMarkdown({ title: "Generated", unitId: "U2", visualIds: ["schema-learn"], generatedBy: false }),
     );
     write(garden, "notes/manual.md", "---\ntitle: Manual\n---\nKeep.\n");

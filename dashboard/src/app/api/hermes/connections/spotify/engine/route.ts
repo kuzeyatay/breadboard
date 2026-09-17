@@ -17,6 +17,7 @@ import {
   renewSpotifyPlaybackViewLease,
 } from "@/lib/spotify/view-lease.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
+import { publishSpotifyPlayback } from "@/lib/spotify/playback-events.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -72,7 +73,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     requireEnabled();
-    const body = await readJsonBody(request, 4 * 1024);
+    const body = await readJsonBody(request, 16 * 1024);
     if (exactBody(body, ["ticket", "operation"])) {
       if (body.operation !== "token" || typeof body.ticket !== "string") {
         throw new ApiError(
@@ -86,11 +87,14 @@ export async function POST(request: Request) {
         headers: noStoreHeaders,
       });
     }
-    if (exactBody(body, ["ticket", "deviceId"])) {
+    if (exactBody(body, ["ticket", "deviceId"]) || exactBody(body, ["ticket", "deviceId", "playback"])) {
       registerSpotifyPlaybackEngine({
         ticket: typeof body.ticket === "string" ? body.ticket : "",
         deviceId: body.deviceId,
       });
+      if (Object.hasOwn(body, "playback")) {
+        publishSpotifyPlayback(verifySpotifyEngineTicket(body.ticket as string), (body.deviceId as string).trim(), body.playback);
+      }
       return NextResponse.json({ ok: true }, { headers: noStoreHeaders });
     }
     if (!exactBody(body, ["viewId"])) {

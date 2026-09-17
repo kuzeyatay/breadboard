@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["next-env.d.ts", "src/vendor/genoffice/pptx-render/src/bidi-js.d.ts", "src/lib/bambu/**/*.ts", "src/app/components/settings-bambu.tsx", "src/app/components/hermes/bambu-print-card.tsx", "src/app/components/hermes/generative-ui-renderer.tsx", "src/app/api/hermes/connections/bambu/**/*.ts", "src/app/api/hermes/tools/bambu/route.ts"],
+  "exclude": ["node_modules", "scripts", "third-party", ".tmp-bambu-upstream"]
+}

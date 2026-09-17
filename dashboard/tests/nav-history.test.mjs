@@ -8,6 +8,7 @@ import {
   recordVisit,
   resolveBackHref,
   subscribeToTrail,
+  withProfileReturnTo,
 } from "../src/lib/nav-history.ts";
 
 const ORIGIN = "http://localhost:3000";
@@ -191,16 +192,42 @@ test("garden chat leaves to the dashboard with a single native navigation", () =
   assert.doesNotMatch(gardenChat, /<Link\s+href="\/dashboard"/);
 });
 
-test("the profile page leaves to the dashboard rather than following the trail", () => {
-  // A person page is reached from the profile's own member list, so deferring
-  // to the trail makes the two each other's back target as soon as the
-  // browser's back button returns the user without unwinding it.
+test("Profile returns to its source page, including the New tab launcher", () => {
   const profile = fs.readFileSync(
     new URL("../src/app/profile/profile-client.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(profile, /<BackLink[^>]*fallbackHref="\/dashboard"[^>]*\sfixed\b/);
+  assert.doesNotMatch(profile, /<BackLink[^>]*\sfixed\b/);
+  for (const source of ['/new-tab', '/plan?view=calendar', '/gardens/plants?note=roses']) {
+    trail(source, '/profile', '/profile?tab=knowledge');
+    assert.equal(resolveBackHref('/profile?tab=knowledge', '/dashboard'), source);
+  }
+});
+
+test("a fresh Profile tab retains its source through reloads and Knowledge tab changes", () => {
+  trail();
+  const source = '/gardens/plants?note=roses#heading';
+  const href = withProfileReturnTo('/profile', source);
+  recordVisit(href);
+  assert.equal(resolveBackHref(href, '/dashboard'), source);
+  assert.equal(resolveBackHref(`${href}&tab=knowledge`, '/dashboard'), source);
+  assert.equal(backLabelFor(source, 'Back'), 'Back to workspace');
+  assert.equal(backLabelFor('/new-tab', 'Back'), 'Back to new tab');
+  // A browser may copy the opener's session storage into the new tab.
+  recordVisit('/calendar');
+  recordVisit(href);
+  assert.equal(resolveBackHref(href, '/dashboard'), source);
+});
+
+test("Profile return links reject external, auth, malformed and self destinations", () => {
+  trail();
+  for (const source of ['https://example.com/', '//example.com/', '/auth/login', '/api/profile', 'javascript:alert(1)', '/profile?tab=knowledge']) {
+    assert.equal(withProfileReturnTo('/profile', source), '/profile');
+    assert.equal(resolveBackHref(`/profile?returnTo=${encodeURIComponent(source)}`, '/dashboard'), '/dashboard');
+  }
+  assert.equal(withProfileReturnTo('/plan', '/new-tab'), '/plan');
+  assert.equal(withProfileReturnTo('https://example.com/profile', '/new-tab'), 'https://example.com/profile');
 });
 
 test("page navigation retains the current screen and uses only the global progress bar", () => {

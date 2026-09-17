@@ -90,9 +90,19 @@ export function describeError(error: unknown): { status: number; body: Record<st
   // with a 4xx/5xx numeric status); the messages these throw are user-safe
   // ("Unauthorized", "Cluster not found"), and we cap length as a safeguard.
   if (error instanceof Error) {
-    const status = (error as Error & { status?: unknown }).status;
+    const { status, code } = error as Error & { status?: unknown; code?: unknown };
     if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) {
-      return { status, body: { error: error.message.slice(0, 200) } };
+      // A typed error that also names its code is a deliberate, field-level
+      // message for the caller (e.g. every invalid visualizer field), so it
+      // gets room; an untyped status-only error keeps the short cap.
+      const limit = typeof code === "string" && code ? 1_500 : 200;
+      return {
+        status,
+        body: {
+          error: error.message.slice(0, limit),
+          ...(typeof code === "string" && code ? { code } : {}),
+        },
+      };
     }
   }
   // Unexpected messages and stacks may contain private paths, loopback URLs,

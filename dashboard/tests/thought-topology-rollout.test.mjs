@@ -15,7 +15,12 @@ fs.mkdirSync(process.env.QUARTZ_CONTENT_PATH, { recursive: true });
 await import("../scripts/learn-worker-import-hook.mjs");
 const { ensureThoughtTopologySchema } =
   await import("../src/lib/thought-topology/schema.ts");
-const { invalidateThoughtTopologyAfterMutation, resubmitQueuedThoughtTopologyJob } =
+const {
+  invalidateThoughtTopologyAfterMutation,
+  resubmitQueuedThoughtTopologyJob,
+  readPathRepairDelayMs,
+  READ_PATH_REPAIR_BACKOFF_MS,
+} =
   await import("../src/lib/thought-topology/state.ts");
 
 function fixtureDatabase() {
@@ -23,6 +28,7 @@ function fixtureDatabase() {
   database.exec(`
     CREATE TABLE users (id INTEGER PRIMARY KEY);
     INSERT INTO users (id) VALUES (1);
+    CREATE TABLE hermes_user_settings (user_id INTEGER PRIMARY KEY, composer_switches TEXT);
     CREATE TABLE clusters (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -33,6 +39,41 @@ function fixtureDatabase() {
   `);
   return database;
 }
+
+test("paused topology records mutations without dispatching, and only manual retries bypass the preference", async () => {
+  const database = fixtureDatabase();
+  ensureThoughtTopologySchema(database);
+  database.prepare("INSERT INTO clusters (user_id, name, slug) VALUES (1, 'Paused', 'paused')").run();
+  database.prepare("INSERT INTO hermes_user_settings VALUES (1, ?)")
+    .run(JSON.stringify({ thoughtTopologyAutoUpdate: false }));
+  const submissions = [];
+  const options = { database, submit: async (job) => { submissions.push(job); return { snapshot: { jobId: 'job_manual' } }; } };
+  for (const reason of ['edit', 'publish', 'delete']) {
+    const result = await invalidateThoughtTopologyAfterMutation('paused', reason, options);
+    assert.equal(result.queueJobId, 0);
+  }
+  assert.equal(database.prepare("SELECT thought_topology_revision AS revision FROM clusters").get().revision, 3);
+  assert.equal(database.prepare("SELECT count(*) AS count FROM thought_topology_jobs").get().count, 0);
+  assert.equal(submissions.length, 0);
+
+  await invalidateThoughtTopologyAfterMutation('paused', 'Manual update', { ...options, manual: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].revision, 4);
+
+  database.prepare("UPDATE thought_topology_jobs SET runtime_job_id = NULL").run();
+  assert.equal(await resubmitQueuedThoughtTopologyJob('paused', { ...options, minimumAgeMs: 0 }), false);
+  assert.equal(submissions.length, 1);
+  assert.equal(await resubmitQueuedThoughtTopologyJob('paused', { ...options, minimumAgeMs: 0, manual: true }), true);
+  assert.equal(submissions.length, 2);
+
+  database.prepare("UPDATE thought_topology_jobs SET status = 'done'").run();
+  database.prepare("UPDATE hermes_user_settings SET composer_switches = ?")
+    .run(JSON.stringify({ thoughtTopologyAutoUpdate: true }));
+  await invalidateThoughtTopologyAfterMutation('paused', 'edit after re-enabling', options);
+  assert.equal(submissions.length, 3);
+  database.close();
+});
 
 test("installing topology schema preserves pre-feature Gardens and defaults future Gardens on", () => {
   const database = fixtureDatabase();
@@ -329,21 +370,24 @@ test("canonical creation is explicit and disabled API/preview paths stay legacy 
   const disabledReturn = apiSource.indexOf('enabled: false, mode: "links"');
   const repairQueue = apiSource.indexOf("await queueRebuildForStoredTopology(");
   assert.ok(disabledReturn > 0 && repairQueue > disabledReturn);
-  // Passive reads react to Markdown drift and repair legacy partial snapshots.
-  // Scoring changes still do not cause a no-content reconstruction loop.
+  // Passive reads react to Markdown drift and repair legacy partial snapshots
+  // and pre-provenance scoring. Every one of those triggers reproduces itself
+  // until a build succeeds, so each read-path queue site must sit behind the
+  // failure backoff: without it a Garden whose builds fail (2026-09-10:
+  // 4,000+ rows for one Garden in three days) relaunched a worker every poll.
   assert.match(apiSource, /!thoughtTopologyHasCompleteConnections\(topology\)/);
-  assert.match(
-    apiSource,
-    /contentFingerprint !== gardenContentFingerprint\(gardenDir\)[\s\S]{0,400}if \(!reason\) return false;[\s\S]{0,160}invalidateThoughtTopologyAfterMutation\(cluster\.slug, reason\)/,
-  );
-  assert.doesNotMatch(apiSource, /scoringVersionOrdinal|pendingExplanations/);
+  // Drift and paused reads are exercised against stored artifacts in the API tests.
+  assert.match(apiSource, /function readPathRepairDue\([\s\S]{0,300}readPathRepairDelayMs\(cluster\.id/);
+  assert.match(apiSource, /async function queueRebuildForStoredTopology\([\s\S]{0,200}\{\r?\n\s*if \(!readPathRepairDue\(/);
+  assert.match(apiSource, /async function queueFirstBuild\([\s\S]{0,120}\{\r?\n\s*if \(!readPathRepairDue\(/);
+  assert.doesNotMatch(apiSource, /pendingExplanations/);
   assert.match(
     previewSource,
     /cluster\.thought_topology_enabled === 1 \? 'thought-topology' : 'links'/,
   );
   assert.match(
     publishSource,
-    /if \(options\.gardenSlug\)[\s\S]{0,180}invalidateThoughtTopologyAfterMutation/,
+    /if \(options\.gardenSlug\)[\s\S]{0,400}invalidateThoughtTopologyAfterMutation/,
   );
   assert.doesNotMatch(
     publishSource,
@@ -355,4 +399,45 @@ test.after(() => {
   // The imported dashboard singleton may still hold its isolated SQLite file
   // open on Windows. The sentinel content itself is intentionally retained only
   // under the OS temp root and never points at a real Garden.
+});
+
+test("read-path repairs back off while builds keep failing, and reset on any other outcome", () => {
+  const database = fixtureDatabase();
+  ensureThoughtTopologySchema(database);
+  database
+    .prepare("INSERT INTO clusters (user_id, name, slug) VALUES (1, 'Failing', 'failing-garden')")
+    .run();
+  const minute = 60_000;
+  const failedAt = Date.UTC(2026, 8, 10, 17, 1, 7);
+  const stamp = (ms) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const insert = database.prepare(
+    `INSERT INTO thought_topology_jobs (cluster_id, revision, reason, status, updated_at)
+     VALUES (1, ?, 'repair', ?, ?)`,
+  );
+
+  assert.equal(readPathRepairDelayMs(1, database, failedAt), 0, "no history: repair at once");
+
+  insert.run(1, "failed", stamp(failedAt));
+  assert.equal(readPathRepairDelayMs(1, database, failedAt), 0, "one dead worker is replaced at once");
+
+  insert.run(2, "failed", stamp(failedAt));
+  assert.equal(readPathRepairDelayMs(1, database, failedAt + 30_000), 2 * minute - 30_000, "the second identical failure waits");
+  assert.equal(readPathRepairDelayMs(1, database, failedAt + 2 * minute), 0);
+
+  insert.run(3, "failed", stamp(failedAt));
+  assert.equal(readPathRepairDelayMs(1, database, failedAt), 5 * minute, "third failure in a row");
+
+  for (let revision = 4; revision <= 9; revision += 1) insert.run(revision, "failed", stamp(failedAt));
+  assert.equal(
+    readPathRepairDelayMs(1, database, failedAt),
+    READ_PATH_REPAIR_BACKOFF_MS[READ_PATH_REPAIR_BACKOFF_MS.length - 1],
+    "the ceiling holds however long the run of failures",
+  );
+
+  insert.run(10, "done", stamp(failedAt));
+  assert.equal(readPathRepairDelayMs(1, database, failedAt), 0, "a completed build resets the backoff");
+  insert.run(11, "failed", stamp(failedAt));
+  insert.run(12, "failed", stamp(failedAt));
+  assert.equal(readPathRepairDelayMs(1, database, failedAt), 2 * minute, "and the schedule starts over");
+  database.close();
 });

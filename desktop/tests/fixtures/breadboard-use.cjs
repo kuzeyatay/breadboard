@@ -25,9 +25,30 @@ const pageHtml = title => `<!doctype html><title>${title}</title><body style="ba
 
 app.whenReady().then(async () => {
   const { useBreadboard } = require(path.join(dir, 'transport.cjs'));
+  let preferences = { readAloudNotifications: false, alwaysOnVoiceAssistant: false };
+  let preferenceWrites = 0;
+  let rejectPreferenceSave = false;
   const server = http.createServer((req, res) => {
     if (req.url === '/api/auth/session') {
       res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ user: { id: '7' } })); return;
+    }
+    if (req.url === '/api/profile/voice-assistant') {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'PUT') {
+        let body = ''; req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          if (rejectPreferenceSave) { res.statusCode = 503; res.end(JSON.stringify({ error: 'Voice settings could not save.' })); return; }
+          preferences = JSON.parse(body); preferenceWrites++; res.end(JSON.stringify({ preferences }));
+        });
+      } else res.end(JSON.stringify({ preferences }));
+      return;
+    }
+    if (req.url === '/profile-controls.js') {
+      res.setHeader('Content-Type', 'text/javascript'); res.end(fs.readFileSync(path.join(dir, 'profile-controls.js'))); return;
+    }
+    if (req.url === '/profile') {
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<!doctype html><title>Profile</title><div id="profile-controls"></div><script src="/profile-controls.js"></script>'); return;
     }
     res.setHeader('Content-Type', 'text/html'); res.end(pageHtml(req.url));
   });
@@ -99,14 +120,48 @@ app.whenReady().then(async () => {
   assert.equal(browser.url, 'https://www.google.com/search?q=bread%20%26%20butter');
   const snap = await call({ action: 'snapshot', targetId: browser.targetId });
   assert.ok(!JSON.stringify(snap).includes('never-expose-me'));
-  // A browser task may start beside a tab that has since moved into the
-  // background. Capture must activate the observed target in the same request.
+  // Once the user leaves a tab, repeated agent inspections must leave their
+  // selected page in front. Only an explicit activation may switch it back.
   await call({ action: 'activate', targetId: dashboard.targetId });
   await assert.rejects(call({ action: 'click', targetId: browser.targetId, snapshotId: snap.snapshotId,
     ref: snap.elements.find(e => e.name === 'Test button').ref }), /Activate/);
-  const reactivated = await call({ action: 'snapshot', targetId: browser.targetId });
+  for (const action of ['snapshot', 'screenshot', 'snapshot']) {
+    if (action === 'screenshot') {
+      await assert.rejects(call({ action, targetId: browser.targetId }), /background.*snapshot/);
+    } else {
+      const inspected = await call({ action, targetId: browser.targetId });
+      assert.ok(inspected.elements.some(e => e.name === 'Test button'));
+      assert.equal(inspected.active, false);
+    }
+    assert.ok((await call({ action: 'state' })).targets.some(t => t.targetId === dashboard.targetId && t.active),
+      `${action} of a previous tab must preserve the user's selection`);
+  }
+  await call({ action: 'activate', targetId: browser.targetId });
   assert.ok((await call({ action: 'state' })).targets.some(t => t.targetId === browser.targetId && t.active));
-  assert.ok(reactivated.elements.some(e => e.name === 'Test button'));
+  const backgroundApp = await call({ action: 'snapshot', targetId: dashboard.targetId });
+  assert.equal(backgroundApp.active, false);
+  assert.ok((await call({ action: 'state' })).targets.some(t => t.targetId === browser.targetId && t.active));
+
+  // A snapshot already in flight must also tolerate the user leaving its tab.
+  const browserContents = manager.breadboardUseTargets().find(t => t.contents.id === browser.targetId).contents;
+  const execute = browserContents.executeJavaScript;
+  let releaseSnapshot;
+  browserContents.executeJavaScript = async function (...args) {
+    const result = await execute.apply(this, args);
+    if (args[0].includes('"action":"snapshot"')) {
+      assert.equal(args[1], false, 'Passive inspection must not grant page user activation');
+      await new Promise(resolve => { releaseSnapshot = resolve; });
+    }
+    return result;
+  };
+  const pendingSnapshot = call({ action: 'snapshot', targetId: browser.targetId });
+  await until(() => releaseSnapshot);
+  browserContents.executeJavaScript = execute;
+  manager.handleCommand(window.webContents, { type: 'activate', id: dashboard.tabId });
+  releaseSnapshot();
+  assert.equal((await pendingSnapshot).active, false);
+  assert.ok((await call({ action: 'state' })).targets.some(t => t.targetId === dashboard.targetId && t.active));
+  await call({ action: 'activate', targetId: browser.targetId });
   await assert.rejects(call({ action: 'click', targetId: browser.targetId, snapshotId: snap.snapshotId,
     ref: snap.elements.find(e => e.name === 'Test button').ref }), /expired/);
   const ready = await call({ action: 'snapshot', targetId: browser.targetId });
@@ -140,6 +195,78 @@ app.whenReady().then(async () => {
   await call({ action: 'activate', targetId: browser.targetId });
   const afterClose = await call({ action: 'close', targetId: browser.targetId });
   assert.ok(!afterClose.targets.some(t => t.targetId === browser.targetId));
+
+  await call({ action: 'open', surface: 'profile' });
+  const profile = await until(async () => (await call({ action: 'state' })).targets.find(t => t.active && !t.loading && t.url === origin + '/profile'));
+  const profileSnapshot = async () => {
+    const first = await call({ action: 'snapshot', targetId: profile.targetId });
+    if (first.nextOffset === null) return first;
+    return call({ action: 'snapshot', targetId: profile.targetId, offset: first.nextOffset });
+  };
+  let profileState = await until(async () => {
+    const snapshot = await profileSnapshot();
+    return snapshot.elements.some(e => e.name === 'Read aloud notifications' && !e.disabled) && snapshot;
+  });
+  assert.ok(profileState.totalElements > 300);
+  const setting = name => profileState.elements.find(e => e.name === name);
+  assert.equal(setting('Read aloud notifications').checked, false);
+  assert.equal(setting('Always on voice assistant').checked, false);
+  assert.equal(setting('Read aloud notifications').section, 'Voice assistant');
+  assert.match(setting('Read aloud notifications').description, /Read new notifications/);
+  const setSwitch = async (name, checked) => {
+    const result = await call({ action: 'set_checked', targetId: profile.targetId, snapshotId: profileState.snapshotId, ref: setting(name).ref, checked });
+    profileState = await until(async () => {
+      const snapshot = await profileSnapshot();
+      return snapshot.elements.some(e => e.name === name && e.checked === checked && !e.disabled) && snapshot;
+    });
+    return result;
+  };
+  assert.equal((await setSwitch('Read aloud notifications', true)).changed, true);
+  assert.equal(preferences.readAloudNotifications, true);
+  const writesAfterEnable = preferenceWrites;
+  assert.equal((await setSwitch('Read aloud notifications', true)).changed, false);
+  assert.equal(preferenceWrites, writesAfterEnable, 'An already enabled setting must not be clicked/saved again');
+  await setSwitch('Read aloud notifications', false);
+  assert.equal(preferences.readAloudNotifications, false);
+  await setSwitch('Always on voice assistant', true);
+  assert.equal(preferences.alwaysOnVoiceAssistant, true);
+  const profileContents = manager.breadboardUseTargets().find(t => t.contents.id === profile.targetId).contents;
+  await profileContents.loadURL(origin + '/profile');
+  profileState = await until(async () => {
+    const snapshot = await profileSnapshot();
+    return snapshot.elements.some(e => e.name === 'Always on voice assistant' && e.checked && !e.disabled) && snapshot;
+  });
+  await setSwitch('Always on voice assistant', false);
+  rejectPreferenceSave = true;
+  await call({ action: 'set_checked', targetId: profile.targetId, snapshotId: profileState.snapshotId, ref: setting('Read aloud notifications').ref, checked: true });
+  profileState = await until(async () => {
+    const snapshot = await profileSnapshot();
+    return snapshot.text.includes('Voice settings could not save.') && snapshot;
+  });
+  assert.equal(setting('Read aloud notifications').checked, false);
+  assert.equal(preferences.readAloudNotifications, false, 'A failed save must not be reported as an enabled switch');
+  rejectPreferenceSave = false;
+  for (const name of ['Native checkbox', 'Custom switch']) {
+    await setSwitch(name, true); await setSwitch(name, false);
+  }
+  for (const [name, error] of [['Blocked switch', /disabled/], ['Read-only switch', /read-only/]]) {
+    await assert.rejects(call({ action: 'set_checked', targetId: profile.targetId, snapshotId: profileState.snapshotId, ref: setting(name).ref, checked: true }), error);
+  }
+  const range = setting('Questions per day');
+  assert.deepEqual([range.min, range.max, range.step], ['1', '50', '1']);
+  await call({ action: 'fill', targetId: profile.targetId, snapshotId: profileState.snapshotId, ref: range.ref, text: '12' });
+  profileState = await profileSnapshot(); assert.match(profileState.text, /Daily limit: 12/);
+  await assert.rejects(call({ action: 'fill', targetId: profile.targetId, snapshotId: profileState.snapshotId, ref: setting('Delivery channel').ref, text: 'whatsapp' }), /enabled/);
+  await call({ action: 'fill', targetId: profile.targetId, snapshotId: profileState.snapshotId, ref: setting('Delivery channel').ref, text: 'telegram' });
+  profileState = await profileSnapshot(); assert.match(profileState.text, /Channel: telegram/);
+  // Settings must remain reachable when the Profile tab-navigation switch is off.
+  manager.setEnabled(false);
+  const untabbedApp = manager.breadboardUseTargets().find(t => t.active && t.kind === 'app');
+  await until(() => !untabbedApp.contents.isLoading());
+  await untabbedApp.contents.loadURL(origin + '/dashboard');
+  await call({ action: 'open', surface: 'settings' });
+  assert.ok((await call({ action: 'state' })).targets.some(t => t.active && t.url === origin + '/profile'));
+  assert.equal(manager.isEnabled, false, 'Opening Profile must not turn navigation back on');
   void bridge.close();
   assert.equal(fs.existsSync(path.join(dir, 'breadboard-use.json')), false);
   console.log('Breadboard use: search, Garden, refs, fill, click, scroll, screenshot, navigate, voice close, tab close, account/auth checks passed.');

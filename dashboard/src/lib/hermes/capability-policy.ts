@@ -1,5 +1,7 @@
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { HermesSurface } from "./config.ts";
+import { requiresCodingOutcome } from "./task-plan.ts";
+import { requestedActions, requestProse } from "./request-language.ts";
 
 export type CapabilityMode =
   | "knowledge"
@@ -48,10 +50,6 @@ export interface CapabilityGateInput {
   now?: Date;
 }
 
-const IMPLEMENTATION_VERB =
-  /\b(add|build|change|code|create|delete|develop|edit|fix|implement|integrate|migrate|modify|patch|refactor|remove|repair|replace|scaffold|update|wire)\b/i;
-const IMPLEMENTATION_ARTIFACT =
-  /\b(api|app|application|backend|build|button|class|cli|code|component|config(?:uration)?|css|database|dependency|endpoint|feature|file|frontend|function|handler|interface|library|migration|module|package|page|parser|popup|repository|route|schema|script|server|service|software|source|style|test|typescript|ui|website)\b/i;
 const TECHNICAL_MATERIAL =
   /\b(api|architecture|build|code|component|config(?:uration)?|database|dependency|error|files?|function|git|implementation|library|log|module|package|palette|repository|route|schema|source|stack trace|test|typescript)\b/i;
 const READ_INTENT =
@@ -286,24 +284,20 @@ export function decideCapabilityMode(
   input: CapabilityGateInput,
 ): CapabilityDecision {
   const now = input.now ?? new Date();
-  const requestedOutcome = outcomeWithoutCapabilityTokens(
+  const requestedOutcome = requestProse(outcomeWithoutCapabilityTokens(
     input.requestedOutcome,
-  ).slice(0, 4_000);
+  )).slice(0, 4_000);
   const root = safeAuthorizedRoot(input.authorizedRoot);
   const authorizedPathPatterns = root
     ? implementationPathPatterns(requestedOutcome, root)
     : [];
   const explicitNoMutation = EXPLICIT_NO_MUTATION.test(requestedOutcome);
-  const implementationIntent =
-    IMPLEMENTATION_VERB.test(requestedOutcome) &&
-    IMPLEMENTATION_ARTIFACT.test(requestedOutcome) &&
-    !explicitNoMutation;
+  const implementationIntent = requiresCodingOutcome(requestedOutcome);
   const clearlyNonImplementation =
     (NON_IMPLEMENTATION_INTENT.test(requestedOutcome) &&
       !implementationIntent) ||
-    KNOWLEDGE_ONLY_INTENT.test(requestedOutcome) ||
-    explicitNoMutation;
-  const highImpactIntent = HIGH_IMPACT.test(requestedOutcome);
+    (!implementationIntent && (KNOWLEDGE_ONLY_INTENT.test(requestedOutcome) || explicitNoMutation));
+  const highImpactIntent = requestedActions(requestedOutcome).some((action) => HIGH_IMPACT.test(action.verb));
   const implementationCapableSurface =
     input.surface === "dashboard_terminal" && input.userId !== null;
 

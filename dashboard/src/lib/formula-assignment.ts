@@ -1448,6 +1448,12 @@ export function applyFormulaAssignmentPlanToUnits(args: {
           teachingGoal: assignment.teachingGoal ?? "Teach the verified source formula.",
           termsToDefine: assignment.termsToDefine ?? [],
           placement: assignment.placement ?? placementForRole(unit.role),
+          // Code-repaired assignments carry no verified derivation route, so
+          // they stay "asserted_in_source": the page says the result is taken
+          // as given rather than implying a derivation nobody checked. Only the
+          // model-authored contract can promote a formula to "derived".
+          grounding: "asserted_in_source" as const,
+          derivableFrom: [],
         };
       }),
       ...preserved,

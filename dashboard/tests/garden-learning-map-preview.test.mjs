@@ -15,7 +15,10 @@ test("the learning map owns the single Explore action", () => {
 
   assert.match(graph, />\s*Explore\s*</);
   assert.match(graph, /aria-label="Explore"/);
-  assert.match(graph, /import LinkContextMenu from ['"]\.\/link-context-menu['"]/);
+  assert.match(
+    graph,
+    /import LinkContextMenu from ['"]\.\/link-context-menu['"]/,
+  );
   assert.match(
     graph,
     /<LinkContextMenu\s+href=\{graphHref\(clusterSlug\)\}\s+label="Explore learning map"\s*>[\s\S]*?aria-label="Explore"[\s\S]*?<\/LinkContextMenu>/,
@@ -113,7 +116,7 @@ test("the Quartz preview preserves the browser host and reports real canvas read
   // Garden, folder anchors, a few high-value pages, and the strongest bridges.
   assert.match(
     quartzGraph,
-    /return renderThoughtTopology\(graph, fullSlug, cfg, topology/,
+    /await renderThoughtTopology\(graph, fullSlug, cfg, topology/,
   );
   const topologyLayout = read(
     "../quartz/quartz/components/scripts/thoughtTopologyLayout.ts",
@@ -157,8 +160,14 @@ test("the Learning Map refreshes from server state even when the workspace is id
   assert.match(graph, /window\.setInterval\(checkFreshness/);
   assert.match(graph, /window\.addEventListener\('focus', checkFreshness\)/);
   assert.match(graph, /window\.addEventListener\('online', checkFreshness\)/);
-  assert.match(graph, /document\.addEventListener\('visibilitychange', checkWhenVisible\)/);
-  assert.match(graph, /refresh: hashString\(`\$\{refreshKey\}:\$\{serverRefreshKey\}`\)/);
+  assert.match(
+    graph,
+    /document\.addEventListener\('visibilitychange', checkWhenVisible\)/,
+  );
+  assert.match(
+    graph,
+    /refresh: hashString\(`\$\{refreshKey\}:\$\{serverRefreshKey\}`\)/,
+  );
   assert.match(
     graph,
     /src=\{quartzLease\.ready && previewFreshnessReady \? quartzPreviewUrl : undefined\}/,
@@ -195,7 +204,7 @@ test("library pages bridge each scoped Garden into one aggregate Thought Topolog
   );
 });
 
-test("Thought Topology rebuilds stay backgrounded and the right sidebar is folder text only", () => {
+test("Thought Topology rebuilds stay backgrounded and the sidebar keeps its graph layers", () => {
   const quartzGraph = read(
     "../quartz/quartz/components/scripts/graph.inline.ts",
   );
@@ -210,21 +219,24 @@ test("Thought Topology rebuilds stay backgrounded and the right sidebar is folde
   assert.match(quartzGraph, /requestedTopologyResult\.mode === "unavailable"/);
   assert.match(quartzGraph, /window\.setTimeout\(poll, TOPOLOGY_POLL_MS\)/);
   assert.match(quartzGraph, /await renderGraph\(graph, fullSlug\)/);
-  assert.match(quartzGraph, /graphRoot\.dataset\.activeMode = "topology-pending"/);
+  assert.match(
+    quartzGraph,
+    /graphRoot\.dataset\.activeMode = "topology-pending"/,
+  );
   assert.match(quartzGraph, /topology\.sourceRevision !== "pending"/);
   assert.match(
     topologyRenderer,
-    /folderLabelsOnly = !isGlobalGraph && Boolean\(graph\.closest\("\.right\.sidebar"\)\)/,
+    /compactSidebar = !isGlobalGraph && Boolean\(graph\.closest\("\.right\.sidebar"\)\)/,
   );
-  assert.match(topologyRenderer, /nodeLayer\.visible = !folderLabelsOnly/);
-  assert.match(topologyRenderer, /linkLayer\.visible = !folderLabelsOnly/);
+  assert.doesNotMatch(topologyRenderer, /(?:nodeLayer|linkLayer)\.visible =/);
+  assert.match(
+    topologyRenderer,
+    /hierarchyLayer\.visible = settings\.showHierarchy/,
+  );
   assert.match(topologyRenderer, /preference: "webgl"/);
   assert.match(topologyRenderer, /webglcontextlost/);
   assert.match(topologyRenderer, /scheduleRecovery/);
   assert.match(topologyRenderer, /hideCallout\(\)/);
-  assert.match(
-    topologyRenderer,
-    /folderLabelsOnly && node\.kind !== "folder"/,
-  );
+  assert.match(topologyRenderer, /compactSidebar && node\.kind !== "folder"/);
   assert.doesNotMatch(topologyRenderer, /waiting for its short explanation/);
 });

@@ -131,7 +131,7 @@ test("chat-surface rows use exact packaged UI entry points and transport identit
   }
   assert.match(workflows, /Ask anything across your gardens/u);
   assert.match(workflows, /Ask about your documents/u);
-  assert.match(workflows, /Ask about a topic, page, source, or link/u);
+  assert.ok(workflows.includes("getByPlaceholder('Ask anything', { exact: true })"));
   assert.match(workflows, /Open Assistant for this page/u);
   assert.match(workflows, /Turn on temporary chat/u);
   assert.match(workflows, /temporary:true/u);

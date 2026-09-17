@@ -559,7 +559,7 @@ test("Terminal permits any download URL and file type only after exact-command a
   );
 });
 
-test("surface broker keeps the permission-gated Terminal on its dedicated interactive surface", () => {
+test("surface broker offers audited commands in authenticated Terminal and Garden chats", () => {
   const terminal = grantFor("dashboard_terminal").allowedTools;
   const garden = grantFor("garden_chat").allowedTools;
   const quartz = grantFor("quartz_ai").allowedTools;
@@ -567,7 +567,7 @@ test("surface broker keeps the permission-gated Terminal on its dedicated intera
   assert.equal(terminal.artifact_create, true);
   assert.equal(terminal.artifact_import, true);
   assert.equal(terminal.artifact_image_generate, true);
-  assert.equal(garden.terminal_execute_command, false);
+  assert.equal(garden.terminal_execute_command, true);
   assert.equal(garden.bash, false);
   assert.equal(garden.artifact_create, true);
   assert.equal(garden.artifact_import, true);
@@ -1204,7 +1204,7 @@ test("a current-turn HTML upload is imported byte-for-byte without a workspace p
       }),
     );
 
-    const artifact = await createArtifactFromUpload({
+    const importInput = {
       userId: 1,
       runtimeSessionId: 20,
       hermesSessionId: "oh_session",
@@ -1219,7 +1219,18 @@ test("a current-turn HTML upload is imported byte-for-byte without a workspace p
       database: fixture.database,
       storageRoot: fixture.storage,
       attachmentStorageRoots: { files: filesRoot },
+    };
+    fixture.database.prepare("UPDATE conversation_messages SET content = ? WHERE id = 120").run(
+      "Use the attached HTML as a reference and write the rest of the page. Add a visual description to the text.",
+    );
+    await assert.rejects(() => createArtifactFromUpload(importInput), {
+      code: "artifact_upload_not_requested",
     });
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM hermes_artifacts").get().count, 0);
+    fixture.database.prepare("UPDATE conversation_messages SET content = ? WHERE id = 120").run(
+      "Save landing.html as an artifact.",
+    );
+    const artifact = await createArtifactFromUpload(importInput);
 
     assert.equal(artifact.status, "ready");
     assert.equal(artifact.kind, "html");

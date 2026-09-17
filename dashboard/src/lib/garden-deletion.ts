@@ -535,11 +535,14 @@ export async function finalizeGardenDeletion(
     if (result.organizationId !== null) {
       refreshOrganizationQuartzIndex(result.userId);
     }
+    // The Garden's source folder is gone, so a build scoped to it renders
+    // nothing there and the publisher drops its published pages.
     await publishQuartzAfterMutation(
       `delete cluster ${result.gardenSlug}`,
       {
         userId: result.userId,
         topologyImpact: "none",
+        scope: [result.gardenSlug],
       },
     );
   } catch (error) {

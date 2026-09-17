@@ -9,7 +9,7 @@
   "scripts": {
     "predev": "node scripts/sync-dev-runtime-manifests.mjs",
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
-    "dev": "npm run build && npm run prepare:native-runtime && node scripts/prepare-hot-dev-runtimes.mjs && npm run prepare:transcription && node scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins && node scripts/dev.mjs",
+    "dev": "npm run build && npm run prepare:native-runtime && node scripts/prepare-hot-dev-runtimes.mjs && npm run prepare:computer-use && npm run prepare:transcription && node scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins && node scripts/dev.mjs",
     "start": "electron .",
     "test": "npm run build && node scripts/run-desktop-tests.mjs",
     "test:build": "tsc -p tsconfig.tests.json",
@@ -22,6 +22,8 @@
     "prepare:solidworks:source": "node scripts/prepare-solidworks-source.mjs",
     "prepare:vlm-ocr": "node scripts/prepare-vlm-ocr-runtime.mjs",
     "prepare:vlm-ocr:offline": "node scripts/prepare-vlm-ocr-runtime.mjs --offline",
+    "prepare:computer-use": "node scripts/prepare-cua-driver-runtime.mjs",
+    "prepare:computer-use:offline": "node scripts/prepare-cua-driver-runtime.mjs --offline",
     "prepare:native-runtime": "node scripts/build-runtime-supervisor.mjs",
     "prepare:runtime-supervisor": "npm run prepare:native-runtime",
     "prepare:app": "node scripts/prepare-app-resources.mjs",

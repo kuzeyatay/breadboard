@@ -111,8 +111,9 @@ test("resending an answer creates a sibling branch in the existing conversation"
   assert.match(branchRuntimeRoute, /forceRecreate: true/);
   assert.match(branchRuntimeRoute, /historyOverride: runtimeMessagesForBranch\(history\)/);
   assert.match(messageRoute, /branchHistory,\s+branchContextId:/);
-  assert.match(turnService, /recentMessages: input\.branchHistory/);
-  assert.match(turnService, /includeConversationState: false/);
+  assert.match(turnService, /const currentConversationMessages\s*=\s*input\.branchHistory\s*\?\?/);
+  assert.match(turnService, /recentMessages: currentConversationMessages/);
+  assert.match(turnService, /includeConversationState: input\.branchHistory === undefined/);
 });
 
 test("branch navigation sits beside the assistant overflow menu", () => {

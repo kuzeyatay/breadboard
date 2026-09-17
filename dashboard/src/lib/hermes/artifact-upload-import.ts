@@ -17,6 +17,7 @@ import { readModelBlob } from "../conversations/model-blob-store.ts";
 import { STORED_FILE_ATTACHMENT_FORMATS } from "../stored-file-attachments.ts";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
 import type { ArtifactKind } from "./artifact-types.ts";
+import { requestsUploadArtifact } from "./artifact-upload-intent.ts";
 import {
   ArtifactStoreError,
   createImportedArtifact,
@@ -57,7 +58,7 @@ function uploadTitle(name: string): string {
 function selectUpload(input: CreateArtifactFromUploadInput): SelectedUpload {
   const database = input.database ?? db;
   const row = database.prepare(`
-    SELECT m.id, m.metadata
+    SELECT m.id, m.content, m.metadata
     FROM conversation_messages m
     JOIN conversations c ON c.id = m.conversation_id
     WHERE m.conversation_id = ?
@@ -68,6 +69,7 @@ function selectUpload(input: CreateArtifactFromUploadInput): SelectedUpload {
     LIMIT 1
   `).get(input.conversationId, input.userId, input.clientMessageId) as {
     id: number;
+    content: string;
     metadata: string | null;
   } | undefined;
   if (!row) {
@@ -121,6 +123,13 @@ function selectUpload(input: CreateArtifactFromUploadInput): SelectedUpload {
       input.attachmentName
         ? `No current-turn upload is named ${JSON.stringify(input.attachmentName)}.`
         : "That attachment index does not exist in the active user message.",
+    );
+  }
+  if (!requestsUploadArtifact(row.content, attachment.name)) {
+    throw new ArtifactStoreError(
+      409,
+      "artifact_upload_not_requested",
+      "This upload is source material for the user's request. Read it through the attachment context or document tools and complete the requested work. Do not import an unchanged copy as an output artifact unless the user asks to save the uploaded file. Use artifact_create or import a newly generated file for the requested output.",
     );
   }
   return { attachment, index, messageId: row.id };

@@ -17,6 +17,8 @@ import {
   humanizerBaseUrl,
   humanizerDevice,
   humanizerMode,
+  humanizerModel,
+  humanizerRevision,
   humanizerServiceSecret,
   humanizerTimeoutMs,
 } from "./config.ts";
@@ -126,7 +128,7 @@ async function call(
   if (!secret) return null;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("timeout")), init.timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   // A browser that went away must not leave a beam search running. The caller's
   // signal is forwarded so the fetch is torn down, and `/cancel` below tells the
   // service to stop between chunks rather than finish the job for nobody.
@@ -135,6 +137,9 @@ async function call(
   else init.signal?.addEventListener("abort", forwardAbort, { once: true });
   try {
     const perform = async () => {
+      // Runtime bounds cold startup separately. Give inference its full budget
+      // only after the on-demand service lease is ready.
+      timer = setTimeout(() => controller.abort(new Error("timeout")), init.timeoutMs);
       const response = await fetch(`${humanizerBaseUrl(env)}${route}`, {
         method: init.method,
         headers: {
@@ -153,9 +158,10 @@ async function call(
       }
       return { status: response.status, body: parsed };
     };
-    return route === "/health"
-      ? await perform()
-      : await withServiceLease("humanizer", "rewrite", perform, env);
+    if (controller.signal.aborted) return { aborted: true };
+    return route === "/humanize"
+      ? await withServiceLease("humanizer", "rewrite", perform, env)
+      : await perform();
   } catch (error) {
     if (error instanceof SupervisorResourceExhaustedError) throw error;
     // A service that is not running is the ordinary case on a machine that
@@ -230,6 +236,54 @@ function parseWarnings(value: unknown): HumanizerWarning[] {
       },
     ];
   });
+}
+
+/**
+ * Agent preflight for an explicit rewrite. Unlike the passive settings health
+ * probe, this wakes the on-demand service before deciding whether it can run.
+ * Both agent tool surfaces must use the same readiness contract.
+ */
+export async function humanizerToolStatus(env: NodeJS.ProcessEnv = process.env) {
+  let health = unreachable("The humanizer is turned off.");
+  const disabled = humanizerMode(env) === "disabled";
+  if (!disabled) {
+    try {
+      health = await withServiceLease("humanizer", "humanize-status", () => humanizerHealth(env), env);
+    } catch (error) {
+      if (error instanceof SupervisorResourceExhaustedError) throw error;
+      health = unreachable("The local rewriter could not be started. Try the rewrite again.");
+    }
+  }
+  const state = disabled
+    ? "disabled"
+    : health.status === "unreachable"
+      ? "unavailable"
+      : health.status === "degraded"
+        ? "error"
+        : health.busy
+          ? "busy"
+          : "ready";
+  return {
+    state,
+    ready: state === "ready",
+    modelId: health.modelId || humanizerModel(env),
+    modelRevision: health.modelRevision || humanizerRevision(env),
+    requestedDevice: humanizerDevice(env),
+    device: health.device,
+    busy: health.busy,
+    modelInstalled: health.modelInstalled,
+    summary: state === "ready"
+      ? health.modelInstalled
+        ? `The local rewriter is ready (${health.modelId} on ${health.device}). Call humanize_text with the passage.`
+        : "The local rewriter is ready. Call humanize_text with the passage; it will download and load the model on first use."
+      : state === "disabled"
+        ? "Local rewriting is switched off in this installation's settings."
+        : state === "busy"
+          ? "The local rewriter is already rewriting something. Wait a moment and try once more."
+          : state === "error"
+            ? "The local rewriter could not load its model. Try the rewrite again."
+            : "The local rewriter could not be started. Try the rewrite again.",
+  };
 }
 
 function terminalRewrittenText(value: unknown): boolean {

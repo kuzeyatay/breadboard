@@ -54,6 +54,12 @@ const enabledTools = (grant) =>
     .filter(([, on]) => on)
     .map(([tool]) => tool);
 
+test("image inspection is granted for owned chat attachments, never isolated sessions", () => {
+  assert.equal(broker("Solve these attached questions").allowedTools.attachment_image, true);
+  assert.equal(broker("Read this image", { surface: "garden_chat" }).allowedTools.attachment_image, true);
+  assert.equal(broker("Read this image", { surface: "quartz_ai", isolated: true }).allowedTools.attachment_image, false);
+});
+
 const allows = (grant, permission, pattern) =>
   grant.permissionRules.some(
     (rule) =>

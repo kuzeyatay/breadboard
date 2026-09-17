@@ -5,6 +5,39 @@ export function looksLikeBrowserAddress(value: string): boolean {
   return ADDRESS_PATTERN.test(value.trim());
 }
 
+export interface SearchSuggestion {
+  value: string;
+  label: string;
+  detail?: string;
+  source: "google" | "history";
+}
+
+export function searchSuggestions(
+  query: string,
+  recentSearches: readonly string[],
+  google: readonly string[],
+): SearchSuggestion[] {
+  const value = query.trim();
+  const normalized = value.toLocaleLowerCase();
+  const remembered: SearchSuggestion[] = recentSearches
+    .filter((entry) => entry.toLocaleLowerCase().includes(normalized))
+    .map((entry) => ({ value: entry, label: entry, source: "history" }));
+  const predictions: SearchSuggestion[] = (value && !looksLikeBrowserAddress(value) ? google : [])
+    .map((entry) => ({ value: entry, label: entry, source: "google" }));
+  if (value && !looksLikeBrowserAddress(value) && !predictions.some((entry) => entry.value.toLocaleLowerCase() === normalized)) {
+    predictions.unshift({ value, label: value, detail: "Search with Google", source: "google" });
+  }
+  const seen = new Set<string>();
+  return [...remembered, ...predictions]
+    .filter((entry) => {
+      const key = entry.value.toLocaleLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
+}
+
 /** Return only a term that Breadboard actually sent to search. */
 export function recentSearchFromInput(input: string): string | null {
   const clean = input.trim().slice(0, 300);

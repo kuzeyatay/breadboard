@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useGardenTitle } from '@/app/components/use-garden-title';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
 import { Toaster, useToast } from '@/app/components/toast';
 import { quartzUrlFromBase, quartzUrlWithAppTheme } from '@/lib/quartz-url';
@@ -16,8 +17,11 @@ import {
   quartzTopologyInvestigationRequest,
   type QuartzTopologyInvestigationRequest,
 } from '@/lib/quartz-topology-investigation';
+import { useCanonicalQuartzDocument } from '../use-canonical-quartz-document';
 import { useCanonicalGardenFolders } from '../use-canonical-garden-folders';
 import { useQuartzViewLease } from '../use-quartz-view-lease';
+import { useQuartzReaderLayout } from '../use-quartz-reader-layout';
+import GardenMarkdownArtifacts from '../garden-markdown-artifacts';
 
 interface Props {
   clusterSlug: string;
@@ -44,6 +48,7 @@ interface ActiveMarkdown {
 }
 
 interface QuartzMessage {
+  action?: string;
   type?: string;
   open?: boolean;
   slug?: string;
@@ -157,6 +162,7 @@ export default function GardenClient({
   initialChatOpen = false,
   trackPublicView = false,
 }: Props) {
+  useGardenTitle(clusterSlug, clusterName);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { toasts, dismissToast } = useToast();
   const quartzDocumentReadyRef = useRef(false);
@@ -165,15 +171,14 @@ export default function GardenClient({
   const quartzLease = useQuartzViewLease(true, quartzViewId);
   const [activeCluster, setActiveCluster] = useState(clusterSlug);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(() =>
-    note ? { cluster: clusterSlug, slug: note, loading: true } : null,
+    note && isMarkdownDocumentSlug(note, clusterSlug)
+      ? { cluster: clusterSlug, slug: note, loading: true } : null,
   );
   const [assistantSelection, setAssistantSelection] = useState<QuartzAssistantSelectionRequest | null>(null);
   const [topologyInvestigation, setTopologyInvestigation] =
     useState<QuartzTopologyInvestigationRequest | null>(null);
   const [assistantInlineStop, setAssistantInlineStop] = useState<QuartzInlineAnswerStopRequest | null>(null);
   const [markdownEditorOpen, setMarkdownEditorOpen] = useState(false);
-  const activeMarkdownCluster = activeMarkdown?.cluster;
-  const activeMarkdownSlug = activeMarkdown?.slug;
   const quartzOrigin = useMemo(() => {
     try {
       return new URL(quartzBaseUrl).origin;
@@ -181,6 +186,7 @@ export default function GardenClient({
       return '';
     }
   }, [quartzBaseUrl]);
+  const { readerLayoutStyle, setAssistantWidth } = useQuartzReaderLayout(iframeRef, quartzOrigin);
 
   function postInlineAnswer(update: QuartzInlineAnswerUpdate) {
     iframeRef.current?.contentWindow?.postMessage(
@@ -221,6 +227,7 @@ export default function GardenClient({
           return;
         const requestId = data.requestId;
         void fetch(`/api/thought-topology?clusterSlug=${encodeURIComponent(clusterSlug)}`, {
+          method: data.action === 'retry' ? 'POST' : 'GET',
           credentials: 'same-origin',
           cache: 'no-store',
         })
@@ -286,11 +293,22 @@ export default function GardenClient({
       }
 
       if (data.type === 'second-brain:navigate' && data.slug) {
+        if (!fromQuartz) return;
         setMarkdownEditorOpen(false);
         const cluster = clusterFromQuartzSlug(data.slug, clusterSlug);
         const slug = noteSlugFromQuartzSlug(data.slug, cluster);
         const nextActiveCluster = cluster || clusterSlug;
         const isMarkdownDocument = isMarkdownDocumentSlug(slug, nextActiveCluster);
+        // The frame navigates independently of Next. Keep a reloadable parent
+        // URL without adding another history entry or reloading the frame.
+        const readerUrl = new URL(window.location.href);
+        readerUrl.pathname = `/garden/${encodeURIComponent(nextActiveCluster)}`;
+        if (slug && slug !== 'index') readerUrl.searchParams.set('note', slug);
+        else readerUrl.searchParams.delete('note');
+        if (readerUrl.href !== window.location.href) {
+          readerUrl.hash = '';
+          window.history.replaceState(window.history.state, '', readerUrl);
+        }
         if (cluster) {
           setActiveCluster(cluster);
           window.dispatchEvent(new CustomEvent('sb:active-cluster', { detail: { cluster } }));
@@ -532,9 +550,9 @@ export default function GardenClient({
               error: body.error,
             });
             if (ok) {
-              window.setTimeout(() => {
-                iframeRef.current?.contentWindow?.location.reload();
-              }, 900);
+              window.dispatchEvent(new CustomEvent('sb:markdown-updated', {
+                detail: { cluster: effectiveCluster, slug },
+              }));
             }
           })
           .catch(() => {
@@ -739,74 +757,16 @@ export default function GardenClient({
     }, 2_500);
   }
 
-  useEffect(() => {
-    if (!activeMarkdownSlug || !activeMarkdownCluster) return;
-
-    let cancelled = false;
-    const cluster = activeMarkdownCluster;
-    const slug = activeMarkdownSlug;
-
-    fetch(`/api/documents/${encodeURIComponent(slug)}?clusterSlug=${encodeURIComponent(cluster)}`)
-      .then(async (response) => {
-        const body = await response.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!response.ok || !body.success || typeof body.content !== 'string') {
-          setActiveMarkdown((current) =>
-            current?.cluster === cluster && current.slug === slug
-              ? { ...current, content: undefined, loading: false }
-              : current,
-          );
-          return;
-        }
-        setActiveMarkdown((current) =>
-          current?.cluster === cluster && current.slug === slug
-            ? {
-                ...current,
-                content: body.content,
-                title: typeof body.fileName === 'string' ? body.fileName : slug,
-                loading: false,
-              }
-            : current,
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setActiveMarkdown((current) =>
-          current?.cluster === cluster && current.slug === slug
-            ? { ...current, content: undefined, loading: false }
-            : current,
-        );
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMarkdownCluster, activeMarkdownSlug]);
-
-  useEffect(() => {
-    function handleMarkdownUpdated(event: Event) {
-      const detail = (event as CustomEvent<Partial<ActiveMarkdown>>).detail;
-      if (!detail?.cluster || !detail.slug || detail.cluster !== activeMarkdownCluster) return;
-      setActiveMarkdown({
-        cluster: detail.cluster,
-        slug: detail.slug,
-        title: detail.title,
-        content: detail.content,
-        loading: false,
-      });
-      window.setTimeout(() => {
-        iframeRef.current?.contentWindow?.location.reload();
-      }, 300);
-    }
-
-    window.addEventListener('sb:markdown-updated', handleMarkdownUpdated);
-    return () => window.removeEventListener('sb:markdown-updated', handleMarkdownUpdated);
-  }, [activeMarkdownCluster]);
-
+  const canonicalReader = useCanonicalQuartzDocument(iframeRef, quartzOrigin, activeMarkdown, setActiveMarkdown);
   useCanonicalGardenFolders(iframeRef, quartzOrigin, clusterSlug);
 
+
   return (
-    <div className="relative flex min-h-0 flex-1 overflow-hidden bg-gray-950">
+    <div
+      className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-gray-950 lg:pr-[var(--garden-assistant-space)]"
+      style={readerLayoutStyle}
+    >
+      {canonicalReader.error ? <p role="alert" className="absolute left-3 top-3 z-20 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--danger)]">{canonicalReader.error}<button type="button" className="ml-2 underline" onClick={() => void canonicalReader.retry()}>Retry</button></p> : null}
       {quartzLease.failed && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-gray-950" role="alert">
           <div className="flex flex-col items-center gap-4">
@@ -849,9 +809,13 @@ export default function GardenClient({
         onInlineAnswerUpdate={postInlineAnswer}
         initialOpen={initialChatOpen}
         launcherHidden={markdownEditorOpen}
+        onPanelWidthChange={setAssistantWidth}
+        quartzIframeRef={iframeRef}
+        quartzOrigin={quartzOrigin}
       />
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
+      <GardenMarkdownArtifacts iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
     </div>
   );
 }

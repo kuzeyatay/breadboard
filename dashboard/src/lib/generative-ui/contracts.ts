@@ -144,11 +144,23 @@ export interface ChatSearchResource {
   };
 }
 
-/** Add future maps, weather, music, calendar, stock, and MCP projections here. */
+export interface PrinterJobResource {
+  schemaVersion: 1;
+  kind: "printer-job";
+  renderer: "bambu-print-card";
+  id: string;
+  title: string;
+  createdAt: string;
+  actions: [];
+  data: { jobId: string; runId: string; conversationPublicId: string; originatingTurnId: string };
+}
+
+/** Versioned references are display data; the backend is the authority. */
 export type GenerativeUiResource =
   | ProductSearchResource
   | GardenNavigationResource
-  | ChatSearchResource;
+  | ChatSearchResource
+  | PrinterJobResource;
 
 export type GenerativeUiAction =
   | {
@@ -342,6 +354,12 @@ export function normalizeGenerativeUiResource(
 ): GenerativeUiResource | null {
   const candidate = record(value);
   if (!candidate) return null;
+  if (candidate.schemaVersion === 1 && candidate.kind === "printer-job" && candidate.renderer === "bambu-print-card") {
+    const data = record(candidate.data);
+    const jobId = id(data?.jobId), runId = id(data?.runId), conversationPublicId = id(data?.conversationPublicId), originatingTurnId = id(data?.originatingTurnId);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(jobId) || candidate.id !== `printer:${jobId}` || !runId || !conversationPublicId || !originatingTurnId || !Number.isFinite(Date.parse(String(candidate.createdAt)))) return null;
+    return { schemaVersion: 1, kind: "printer-job", renderer: "bambu-print-card", id: `printer:${jobId}`, title: "Bambu Lab print", createdAt: String(candidate.createdAt), actions: [], data: { jobId, runId, conversationPublicId, originatingTurnId } };
+  }
   if (
     candidate.schemaVersion === PRODUCT_SEARCH_SCHEMA_VERSION &&
     candidate.kind === PRODUCT_SEARCH_RESOURCE_KIND &&
@@ -653,10 +671,11 @@ export function chatSearchResourceFromHits(input: {
 
 export function normalizeGenerativeUiResources(value: unknown): GenerativeUiResource[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry): GenerativeUiResource[] => {
+  const normalized = value.flatMap((entry): GenerativeUiResource[] => {
     const normalized = normalizeGenerativeUiResource(entry);
     return normalized ? [normalized] : [];
-  }).slice(0, 4);
+  });
+  return [...new Map(normalized.map(resource => [resource.id, resource])).values()].slice(0, 4);
 }
 
 function parsedToolOutput(value: unknown): Record<string, unknown> | null {
@@ -687,7 +706,9 @@ export function generativeUiResourcesFromToolOutput(
       ? GARDEN_SEARCH_RESOURCE_KIND
       : normalizedTool === "chat_search"
         ? CHAT_SEARCH_RESOURCE_KIND
-        : null;
+        : normalizedTool === "bambu_print_prepare"
+          ? "printer-job"
+          : null;
   if (!expectedKind) return [];
   const parsed = parsedToolOutput(output);
   return normalizeGenerativeUiResources(parsed?.uiResources).filter(

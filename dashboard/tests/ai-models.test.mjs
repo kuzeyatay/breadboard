@@ -19,7 +19,7 @@ test('GPT-5.6 Sol is the default for every assistant surface', () => {
 test('assistant model lists put Astra first and remove duplicates', () => {
   assert.deepEqual(
     mergeAssistantModels(['gpt-5.4', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna', ' custom-model ', '', null]),
-    ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'custom-model'],
+    ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-luna-reserve', 'gpt-5.5', 'gpt-5.4', 'custom-model'],
   );
 });
 
@@ -29,6 +29,7 @@ test('assistant model names use a readable label in the composer', () => {
   assert.equal(formatAssistantModelName('gpt-5.6-sol'), 'GPT-5.6 Sol');
   assert.equal(formatAssistantModelName('gpt-5.6-terra'), 'GPT-5.6 Terra');
   assert.equal(formatAssistantModelName('gpt-5.6-luna'), 'GPT-5.6 Luna');
+  assert.equal(formatAssistantModelName('gpt-5.6-luna-reserve'), 'GPT-5.6 Luna (Reserve)');
   assert.equal(formatAssistantModelName('gpt-5.5'), 'GPT-5.5');
   assert.equal(
     formatAssistantModelName('cliproxy/gemini-3.7-flash-high'),
@@ -206,4 +207,18 @@ test('grouping keeps every model that was passed in', () => {
       .sort(),
     [...models].sort(),
   );
+});
+
+test('chatgpt.com tab models sit in their own section and are marked (web)', () => {
+  assert.equal(formatAssistantModelName('openaiweb/gpt-5-2-thinking'), 'GPT-5.2 Thinking (web)');
+  assert.equal(formatAssistantModelName('openaiweb/gpt-5-2-instant'), 'GPT-5.2 Instant (web)');
+  assert.equal(formatAssistantModelName('openaiweb/gpt-4o'), 'GPT-4o (web)');
+  assert.equal(formatAssistantModelName('openaiweb/o3-pro'), 'o3 Pro (web)');
+  assert.equal(formatAssistantModelName('openaiweb/auto'), 'Auto (web)');
+  assert.deepEqual(assistantModelGroup('openaiweb/gpt-5-2'), { id: 'openaiweb', label: 'OpenAI (web)' });
+  // The vendor stays OpenAI for anything that reasons about who built it.
+  assert.equal(assistantModelVendor('openaiweb/gpt-5-2').id, 'openai');
+  const groups = groupAssistantModels(['gpt-5.6-sol', 'openaiweb/auto', 'openaiweb/gpt-5-2', 'cliproxy/claude-sonnet-5']);
+  assert.deepEqual(groups.map((group) => group.vendorLabel), ['OpenAI', 'OpenAI (web)', 'Anthropic']);
+  assert.deepEqual(groups[1].models, ['openaiweb/auto', 'openaiweb/gpt-5-2']);
 });

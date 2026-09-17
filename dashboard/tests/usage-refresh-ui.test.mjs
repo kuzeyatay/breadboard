@@ -11,13 +11,13 @@ const routeSource = fs.readFileSync(
   "utf8",
 );
 
-test("manual usage refresh probes ChatMock while automatic loads remain read-only", () => {
+test("chat usage popover probes on manual refresh while its automatic loads remain read-only", () => {
   assert.match(popoverSource, /const useProbe = probe && !googleUsageActive && !claudeUsageActive/);
   assert.match(popoverSource, /method: useProbe \? "POST" : "GET"/);
   assert.match(popoverSource, /refreshUsage\(false, true\)/);
   assert.match(popoverSource, /refreshUsage\(true\)/);
   assert.match(routeSource, /export async function POST\(request: Request\)/);
-  assert.match(routeSource, /buildUsageRefreshRequest\(\)/);
+  assert.match(routeSource, /refreshChatgptUsage\(baseURL, userId\)/);
 });
 
 test("Google subscription usage is selected by model without a generation probe", () => {
@@ -26,10 +26,13 @@ test("Google subscription usage is selected by model without a generation probe"
   assert.match(routeSource, /withCliproxyLease\([\s\S]*'subscription-usage-limits'[\s\S]*readGoogleUsageLimits\(model\)/);
 });
 
-test("Anthropic subscription usage is embedded without a generation probe", () => {
+test("Anthropic reads usage first and requests bounded session recovery only when needed", () => {
   assert.match(popoverSource, /const claudeUsageActive = isClaudeSubscriptionModel\(activeModel\)/);
   assert.match(popoverSource, /usageData\.provider === "anthropic"/);
   assert.match(popoverSource, /Anthropic-reported subscription usage/);
   assert.match(routeSource, /claudeSubscriptionModelId\(model\)/);
   assert.match(routeSource, /await readClaudeUsageLimits\(model\)/);
+  assert.match(popoverSource, /claudeUsageActive && data\.recovery_required/);
+  assert.match(routeSource, /recoverSession: async \(\) =>/);
+  assert.match(routeSource, /operation: 'refresh-usage'/);
 });

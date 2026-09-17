@@ -39,7 +39,7 @@ export interface MessagePart {
 }
 
 export interface MessageRecord {
-  info?: { id?: string; role?: string; error?: unknown; tokens?: TokenCounts };
+  info?: { id?: string; role?: string; error?: unknown; tokens?: TokenCounts; summary?: boolean | Record<string, unknown>; mode?: string; agent?: string; finish?: string };
   parts?: MessagePart[];
 }
 

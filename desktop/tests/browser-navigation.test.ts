@@ -124,13 +124,9 @@ test("browser selection messages and trusted rail bounds are narrow and validate
   assert.equal(browserContentLeft(1_920, true, 1_200), 960);
   assert.equal(browserContentLeft(1_280, true, 700), 640);
   assert.equal(browserContentLeft(640, true), 320);
-  assert.equal(browserContentTop(false), BROWSER_CONTENT_TOP_INSET);
-  assert.equal(browserContentTop(true, 174), 174, "two suggestions leave no unused strip");
-  assert.equal(browserContentTop(true, 174.5), 175, "fractional edges never clip the dropdown");
-  assert.equal(browserContentTop(true, 424), 424, "larger lists are not clipped at a fixed height");
-  assert.equal(browserContentTop(false, 424), BROWSER_CONTENT_TOP_INSET);
-  assert.equal(browserContentTop(true, 64), BROWSER_CONTENT_TOP_INSET);
-  assert.equal(browserContentTop(true, 424, 300), 299, "resizing keeps the page within the window");
+  assert.equal(browserContentTop(), BROWSER_CONTENT_TOP_INSET);
+  assert.equal(browserContentTop(300), BROWSER_CONTENT_TOP_INSET, "page stays below the toolbar regardless of dropdown size");
+  assert.equal(browserContentTop(100), 99, "tiny windows keep the page within the viewport");
   assert.equal(
     tabLoadingSceneTop(true, false),
     TAB_LOADING_SCENE_TOP_INSET,

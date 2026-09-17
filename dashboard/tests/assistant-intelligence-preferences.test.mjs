@@ -21,7 +21,7 @@ after(() => {
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 
-test("a selected intelligence mode becomes the durable user default", () => {
+test("the profile intelligence preference remains a durable user default", () => {
   db.prepare(
     "INSERT INTO users(id, username, email, password_hash) VALUES (1, 'alice', 'alice@example.test', 'x')",
   ).run();
@@ -91,17 +91,13 @@ test("the picker is handed the whole per-model record, not just the active pair"
   const hook = source("../src/app/components/use-assistant-intelligence.ts");
   const route = source("../src/app/api/assistant-preferences/route.ts");
   assert.match(route, /reasoningEffortByModel: settings\.reasoningEffortByModel/);
-  // Selecting a model applies its remembered depth in the same request, so the
-  // model and the effort can never land out of order.
-  assert.match(hook, /const restored = rememberedEfforts\.current\[normalized\]/);
-  assert.match(
-    hook,
-    /persist\(restored \? \{ model: normalized, reasoningEffort: restored \} : \{ model: normalized \}\)/,
-  );
-  assert.match(hook, /remember\(model, value\)/);
+  // Local model and effort changes share one scoped write.
+  assert.match(hook, /const effort = remembered\[normalized\] \?\? reasoningEffort/);
+  assert.match(hook, /reasoningEffortByModel: remembered/);
+  assert.doesNotMatch(hook, /patchAssistantPreferences/);
 });
 
-test("every dashboard chat surface consumes the shared intelligence preference", () => {
+test("every dashboard chat surface scopes its override to its active chat", () => {
   for (const file of [
     "../src/app/components/hermes/dashboard-agent-terminal.tsx",
     "../src/app/components/hermes/garden-agent-chat.tsx",
@@ -110,13 +106,16 @@ test("every dashboard chat surface consumes the shared intelligence preference",
     "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
   ]) {
     const contents = source(file);
-    assert.match(contents, /useAssistantIntelligence\(\)/, file);
+    assert.match(contents, /useAssistantIntelligence\(\{[\s\S]*?sessionId:/s, file);
+    // ...and shares the pick itself, so a model chosen on one chat surface is
+    // the model the next one opens with.
+    assert.match(contents, /shared: true/, file);
     assert.doesNotMatch(contents, /useState(?:<[^>]+>)?\(DEFAULT_MODEL\)/, file);
     assert.doesNotMatch(contents, /useState(?:<[^>]+>)?\(DEFAULT_ASSISTANT_REASONING_EFFORT\)/, file);
   }
 });
 
-test("preferences survive reloads locally, sync to the account, and reach Quartz", () => {
+test("only profile saves change the account; dashboard and Quartz chat picks remain local", () => {
   const hook = source("../src/app/components/use-assistant-intelligence.ts");
   const route = source("../src/app/api/assistant-preferences/route.ts");
   const quartz = source("../../quartz/quartz/components/scripts/breadboardAI.inline.ts");
@@ -124,10 +123,13 @@ test("preferences survive reloads locally, sync to the account, and reach Quartz
   assert.match(hook, /breadboard:assistant-model/);
   assert.match(hook, /breadboard:assistant-reasoning-effort/);
   assert.match(hook, /localStorage\.setItem/);
-  assert.match(hook, /patchAssistantPreferences\(value\)/);
+  assert.match(hook, /breadboard:intelligence-override:/);
+  assert.doesNotMatch(hook, /patchAssistantPreferences/);
+  const profile = source("../src/app/profile/default-model-panel.tsx");
+  assert.match(profile, /patchAssistantPreferences\(\{ model: normalized \}\)/);
   assert.match(route, /intelligencePreferenceSet/);
   assert.match(route, /setHermesUserSettings/);
   assert.match(quartz, /api\/assistant-preferences/);
-  assert.match(quartz, /saveIntelligencePreference/);
-  assert.match(quartz, /localStorage\.setItem\(ASSISTANT_EFFORT_STORAGE_KEY/);
+  assert.doesNotMatch(quartz, /saveIntelligencePreference|method: "PATCH"|localStorage\.setItem/);
+  assert.match(quartz, /restoreChatIntelligence\(item\.id\)/);
 });

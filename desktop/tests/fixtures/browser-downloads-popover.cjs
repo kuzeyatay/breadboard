@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { createRequire } = require("node:module");
-const { app, BrowserWindow, ipcMain, session, webContents } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, session, webContents } = require("electron");
 const { TabManager, BROWSER_SESSION_PARTITION } = require("../../dist/main/tab-manager.js");
 const { BrowserDownloads } = require("../../dist/main/browser-downloads.js");
 const { IPC_CHANNELS, isTabsCommand, isBrowserDownloadCommand } = require("../../dist/shared/ipc-contract.js");
@@ -18,6 +18,7 @@ const until = async (probe, label) => {
     if (result) return result;
     await new Promise(resolve => setTimeout(resolve, 40));
   }
+  console.log("Remaining views:", webContents.getAllWebContents().map(contents => ({ id: contents.id, url: contents.getURL() })));
   throw new Error(`Timed out: ${label}`);
 };
 const listen = server => new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)));
@@ -35,19 +36,25 @@ app.whenReady().then(async () => {
       import BrowserDownloadsPopover from './src/app/browser/browser-downloads-popover';
       import BrowserDownloadsPanel from './src/app/browser/browser-downloads';
       import BrowserMenuControls from './src/app/browser/browser-menu-controls';
+      import BrowserExtensionsButton from './src/app/browser/browser-extensions-button';
+      import BrowserExtensionsPopover from './src/app/browser/browser-extensions-popover';
       function Chrome() {
         const state = useDesktopTabs();
         const tab = state?.tabs.find(tab => tab.id === state.selfId);
         const [panel, setPanel] = useState('');
         return <><div className="browser-toolbar" style={{marginTop:32}}>
-          <div className="browser-address-form">{tab?.browser?.address || 'Search or enter address'}</div>
+          <div className="browser-address-form" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            {tab?.browser?.address || 'Search or enter address'}
+            <BrowserExtensionsButton open={tab?.browser?.extensionsOpen ?? false} count={state?.extensions.length ?? 0}/>
+          </div>
           <BrowserDownloadsButton active={Boolean(tab?.browser && tab.id === state?.activeId)} open={tab?.browser?.downloadsOpen ?? false}/>
           <BrowserMenuControls profileLabel="Fixture" address={tab?.browser?.address || ''} onPanel={panel => {
             setPanel(panel); window.testPanel = panel; void sendDesktopTabsCommand({type:'browser-terminal',open:true});
           }}/>
         </div><div style={{width:600}}><BrowserDownloadsPanel active={panel === 'downloads'} closeButton={<button>Close</button>}/></div></>;
       }
-      createRoot(document.getElementById('root')).render(location.pathname === '/browser/downloads-popover' ? <BrowserDownloadsPopover/> : <Chrome/>);
+      createRoot(document.getElementById('root')).render(location.pathname === '/browser/downloads-popover' ? <BrowserDownloadsPopover/>
+        : location.pathname === '/browser/extensions-popover' ? <BrowserExtensionsPopover/> : <Chrome/>);
     `, resolveDir: dashboard, loader: "tsx" },
     bundle: true, write: false, outdir: "out", format: "iife", platform: "browser",
     define: { "process.env.NODE_ENV": '"production"' },
@@ -95,6 +102,7 @@ app.whenReady().then(async () => {
   fs.writeFileSync(loading, "<!doctype html><body>Loading</body>");
   const preload = path.resolve(__dirname, "../../dist/preload/preload.js");
   const manager = new TabManager({
+    log: line => console.log(line),
     allowed: { origins: new Set([origin]) }, preloadPath: preload,
     loadingHtmlPath: () => loading, recoveryHtmlPath: () => loading, theme: () => "light",
     openWindow: () => assert.fail("Unexpected window"),
@@ -118,10 +126,11 @@ app.whenReady().then(async () => {
   const page = await until(() => webContents.getAllWebContents().find(c => c.getURL() === web + "/" && !c.isLoading()), "website");
   const pageView = await until(() => window.contentView.children.find(view => view.webContents?.id === page.id), "website visible");
   const pageBounds = pageView.getBounds();
+  await until(() => !manager.stateFor(chrome).navigationPending && page.isFocused(), "browser reveal complete");
   await until(() => (reads.get(chrome.id) || 0) >= 2, "download baseline");
   chrome.debugger.attach("1.3");
   await chrome.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-  const toolbar = () => chrome.executeJavaScript("document.querySelector('[aria-haspopup=dialog]')?.outerHTML || ''");
+  const toolbar = () => chrome.executeJavaScript("document.querySelector('[aria-label^=Downloads]')?.outerHTML || ''");
   assert.match(await toolbar(), /aria-expanded="false"/);
   assert.equal(manager.handleCommand(page, { type: "browser-downloads-popover", x: 900, y: 80 }), false);
   assert.equal(isTabsCommand({ type: "browser-downloads-resize", height: Infinity }), false);
@@ -175,17 +184,127 @@ app.whenReady().then(async () => {
   assert.equal(fs.existsSync(opened[0]), true);
   // Reopen after the click-dismiss guard expires, then dismiss using Escape.
   await new Promise(resolve => setTimeout(resolve, 250));
-  await chrome.executeJavaScript("document.querySelector('[aria-haspopup=dialog]').click()");
+  await chrome.executeJavaScript("document.querySelector('[aria-label^=Downloads]').click()");
   popup = await until(() => { const contents = popupContents(); return contents && !contents.isLoading() ? contents : null; }, "reopened renderer");
   await until(async () => (await body()).includes("Completed"), "reopened history");
   popup.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
   await until(() => !popupContents(), "Escape closes popup");
   await new Promise(resolve => setTimeout(resolve, 250));
-  await chrome.executeJavaScript("document.querySelector('[aria-haspopup=dialog]').click()");
+  await chrome.executeJavaScript("document.querySelector('[aria-label^=Downloads]').click()");
   popup = await until(() => { const contents = popupContents(); return contents && !contents.isLoading() ? contents : null; }, "popup for outside dismissal");
   await until(async () => (await body()).includes("Completed"), "outside dismissal content");
   page.focus();
   await until(() => !popupContents(), "focusing the website dismisses the popover");
+  // The extensions card must cross the same native surface boundary.
+  await manager.handleCommand(chrome, { type: "browser-terminal", open: false });
+  await page.executeJavaScript("document.body.style.height='2000px'; scrollTo(0,120); window.pageMarker='preserved'");
+  const originalBounds = pageView.getBounds();
+  const extensionContents = () => webContents.getAllWebContents().find(c =>
+    !c.isDestroyed() && c.getURL().startsWith(origin + "/browser/extensions-popover"));
+  const extensionToolbar = () => chrome.executeJavaScript("document.querySelector('[aria-label=Extensions]').getAttribute('aria-expanded')");
+  const openExtensions = async () => {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await chrome.executeJavaScript("document.querySelector('[aria-label=Extensions]').click()");
+    popup = await until(() => { const found = extensionContents(); return found && !found.isLoading() ? found : null; }, "extensions renderer");
+    await until(() => window.contentView.children.find(view => view.webContents?.id === popup.id)?.getBounds().y > 0, "extensions measured and visible");
+    await until(async () => await extensionToolbar() === "true", "extensions button reflects native state");
+    return window.contentView.children.find(view => view.webContents?.id === popup.id);
+  };
+  let extensionView = await openExtensions();
+  assert.match(await body(), /No extensions loaded yet/);
+  assert.match(await body(), /Picture in Picture/);
+  assert.match(await body(), /Load unpacked/);
+  assert.equal(window.contentView.children.at(-1).webContents.id, popup.id, "extensions are above website");
+  assert.ok(extensionView.getBounds().y + extensionView.getBounds().height > originalBounds.y + 150, "card extends well into website area");
+  assert.deepEqual(pageView.getBounds(), originalBounds, "opening extensions leaves website viewport alone");
+  await manager.handleCommand(chrome, { type: "browser-address-suggestions", open: false });
+  const stacked = window.contentView.children.map(view => view.webContents?.id);
+  assert.ok(stacked.indexOf(popup.id) > stacked.indexOf(page.id) && stacked.indexOf(popup.id) > stacked.indexOf(chrome.id), "relayout keeps extensions above website and toolbar");
+  assert.equal(manager.handleCommand(page, { type: "browser-extensions-popover", x: 900, y: 80 }), false);
+  assert.equal(manager.handleCommand(chrome, { type: "browser-extensions-resize", height: 200 }), false);
+  assert.equal(isTabsCommand({ type: "browser-extensions-resize", height: Infinity }), false);
+  assert.equal(isTabsCommand({ type: "browser-extensions-popover", x: -1, y: 80 }), false);
+  await popup.executeJavaScript("document.documentElement.dataset.theme='dark'");
+  await capture("extensions-empty-dark");
+
+  const extensionPath = path.join(dir, "extension");
+  fs.mkdirSync(extensionPath);
+  fs.writeFileSync(path.join(extensionPath, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Fixture extension", version: "1.0" }));
+  let selectionPath = extensionPath, selections = 0;
+  dialog.showOpenDialog = async () => {
+    selections++;
+    // A native folder chooser temporarily takes focus away from the card.
+    window.emit("blur"); chrome.focus();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(popup.isDestroyed(), false, "folder dialog cannot destroy its own result/error surface");
+    return { canceled: false, filePaths: [selectionPath] };
+  };
+  const clickPopup = async selector => {
+    await until(() => popup.executeJavaScript('!document.querySelector(' + JSON.stringify(selector) + ')?.disabled'), "extension action enabled");
+    const point = await popup.executeJavaScript('(() => { const button = document.querySelector(' + JSON.stringify(selector) + '); button.scrollIntoView({block:"nearest"}); const r = button.getBoundingClientRect(); return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)} })()');
+    popup.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
+    popup.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+  };
+  await clickPopup(".browser-extension-load");
+  await until(async () => (await body()).includes("Fixture extension"), "load action below website boundary works");
+  await until(async () => (await body()).includes("1 active"), "installed count updates in popup");
+  await until(() => chrome.executeJavaScript("document.querySelector('.browser-extensions-count')?.textContent === '1'"), "toolbar installed count updates");
+  await capture("extensions-installed-dark");
+  selectionPath = path.join(dir, "missing-extension");
+  await clickPopup(".browser-extension-load");
+  await until(async () => (await body()).includes("That folder could not be loaded"), "invalid folder shows inline error");
+  selectionPath = extensionPath;
+  await clickPopup(".browser-extension-load");
+  await until(() => popup.executeJavaScript("!document.querySelector('[role=alert]') && !document.querySelector('.browser-extension-load').disabled"), "retry clears load error");
+  assert.equal(selections, 3);
+  await clickPopup('[aria-label="Reload Fixture extension"]');
+  await until(() => popup.executeJavaScript(`!!document.querySelector('[aria-label="Reload Fixture extension"]') && !document.querySelector('[aria-label="Reload Fixture extension"]').disabled`), "reload finishes in the same card");
+  await clickPopup('[aria-label="Remove Fixture extension"]');
+  await until(async () => (await body()).includes("No extensions loaded yet"), "remove refreshes the card");
+  assert.deepEqual(await page.executeJavaScript("[window.pageMarker,scrollY]"), ["preserved", 120], "actions preserve website state and scroll");
+  assert.deepEqual(pageView.getBounds(), originalBounds);
+  await page.executeJavaScript(`(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
+    const paint = () => { const ctx = canvas.getContext('2d'); ctx.fillStyle = '#537958'; ctx.fillRect(0,0,320,180); };
+    paint(); window.videoTimer = setInterval(paint, 40);
+    const video = document.createElement('video'); video.muted = true; video.style.cssText = 'position:fixed;top:20px;left:20px;width:320px;height:180px';
+    document.body.append(video); video.srcObject = canvas.captureStream(25); window.fixtureVideo = video; await video.play();
+  })()`);
+  await clickPopup("main button");
+  await until(() => !extensionContents(), "built-in PiP action closes the card");
+  await until(() => page.executeJavaScript("document.pictureInPictureElement === window.fixtureVideo"), "built-in PiP starts from the extensions card");
+  await page.executeJavaScript("document.exitPictureInPicture()");
+  await openExtensions();
+  popup.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+  await until(() => !extensionContents(), "Escape closes extensions");
+  await until(async () => await extensionToolbar() === "false", "Escape resets toolbar state");
+  assert.equal(chrome.isFocused(), true, "Escape returns focus to toolbar");
+  await openExtensions();
+  page.focus();
+  await until(() => !extensionContents(), "clicking page dismisses extensions");
+  await openExtensions();
+  chrome.focus();
+  await until(() => !extensionContents(), "toolbar focus dismisses extensions");
+  await chrome.executeJavaScript("document.querySelector('[aria-label=Extensions]').click()");
+  assert.equal(extensionContents(), undefined, "same toolbar click does not reopen dismissed card");
+
+  await openExtensions();
+  window.setSize(500, 280);
+  await until(() => !extensionContents(), "resize dismisses stale anchored card");
+  extensionView = await openExtensions();
+  const shortBounds = extensionView.getBounds();
+  assert.ok(shortBounds.x >= 0 && shortBounds.x + shortBounds.width <= window.getContentSize()[0]);
+  assert.ok(shortBounds.y + shortBounds.height <= window.getContentSize()[1]);
+  assert.equal(await popup.executeJavaScript("document.querySelector('main').scrollHeight > document.querySelector('main').clientHeight"), true, "short window scrolls the entire card");
+  await clickPopup(".browser-extension-load");
+  await until(() => selections === 4, "bottom action remains reachable in short window");
+  await until(() => popup.executeJavaScript("!document.querySelector('.browser-extension-load').disabled"), "folder action completes in short window");
+  await capture("extensions-short-window");
+  const browserTabId = manager.stateFor(chrome).selfId;
+  const otherTab = manager.stateFor(chrome).tabs.find(tab => tab.id !== browserTabId);
+  await manager.handleCommand(chrome, { type: "activate", id: otherTab.id });
+  await until(() => !extensionContents(), "switching tabs dismisses extensions");
+  console.log("Extensions stacking, real load/reload/remove, inline retry, viewport preservation, small windows and dismissal passed.");
   assert.equal(BrowserWindow.getAllWindows().length, 1);
   console.log("Download toolbar, progress, native layering, file actions, full list and Escape passed.");
   chrome.debugger.detach();

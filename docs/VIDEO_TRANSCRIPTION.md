@@ -187,6 +187,7 @@ required.
 | yt-dlp not found | Install yt-dlp or set `YTDLP_PATH`. Only metadata previews degrade; Scriberr still downloads via its own yt-dlp. |
 | FFmpeg not found | Install FFmpeg or set `FFMPEG_PATH` (Scriberr's container ships its own for transcription). |
 | JavaScript runtime not found | yt-dlp needs Node or Deno for YouTube extraction; Breadboard's Node install qualifies — ensure `node` is on PATH for yt-dlp. |
+| "Downloading the YouTube video failed" on a public video | Scriberr's log (`logs/services/scriberr.log`) shows `HTTP Error 403: Forbidden` from yt-dlp. The bundled yt-dlp is too old for YouTube's current player. Bump `YTDLP_RELEASE` in `scripts/prepare-scriberr-runtime.mjs` (version, URL, sha256 from the release's `SHA2-256SUMS`), run `npm run desktop:prepare`, then `node desktop/scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins` so the dev runtime root picks it up. The same directory carries `yt-dlp.conf` (`--js-runtimes node`) so the bundled Node solves YouTube's JS challenges. |
 | YouTube asks for sign-in | The video is private/age-restricted. Cookie support is intentionally not bundled; configure cookies in the Scriberr container if required. |
 | Video has no audio | The upload was rejected by ffprobe validation (`media_no_audio`) — there is nothing to transcribe. |
 | Unsupported codec | `media_unsupported` from ffprobe, or Scriberr's own ffmpeg failed. Re-encode to H.264/AAC MP4: `ffmpeg -i in -c:v libx264 -c:a aac out.mp4`. |

@@ -4,12 +4,13 @@
 // have produced.
 //
 // Destructive and organizational controls stay behind one dots menu, the same
-// way the terminal rail's Recents does it. Each idle row also carries the same
-// color-and-selection square as Garden documents: one click opens its palette,
-// while two quick clicks scope a downloadable artifact into the composer.
+// way the terminal rail's Recents does it. Each idle row has a direct attachment
+// action; highlighting is available from the archive menu.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
+import { ARTIFACT_CATEGORIES, artifactCategory, artifactKindLabel, type ArtifactCategory } from "@/lib/generated/artifact-reference";
+import styles from "./artifact-panel.module.css";
 import {
   filterArtifactsForArchive,
   filterArtifactsForSearch,
@@ -19,6 +20,7 @@ import ArtifactViewer, {
   ARTIFACT_BROWSER_EVENT,
   artifactDescription,
   artifactPdfHref,
+  artifactUrl,
   ArtifactFileIcon,
   deleteArtifactRequest,
   highlightArtifactRequest,
@@ -330,59 +332,6 @@ function HighlightBar({
   );
 }
 
-/** The compact color picker shared by an idle artifact row's square control. */
-function ArtifactColorPalette({
-  artifact,
-  onChoose,
-  onClose,
-}: {
-  artifact: PresentedArtifact;
-  onChoose: (highlight: string | null) => void;
-  onClose: () => void;
-}) {
-  const paletteRef = useRef<HTMLDivElement>(null);
-  useDismissOnOutside(paletteRef, onClose);
-
-  return (
-    <div
-      ref={paletteRef}
-      role="menu"
-      aria-label={`Choose ${artifact.title} color`}
-      className="absolute left-0 top-6 z-30 w-32 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_10px_26px_rgba(0,0,0,0.18)]"
-    >
-      <div className="grid grid-cols-5 gap-1.5">
-        {CHAT_HIGHLIGHTS.map((highlight) => (
-          <button
-            key={highlight.id}
-            type="button"
-            role="menuitemradio"
-            onClick={() => onChoose(highlight.id)}
-            aria-label={`Color ${artifact.title} ${highlight.label}`}
-            aria-checked={artifact.highlight === highlight.id}
-            title={highlight.label}
-            className={`h-4 w-4 rounded border transition-transform hover:scale-110 ${
-              artifact.highlight === highlight.id
-                ? "border-[var(--ink-heading)]"
-                : "border-[var(--line-strong)]"
-            }`}
-            style={{ backgroundColor: highlight.color }}
-          />
-        ))}
-      </div>
-      {artifact.highlight ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => onChoose(null)}
-          className="mt-2 w-full rounded border border-[var(--line)] px-2 py-1 text-[10px] text-[var(--ink-muted)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
-        >
-          Clear
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 export interface ArtifactPanelProps {
   conversationId?: string | null;
   gardenSlug?: string | null;
@@ -400,6 +349,8 @@ export interface ArtifactPanelProps {
   attachingArtifactIds?: ReadonlySet<string>;
   /** Adds or removes one artifact from the visible chat's attachment scope. */
   onToggleArtifactAttachment?: (artifact: PresentedArtifact) => void | Promise<void>;
+  /** Reports the usable archive size to a parent that renders its own header. */
+  onArchiveCountChange?: (count: number) => void;
 }
 
 export default function ArtifactPanel({
@@ -414,9 +365,13 @@ export default function ArtifactPanel({
   attachedArtifactIds,
   attachingArtifactIds,
   onToggleArtifactAttachment,
+  onArchiveCountChange,
 }: ArtifactPanelProps) {
   const [artifacts, setArtifacts] = useState<PresentedArtifact[]>([]);
+  const [hasLoadedArtifacts, setHasLoadedArtifacts] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [category, setCategory] = useState<ArtifactCategory>("All");
+  const [sortOrder, setSortOrder] = useState("recent");
   const [openId, setOpenId] = useState<string | null>(null);
   // A surface can offer a proper artifact lane around this archive. Garden's
   // archive is nested in the learning-map rail, so it uses that wider lane.
@@ -439,8 +394,6 @@ export default function ArtifactPanel({
   const [pen, setPen] = useState<string | null>(CHAT_HIGHLIGHTS[0].id);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [openColorPaletteId, setOpenColorPaletteId] = useState<string | null>(null);
-  const artifactColorClickTimersRef = useRef<Map<string, number>>(new Map());
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -460,11 +413,13 @@ export default function ArtifactPanel({
   const refresh = useCallback(async () => {
     if (!query) return;
     setLoading(true);
+    setHasLoadedArtifacts(false);
     try {
       const response = await fetch(`/api/hermes/artifacts?${query}`);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : "Could not load artifacts.");
       setArtifacts(Array.isArray(data.artifacts) ? (data.artifacts as PresentedArtifact[]) : []);
+      setHasLoadedArtifacts(true);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load artifacts.");
@@ -502,22 +457,23 @@ export default function ArtifactPanel({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mode, stopWorking]);
 
-  useEffect(() => {
-    const clickTimers = artifactColorClickTimersRef.current;
-    return () => {
-      for (const timer of clickTimers.values()) window.clearTimeout(timer);
-      clickTimers.clear();
-    };
-  }, []);
-
   const archiveArtifacts = useMemo(
     () => filterArtifactsForArchive(artifacts),
     [artifacts],
   );
+  useEffect(() => {
+    if (hasLoadedArtifacts) onArchiveCountChange?.(archiveArtifacts.length);
+  }, [archiveArtifacts.length, hasLoadedArtifacts, onArchiveCountChange]);
   const openArtifact = openId ? archiveArtifacts.find((item) => item.id === openId) ?? null : null;
   const filteredArtifacts = useMemo(
-    () => filterArtifactsForSearch(archiveArtifacts, searchQuery),
-    [archiveArtifacts, searchQuery],
+    () => {
+      const matches = filterArtifactsForSearch(archiveArtifacts, searchQuery)
+        .filter(item => category === "All" || artifactCategory(item) === category);
+      return sortOrder === "name"
+        ? [...matches].sort((a, b) => a.title.localeCompare(b.title))
+        : matches;
+    },
+    [archiveArtifacts, searchQuery, category, sortOrder],
   );
   const searching = Boolean(searchQuery.trim());
 
@@ -613,35 +569,6 @@ export default function ArtifactPanel({
     [pen, updateArtifactHighlight],
   );
 
-  /**
-   * Match Garden documents exactly: the first click waits briefly before
-   * opening the palette; a second click cancels that opening and toggles the
-   * artifact's chat scope instead. Non-downloadable artifacts remain colorable.
-   */
-  const handleArtifactColorButtonClick = useCallback(
-    (artifact: PresentedArtifact, selectableForChat: boolean) => {
-      const pendingTimer = artifactColorClickTimersRef.current.get(artifact.id);
-      if (pendingTimer !== undefined) {
-        window.clearTimeout(pendingTimer);
-        artifactColorClickTimersRef.current.delete(artifact.id);
-        if (!selectableForChat || !onToggleArtifactAttachment) {
-          setOpenColorPaletteId((openId) => (openId === artifact.id ? null : artifact.id));
-          return;
-        }
-        setOpenColorPaletteId(null);
-        void onToggleArtifactAttachment(artifact);
-        return;
-      }
-
-      const timer = window.setTimeout(() => {
-        artifactColorClickTimersRef.current.delete(artifact.id);
-        setOpenColorPaletteId((openId) => (openId === artifact.id ? null : artifact.id));
-      }, 250);
-      artifactColorClickTimersRef.current.set(artifact.id, timer);
-    },
-    [onToggleArtifactAttachment],
-  );
-
   const handleImageCreated = useCallback((artifact: PresentedArtifact) => {
     setArtifacts((current) => [artifact, ...current.filter((item) => item.id !== artifact.id)]);
     setOpenId(artifact.id);
@@ -687,7 +614,7 @@ export default function ArtifactPanel({
 
   return (
     <section
-      className={`relative flex min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)] ${compact ? "h-full" : "max-h-[62vh]"}`}
+      className={`${styles.archive} relative flex min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)] ${compact ? "h-full" : "max-h-[62vh]"}`}
       aria-label="Artifacts"
     >
       {!hideHeader ? (
@@ -702,8 +629,8 @@ export default function ArtifactPanel({
         </div>
       ) : null}
 
-      <div className="flex items-center gap-1.5 border-b border-[var(--line)] bg-[var(--paper-surface)] p-2.5">
-        <div className="neu-inset relative min-w-0 flex-1 rounded-xl">
+      <div className={styles.searchBar}>
+        <div className="relative min-w-0 flex-1">
           <svg
             aria-hidden="true"
             viewBox="0 0 24 24"
@@ -723,7 +650,7 @@ export default function ArtifactPanel({
             aria-label="Search artifacts"
             autoComplete="off"
             spellCheck={false}
-            className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] py-2 pl-9 pr-9 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--botanical)] focus:ring-2 focus:ring-[var(--botanical)]/15"
+            className={styles.search}
           />
           {searchQuery ? (
             <button
@@ -744,6 +671,21 @@ export default function ArtifactPanel({
         {hideHeader && mode === "idle" ? menuButton : null}
       </div>
 
+      <div className={styles.filters} role="group" aria-label="Artifact types">
+        {ARTIFACT_CATEGORIES.map(value => (
+          <button key={value} type="button" aria-pressed={category === value} onClick={() => setCategory(value)}>
+            {value}
+          </button>
+        ))}
+      </div>
+      <div className={styles.listHeading}>
+        <span aria-live="polite">{filteredArtifacts.length} {filteredArtifacts.length === 1 ? "artifact" : "artifacts"}</span>
+        <select aria-label="Sort artifacts" value={sortOrder} onChange={event => setSortOrder(event.target.value)}>
+          <option value="recent">Recent first</option>
+          <option value="name">Name A–Z</option>
+        </select>
+      </div>
+
       {menuPosition ? (
         <ArchiveMenu
           position={menuPosition}
@@ -751,13 +693,11 @@ export default function ArtifactPanel({
           onClose={() => setMenuPosition(null)}
           onStartSelecting={() => {
             setMenuPosition(null);
-            setOpenColorPaletteId(null);
             setSelectedIds(new Set());
             setMode("selecting");
           }}
           onStartHighlighting={() => {
             setMenuPosition(null);
-            setOpenColorPaletteId(null);
             setMode("highlighting");
           }}
           onRefresh={() => {
@@ -769,22 +709,22 @@ export default function ArtifactPanel({
 
       {error ? <p className="m-3 rounded-md bg-red-50 p-2 text-xs text-red-700">{error}</p> : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div className={styles.list}>
         {loading && archiveArtifacts.length === 0 ? (
           <p className="p-3 text-xs text-[var(--ink-muted)]">Loading…</p>
         ) : null}
         {archiveArtifacts.length === 0 && !loading ? (
-          <p className="p-3 text-xs text-[var(--ink-muted)]">No artifacts yet.</p>
+          <div className={styles.empty}><ArtifactFileIcon kind="document" /><strong>No artifacts yet.</strong><p>Documents, images, and web pages you create in chat will appear here.</p></div>
         ) : null}
         {archiveArtifacts.length > 0 && filteredArtifacts.length === 0 && !loading ? (
           <div className="px-3 py-8 text-center">
-            <p className="text-xs text-[var(--ink-muted)]">No artifacts match “{searchQuery.trim()}”.</p>
+            <p className="text-xs text-[var(--ink-muted)]">{searching ? `No artifacts match “${searchQuery.trim()}”.` : `No ${category.toLowerCase()} artifacts yet.`}</p>
             <button
               type="button"
-              onClick={() => setSearchQuery("")}
+              onClick={() => { setSearchQuery(""); setCategory("All"); }}
               className="neu-button mt-3 rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs text-[var(--ink)]"
             >
-              Clear search
+              Clear filters
             </button>
           </div>
         ) : null}
@@ -813,21 +753,30 @@ export default function ArtifactPanel({
           const highlight = chatHighlight(artifact.highlight);
           const rowInner = (
             <>
-              <span className="bb-neu-artifact-preview inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] text-[var(--botanical)] [&_svg]:h-4 [&_svg]:w-4 [&_svg]:stroke-current [&_svg]:[stroke-linecap:round] [&_svg]:[stroke-linejoin:round] [&_svg]:[stroke-width:1.6]">
-                <ArtifactFileIcon kind={artifact.kind} />
+              <span className={styles.preview}>
+                <ArtifactFileIcon kind={artifact.kind} renderer={artifact.renderer} />
+                {artifact.kind === "image" && artifact.previewAvailable ? (
+                  // Authenticated local preview URLs cannot use the image optimizer.
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={`${artifact.id}:${artifact.version}`} src={artifactUrl(artifact, "preview")} alt="" loading="lazy" onError={event => { event.currentTarget.style.display = "none"; }} />
+                ) : <span>{artifactKindLabel(artifact)}</span>}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
+                <span className={styles.title}>
                   {artifact.title}
                 </span>
-                <span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">
-                  {artifactDescription(artifact)}
+                <span className={styles.details} title={artifact.filename}>
+                  {artifact.filename || artifactDescription(artifact)}
+                </span>
+                <span className={styles.metadata}>
+                  {artifactKindLabel(artifact)}
+                  {artifact.updatedAt && Number.isFinite(Date.parse(artifact.updatedAt)) ? ` · ${new Date(artifact.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : ""}
                 </span>
               </span>
             </>
           );
           const openClasses =
-            "flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]";
+            `${styles.open} flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`;
           // The mark and the checked outline are painted inline because the
           // card's own material is unlayered CSS a utility class cannot beat.
           // A marked row keeps its color in every mode: an edge bar for the eye
@@ -840,7 +789,8 @@ export default function ArtifactPanel({
           return (
             <div
               key={artifact.id}
-              className="bb-neu-artifact-card mb-1.5 flex w-full items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 transition-colors hover:bg-[var(--paper-strong)]"
+              className={styles.row}
+              data-open={openId === artifact.id || attached || undefined}
               style={{
                 ...(highlight
                   ? { background: `color-mix(in srgb, ${highlight.color} 15%, transparent)` }
@@ -858,69 +808,6 @@ export default function ArtifactPanel({
                   aria-label={`Select ${artifact.title}`}
                   className="h-3.5 w-3.5 shrink-0 accent-[var(--botanical)]"
                 />
-              ) : null}
-              {mode === "idle" ? (
-                <div className="relative shrink-0">
-                  <button
-                    type="button"
-                    data-row-menu-button
-                    onClick={() =>
-                      handleArtifactColorButtonClick(
-                        artifact,
-                        Boolean(
-                          onToggleArtifactAttachment &&
-                          artifact.downloadAvailable &&
-                          !attachmentSelectionBusy,
-                        ),
-                      )
-                    }
-                    className={`flex h-5 w-5 items-center justify-center rounded border bg-[var(--paper-raised)] transition-[border-color,box-shadow,transform,opacity] hover:border-[var(--botanical)] active:scale-[0.96] ${
-                      attached
-                        ? "border-[var(--botanical)] ring-2 ring-[var(--botanical)]/70 ring-offset-1 ring-offset-[var(--paper-surface)]"
-                        : "border-[var(--line-strong)]"
-                    } ${attaching ? "cursor-wait opacity-50" : "cursor-pointer"}`}
-                    title={`${highlight ? `Colored ${highlight.label}. ` : ""}${
-                      onToggleArtifactAttachment
-                        ? artifact.downloadAvailable
-                          ? attached
-                            ? "Selected for chat; click twice to remove."
-                            : "Click twice to select for chat."
-                          : "This artifact cannot be selected for chat."
-                        : ""
-                    } Click once to choose a color.`}
-                    aria-label={
-                      onToggleArtifactAttachment
-                        ? attached
-                          ? "Artifact color; selected for chat"
-                          : "Artifact color; click twice to select for chat"
-                        : "Artifact color"
-                    }
-                    aria-pressed={onToggleArtifactAttachment ? attached : undefined}
-                    aria-expanded={openColorPaletteId === artifact.id}
-                  >
-                    {attaching ? (
-                      <span
-                        aria-hidden="true"
-                        className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
-                      />
-                    ) : (
-                      <span
-                        className="h-3 w-3 rounded-sm border border-[var(--line-strong)]"
-                        style={{ backgroundColor: highlight?.color ?? "transparent" }}
-                      />
-                    )}
-                  </button>
-                  {openColorPaletteId === artifact.id ? (
-                    <ArtifactColorPalette
-                      artifact={artifact}
-                      onChoose={(next) => {
-                        setOpenColorPaletteId(null);
-                        void updateArtifactHighlight(artifact, next);
-                      }}
-                      onClose={() => setOpenColorPaletteId(null)}
-                    />
-                  ) : null}
-                </div>
               ) : null}
               {mode === "idle" && pdfHref ? (
                 <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
@@ -947,6 +834,23 @@ export default function ArtifactPanel({
                   {rowInner}
                 </button>
               )}
+              {mode === "idle" && onToggleArtifactAttachment && artifact.downloadAvailable ? (
+                <button
+                  type="button"
+                  className={styles.attach}
+                  disabled={attachmentSelectionBusy}
+                  aria-label={attached ? `Remove ${artifact.title} from chat` : `Attach ${artifact.title} to chat`}
+                  title={attached ? "Remove from chat" : "Attach to chat"}
+                  aria-pressed={attached}
+                  onClick={() => {
+                    void Promise.resolve().then(() => onToggleArtifactAttachment(artifact)).catch(cause => {
+                      setError(cause instanceof Error ? cause.message : "Could not attach this artifact.");
+                    });
+                  }}
+                >
+                  {attaching ? "…" : attached ? "✓" : "+"}
+                </button>
+              ) : null}
             </div>
           );
         })}

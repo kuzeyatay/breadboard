@@ -1,0 +1,15 @@
+/* Keep the inspector close control above its content in the 3D viewer. */
+.graph [data-topology-dimension="3d"] ~ .thought-inspector > .thought-inspector-close {
+  z-index: 1;
+}
+
+.graph .thought-topology-filter:has(> .thought-topology-spin) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.graph .thought-topology-filter > .thought-topology-spin[aria-pressed="true"] {
+  border-color: var(--secondary);
+}

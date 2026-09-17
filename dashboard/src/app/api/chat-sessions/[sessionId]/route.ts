@@ -6,6 +6,8 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
+import { ensureGardenResponseBranches, normalizeGardenResponseBranches, writeGardenResponseBranches } from "@/lib/conversations/garden-response-branches";
+import { chatMessagesBelongToConversation } from "@/lib/conversations/chat-message-ownership";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import {
   normalizeChatMessageAttachments,
@@ -64,6 +66,7 @@ interface QuartzInlineSelectionReference {
 interface ChatMessage {
   id?: string;
   clientMessageId?: string;
+  branchGroupId?: string;
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
@@ -156,6 +159,8 @@ function mergeRuntimeMetadata(
   if (message.internalAgentContinuation === true) {
     metadata.internalAgentContinuation = true;
   }
+  if (message.clientMessageId) metadata.clientMessageId = message.clientMessageId;
+  if (message.branchGroupId) metadata.branchGroupId = message.branchGroupId;
   if (message.clarificationAnswer === true) {
     metadata.clarificationAnswer = true;
   }
@@ -392,6 +397,9 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(record.clientMessageId)
         ? { clientMessageId: record.clientMessageId }
         : {}),
+      ...(typeof record.branchGroupId === "string" && record.branchGroupId.trim()
+        ? { branchGroupId: record.branchGroupId.trim().slice(0, 200) }
+        : {}),
       role,
       content,
       ...(role === "user" && record.internalAgentContinuation === true
@@ -486,6 +494,11 @@ export async function PATCH(
   if (body.messages !== undefined && !messages) {
     return NextResponse.json({ error: "Invalid messages" }, { status: 400 });
   }
+  const branchGroups = body.branchGroups === undefined ? undefined
+    : normalizeGardenResponseBranches(body.branchGroups, normalizeMessages);
+  if (branchGroups === null) {
+    return NextResponse.json({ error: "Invalid response branches" }, { status: 400 });
+  }
   // A Garden runtime turn is server-owned after dispatch. If its browser SSE
   // viewer disappears, that renderer may still attempt one final compatibility
   // PATCH carrying a transport exception such as "network error". Ignore that
@@ -521,7 +534,7 @@ export async function PATCH(
   // loose in the other.
   const needsConversation =
     Boolean(title) || messagesToPersist !== undefined || body.pinned !== undefined ||
-    body.highlight !== undefined;
+    body.highlight !== undefined || body.branchGroups !== undefined;
   let conversation = needsConversation
     ? ensureConversationForLegacyChatSession(sessionAccess.id, userId)
     : null;
@@ -530,6 +543,20 @@ export async function PATCH(
     clientMessageId: string;
     content: string;
   }> = [];
+  if (conversation && messagesToPersist && !chatMessagesBelongToConversation(
+    db, conversation.id, userId, messagesToPersist,
+  )) {
+    return NextResponse.json(
+      { error: "These messages belong to another chat. Reload this chat before saving." },
+      { status: 409 },
+    );
+  }
+  const branchConversationId = conversation?.id;
+  if (branchConversationId && branchGroups && Object.values(branchGroups).some(group => group &&
+    group.variants.some(variant => !chatMessagesBelongToConversation(db, branchConversationId, userId, variant)))) {
+    return NextResponse.json({ error: "These response branches belong to another chat." }, { status: 409 });
+  }
+  if (branchGroups) ensureGardenResponseBranches(db);
   const canonicalByClientRole = new Map<string, {
     id: number;
     client_message_id: string;
@@ -557,6 +584,7 @@ export async function PATCH(
     }
   }
   const update = db.transaction(() => {
+    if (branchGroups) writeGardenResponseBranches(db, sessionAccess.id, branchGroups);
     if (title && conversation) {
       // Garden Chat and Terminal are two views of the same canonical
       // conversation. Use the canonical rename so both stores change together,
@@ -572,11 +600,13 @@ export async function PATCH(
 
     if (messagesToPersist) {
       const runtimeMetadata = db.prepare(
-        `SELECT role, content, canonical_message_id, tool_calls, permission_decisions, runtime_error, runtime_status, created_at
+        `SELECT role, content, sources, token_usage, canonical_message_id, tool_calls, permission_decisions, runtime_error, runtime_status, created_at
          FROM chat_messages WHERE session_id = ? ORDER BY order_index`,
       ).all(sessionAccess.id) as Array<{
         role: string;
         content: string;
+        sources: string | null;
+        token_usage: string | null;
         canonical_message_id: number | null;
         tool_calls: string | null;
         permission_decisions: string | null;
@@ -648,6 +678,18 @@ export async function PATCH(
           });
         }
       });
+      // A finishing main stream can hold a snapshot from before a concurrent
+      // highlight question. Its compatibility save must not erase that turn.
+      let nextOrder = messagesToPersist.length;
+      for (const prior of runtimeMetadata) {
+        if (JSON.parse(prior.tool_calls || "{}").textSelection?.mode !== "inline" || prior.canonical_message_id === null) continue;
+        const present = db.prepare("SELECT 1 FROM chat_messages WHERE session_id = ? AND canonical_message_id = ?")
+          .get(sessionAccess.id, prior.canonical_message_id);
+        if (present) continue;
+        insert.run(sessionAccess.id, prior.role, prior.content, prior.sources, prior.token_usage,
+          prior.tool_calls, prior.permission_decisions, prior.runtime_error, prior.runtime_status,
+          nextOrder++, prior.created_at, prior.canonical_message_id);
+      }
     }
   });
 

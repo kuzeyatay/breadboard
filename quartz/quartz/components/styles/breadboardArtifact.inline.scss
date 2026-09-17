@@ -1,0 +1,29 @@
+.breadboard-artifact-card {
+  margin: 1.5rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--light);
+
+  .breadboard-artifact-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.9rem 1rem; }
+  strong { flex: 1; min-width: 0; font-size: 0.95rem; overflow-wrap: anywhere; }
+  .breadboard-artifact-kind { color: var(--secondary); font-size: 0.72rem; font-weight: 600; }
+  .breadboard-artifact-status { display: block; color: var(--gray); font-size: 0.85rem; padding: 0 1rem 0.85rem; }
+  .breadboard-artifact-status:empty { display: none; }
+  button {
+    flex-shrink: 0;
+    border: 1px solid var(--lightgray);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--secondary);
+    padding: 0.5rem 0.65rem;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.8rem;
+  }
+  button[hidden] { display: none; }
+  > button { margin: 0 1rem 1rem; }
+  button:focus-visible { outline: 2px solid var(--secondary); outline-offset: 2px; }
+  button:active { transform: scale(0.97); }
+  .breadboard-artifact-preview { display: block; width: 100%; border: 0; border-top: 1px solid var(--lightgray); background: white; }
+}

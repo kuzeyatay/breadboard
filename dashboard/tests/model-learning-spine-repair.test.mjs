@@ -155,6 +155,9 @@ describe("learning-spine targeted model repair", () => {
       canonicalEvidenceByUnit: { U1: [{ id: "anchor-U1", exactText: "Gauss law" }] },
     });
     assert.match(request.system, /COMPLETE learning-unit record/);
+    assert.match(request.system, /Estimate each unit independently/);
+    assert.match(request.system, /advisory planning estimates, not minimums or caps/);
+    assert.doesNotMatch(request.system, /"expectedWordRange":\s*\[700,\s*1100\]/);
     assert.match(request.system, /inside_concept_explanation/);
     assert.match(request.system, /semanticConcepts/);
     assert.match(request.system, /knowledgeClaims/);

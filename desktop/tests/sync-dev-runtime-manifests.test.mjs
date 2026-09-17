@@ -7,6 +7,11 @@ import test from "node:test";
 import { syncDevRuntimeManifests } from "../scripts/sync-dev-runtime-manifests.mjs";
 
 const hotBinContents = Object.freeze({
+  "codex.exe": "codex\n",
+  "codex-code-mode-host.exe": "codex host\n",
+  "codex-command-runner.exe": "codex runner\n",
+  "codex-windows-sandbox-setup.exe": "codex sandbox setup\n",
+  "rg.exe": "ripgrep\n",
   "runtime-supervisor.exe": "runtime supervisor\n",
   "scriberr.exe": "scriberr\n",
   "ffmpeg.exe": "ffmpeg\n",

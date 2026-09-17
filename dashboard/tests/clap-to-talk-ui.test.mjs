@@ -30,6 +30,7 @@ test('real worklet, foreground handoff, composer targeting and automatic voice i
   await page.evaluate(()=>window.finishPrepare());
   await page.waitForFunction(()=>window.greetings.length===1&&Boolean(window.finishGreeting));
   assert.equal(await page.evaluate(()=>window.greetings[0].provider),'local');
+  assert.equal(await page.locator('.voice-widget-message-assistant').innerText(),await page.evaluate(()=>window.greetings[0].text),'caption matches the spoken greeting');
   const qa=path.join(h.root,'.tmp-clap-controls-qa');fs.mkdirSync(qa,{recursive:true});
   await page.screenshot({path:path.join(qa,'voice-current-tab.png'),animations:'disabled'});
   assert.equal(await page.evaluate(()=>window.captures.filter(c=>c.stream.getAudioTracks()[0].readyState==='live').length),0,'greeting finishes before capture');
@@ -62,6 +63,47 @@ test('real worklet, foreground handoff, composer targeting and automatic voice i
  } finally{await h.close();}
 });
 
+test('claps open fresh voice sessions after clap-started and manually opened voice closes', {timeout:45000}, async()=>{
+ const h=await clapBrowser();
+ h.fixture.preferences={...h.fixture.preferences,enabled:true,resumeOnStartup:true};
+ h.fixture.action={prompt:'Open voice',action:{kind:'voice'}};
+ try{
+  const source=await h.context.newPage(),errors=[];
+  // A fixed random draw would repeat in every fresh window without persisted history.
+  await h.context.addInitScript(()=>{Math.random=()=>0;});
+  let previousGreeting=null;
+  source.on('pageerror',error=>errors.push(error.message));
+  await source.goto(h.url+'/new-tab');
+  for(const trigger of ['clap','clap','manual','clap']){
+   await source.waitForFunction(()=>window.clapSnapshot?.().status==='listening');
+   const opened=source.waitForEvent('popup');
+   await source.evaluate(trigger=>trigger==='clap'?window.emitClaps():window.openVoiceWindow(),trigger);
+   const voice=await opened;voice.on('pageerror',error=>errors.push(error.message));
+   await voice.getByRole('dialog',{name:'Voice conversation'}).waitFor();
+   await voice.waitForFunction(()=>window.prepares===1);
+   if(trigger!=='manual'){
+    await voice.evaluate(()=>window.finishPrepare());
+    await voice.waitForFunction(()=>window.greetings.length===1&&Boolean(window.finishGreeting));
+    const greeting=await voice.evaluate(()=>window.greetings[0].text);
+    assert.notEqual(greeting,previousGreeting,'fresh voice windows do not repeat the previous greeting');
+    assert.equal(await voice.locator('.voice-widget-message-assistant').innerText(),greeting);
+    previousGreeting=greeting;
+    await voice.evaluate(()=>window.finishGreeting());
+    await voice.getByRole('button',{name:'Pause listening'}).waitFor();
+   }
+   // Also close a manual session during preparation, before capture has begun.
+   await voice.getByRole('button',{name:'Close voice mode'}).click();
+   await voice.getByRole('dialog',{name:'Voice conversation'}).waitFor({state:'hidden'});
+   await voice.waitForFunction(()=>window.captures.every(c=>c.stream.getTracks().every(t=>t.readyState==='ended')));
+   await voice.close();await source.bringToFront();
+   await source.waitForFunction(()=>window.clapSnapshot().status==='listening');
+   assert.equal(await source.evaluate(()=>window.captures.filter(c=>c.stream.getTracks()[0].readyState==='live').length),1);
+  }
+  assert.equal(await source.evaluate(()=>window.clapSnapshot().gestures),3);
+  assert.deepEqual(errors,[]);
+ }finally{await h.close();}
+});
+
 test('OpenAI greets in the conversation session and provider failure never uses system speech', {timeout:30000}, async()=>{
  const h=await clapBrowser();h.fixture.speechProvider='chatgpt';
  try{
@@ -69,6 +111,7 @@ test('OpenAI greets in the conversation session and provider failure never uses 
   await page.evaluate(()=>window.dispatchSpeech('voice'));await page.waitForFunction(()=>window.prepares===1);await page.evaluate(()=>window.finishPrepare());
   await page.waitForFunction(()=>window.greetings.length===1);
   assert.equal(await page.evaluate(()=>window.greetings[0].provider),'chatgpt');assert.equal(await page.evaluate(()=>window.voiceConnections),1);
+  assert.equal(await page.locator('.voice-caption-text').innerText(),await page.evaluate(()=>window.greetings[0].text),'OpenAI speaks the displayed greeting');
   assert.equal(await page.evaluate(()=>window.voiceListening),false,'OpenAI microphone input muted during greeting');
   await page.evaluate(()=>window.finishGreeting());await page.waitForFunction(()=>window.voiceListening===true);
   assert.equal(h.fixture.requests.includes('/api/speech/synthesize'),false,'no Voicebox fallback from OpenAI');

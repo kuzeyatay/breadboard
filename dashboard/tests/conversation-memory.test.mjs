@@ -95,6 +95,129 @@ function finishTurn(conversationRow, clientMessageId, surface, userText, assista
   return reserved;
 }
 
+test("compacting Ask here turns preserves the main conversation goal", () => {
+  const chat = conversation();
+  const goal = "Review the whole architecture, including storage and authentication.";
+  finishTurn(chat, "main-goal", "dashboard_terminal", goal);
+  for (let index = 0; index < 24; index += 1) {
+    const clientMessageId = `inline-aside-${index}`;
+    store.reserveConversationTurn({
+      conversation: chat, clientMessageId, surface: "dashboard_terminal", content: "Why cache this?",
+      metadata: { textSelection: {
+        id: `inline:${index}`, mode: "inline", sourceMessageId: "msg_2", start: 0, end: 7, quote: "caching",
+      } },
+    });
+    store.completeAssistantMessage({ conversationId: chat.id, clientMessageId, content: "A local caching explanation." });
+  }
+  memory.compactConversationMemoryIfNeeded(chat.id);
+  assert.equal(memory.loadConversationMemoryState(chat.id).workingState.currentGoal, goal);
+});
+
+const notesWithVisualDescriptions = "what i was trying to do was to write an intuitive and detailed and no maths introduction to electromagnetic fields and the general misconceptions about the topic and explain electricity, in the attahced pdf are three pages of my notes which, based on this chat, you must write the rest, if a visual is needed , add that to the text you are writing, inside partantheses indicating what the visual should be";
+
+test("a task's formatting request survives compaction as scoped history, not a decision", () => {
+  const chat = conversation(1, "Question about shared meaning");
+  const first = finishTurn(chat, "notes-request", "garden_chat", notesWithVisualDescriptions,
+    "The introduction. (Visual: Draw the circuit.)");
+  finishTurn(chat, "example-choice", "garden_chat", "We decided to use the copper wire example.");
+  finishTurn(chat, "one-off-preference", "garden_chat", "I prefer a table for this comparison.");
+  finishTurn(chat, "standing-preference", "garden_chat", "For future explanations, always include visual descriptions in parentheses.");
+  for (let index = 0; index < 18; index += 1) {
+    finishTurn(chat, `followup-${index}`, "garden_chat", "Explain how electric current works.");
+  }
+  memory.compactConversationMemoryIfNeeded(chat.id);
+  const saved = memory.loadConversationMemoryState(chat.id);
+  assert.deepEqual(saved.workingState.decisions, ["We decided to use the copper wire example."]);
+  assert.deepEqual(saved.workingState.temporaryPreferences, []);
+  const historical = saved.workingState.historicalInstructions;
+  const visual = historical.find((entry) => entry.sourceMessageId === first.userMessage.id);
+  assert.equal(visual.content, notesWithVisualDescriptions);
+  assert.equal(visual.sourceOrder, first.userMessage.order_index);
+  assert.equal(visual.truncated, false, "the scope at the end must survive the old 320-character cutoff");
+  assert.ok(historical.some((entry) => entry.content === "I prefer a table for this comparison."));
+  assert.ok(historical.some((entry) => entry.content === "For future explanations, always include visual descriptions in parentheses."),
+    "explicit future scope must survive so the model can honor it");
+  assert.doesNotMatch(saved.summary, /^Current goal:/m, "a compacted old task is not the active task");
+  const bundle = memory.loadConversationMemoryBundle({ conversation: chat, query: "Explain the transient in detail." });
+  const prompt = memory.composeMemoryContext(bundle);
+  assert.match(prompt, /# instruction_scope/);
+  assert.match(prompt, /continues or revises the same deliverable/);
+  assert.match(prompt, /only when the user's wording establishes that scope/);
+  assert.equal(db.prepare("SELECT content FROM conversation_messages WHERE id = ?").get(first.userMessage.id).content,
+    notesWithVisualDescriptions, "the exact transcript stays intact");
+});
+
+test("existing keyword decisions are upgraded with their original source before the next prompt", () => {
+  const chat = conversation();
+  const turn = finishTurn(chat, "old-notes", "garden_chat", notesWithVisualDescriptions);
+  const initial = memory.loadConversationMemoryState(chat.id);
+  const oldState = { ...initial.workingState, currentGoal: "Continue my introduction",
+    decisions: [notesWithVisualDescriptions.slice(0, 320)], temporaryPreferences: ["I prefer a table for this answer."] };
+  delete oldState.instructionScopeVersion;
+  db.prepare(`UPDATE conversation_memory_state
+    SET working_state = ?, rolling_summary = ?, summarized_through_order = ?, version = 9
+    WHERE conversation_id = ?`).run(JSON.stringify(oldState), "Decisions:\n- " + notesWithVisualDescriptions.slice(0, 320),
+      turn.assistantMessage.order_index, chat.id);
+  const migrated = memory.loadConversationMemoryState(chat.id);
+  assert.deepEqual(migrated.workingState.decisions, []);
+  assert.deepEqual(migrated.workingState.temporaryPreferences, []);
+  assert.equal(migrated.workingState.instructionScopeVersion, 1);
+  assert.equal(migrated.version, 10);
+  assert.equal(migrated.workingState.historicalInstructions[0].content, notesWithVisualDescriptions);
+  assert.equal(migrated.workingState.historicalInstructions[0].sourceMessageId, turn.userMessage.id);
+  assert.equal(migrated.workingState.historicalInstructions[1].sourceMessageId, null);
+  assert.equal(migrated.workingState.historicalInstructions[1].truncated, true);
+  assert.doesNotMatch(migrated.summary, /^Decisions:/m);
+  assert.deepEqual(memory.loadConversationMemoryState(chat.id), migrated, "migration is idempotent");
+});
+
+test("cleared memory stays cleared and exact history still carries the scoping policy", () => {
+  const chat = conversation();
+  finishTurn(chat, "old-request", "garden_chat", notesWithVisualDescriptions);
+  memory.loadConversationMemoryState(chat.id);
+  db.prepare(`UPDATE conversation_memory_state SET rolling_summary = '', working_state = '{}',
+    summarized_through_order = -1, version = 7 WHERE conversation_id = ?`).run(chat.id);
+  const cleared = memory.loadConversationMemoryState(chat.id);
+  assert.equal(cleared.summary, "");
+  assert.equal(cleared.version, 7);
+  assert.deepEqual(cleared.workingState.historicalInstructions, []);
+  const prompt = memory.composeMemoryContext(memory.loadConversationMemoryBundle({ conversation: chat, query: "Why?" }),
+    { includeConversationState: false });
+  assert.match(prompt, /# instruction_scope/);
+  assert.doesNotMatch(prompt, /# rolling_conversation_summary|# structured_working_state/);
+  assert.match(prompt, /inside partantheses/);
+});
+
+test("ambiguous truncated legacy instructions cannot acquire an invented source or scope", () => {
+  const chat = conversation();
+  const prefix = "You must use this presentation format. " + "Background detail. ".repeat(20);
+  finishTurn(chat, "local-request", "garden_chat", prefix + "Only for this draft.");
+  const second = finishTurn(chat, "future-request", "garden_chat", prefix + "For all future replies.");
+  const initial = memory.loadConversationMemoryState(chat.id);
+  db.prepare(`UPDATE conversation_memory_state SET working_state = ?, summarized_through_order = ?
+    WHERE conversation_id = ?`).run(JSON.stringify({ ...initial.workingState, decisions: [prefix.slice(0, 320)] }),
+      second.assistantMessage.order_index, chat.id);
+  const migrated = memory.loadConversationMemoryState(chat.id);
+  assert.deepEqual(migrated.workingState.decisions, []);
+  assert.equal(migrated.workingState.historicalInstructions[0].sourceMessageId, null);
+  assert.equal(migrated.workingState.historicalInstructions[0].truncated, true);
+  assert.equal(migrated.workingState.historicalInstructions[0].content, prefix.slice(0, 320).trim());
+});
+
+test("a long decision keeps its trailing task limitation instead of saving an unconditional prefix", () => {
+  const chat = conversation();
+  const request = "We decided to use visual descriptions. " + "This explains our drafting approach. ".repeat(12) + "Only for this introduction, not later explanations.";
+  finishTurn(chat, "long-decision", "garden_chat", request);
+  for (let index = 0; index < 18; index += 1) {
+    finishTurn(chat, `later-question-${index}`, "garden_chat", "Explain charge.");
+  }
+  memory.compactConversationMemoryIfNeeded(chat.id);
+  const saved = memory.loadConversationMemoryState(chat.id);
+  assert.deepEqual(saved.workingState.decisions, []);
+  assert.equal(saved.workingState.historicalInstructions[0].content, request);
+  assert.equal(saved.workingState.historicalInstructions[0].truncated, false);
+});
+
 test("a proactive assistant message can open the canonical conversation", () => {
   const chat = conversation(1, "Telegram reminder");
   const first = store.appendConversationAssistantMessage({
@@ -188,6 +311,99 @@ test("a delivered WhatsApp reminder is bound to the conversation containing it",
   assert.match(message.content, /Starting now: Control systems/);
   assert.equal(JSON.parse(message.metadata).externalMessagingChannel, "whatsapp");
 });
+
+for (const channel of ["telegram", "whatsapp"]) {
+  const target = { chatId: channel === "telegram" ? "daily-123" : "31655500000@s.whatsapp.net", label: "Alice" };
+  const channelStore = () => channel === "telegram" ? getTelegramStore() : getWhatsAppStore();
+  const send = (text, extra = {}) => messaging.recordDeliveredOwnerMessage({
+    channel, userId: 1, target, text, kind: "reminder", ...extra,
+  });
+
+  test(`${channel}: reminders, user messages and replies share one durable daily transcript`, async () => {
+    const first = await send("Morning reminder");
+    finishTurn(first, "phone-question", "dashboard_terminal", "Where is the class?", "Room 12");
+    const second = await send("Afternoon reminder");
+    assert.equal(second.id, first.id);
+    const review = await messaging.recordDeliveredOwnerExchange({
+      channel, userId: 1, chatId: target.chatId, userText: "My review answer",
+      assistantText: "Correct", clientMessageId: "phone-review",
+    });
+    assert.equal(review.id, first.id);
+    const third = await send("Evening reminder");
+    assert.equal(third.id, first.id);
+    assert.equal(channelStore().getChat(target.chatId).conversation_id, first.id);
+    assert.deepEqual(store.listConversationMessages(first.id).map(message => [message.role, message.content]), [
+      ["assistant", "Morning reminder"],
+      ["user", "Where is the class?"],
+      ["assistant", "Room 12"],
+      ["assistant", "Afternoon reminder"],
+      ["user", "My review answer"],
+      ["assistant", "Correct"],
+      ["assistant", "Evening reminder"],
+    ]);
+    assert.equal(store.listConversationsForUser(1).length, 1);
+  });
+
+  test(`${channel}: outgoing messages reuse a user-started chat and respect an explicit new chat`, async () => {
+    // Seed the contact, then mirror the ordinary inbound and /new bindings.
+    await send("First reminder");
+    const userStarted = conversation(1, "My own title");
+    finishTurn(userStarted, "user-started", "dashboard_terminal", "Hello", "Hi");
+    channelStore().bindConversation(target.chatId, userStarted.id);
+    const delivered = await send("Later reminder");
+    assert.equal(delivered.id, userStarted.id);
+    assert.equal(delivered.title, "My own title");
+    assert.equal(store.listConversationMessages(userStarted.id).length, 3);
+    const explicitNew = conversation(1, "Fresh chat");
+    channelStore().bindConversation(target.chatId, explicitNew.id);
+    assert.equal((await send("After /new")).id, explicitNew.id);
+  });
+
+  test(`${channel}: the next local day starts a new transcript for outgoing messages and review replies`, async () => {
+    const first = await send("Yesterday's reminder");
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    db.prepare("UPDATE conversations SET created_at = ? WHERE id = ?").run(yesterday.toISOString(), first.id);
+    const today = await send("Today's reminder");
+    assert.notEqual(today.id, first.id);
+    assert.equal((await send("Another reminder today")).id, today.id);
+    assert.deepEqual(store.listConversationMessages(first.id).map(message => message.content), ["Yesterday's reminder"]);
+    db.prepare("UPDATE conversations SET created_at = ? WHERE id = ?").run(yesterday.toISOString(), today.id);
+    const review = await messaging.recordDeliveredOwnerExchange({
+      channel, userId: 1, chatId: target.chatId, userText: "Answer today",
+      assistantText: "Feedback today", clientMessageId: "review-new-day",
+    });
+    assert.notEqual(review.id, today.id);
+    assert.equal((await send("Reminder after the review")).id, review.id);
+  });
+
+  test(`${channel}: concurrent deliveries and a completed review preserve an active user turn`, async () => {
+    const deliveries = await Promise.all(["First", "Second", "Third"].map(text => send(text)));
+    assert.equal(new Set(deliveries.map(item => item.id)).size, 1);
+    const chat = deliveries[0];
+    store.reserveConversationTurn({
+      conversation: chat, clientMessageId: "still-running", surface: "dashboard_terminal", content: "Research this",
+    });
+    await send("Reminder during research");
+    await messaging.recordDeliveredOwnerExchange({
+      channel, userId: 1, chatId: target.chatId, userText: "Review during research",
+      assistantText: "Review feedback", clientMessageId: "concurrent-review",
+    });
+    const messages = store.listConversationMessages(chat.id);
+    assert.equal(messages.length, 8);
+    assert.equal(messages.find(message => message.client_message_id === "still-running" && message.role === "assistant").status, "pending");
+    assert.equal(messages.filter(message => message.status === "pending").length, 1);
+    assert.equal(new Set(messages.map(message => message.order_index)).size, messages.length);
+  });
+
+  test(`${channel}: daily continuity stays within the recipient and account`, async () => {
+    const first = await send("Alice's reminder");
+    const other = await send("Separate recipient", { target: { chatId: target.chatId + "-other", label: "Other chat" } });
+    assert.notEqual(other.id, first.id);
+    await assert.rejects(() => send("Wrong account", { userId: 2 }), /different Breadboard account/);
+    assert.equal(store.listConversationMessages(first.id).length, 1);
+  });
+}
 
 test("a failed turn keeps the tokens it spent", () => {
   const chat = conversation();
@@ -983,3 +1199,17 @@ function seedLegacySchema(database) {
     );
   `);
 }
+
+
+test("mentioning a question's keywords never resolves it, including objections without punctuation", () => {
+  const chat = conversation(1, "Explanation continuity");
+  finishTurn(chat, "initial-question", "garden_chat", "Why does redistribution change the electric field?",
+    "Redistribution changes the electric field through adjustment.");
+  finishTurn(chat, "still-confused", "garden_chat", "what adjustment bro you cant just say the adjustment before like telling what happens",
+    "The adjustment is redistribution.");
+  for (let index = 0; index < 25; index += 1) finishTurn(chat, `padding-${index}`, "garden_chat", "Continue.", "Continuing.");
+  memory.compactConversationMemoryIfNeeded(chat.id);
+  const state = memory.loadConversationMemoryState(chat.id);
+  assert.ok(state.workingState.openQuestions.some(q => q.includes("Why does redistribution")));
+  assert.ok(state.workingState.openQuestions.some(q => q.includes("what adjustment bro")));
+});

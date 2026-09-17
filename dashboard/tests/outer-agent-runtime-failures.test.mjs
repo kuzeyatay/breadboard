@@ -3,7 +3,25 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { outerAgentFailureMessage } from "../src/lib/runtime-v2/outer-agent-failure.ts";
+import { outerAgentFailureMessage, outerAgentInterruptionEvent } from "../src/lib/runtime-v2/outer-agent-failure.ts";
+
+test("restart interruptions become a terminal event after the last worker event", () => {
+  for (const state of ["interrupted", "uncertain"]) {
+    assert.deepEqual(outerAgentInterruptionEvent({
+      state, lastWorkerSequence: 696, finishedAt: 1788725908852, updatedAt: 1788725908852,
+    }), {
+      sequenceNumber: 697, type: "run.aborted",
+      payload: { interrupted: true, summary: "Interrupted" },
+      at: "2026-09-06T20:18:28.852Z",
+    });
+  }
+  for (const state of ["running", "queued", "succeeded", "failed", "cancelled"]) {
+    assert.equal(outerAgentInterruptionEvent({ state }), null);
+  }
+  assert.equal(outerAgentInterruptionEvent({
+    state: "uncertain", lastWorkerSequence: 10, updatedAt: 1788725908852,
+  }, 700).sequenceNumber, 701, "batched checkpoints must not put the interruption behind the client cursor");
+});
 
 function failedJob(overrides = {}) {
   return {

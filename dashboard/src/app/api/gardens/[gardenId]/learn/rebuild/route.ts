@@ -7,6 +7,7 @@ import {
   isLearnRouteConflict,
   parseLearnUserInstruction,
   readLearnRouteJsonObject,
+  resolveLearnRequestModel,
 } from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
@@ -42,7 +43,7 @@ export async function POST(
         ? body.syllabusSourceId.trim()
         : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const model = selectedModelForUser(userId);
+    const model = resolveLearnRequestModel(body, selectedModelForUser(userId));
     const execution = await executeLearnOperationForRoute({
       operation: "rebuild",
       gardenId: cluster.slug,

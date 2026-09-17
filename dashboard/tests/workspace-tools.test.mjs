@@ -42,6 +42,18 @@ function denies(run, code) {
   assert.throws(run, (error) => error instanceof WorkspaceFileError && error.code === code);
 }
 
+test("Windows extended runtime paths support the complete workspace file loop", { skip: process.platform !== "win32" }, () => {
+  const root = makeWorkspace();
+  try {
+    const extended = path.toNamespacedPath(root);
+    writeWorkspaceFile(extended, { path: "notes/field.txt", content: "electric field" });
+    assert.match(JSON.stringify(readWorkspaceFile(extended, { path: "notes/field.txt" })), /electric field/);
+    assert.match(JSON.stringify(listWorkspaceFiles(extended, { glob: "**/*" })), /field.txt/);
+    assert.match(JSON.stringify(searchWorkspaceFiles(extended, { query: "electric" })), /field.txt/);
+    denies(() => readWorkspaceFile(extended, { path: "../outside.txt" }), "workspace_path_denied");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 // ── wiring ──────────────────────────────────────────────────────────────────
 
 test("the family exposes exactly the intended tools", () => {

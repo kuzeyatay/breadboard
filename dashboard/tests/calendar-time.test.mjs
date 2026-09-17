@@ -32,6 +32,8 @@ import {
   layoutTimedDay,
   rangeForView,
   shiftAnchor,
+  TIME_GRID_HOUR_HEIGHT_REM,
+  TIME_GRID_MIN_BLOCK_HEIGHT_REM,
 } from "../src/lib/calendar/layout.ts";
 import { formatRangeTitle, formatTimeRange } from "../src/lib/calendar/format.ts";
 
@@ -310,6 +312,33 @@ test("overlapping meetings split into columns, isolated ones stay full width", (
 
   // 09:00 is 540 of 1440 minutes into the day.
   assert.equal(Number(byId.get(1).top.toFixed(4)), Number((540 / 1440).toFixed(4)));
+});
+
+test("short events show both labels without covering nearby events", () => {
+  const events = [
+    occurrence(1, "2026-08-03T11:00", "2026-08-03T11:30"),
+    occurrence(2, "2026-08-03T11:30", "2026-08-03T11:35"),
+    occurrence(3, "2026-08-03T11:50", "2026-08-03T12:05"),
+    occurrence(4, "2026-08-03T14:00", "2026-08-03T15:00"),
+    occurrence(5, "2026-08-03T23:59", "2026-08-03T23:59"),
+  ];
+  const original = structuredClone(events);
+  const blocks = layoutTimedDay(events, "2026-08-03");
+  for (const block of blocks) {
+    const heightRem = block.height * 24 * TIME_GRID_HOUR_HEIGHT_REM;
+    assert.ok(heightRem >= TIME_GRID_MIN_BLOCK_HEIGHT_REM - 1e-9);
+    assert.equal(block.top, minutesIntoDay(block.occurrence.start) / 1440);
+  }
+  for (const [index, a] of blocks.entries()) {
+    for (const b of blocks.slice(index + 1)) {
+      const overlapsVertically = a.top < b.top + b.height && b.top < a.top + a.height;
+      if (overlapsVertically) assert.notEqual(a.column, b.column);
+    }
+  }
+  assert.equal(blocks[0].column, blocks[2].column, "a lane is reusable when the card ends");
+  assert.equal(blocks[3].columns, 1, "separate events retain the full day width");
+  assert.equal(blocks[3].height, 60 / 1440, "longer events keep their duration height");
+  assert.deepEqual(events, original, "display sizing never changes scheduled times");
 });
 
 test("a meeting crossing midnight is clipped to each day it shows on", () => {

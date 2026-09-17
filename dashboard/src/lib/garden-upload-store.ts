@@ -46,10 +46,35 @@ export interface GardenUploadTask {
   steps: Record<string, string>;
   tokenUsage: Record<string, IngestTokenUsage>;
   visionErrors: Record<string, string>;
+  /**
+   * Per file, the retained-upload record a failure left behind (the server
+   * kept the bytes and request), so the failed row can offer Resume.
+   */
+  recoveryIds: Record<string, string>;
+  /** Per file, the record this task is replaying instead of uploading bytes. */
+  resumingRecoveryIds: Record<string, string>;
   options: GardenUploadTaskOptions;
   state: GardenUploadTaskState;
   startedAt: number;
   completedAt: number | null;
+}
+
+/** What the garden's recovery route lists for a failed upload. */
+export interface GardenUploadRecovery {
+  recoveryId: string;
+  filename: string;
+  sizeBytes: number;
+  failedAt: number;
+  failure: { message: string; kind: "provider-quota" | "runtime" };
+  lastStep: string;
+  request: {
+    parseWithVlm: boolean;
+    parseWithAnydoc: boolean;
+    isHandwriting: boolean;
+    generateMap: boolean;
+    model: string | null;
+  };
+  resumedJobId: string | null;
 }
 
 export type GardenUploadToast = {
@@ -67,6 +92,8 @@ export interface GardenUploadSink {
   addToast: (toast: GardenUploadToast) => void;
   refreshAfterFile: () => void;
   refreshAfterTask: () => void;
+  /** A failure kept a recovery record, or a resume settled one. */
+  refreshRecoveries?: () => void;
   isTaskStatusVisible: (taskId: string) => boolean;
 }
 
@@ -135,6 +162,17 @@ function taskStatusVisible(clusterSlug: string, taskId: string): boolean {
   return sinks.get(clusterSlug)?.isTaskStatusVisible(taskId) ?? false;
 }
 
+function sinkRefreshRecoveries(clusterSlug: string): void {
+  sinks.get(clusterSlug)?.refreshRecoveries?.();
+}
+
+function recoveryIdFromEvent(event: Record<string, unknown>): string | null {
+  const recoveryId = event.recoveryId;
+  return typeof recoveryId === "string" && /^rec_[0-9a-f]{32}$/u.test(recoveryId)
+    ? recoveryId
+    : null;
+}
+
 function updateTask(
   taskId: string,
   update: (task: GardenUploadTask) => GardenUploadTask,
@@ -196,29 +234,65 @@ export function startGardenUploadTask(input: {
   files: File[];
   options: GardenUploadTaskOptions;
 }): string {
+  return startTask(input.clusterSlug, [...input.files], input.options, {});
+}
+
+/**
+ * Replay a failed upload from the copy the server kept. No bytes leave the
+ * browser: the task carries an empty placeholder File for the row, and the
+ * resume route streams the retained document into a new Runtime job. The
+ * request options are the record's; the model is the person's current pick.
+ */
+export function resumeGardenUploadRecovery(input: {
+  clusterSlug: string;
+  recovery: GardenUploadRecovery;
+}): string {
+  const { recovery } = input;
+  const placeholder = new File([], recovery.filename);
+  return startTask(
+    input.clusterSlug,
+    [placeholder],
+    {
+      label: "",
+      handwriting: recovery.request.isHandwriting,
+      parseWithVlm: recovery.request.parseWithVlm,
+      parseWithAnydoc: recovery.request.parseWithAnydoc,
+      generateMap: recovery.request.generateMap,
+    },
+    { [gardenUploadFileKey(placeholder)]: recovery.recoveryId },
+  );
+}
+
+function startTask(
+  clusterSlug: string,
+  files: File[],
+  options: GardenUploadTaskOptions,
+  resumingRecoveryIds: Record<string, string>,
+): string {
   const taskId = crypto.randomUUID();
-  const files = [...input.files];
   const statuses: Record<string, GardenUploadFileStatus> = {};
   for (const file of files) statuses[gardenUploadFileKey(file)] = "pending";
   tasks = [
     ...tasks,
     {
       id: taskId,
-      clusterSlug: input.clusterSlug,
+      clusterSlug,
       files,
       statuses,
       errors: {},
       steps: {},
       tokenUsage: {},
       visionErrors: {},
-      options: input.options,
+      recoveryIds: {},
+      resumingRecoveryIds,
+      options,
       state: "uploading",
       startedAt: Date.now(),
       completedAt: null,
     },
   ];
   notify();
-  void runUploadTask(taskId, input.clusterSlug, files, input.options);
+  void runUploadTask(taskId, clusterSlug, files, options, resumingRecoveryIds);
   return taskId;
 }
 
@@ -227,6 +301,7 @@ async function runUploadTask(
   clusterSlug: string,
   files: File[],
   options: GardenUploadTaskOptions,
+  resumingRecoveryIds: Record<string, string> = {},
 ): Promise<void> {
   const abortController = new AbortController();
   abortControllers.set(taskId, abortController);
@@ -261,6 +336,31 @@ async function runUploadTask(
       ...task,
       visionErrors: update(task.visionErrors),
     }));
+  const setTaskRecoveryId = (key: string, recoveryId: string | null) =>
+    updateTask(taskId, (task) => {
+      const next = { ...task.recoveryIds };
+      if (recoveryId) next[key] = recoveryId;
+      else delete next[key];
+      return { ...task, recoveryIds: next };
+    });
+  // A failure that kept a recovery record is worth naming in the toast: the
+  // person can resume it from the garden instead of uploading again.
+  const failFile = (
+    key: string,
+    fileName: string,
+    message: string,
+    recoveryId: string | null,
+  ) => {
+    setTaskStatuses((current) => ({ ...current, [key]: "error" }));
+    setTaskErrors((current) => ({ ...current, [key]: message }));
+    setTaskRecoveryId(key, recoveryId);
+    if (recoveryId) sinkRefreshRecoveries(clusterSlug);
+    if (!taskStatusVisible(clusterSlug, taskId)) {
+      sinkToast(clusterSlug, {
+        message: `${fileName}: ${message}${recoveryId ? " The upload was kept and can be resumed from Documents." : ""}`,
+      });
+    }
+  };
   const deferredRecoveryIds = new Set<string>();
   let mainLoopFinished = false;
   const finishTaskWhenSettled = () => {
@@ -358,11 +458,7 @@ async function runUploadTask(
           } else if (event.type === "error" && event.canceled !== true) {
             const message =
               typeof event.error === "string" ? event.error : "Upload failed";
-            setTaskStatuses((current) => ({ ...current, [key]: "error" }));
-            setTaskErrors((current) => ({ ...current, [key]: message }));
-            if (!taskStatusVisible(clusterSlug, taskId)) {
-              sinkToast(clusterSlug, { message: `${file.name}: ${message}` });
-            }
+            failFile(key, file.name, message, recoveryIdFromEvent(event));
           }
         },
         { signal: abortController.signal },
@@ -402,16 +498,26 @@ async function runUploadTask(
     };
 
     try {
-      const res = await fetch("/api/ingest", {
-        method: "POST",
-        headers: {
-          "X-Breadboard-Ingest-Cluster-Slug": clusterSlug,
-          "X-Breadboard-Ingest-File-Size": String(file.size),
-          "X-Breadboard-Ingest-Request-Id": requestId,
-        },
-        body: formData,
-        signal: abortController.signal,
-      });
+      const resumingRecoveryId = resumingRecoveryIds[key];
+      const res = resumingRecoveryId
+        ? await fetch(
+            `/api/gardens/${encodeURIComponent(clusterSlug)}/ingest-recovery/${encodeURIComponent(resumingRecoveryId)}/resume`,
+            {
+              method: "POST",
+              headers: { "X-Breadboard-Ingest-Request-Id": requestId },
+              signal: abortController.signal,
+            },
+          )
+        : await fetch("/api/ingest", {
+            method: "POST",
+            headers: {
+              "X-Breadboard-Ingest-Cluster-Slug": clusterSlug,
+              "X-Breadboard-Ingest-File-Size": String(file.size),
+              "X-Breadboard-Ingest-Request-Id": requestId,
+            },
+            body: formData,
+            signal: abortController.signal,
+          });
       const bound = bindRuntimeIngestResponse(requestId, res);
       runtimeJobId = bound?.jobId ?? null;
       if (runtimeJobId) {
@@ -443,6 +549,7 @@ async function runUploadTask(
       let buffer = "";
       let result: Record<string, unknown> | null = null;
       let streamError = "";
+      let streamRecoveryId: string | null = null;
       let canceledEvent = false;
 
       while (true) {
@@ -464,6 +571,7 @@ async function runUploadTask(
               canceled?: boolean;
               tokenUsage?: IngestTokenUsage;
               visionError?: string;
+              recoveryId?: string;
               [key: string]: unknown;
             };
             if (event.tokenUsage) {
@@ -492,6 +600,7 @@ async function runUploadTask(
               if (event.canceled) canceledEvent = true;
               streamError =
                 typeof event.error === "string" ? event.error : "Upload failed";
+              streamRecoveryId = recoveryIdFromEvent(event);
             }
           } catch {
             // Ignore malformed stream events.
@@ -509,6 +618,7 @@ async function runUploadTask(
       if (result?.success) {
         terminalOutcome = true;
         forgetRuntimeIngestRecovery(requestId);
+        if (resumingRecoveryId) sinkRefreshRecoveries(clusterSlug);
         setTaskStatuses((current) => ({ ...current, [key]: "done" }));
         setTaskErrors((current) => {
           const next = { ...current };
@@ -540,10 +650,11 @@ async function runUploadTask(
       } else if (streamError) {
         terminalOutcome = true;
         forgetRuntimeIngestRecovery(requestId);
-        setTaskStatuses((current) => ({ ...current, [key]: "error" }));
-        setTaskErrors((current) => ({ ...current, [key]: streamError }));
-        if (!taskStatusVisible(clusterSlug, taskId)) {
-          sinkToast(clusterSlug, { message: `${file.name}: ${streamError}` });
+        failFile(key, file.name, streamError, streamRecoveryId);
+        if (resumingRecoveryId && !streamRecoveryId) {
+          // The resume failed before a new record could replace the old one;
+          // the list re-offers the original.
+          sinkRefreshRecoveries(clusterSlug);
         }
       } else {
         continueRuntimeRecovery();

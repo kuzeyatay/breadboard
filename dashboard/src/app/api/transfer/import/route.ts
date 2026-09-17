@@ -1,7 +1,6 @@
 import { revalidatePath } from "next/cache";
 
 import { requireUserId } from "@/lib/server-auth";
-import { MAX_TRANSFER_BYTES } from "@/lib/garden-transfer/archive.ts";
 import {
   TransferError,
   transferKindForFilename,
@@ -35,12 +34,6 @@ export async function POST(request: Request) {
       throw new TransferError(
         `"${file.name}" is not a .garden or .cluster file.`,
         415,
-      );
-    }
-    if (file.size > MAX_TRANSFER_BYTES) {
-      throw new TransferError(
-        `That file is larger than the ${Math.round(MAX_TRANSFER_BYTES / (1024 * 1024))} MB import limit.`,
-        413,
       );
     }
 

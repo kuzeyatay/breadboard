@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 import requests
 
 from . import store
-from .catalog import KIND_ANTHROPIC, KIND_CHATGPT_OAUTH, KIND_OPENAI_COMPATIBLE, ProviderSpec
+from .catalog import KIND_ANTHROPIC, KIND_CHATGPT_OAUTH, KIND_CHATGPT_WEB, KIND_OPENAI_COMPATIBLE, ProviderSpec
 from .store import ResolvedCredentials
 
 DISCOVERY_FILENAME = "discovered_models.json"
@@ -336,7 +336,7 @@ def _resolve(
 
 def discovered_models_for(spec: ProviderSpec, configured: Sequence[str]) -> List[str]:
     """Ids the provider itself reports, beyond ``configured`` (suggested + pinned)."""
-    if not discovery_enabled() or spec.kind == KIND_CHATGPT_OAUTH:
+    if not discovery_enabled() or spec.kind in (KIND_CHATGPT_OAUTH, KIND_CHATGPT_WEB):
         return []
     credentials = store.resolve_credentials(spec)
     if not credentials.usable:

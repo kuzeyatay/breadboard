@@ -3,10 +3,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CODEX_WINDOWS_RUNTIME_FILES } from "./codex-runtime-files.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifestNames = Object.freeze(["services.json", "workers.json"]);
-const mandatoryRuntimeBinPath = "bin/runtime-supervisor.exe";
+// Worker child executables are not launch-profile services. Stage the coding
+// runtime as well so HyperFrames and the isolated Codex health probe can use it.
+const mandatoryRuntimeBinPaths = ["bin/runtime-supervisor.exe", ...CODEX_WINDOWS_RUNTIME_FILES.map((name) => `bin/${name}`)];
 const stageRuntimeBinsOption = "--stage-runtime-bins";
 let temporarySequence = 0;
 
@@ -167,7 +170,7 @@ function hotRuntimeBinClosure(servicesManifest) {
   if (!Array.isArray(services) || services.length === 0) {
     throw new Error("Runtime V2 services.json has no services for hot bin staging.");
   }
-  const closure = new Set([mandatoryRuntimeBinPath]);
+  const closure = new Set(mandatoryRuntimeBinPaths);
   for (const service of services) {
     if (!isRecord(service) || typeof service.id !== "string" || service.id.length === 0) {
       throw new Error("Runtime V2 hot bin staging found an invalid service record.");

@@ -25,7 +25,18 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
   }
   if (!state) {
     if (operation !== "collect") return [];
-    const observer = new MutationObserver(() => { if (scope[key]) scope[key]!.dirty = true; });
+    const observer = new MutationObserver(records => {
+      const current = scope[key];
+      if (!current || current.dirty) return;
+      current.dirty = records.some(record => {
+        if (record.type === "childList") return true;
+        const id = current.nodes.get(record.target)?.get(record.attributeName ?? "");
+        const entry = id === undefined ? undefined : current.entries.get(id);
+        // Our own text/attribute writes don't require another whole-page scan.
+        // Site edits, including edits to a translated node, still do.
+        return !entry?.done || read(entry) !== entry.applied;
+      });
+    });
     state = { entries: new Map(), nodes: new WeakMap(), serial: 0, dirty: true, roots: new Set(), observer };
     scope[key] = state;
   }
@@ -107,25 +118,55 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
       }
     };
     if (document.body) walk(document.body);
+    else current.dirty = true;
   }
   const batch: Array<{ id: number; text: string; context: string }> = [];
-  let size = 0;
+  const initial = (payload as { initial?: boolean } | null)?.initial === true;
+  const maxSegments = initial ? 8 : 40;
+  const maxCharacters = initial ? 2400 : 12000;
+  const candidates: Array<{ id: number; entry: Entry; element: Element; visible: boolean }> = [];
+  const visibility = new Map<Element, { rendered: boolean; visible: boolean }>();
   for (const [id, entry] of current.entries) {
     if (entry.pending || entry.done || !entry.node.isConnected) continue;
-    // Mark unchanged translations complete too; they must not be resubmitted forever.
     const element = entry.node.nodeType === Node.ELEMENT_NODE ? entry.node as Element : entry.node.parentElement;
-    if (!element || excluded(element) || !(element.closest("select") ?? element).getClientRects().length) continue;
+    if (!element || excluded(element) || element.closest("[hidden],[aria-hidden='true']")) continue;
+    const layoutElement = element.closest("select") ?? element;
+    let layout = visibility.get(layoutElement);
+    if (!layout) {
+      const rects = layoutElement.getClientRects();
+      layout = { rendered: rects.length > 0, visible: Array.from(rects).some(rect =>
+        rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth) };
+      visibility.set(layoutElement, layout);
+    }
+    if (layout.rendered) candidates.push({ id, entry, element, visible: layout.visible });
+  }
+  // Keep document order within each group, but translate the current viewport
+  // first, including after the reader scrolls partway down a long page.
+  candidates.sort((a, b) => Number(b.visible) - Number(a.visible));
+  const contexts = new Map<Element, string>();
+  let size = 0;
+  for (const { id, entry, element } of candidates) {
+    // Mark unchanged translations complete too; they must not be resubmitted forever.
     const contextRoot = element.closest("p,li,h1,h2,h3,h4,label,button,td,th,figcaption");
-    let context = "";
-    if (contextRoot) {
+    let context = contextRoot ? contexts.get(contextRoot) ?? "" : "";
+    if (contextRoot && !contexts.has(contextRoot)) {
       const contextWalker = document.createTreeWalker(contextRoot, NodeFilter.SHOW_TEXT, { acceptNode: node =>
         node.parentElement && !excluded(node.parentElement) && !node.parentElement.closest("[hidden],[aria-hidden='true']")
           ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
       let node: Node | null;
-      while (context.length < 300 && (node = contextWalker.nextNode())) context += (node.nodeValue ?? "").slice(0, 300 - context.length);
+      while (context.length < 300 && (node = contextWalker.nextNode())) {
+        const id = current.nodes.get(node)?.get("");
+        const saved = id === undefined ? undefined : current.entries.get(id);
+        // Keep context in the source language as concurrent batches finish.
+        const text = saved && read(saved) === saved.applied ? saved.original : node.nodeValue ?? "";
+        context += text.slice(0, 300 - context.length);
+      }
+      contexts.set(contextRoot, context);
     }
+    // A complete sentence in one node already supplies its own context.
+    if (context === entry.original) context = "";
     const length = entry.original.length + context.length;
-    if (batch.length && (size + length > 12000 || batch.length >= 40)) break;
+    if (batch.length && (size + length > maxCharacters || batch.length >= maxSegments)) break;
     entry.pending = true;
     size += length;
     batch.push({ id, text: entry.original, context });

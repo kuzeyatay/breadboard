@@ -2,6 +2,7 @@ import crypto from "crypto";
 import os from "os";
 import { pathToFileURL } from "url";
 import type OpenAI from "openai";
+import { isLearnNativeVisualizer } from "./learn-native-visualizer-contract.ts";
 import { withCouncil } from "./council.ts";
 import {
   externalRuntimeCopyFile,
@@ -441,6 +442,9 @@ export type GeneratedVisualizationStatus =
   | "rejected";
 
 export interface GeneratedVisualizationManifest {
+  sourceSkill?: "interactive-visualizer-in-chat";
+  skillHash?: string;
+  runtimeEngine?: "breadboard-interactive-visualizer";
   schemaVersion: number;
   sdkVersion: string;
   id: string;
@@ -2090,6 +2094,11 @@ export function validateGeneratedVisualizationDefinition(
       errors: ["definition must be an object"],
       warnings,
     };
+  if (value.nativeRuntime !== undefined) {
+    return isLearnNativeVisualizer(value)
+      ? { definition: value, errors: [], warnings: [] }
+      : { definition: null, errors: ["Invalid native interactive visualizer envelope."], warnings: [] };
+  }
   if (value.schemaVersion !== 1)
     errors.push("definition.schemaVersion must be 1");
   if (value.sdkVersion !== VISUAL_SDK_VERSION) {
@@ -4761,6 +4770,10 @@ export type GeneratedVisualBrowserTestRunner = (
 export async function runGeneratedVisualBrowserTests(
   input: GeneratedVisualBrowserTestsInput,
 ): GeneratedVisualBrowserTestResult {
+  if (input.definition.nativeRuntime) {
+    const { runLearnNativeVisualizerBrowserTests } = await import("./learn-native-visualizer-browser.ts");
+    return runLearnNativeVisualizerBrowserTests(input);
+  }
   const executable = input.browserExecutable.trim();
   if (!executable) {
     return {
@@ -5726,6 +5739,9 @@ export function loadGeneratedVisualDefinition(
     const suffix = ");\n";
     if (!compiled.startsWith(prefix) || !compiled.endsWith(suffix)) return null;
     const parsed = JSON.parse(compiled.slice(prefix.length, -suffix.length));
+    if (isLearnNativeVisualizer(parsed) &&
+      (manifest.sourceSkill !== parsed.nativeRuntime.sourceSkill || manifest.skillHash !== parsed.nativeRuntime.skillHash ||
+        manifest.runtimeEngine !== parsed.nativeRuntime.engine)) return null;
     return validateGeneratedVisualizationDefinition(parsed).definition;
   } catch {
     return null;
@@ -5773,6 +5789,10 @@ function generatedVisualManifestMatchesOpportunity(
 function generatedVisualPublicationEvidenceIsReusable(input: {
   artifactDir: string;
   requireBrowserEvidence: boolean;
+  /** Published by the native interactive-visualizer skill, whose evidence has
+   * its own shape: one `published` lifecycle entry (its critic verdict is in
+   * critic.json) and browser gates recorded per viewport in runtimeTests. */
+  nativeSkill?: boolean;
 }): boolean {
   const validation = readGeneratedVisualArtifactJson(
     path.join(input.artifactDir, "validation.json"),
@@ -5812,6 +5832,25 @@ function generatedVisualPublicationEvidenceIsReusable(input: {
   const lifecycleStatuses = lifecycle.flatMap((entry) =>
     isRecord(entry) && typeof entry.status === "string" ? [entry.status] : [],
   );
+  if (input.nativeSkill) {
+    // Measured 2026-09-15: every native visual failed this check on the
+    // legacy evidence shape, so a resumed Learn build regenerated all of
+    // them and a run that had already published every visual lost it again.
+    if (
+      !lifecycleStatuses.includes("published") ||
+      !(tests.runtimeTests as unknown[]).length
+    ) {
+      return false;
+    }
+    if (!input.requireBrowserEvidence) return true;
+    const browser = tests.browser;
+    return (
+      isRecord(browser) &&
+      browser.screenshotCreated === true &&
+      Array.isArray(browser.viewports) &&
+      browser.viewports.length > 0
+    );
+  }
   if (
     !lifecycleStatuses.includes("critic_approved") ||
     !lifecycleStatuses.includes("published")
@@ -5882,10 +5921,12 @@ function loadReusablePublishedGeneratedVisual(input: {
     !generatedVisualPublicationEvidenceIsReusable({
       artifactDir,
       requireBrowserEvidence: input.requireBrowserEvidence,
+      nativeSkill: manifest.sourceSkill === "interactive-visualizer-in-chat",
     }) ||
     !generatedVisualPublicationEvidenceIsReusable({
       artifactDir: versionDir,
       requireBrowserEvidence: input.requireBrowserEvidence,
+      nativeSkill: manifest.sourceSkill === "interactive-visualizer-in-chat",
     })
   ) {
     return null;
@@ -7576,6 +7617,10 @@ function writeRejectedAttempt(input: {
 }
 
 export type CreateGeneratedVisualizationInput = {
+  /** Explicit recovery of an already completed, durably bound native author call. */
+  nativeAuthorRecovery?: { candidate: unknown; skillHash: string; requestId: string; requestHash: string };
+  /** Learn and garden regeneration explicitly share the native chat skill. */
+  sourceSkill?: "interactive-visualizer-in-chat";
   client: OpenAI;
   model: string;
   gardenDir: string;
@@ -7692,6 +7737,37 @@ async function acquireGeneratedVisualSlot(
   };
 }
 
+/** A retained workspace's exact published visual, revalidated, or null. */
+function reusePublishedGeneratedVisualOnRecovery(
+  input: CreateGeneratedVisualizationInput,
+): GeneratedVisualResult | null {
+  if (!input.reusePublishedArtifactOnRecovery) return null;
+  const reusable = loadReusablePublishedGeneratedVisual({
+    gardenDir: input.gardenDir,
+    opportunity: input.opportunity,
+    model: input.model,
+    availableSourceAnchorIds: input.availableSourceAnchorIds,
+    requireBrowserEvidence:
+      input.runBrowserTests ??
+      String(process.env.LEARN_GENERATED_VISUAL_BROWSER_TESTS ?? "true") !==
+        "false",
+  });
+  if (!reusable) return null;
+  emit(input.onEvent, "visual_resume_artifact_reused", {
+    gardenId: reusable.manifest!.gardenId,
+    learningUnitId: reusable.manifest!.learningUnitId,
+    visualizationId: reusable.manifest!.id,
+    version: reusable.manifest!.version,
+    sourceHash: reusable.manifest!.sourceHash,
+    compiledHash: reusable.manifest!.compiledHash,
+    generatorModel: reusable.manifest!.generatorModel,
+    contractFingerprint: reusable.manifest!.similarityFingerprint,
+    publicationGatesRevalidated: true,
+    providerInvocations: 0,
+  });
+  return reusable;
+}
+
 async function createGeneratedVisualizationWithSlot(
   input: CreateGeneratedVisualizationInput,
 ): Promise<GeneratedVisualResult> {
@@ -7707,33 +7783,8 @@ async function createGeneratedVisualizationWithSlot(
   input.checkCancelled?.();
   if (input.abortSignal?.aborted)
     throw new Error("generated visualization was cancelled");
-  if (input.reusePublishedArtifactOnRecovery) {
-    const reusable = loadReusablePublishedGeneratedVisual({
-      gardenDir: input.gardenDir,
-      opportunity: input.opportunity,
-      model: input.model,
-      availableSourceAnchorIds: input.availableSourceAnchorIds,
-      requireBrowserEvidence:
-        input.runBrowserTests ??
-        String(process.env.LEARN_GENERATED_VISUAL_BROWSER_TESTS ?? "true") !==
-          "false",
-    });
-    if (reusable) {
-      emit(input.onEvent, "visual_resume_artifact_reused", {
-        gardenId: reusable.manifest!.gardenId,
-        learningUnitId: reusable.manifest!.learningUnitId,
-        visualizationId: reusable.manifest!.id,
-        version: reusable.manifest!.version,
-        sourceHash: reusable.manifest!.sourceHash,
-        compiledHash: reusable.manifest!.compiledHash,
-        generatorModel: reusable.manifest!.generatorModel,
-        contractFingerprint: reusable.manifest!.similarityFingerprint,
-        publicationGatesRevalidated: true,
-        providerInvocations: 0,
-      });
-      return reusable;
-    }
-  }
+  const reusable = reusePublishedGeneratedVisualOnRecovery(input);
+  if (reusable) return reusable;
   const id = input.opportunity.id;
   const version = nextGeneratedVisualVersion(input.gardenDir, id);
   const runId = `${nowIso()
@@ -8665,6 +8716,15 @@ export async function createGeneratedVisualization(
 ): Promise<GeneratedVisualResult> {
   const release = await acquireGeneratedVisualSlot(input.abortSignal);
   try {
+    if (input.sourceSkill === "interactive-visualizer-in-chat") {
+      // Native requests used to skip straight past the recovery reuse check
+      // below, so every resumed Learn build regenerated visuals it had
+      // already published (2026-09-15). Check first, same as every route.
+      const reusable = reusePublishedGeneratedVisualOnRecovery(input);
+      if (reusable) return reusable;
+      const { createLearnNativeVisualizer } = await import("./learn-native-visualizer.ts");
+      return await createLearnNativeVisualizer(input);
+    }
     return await createGeneratedVisualizationWithSlot(input);
   } finally {
     release();

@@ -23,6 +23,8 @@ export const COMPOSER_SWITCH_KEYS = [
   "personalize",
   "sunTheme",
   "currentLocation",
+  "learnHumanizerAuto",
+  "thoughtTopologyAutoUpdate",
 ] as const;
 
 export type ComposerSwitchKey = (typeof COMPOSER_SWITCH_KEYS)[number];

@@ -13,8 +13,15 @@ import { artifactRenderer } from "./artifact-renderers.ts";
 import {
   ArtifactImportError,
   inspectArtifactImport,
+  listZipEntries,
 } from "./artifact-import.ts";
+import {
+  FolderArchiveError,
+  stageFolderArchive,
+  type FolderInventory,
+} from "./artifact-folder.ts";
 import { isChatHighlight } from "../conversations/highlights.ts";
+import { artifactsForTranscript } from "./artifact-transcript.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import { scrubFileInPlaceViaRuntime } from "../watermarks/scrub-file.ts";
 import {
@@ -763,7 +770,47 @@ export async function createImportedArtifact(
       "Artifacts can only be imported from the authorized workspace.",
     );
   }
+  const originalSourcePath = sourcePath;
 
+  // A folder is imported as one ZIP of its contents. The directory itself is
+  // what passed the containment check above; the ZIP is staged inside the
+  // store's own root and removed again once its bytes have been copied.
+  let folder: { path: string; inventory: FolderInventory } | null = null;
+  let stagedArchive: string | null = null;
+  if (input.kind === "folder") {
+    let isDirectory = false;
+    try {
+      isDirectory = fs.statSync(sourcePath).isDirectory();
+    } catch {
+      isDirectory = false;
+    }
+    if (isDirectory) {
+      const staging = path.join(
+        storageRoot(input.storageRoot),
+        ".staging",
+        `${randomUUID()}.zip`,
+      );
+      try {
+        const inventory = stageFolderArchive(sourcePath, staging);
+        folder = { path: sourcePath, inventory };
+      } catch (error) {
+        fs.rmSync(staging, { force: true });
+        if (error instanceof FolderArchiveError) {
+          throw new ArtifactStoreError(422, error.code, error.message);
+        }
+        throw error;
+      }
+      stagedArchive = staging;
+      sourcePath = staging;
+    }
+  }
+  try {
+    return await importInspectedFile();
+  } finally {
+    if (stagedArchive) fs.rmSync(stagedArchive, { force: true });
+  }
+
+  async function importInspectedFile(): Promise<ArtifactRow> {
   let previewSourcePath: string | null = null;
   if (input.previewFilePath) {
     try {
@@ -853,8 +900,11 @@ export async function createImportedArtifact(
   }
   const artifactId = `art_${randomUUID()}`;
   const versionId = `artv_${randomUUID()}`;
+  const importedFilename = folder
+    ? `${path.basename(folder.path)}.zip`
+    : path.basename(sourcePath);
   const filename = sanitizeFilename(
-    input.filename ?? path.basename(sourcePath),
+    input.filename ?? importedFilename,
     title,
     inspected.extension,
   );
@@ -876,7 +926,7 @@ export async function createImportedArtifact(
   atomicWrite(
     storedSourcePath,
     JSON.stringify({
-      importedFilename: path.basename(sourcePath),
+      importedFilename,
       kind: input.kind,
       mimeType: inspected.mimeType,
     }),
@@ -934,10 +984,30 @@ export async function createImportedArtifact(
   }
   const { byteSize, contentHash } = hashFile(storedOutputPath);
   const now = new Date().toISOString();
+  // What is inside an archive is worth a line on the card, and for a folder
+  // it is the card: the listing plus the original path are how the user gets
+  // back to the directory the turn made.
+  const archived =
+    inspected.rendererId === "archive-file" && inspected.mimeType === "application/zip"
+      ? listZipEntries(storedOutputPath, 100)
+      : null;
   const metadata = safeJson({
     ...(input.metadata ?? {}),
     imported: true,
     importFormat: inspected.extension.slice(1),
+    sourcePath: folder ? folder.path : originalSourcePath,
+    ...(folder
+      ? {
+          folderPath: folder.path,
+          folderName: path.basename(folder.path),
+          entryCount: folder.inventory.totalFiles,
+          entryBytes: folder.inventory.totalBytes,
+          entries: folder.inventory.entries.slice(0, 100),
+        }
+      : {}),
+    ...(archived
+      ? { entryCount: archived.total, entries: archived.entries }
+      : {}),
   });
   // The status belongs to the artifact, not to this version: version one holds
   // a real, complete file either way, and saying otherwise would make a
@@ -1064,6 +1134,7 @@ export async function createImportedArtifact(
     throw error;
   }
   return getArtifactById(artifactId, database)!;
+  }
 }
 
 export interface ImportArtifactVersionInput {
@@ -1443,6 +1514,7 @@ export function listArtifactsForUser(input: {
   conversationPublicId?: string;
   gardenSlug?: string;
   sourceSurface?: ArtifactRow["source_surface"];
+  presentation?: "transcript";
   database?: Database.Database;
 }): ArtifactRow[] {
   const database = input.database ?? db;
@@ -1467,9 +1539,12 @@ export function listArtifactsForUser(input: {
     input.gardenSlug ?? null, input.gardenSlug ?? null,
     input.sourceSurface ?? null, input.sourceSurface ?? null, input.sourceSurface ?? null,
   ) as ArtifactRow[];
-  return input.conversationPublicId
-    ? reconcileLegacyGardenArtifactOwners(artifacts, database)
+  const presented = input.presentation === "transcript"
+    ? artifactsForTranscript(artifacts, database)
     : artifacts;
+  return input.conversationPublicId
+    ? reconcileLegacyGardenArtifactOwners(presented, database)
+    : presented;
 }
 
 const LEGACY_ARTIFACT_OWNER_MATCH_MS = 5 * 60 * 1_000;

@@ -49,7 +49,7 @@ const nativeServiceEnginePath = path.join(
   "src",
   "service_engine.rs",
 );
-const learnSource = fs.readFileSync(learnPath, "utf8");
+const learnSource = fs.readFileSync(learnPath, "utf8").replace(/\r\n/g, "\n");
 const learnStatusSource = fs.readFileSync(learnStatusPath, "utf8");
 const sourceVisualsSource = fs.readFileSync(sourceVisualsPath, "utf8");
 const gardenFinalizeSource = fs.readFileSync(gardenFinalizePath, "utf8");
@@ -81,6 +81,11 @@ test("Learn planning outwaits the provider websocket and receipt grace by defaul
     learnSource,
     /const LEARN_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT_MS\s*=\s*[\s\S]*?CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT[\s\S]*?\* 1_000;/,
     "the provider websocket lifetime must have one canonical millisecond value",
+  );
+  assert.match(
+    learnSource,
+    /CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT",\s*3_600,/,
+    "large Learn repairs must retain a provider window above the observed 30-minute boundary",
   );
   assert.match(
     learnSource,
@@ -1056,7 +1061,13 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.match(sourceMapValidation, /registered\.sourceId !== sourceId/);
     assert.match(sourceMapValidation, /rawKind !== registered\.kind/);
     assert.match(sourceMapValidation, /sourceMapArtifactKind\(artifact\.kind\)/);
-    assert.match(sourceOf(namedFunction("promptSources")), /sourceMapPromptFigures\(context\.sourceFigures\)/);
+    const promptSourcesSource = sourceOf(namedFunction("promptSources"));
+    assert.match(promptSourcesSource, /sourceMapPromptFigures\(context\.sourceFigures\)/);
+    assert.match(
+      promptSourcesSource,
+      /\.\.\.\(options\.sourceMapArtifactKinds\s*\?\s*\{\}\s*:\s*\{\s*sourceFigures\s*\}\)/,
+      "Source Map prompts must not duplicate the full detector records beside the compact sourceVisuals registry",
+    );
     assert.match(planningSource, /sourceMapFigureAnchorPromptCatalog\(context\.sourceFigures\)/);
     assert.match(learnSource, /authoritative normalized Source Map artifact catalog/);
   });
@@ -1586,13 +1597,24 @@ describe("Learn validation, reads, and publication contracts", () => {
     const validatedPlanning = sourceOf(namedFunction("callValidatedPlanningJson"));
     assert.match(
       validatedPlanning,
-      /let result = await callPlanningJsonOnce\([\s\S]*?\);\s*assertNonemptyPlanningCandidate\(result, stageLabel\);\s*let problems = validate\(result\.parsed\);\s*for \(let repairAttempt = 1; repairAttempt <= 2 && problems\.length > 0;[\s\S]*?result = await dispatchAfterDurablePlanningIssuance\([\s\S]*?dispatch: \(\) => callPlanningJsonOnce\([\s\S]*?\),\s*\}\);\s*assertNonemptyPlanningCandidate\(result, stageLabel\);/,
+      /let result = await callPlanningJsonOnce\([\s\S]*?\);\s*assertNonemptyPlanningCandidate\(result, stageLabel\);[\s\S]*?let problems = validate\(result\.parsed\);\s*for \(let repairAttempt = 1; repairAttempt <= 3 && problems\.length > 0;[\s\S]*?if \(repairAttempt > 2 && !sourceMapAnchorRepair\) break;[\s\S]*?const repairResult = await dispatchAfterDurablePlanningIssuance\([\s\S]*?assertNonemptyPlanningCandidate\([\s\S]*?repairResult/,
       "bounded semantic repair requires a nonempty returned candidate and concrete validation failure",
     );
     assert.equal(
       callsNamed(namedFunction("callValidatedPlanningJson"), "callPlanningJsonOnce").length,
-      2,
-      "validated planning has one initial call site and one validation-gated repair call site",
+      3,
+      "validated planning has one initial call plus targeted and complete-replacement repair paths",
+    );
+    assert.match(
+      validatedPlanning,
+      /sourceMapCanonicalAnchorRepairPacket\(\{[\s\S]*?invalidResponse,[\s\S]*?problems/,
+      "validated planning must route eligible Source Map ID-only failures into targeted repair",
+    );
+    assert.match(validatedPlanning, /applySourceMapCanonicalAnchorRepair\(\{/);
+    assert.match(
+      validatedPlanning,
+      /if \(repairAttempt > 2 && !sourceMapAnchorRepair\) break;/,
+      "the extra attempt must be unreachable for complete-replacement repairs",
     );
 
     const assertPlanningCandidate = executableNamedFunction(
@@ -1631,6 +1653,88 @@ describe("Learn validation, reads, and publication contracts", () => {
       planningSource,
       /const result = await callPlanningJsonOnce\([\s\S]*?assertNonemptyPlanningCandidate\(result, "Learning spine targeted repair"\)/,
       "specialized learning-spine loops must not turn an empty result into repair permission",
+    );
+  });
+
+  test("Source Map ID-only repair sends a compact choice packet and projects only exact model choices", () => {
+    const planningRecord = (value) =>
+      value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const compactRepairRequest = executableNamedFunction(
+      "sourceMapCanonicalAnchorRepairPacket",
+      {
+        planningRecord,
+        SOURCE_MAP_CANONICAL_ID_PROBLEM:
+          /^sourceAnchors\[(\d+)\]\.id must be copied from canonicalSourceAnchors$/,
+      },
+    );
+    const applyRepair = executableNamedFunction("applySourceMapCanonicalAnchorRepair", {
+      planningRecord,
+    });
+    const originalRequest = {
+      sourceOnly: true,
+      sourceContext: { deliberatelyHeavy: "x".repeat(50_000) },
+      syllabus: { deliberatelyHeavy: "y".repeat(50_000) },
+      canonicalSourceAnchors: [
+        { id: "s1-page-1", sourceId: "s1", exactText: "candidate one" },
+        { id: "s1-page-2", sourceId: "s1", exactText: "candidate two" },
+        { id: "s2-page-1", sourceId: "s2", exactText: "unrelated" },
+      ],
+    };
+    const invalidResponse = {
+      sourceAnchors: [
+        { id: "invented", sourceId: "s1", annotation: "preserve me" },
+        { id: "s2-page-1", sourceId: "s2", annotation: "already valid" },
+      ],
+    };
+    const compacted = compactRepairRequest({
+      stageLabel: "Source Map",
+      originalRequest,
+      invalidResponse,
+      problems: ["sourceAnchors[0].id must be copied from canonicalSourceAnchors"],
+    });
+
+    assert.match(compacted.repairScope, /return only the requested replacements/);
+    assert.equal(compacted.candidateCanonicalAnchors.length, 2);
+    assert.deepEqual(
+      Array.from(compacted.candidateCanonicalAnchors, (anchor) => anchor.id),
+      ["s1-page-1", "s1-page-2"],
+    );
+    assert.deepEqual(Array.from(compacted.invalidAnchors, (anchor) => anchor.index), [0]);
+    assert.equal(compacted.sourceContext, undefined);
+    assert.equal(compacted.syllabus, undefined);
+    assert.ok(JSON.stringify(compacted).length < JSON.stringify(originalRequest).length / 10);
+
+    assert.equal(
+      compactRepairRequest({
+        originalRequest,
+        invalidResponse,
+        problems: ["sourceAnchors[0].annotation must be non-empty"],
+      }),
+      null,
+      "non-ID or mixed semantic failures stay on the complete-replacement path",
+    );
+
+    const repaired = applyRepair({
+      invalidResponse,
+      repairPacket: compacted,
+      repairResponse: {
+        replacements: [{ index: 0, sourceId: "s1", canonicalId: "s1-page-2" }],
+      },
+    });
+    assert.equal(repaired.sourceAnchors[0].id, "s1-page-2");
+    assert.equal(repaired.sourceAnchors[0].annotation, "preserve me");
+    assert.strictEqual(repaired.sourceAnchors[1], invalidResponse.sourceAnchors[1]);
+
+    assert.strictEqual(
+      applyRepair({
+        invalidResponse,
+        repairPacket: compacted,
+        repairResponse: {
+          replacements: [{ index: 0, sourceId: "s1", canonicalId: "invented" }],
+        },
+      }),
+      invalidResponse,
+      "unknown model choices must fail closed without deterministic substitution",
     );
   });
 
@@ -1874,7 +1978,7 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
     assert.match(
       lessonSource,
-      /if \(quality\.hardFail\)[\s\S]*?const hardQualityProblems = quality\.problems\.filter\(\(problem\) => problem\.hard\)[\s\S]*?taskType: "subsection_repair"/,
+      /quality\.hardFail && repairRound < MAX_PAGE_REPAIR_ROUNDS[\s\S]*?const hardQualityProblems = quality\.problems\.filter\(\(problem\) => problem\.hard\)[\s\S]*?taskType: "subsection_repair"/,
     );
     assert.doesNotMatch(
       learnSource,
@@ -2187,6 +2291,19 @@ describe("Learn repair timing and abandoned-job recovery", () => {
     assert.match(recoverySource, /if \(!leaseResult\.acquired\)[\s\S]*?continue;/);
     assert.match(recoverySource, /finally \{\s*lease\.release\(\);\s*\}/);
     assert.match(recoverySource, /learn_abandoned_job_recovered/);
+  });
+
+  test("abandoned-job recovery skips a garden whose Runtime worker is still heartbeating", () => {
+    // Live 2026-09-16: a plan worker waiting ~10 min on one syllabus-coverage
+    // answer went quiet on its durable row; the minute sweeper recovered the
+    // garden out from under it and the run was lost. The worker's Runtime job
+    // was heartbeating every 5 s the whole time.
+    const recoverySource = sourceOf(namedFunction("recoverAbandonedLearnJobs"));
+    const liveCheckIndex = recoverySource.indexOf("gardenHasLiveWorker(candidate.garden_id)");
+    const leaseIndex = recoverySource.indexOf("acquireGardenLearnLease");
+    assert.ok(liveCheckIndex >= 0, "the sweeper consults the Runtime worker liveness probe");
+    assert.ok(liveCheckIndex < leaseIndex, "liveness is checked before the recovery lease is taken");
+    assert.match(recoverySource, /=== true\) \{[\s\S]*?skippedJobIds\.push\(candidate\.id\);\s*continue;/);
   });
 
   test("generation restores the retained previous tree if its second-resource commit fails", () => {
@@ -3046,5 +3163,31 @@ test("zero-teachable syllabus recovery is bounded, durable, and precedes every m
     generation.indexOf("stagedPersistedSourceContext") <
       generation.lastIndexOf("writeLearningUnitContractArtifacts"),
     "seeded LUC receipt must be checked before the generation writer can replace it",
+  );
+});
+
+test("a new plan restores a failed run before reading the incremental baseline", () => {
+  // Live 2026-09-16 (telecom-1): a failed generation kept its planning
+  // artifacts in the live garden (27-unit contract over 20 published lessons),
+  // so the next plan read that abandoned contract as the published baseline
+  // and refused with "missing lesson pages for existing units: U21...U27".
+  const planning = sourceOf(namedFunction("runLearnPlanning"));
+  const leaseIndex = planning.indexOf("const lease = leaseResult.lease;");
+  const restoreIndex = planning.indexOf("resolveLearnRunSnapshot(gardenDir, previousJob.id)", leaseIndex);
+  const rollbackIndex = planning.indexOf("await rollbackLearnRun", restoreIndex);
+  const baselineIndex = planning.indexOf("readIncrementalLearnBaseline(gardenDir)", rollbackIndex);
+  const snapshotIndex = planning.indexOf("createLearnRunSnapshot({ gardenId, contentPath, jobId: job.id })", baselineIndex);
+  assert.ok(
+    leaseIndex >= 0 && restoreIndex > leaseIndex && rollbackIndex > restoreIndex &&
+      baselineIndex > rollbackIndex && snapshotIndex > baselineIndex,
+    "restore the failed run under the lease, then read the baseline, then snapshot the new run",
+  );
+  assert.match(
+    planning.slice(baselineIndex, snapshotIndex),
+    /missing lesson pages for existing units[\s\S]*?\);\s*\}\s*\}/,
+  );
+  assert.ok(
+    planning.slice(baselineIndex, snapshotIndex).split("lease.release();").length >= 4,
+    "every baseline refusal after the lease releases it",
   );
 });

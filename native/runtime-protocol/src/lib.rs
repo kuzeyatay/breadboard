@@ -2134,7 +2134,6 @@ pub enum TrustedWorkerEnvironmentSource {
     Vimax,
     VoxDirector,
     OuterShorts,
-    OuterOpenGym,
     AgentReachSetup,
     GbrainSync,
     OuterAgentReach,
@@ -2408,6 +2407,7 @@ pub enum TrustedServiceEnvironmentSource {
     PostizCoordinator,
     InboxZeroStack,
     SpotifyPlayback,
+    BambuPrinter,
     Cliproxy,
     Quartz,
     UiTars,
@@ -2427,7 +2427,7 @@ impl TrustedServiceEnvironmentSource {
     /// Closed iteration/index order used by endpoint allocation. Adding a
     /// service environment is therefore one compile-visible change rather
     /// than another hand-maintained field in every reservation table.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Chatmock,
         Self::Comfyui,
         Self::Dashboard,
@@ -2461,6 +2461,7 @@ impl TrustedServiceEnvironmentSource {
         Self::StockAnalyst,
         Self::SolidworksMcp,
         Self::Acestep,
+        Self::BambuPrinter,
     ];
     pub const COUNT: usize = Self::ALL.len();
 
@@ -2469,6 +2470,7 @@ impl TrustedServiceEnvironmentSource {
             Self::Chatmock => 0,
             Self::Comfyui => 1,
             Self::Acestep => 32,
+            Self::BambuPrinter => 33,
             Self::Dashboard => 2,
             Self::Gbrain => 3,
             Self::Hermes => 4,
@@ -5073,7 +5075,6 @@ mod tests {
                 "vimax-node",
                 "vox-director-node",
                 "outer-shorts-node",
-                "outer-open-gym-node",
                 "agent-reach-setup-node",
                 "gbrain-sync-node",
                 "thought-topology-node",
@@ -5348,12 +5349,6 @@ mod tests {
                 "outer-shorts-node",
                 "shorts-run",
                 TrustedWorkerEnvironmentSource::OuterShorts,
-                (0, 0),
-            ),
-            (
-                "outer-open-gym-node",
-                "open-gym-run",
-                TrustedWorkerEnvironmentSource::OuterOpenGym,
                 (0, 0),
             ),
             (
@@ -5918,6 +5913,7 @@ mod tests {
                 "vibe-trading",
                 "stock-analyst",
                 "acestep",
+                "bambu-printer",
             ]
         );
         for service in &services.services {

@@ -14,6 +14,7 @@ import {
   takeChatNotificationReply,
 } from "../src/lib/chat-notification-inbox.ts";
 import { resolveNotificationReply } from "../src/lib/chat-notifications/reply.ts";
+import { assistantHandoffContent } from "../src/lib/hermes/assistant-visible-content.ts";
 import {
   chatNotificationMessageId,
   dismissChatNotifications,
@@ -21,6 +22,9 @@ import {
   ensureChatNotificationBaseline,
   ensureChatNotificationSchema,
   listPendingChatNotifications,
+  MAX_PENDING_CHAT_NOTIFICATIONS,
+  listUnreadChatMessages,
+  markUnreadChatMessagesSeen,
 } from "../src/lib/chat-notifications/store.ts";
 
 const source = (relative) =>
@@ -227,7 +231,8 @@ function notificationDatabase() {
       default_garden_id INTEGER,
       legacy_chat_session_id INTEGER,
       temporary INTEGER NOT NULL DEFAULT 0,
-      buzz_room_id INTEGER
+      buzz_room_id INTEGER,
+      origin_label TEXT
     );
     CREATE TABLE conversation_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,8 +253,10 @@ function notificationDatabase() {
       (11, 'conv_garden', 1, 'Garden chat', 'garden_chat', 5, 42),
       (12, 'conv_temporary', 1, 'Off the record', 'dashboard_terminal', NULL, NULL),
       (13, 'conv_other_user', 2, 'Someone else', 'dashboard_terminal', NULL, NULL),
-      (14, 'conv_telegram', 1, 'Renamed Telegram chat', 'dashboard_terminal', NULL, NULL);
+      (14, 'conv_telegram', 1, 'Renamed Telegram chat', 'dashboard_terminal', NULL, NULL),
+      (15, 'conv_voice', 1, 'News briefing', 'dashboard_terminal', NULL, NULL);
     UPDATE conversations SET temporary = 1 WHERE id = 12;
+    UPDATE conversations SET origin_label = 'Voice' WHERE id = 15;
   `);
   ensureChatNotificationSchema(db);
   return db;
@@ -279,6 +286,69 @@ function addAnswer(
     ).lastInsertRowid,
   );
 }
+
+test("unread dots share canonical and Garden identities, survive reloads, and reset for a new answer", () => {
+  const db = notificationDatabase();
+  try {
+    addAnswer(db, 10, "Old history", "2026-08-30 08:00:00");
+    assert.deepEqual(listUnreadChatMessages(db, 1), []);
+    const garden = addAnswer(db, 11, "Garden answer", "2026-08-30 09:00:00");
+    assert.deepEqual(listUnreadChatMessages(db, 1), [{ id: `msg_${garden}`, target: { ...gardenTarget, conversationId: "conv_garden" } }]);
+    assert.equal(markUnreadChatMessagesSeen(db, 2, [garden]), 0);
+    assert.equal(markUnreadChatMessagesSeen(db, 1, [], { surface: "dashboard_terminal", chatId: "conv_garden" }), 1);
+    assert.deepEqual(listUnreadChatMessages(db, 1), []);
+    const next = addAnswer(db, 11, "Next answer", "2026-08-30 10:00:00");
+    assert.deepEqual(listUnreadChatMessages(db, 1).map(row => row.id), [`msg_${next}`]);
+    assert.equal(markUnreadChatMessagesSeen(db, 1, [], gardenTarget), 1);
+    assert.deepEqual(listUnreadChatMessages(db, 1), []);
+  } finally { db.close(); }
+});
+
+test("unread dots cover every durable assistant surface beyond the corner-notice limit", () => {
+  const db = notificationDatabase();
+  try {
+    listUnreadChatMessages(db, 1);
+    ensureChatNotificationBaseline(db, 1);
+    db.prepare("UPDATE conversations SET surface = 'quartz_ai' WHERE id = 11").run();
+    const quartz = addAnswer(db, 11, "Page assistant", "2026-08-30 08:00:00");
+    const voice = addAnswer(db, 15, "Voice", "2026-08-30 08:00:00");
+    addAnswer(db, 12, "Temporary", "2026-08-30 09:00:00");
+    addAnswer(db, 13, "Another account", "2026-08-30 09:00:00");
+    for (let n = 0; n < MAX_PENDING_CHAT_NOTIFICATIONS + 5; n++) addAnswer(db, 10, `Answer ${n}`, "2026-08-30 10:00:00");
+    assert.equal(listPendingChatNotifications(db, 1).length, MAX_PENDING_CHAT_NOTIFICATIONS);
+    const unread = listUnreadChatMessages(db, 1);
+    assert.equal(unread.length, MAX_PENDING_CHAT_NOTIFICATIONS + 7);
+    assert.ok(unread.some(row => row.id === `msg_${quartz}`));
+    assert.ok(unread.some(row => row.id === `msg_${voice}`));
+    assert.equal(markUnreadChatMessagesSeen(db, 1, [quartz, voice]), 2);
+    assert.equal(listUnreadChatMessages(db, 1).length, MAX_PENDING_CHAT_NOTIFICATIONS + 5);
+  } finally { db.close(); }
+});
+
+test("the shared unread migration preserves answers already waiting in the account inbox", () => {
+  const db = notificationDatabase();
+  try {
+    addAnswer(db, 10, "Already read", "2026-08-30 08:00:00");
+    ensureChatNotificationBaseline(db, 1);
+    const pending = addAnswer(db, 11, "Waiting to be read", "2026-08-30 09:00:00");
+    addAnswer(db, 15, "Old spoken answer", "2026-08-30 09:00:00");
+    assert.deepEqual(listUnreadChatMessages(db, 1).map(row => row.id), [`msg_${pending}`]);
+    markUnreadChatMessagesSeen(db, 1, [], gardenTarget);
+    assert.deepEqual(listUnreadChatMessages(db, 1), []);
+  } finally { db.close(); }
+});
+
+test("reading a handoff cannot consume the delegated answer that finishes later", () => {
+  const db = notificationDatabase();
+  try {
+    listUnreadChatMessages(db, 1);
+    const id = addAnswer(db, 10, "Starting research", "2026-08-30 09:00:00", "complete", JSON.stringify({ externalAgentOutcome: "running" }));
+    assert.deepEqual(listUnreadChatMessages(db, 1), []);
+    assert.equal(markUnreadChatMessagesSeen(db, 1, [id]), 0);
+    db.prepare("UPDATE conversation_messages SET content = 'Research answer', metadata = '{}', updated_at = '2026-08-30 10:00:00' WHERE id = ?").run(id);
+    assert.deepEqual(listUnreadChatMessages(db, 1).map(row => row.id), [`msg_${id}`]);
+  } finally { db.close(); }
+});
 
 test("the first read draws a line under existing history", () => {
   const db = notificationDatabase();
@@ -352,6 +422,39 @@ test("Telegram replies never become Breadboard notifications", () => {
   );
 });
 
+test("a Garden response matches its canonical chat when opened in the Terminal hub", () => {
+  const target = { ...gardenTarget, conversationId: 'conv_garden' };
+  const hubTarget = { surface: 'dashboard_terminal', chatId: 'conv_garden' };
+  assert.equal(sameChatNotificationTarget(target, hubTarget), true);
+  assert.equal(sameChatNotificationTarget(hubTarget, target), true);
+  assert.equal(sameChatNotificationTarget(target, gardenTarget), true);
+  assert.equal(sameChatNotificationTarget(target, terminalTarget), false);
+  assert.equal(sameChatNotificationTarget(target, otherGardenTarget), false);
+  assert.equal(chatNotificationHref(target), '/gardens/breadboard-dev?chat=42');
+  assert.equal(isChatNotificationTarget({ ...target, conversationId: 42 }), false);
+});
+
+test('Voice responses stay out of the shared inbox, including failures and later reads after closing', () => {
+  const db = notificationDatabase();
+  try {
+    addAnswer(db, 15, 'Earlier spoken answer', '2026-09-06 08:00:00');
+    assert.deepEqual(listPendingChatNotifications(db, 1), []);
+    assert.deepEqual(ensureChatNotificationBaseline(db, 1), { updated_at: '', message_id: 0 });
+    addAnswer(db, 15, 'Here is the news briefing.', '2026-09-06 08:05:00');
+    addAnswer(db, 15, 'The answer could not finish.', '2026-09-06 08:06:00', 'failed');
+    addAnswer(db, 15, 'Goodbye, Kuzey.', '2026-09-06 08:07:00');
+    // Provenance survives renaming and requires no open voice window or
+    // client-side dismissal. Ordinary chat notifications remain available.
+    db.prepare('UPDATE conversations SET title = ? WHERE id = 15').run('Renamed conversation');
+    db.prepare('UPDATE conversations SET title = ? WHERE id = 10').run('Voice');
+    const terminal = addAnswer(db, 10, 'A typed chat answer.', '2026-09-06 08:08:00');
+    const garden = addAnswer(db, 11, 'A garden answer.', '2026-09-06 08:09:00');
+    for (let read = 0; read < 3; read++) {
+      assert.deepEqual(listPendingChatNotifications(db, 1).map(record => record.id), [`msg_${terminal}`, `msg_${garden}`]);
+    }
+  } finally { db.close(); }
+});
+
 test("hidden workers and Telegram-owned continuations never raise false chat notices", () => {
   const db = notificationDatabase();
   listPendingChatNotifications(db, 1);
@@ -397,6 +500,86 @@ test("hidden workers and Telegram-owned continuations never raise false chat not
   );
 });
 
+test("delegated progress stays in Thinking until the synthesis is ready on either chat surface", (t) => {
+  const db = notificationDatabase();
+  t.after(() => db.close());
+  listPendingChatNotifications(db, 1);
+  const progress = "Max Research is reviewing the evidence while Deep Research builds your personalized beginner program. I’ll combine their results into one calorie, diet, training, supplement, and August 2027 roadmap.";
+  const externalAgents = [{ agentName: "Max Research", carried: false }, { agentName: "Deep Research" }];
+  const verification = { externalAgents };
+  assert.equal(assistantHandoffContent({ content: progress, verification }), progress);
+
+  for (const conversationId of [10, 11]) {
+    // Both canonical and reconciled Garden metadata must follow the same rule.
+    for (const metadata of [{ verification }, { toolCalls: { verification } }]) {
+      const id = addAnswer(db, conversationId, progress, "2026-09-07 10:30:00", "complete", JSON.stringify(metadata));
+      assert.deepEqual(listPendingChatNotifications(db, 1), []);
+      assert.equal(dismissChatNotifications(db, 1, [id]), 0);
+    }
+  }
+  const synthesis = "Here are the combined calorie, diet, training, supplement, and timeline recommendations.";
+  const returned = { externalAgents: externalAgents.map(agent => ({ ...agent, carried: true })) };
+  assert.equal(assistantHandoffContent({ content: synthesis, verification: returned }), "");
+  const finalIds = [10, 11].map(conversationId => addAnswer(db, conversationId, synthesis,
+    "2026-09-07 10:40:00", "complete", JSON.stringify({ internalAgentContinuation: true, verification: returned })));
+  for (let poll = 0; poll < 2; poll++) {
+    assert.deepEqual(listPendingChatNotifications(db, 1).map(record => record.id), finalIds.map(id => `msg_${id}`));
+  }
+  assert.equal(dismissChatNotifications(db, 1, finalIds), 2);
+  assert.deepEqual(listPendingChatNotifications(db, 1), []);
+});
+
+test("viewing or baselining a running worker cannot consume its eventual result", (t) => {
+  const db = notificationDatabase();
+  t.after(() => db.close());
+  const id = addAnswer(db, 10, "Research is running.", "2026-09-07 10:30:00", "complete",
+    JSON.stringify({ externalAgent: true, externalAgentOutcome: "running" }));
+  assert.deepEqual(listPendingChatNotifications(db, 1), []);
+  assert.deepEqual(ensureChatNotificationBaseline(db, 1), { updated_at: "", message_id: 0 });
+  assert.equal(dismissChatNotificationsForTarget(db, 1, { surface: "dashboard_terminal", chatId: "conv_terminal" }), 0);
+  assert.equal(dismissChatNotifications(db, 1, [id]), 0);
+  // A fast worker can finish within the same SQLite timestamp second.
+  db.prepare("UPDATE conversation_messages SET content = ?, metadata = ? WHERE id = ?")
+    .run("The research report is ready.", JSON.stringify({ externalAgent: true, externalAgentOutcome: "completed" }), id);
+  assert.deepEqual(listPendingChatNotifications(db, 1).map(record => record.id), [`msg_${id}`]);
+});
+
+test("preambles and empty progress do not notify or crowd finished answers out of the inbox", (t) => {
+  const db = notificationDatabase();
+  t.after(() => db.close());
+  listPendingChatNotifications(db, 1);
+  const answer = addAnswer(db, 10, "An actual answer.", "2026-09-07 10:30:00");
+  const progress = "I am preparing the answer.";
+  for (let index = 0; index < MAX_PENDING_CHAT_NOTIFICATIONS * 4 + 1; index++) {
+    addAnswer(db, 10, `\n\t${progress}\n`, "2026-09-07 10:31:00", "complete",
+      JSON.stringify({ delegatedAgentPreamble: progress }));
+  }
+  addAnswer(db, 10, "\n\t ", "2026-09-07 10:32:00", "complete", JSON.stringify({ progressNotes: [progress] }));
+  assert.deepEqual(listPendingChatNotifications(db, 1).map(record => record.id), [`msg_${answer}`]);
+});
+
+test("real answers, carried results, and failures still notify with delegation metadata", (t) => {
+  const db = notificationDatabase();
+  t.after(() => db.close());
+  listPendingChatNotifications(db, 1);
+  const cases = [
+    { content: "Ordinary answer." },
+    { content: "Answer with no workers.", metadata: { verification: { externalAgents: [] } } },
+    { content: "Results plus follow-up work.", metadata: { verification: { externalAgents: [{ carried: true }, { carried: false }] } } },
+    { content: "Reconciled results.", metadata: { toolCalls: { verification: { externalAgents: [{ carried: true }] } } } },
+    { content: "The finished answer.", metadata: { delegatedAgentPreamble: "I am preparing the answer." } },
+    { content: "Research failed.", status: "failed", metadata: { verification: { externalAgents: [{ carried: false }] } } },
+    { content: "Worker failed.", metadata: { externalAgentOutcome: "failed", delegatedAgentPreamble: "Worker failed." } },
+    { content: "", status: "failed" },
+  ];
+  const ids = cases.map(({ content, status = "complete", metadata = null }) =>
+    addAnswer(db, 10, content, "2026-09-07 10:30:00", status, JSON.stringify(metadata)));
+  const records = listPendingChatNotifications(db, 1);
+  assert.deepEqual(records.map(record => record.id), ids.map(id => `msg_${id}`));
+  assert.deepEqual(records.map(record => record.title), cases.map(({ status, metadata }) =>
+    status === "failed" || metadata?.externalAgentOutcome === "failed" ? "Response failed" : "Response ready"));
+});
+
 test("a dismissal is permanent and belongs to the account", () => {
   const db = notificationDatabase();
   listPendingChatNotifications(db, 1);
@@ -412,7 +595,7 @@ test("a dismissal is permanent and belongs to the account", () => {
   );
   assert.equal(before[2].title, "Response failed");
   assert.equal(before[2].response, "The response could not be completed.");
-  assert.deepEqual(before[1].target, gardenTarget);
+  assert.deepEqual(before[1].target, { ...gardenTarget, conversationId: 'conv_garden' });
 
   assert.equal(dismissChatNotifications(db, 1, [terminal]), 1);
   assert.deepEqual(
@@ -458,6 +641,7 @@ test("reconciled copies of one Garden selection answer dismiss as one notice", (
 
   // Closing that one visible notice retires both row ids. Neither copy can
   // become the next poll's replacement notification.
+  assert.equal(listPendingChatNotifications(db, 1)[0].inlineSelectionId, requestId);
   assert.equal(dismissChatNotifications(db, 1, [migratedCopy]), 2);
   assert.deepEqual(listPendingChatNotifications(db, 1), []);
   assert.deepEqual(

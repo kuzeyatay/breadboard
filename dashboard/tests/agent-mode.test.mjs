@@ -369,10 +369,10 @@ test("super agent staffs web research across every instrument it has", () => {
     superAgentDirective,
     /A broad request earns more than one worker/,
   );
-  // Launches are serial, so a brief that waits on another worker's findings
-  // cannot work — the reconciliation happens in this agent instead.
-  assert.match(superAgentDirective, /They run one at a time, in order/);
-  assert.match(superAgentDirective, /write each brief to stand alone/);
+  // Independent workers now run as a bounded batch. A brief still cannot
+  // depend on another worker finishing first; this agent owns reconciliation.
+  assert.match(superAgentDirective, /Independent workers launch as one bounded batch and run concurrently/);
+  assert.match(superAgentDirective, /Write every brief to stand alone/);
   assert.match(superAgentDirective, /You are the one who reconciles/);
   // And the silent-degradation rule: a failed tool is reported, not papered over.
   assert.match(

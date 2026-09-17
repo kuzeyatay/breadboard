@@ -1,4 +1,5 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { assertGuardedPrinterMcp } from "../bambu/mcp-guard.ts";
 import db from "../db.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
@@ -333,6 +334,7 @@ export function saveMcpConnection(
   userId: number,
   parsed: ReturnType<typeof parseMcpConfig>,
 ): McpConnectionRecord {
+  assertGuardedPrinterMcp(parsed);
   const storedConfig: StoredMcpConfig = parsed.config.transport === "local"
     ? isApprovedLocalMcpProfileReference(parsed.config)
       ? parsed.config
@@ -418,6 +420,7 @@ export function deleteMcpConnection(
 export function runtimeMcpConfig(
   connection: McpConnectionRecord,
 ): RuntimeMcpConfig {
+  assertGuardedPrinterMcp(connection);
   if (connection.config.transport === "local") {
     if (!connection.approvedAt) {
       throw new Error("The local MCP definition has not been explicitly approved.");
@@ -444,6 +447,7 @@ export function runtimeMcpConfig(
       connection.slug,
       reference,
     );
+    assertGuardedPrinterMcp({ ...connection, config: profile });
     // Secret values live only in an encrypted, private, expiring one-shot
     // envelope. The durable profile retains environment names, never values.
     prepareApprovedLocalMcpLaunch(

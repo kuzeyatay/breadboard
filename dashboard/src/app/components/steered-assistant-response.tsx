@@ -4,6 +4,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatTextAnnotation } from "./chat-markdown";
 import {
   chatSelectableText,
+  QuotedChatSelection,
   SelectableAssistantMarkdown,
   type ChatTextSelectionCandidate,
   type FloatingAnchorRect,
@@ -69,6 +70,7 @@ export default function SteeredAssistantResponse({
         if (localEnd <= localStart) return [];
         return [{
           ...annotation,
+          noteContinuation: annotation.start < start,
           start: localStart,
           end: localEnd,
           quote: segmentText.slice(localStart, localEnd),
@@ -97,6 +99,7 @@ export default function SteeredAssistantResponse({
           <div key={segment.key} data-selection-exclude className="group flex justify-end py-1">
             <div className="w-fit max-w-[75%]">
               <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
+                {segment.textSelection ? <QuotedChatSelection selection={segment.textSelection} /> : null}
                 <CollapsibleUserMessage messageKey={`steer:${segment.key}`}>
                   <UserMessageText content={segment.content} />
                 </CollapsibleUserMessage>

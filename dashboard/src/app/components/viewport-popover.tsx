@@ -31,6 +31,9 @@ export default function ViewportPopover({
   className,
   onClose,
   role = "menu",
+  portal = true,
+  open = true,
+  maxHeight: heightLimit = Infinity,
 }: {
   anchorRef: RefObject<HTMLElement | null>;
   ariaLabel: string;
@@ -38,6 +41,10 @@ export default function ViewportPopover({
   className: string;
   onClose: () => void;
   role?: "dialog" | "menu";
+  /** Nested popovers stay in the parent's DOM tree for outside-click handling. */
+  portal?: boolean;
+  open?: boolean;
+  maxHeight?: number;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -52,6 +59,7 @@ export default function ViewportPopover({
   }, [onClose]);
 
   useLayoutEffect(() => {
+    if (!open) return;
     const place = () => {
       const anchor = anchorRef.current;
       const popover = popoverRef.current;
@@ -64,7 +72,7 @@ export default function ViewportPopover({
         popover.offsetWidth,
         viewportWidth - VIEWPORT_MARGIN * 2,
       );
-      const naturalHeight = popover.scrollHeight;
+      const naturalHeight = Math.min(popover.scrollHeight, heightLimit);
       const roomBelow = Math.max(
         0,
         viewportHeight - anchorRect.bottom - ANCHOR_GAP - VIEWPORT_MARGIN,
@@ -75,7 +83,7 @@ export default function ViewportPopover({
       );
       const placeBelow =
         naturalHeight <= roomBelow || roomBelow >= roomAbove;
-      const maxHeight = placeBelow ? roomBelow : roomAbove;
+      const maxHeight = Math.min(placeBelow ? roomBelow : roomAbove, heightLimit);
       const renderedHeight = Math.min(naturalHeight, maxHeight);
       const left = Math.min(
         Math.max(VIEWPORT_MARGIN, anchorRect.right - popoverWidth),
@@ -106,6 +114,8 @@ export default function ViewportPopover({
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // Let the innermost panel close first, preserving the menu behind it.
+      if (popoverRef.current?.querySelector('[data-viewport-popover]:not([hidden])')) return;
       event.stopPropagation();
       onCloseRef.current();
       anchorRef.current?.focus();
@@ -118,6 +128,7 @@ export default function ViewportPopover({
     window.addEventListener("scroll", place, true);
     const resizeObserver = new ResizeObserver(place);
     if (popoverRef.current) resizeObserver.observe(popoverRef.current);
+    if (anchorRef.current) resizeObserver.observe(anchorRef.current);
 
     return () => {
       document.removeEventListener("pointerdown", closeOutside, true);
@@ -126,13 +137,15 @@ export default function ViewportPopover({
       window.removeEventListener("scroll", place, true);
       resizeObserver.disconnect();
     };
-  }, [anchorRef]);
+  }, [anchorRef, open, heightLimit]);
 
   if (typeof document === "undefined") return null;
 
-  return createPortal(
+  const panel = (
     <div
       ref={popoverRef}
+      data-viewport-popover=""
+      hidden={!open}
       role={role}
       aria-label={ariaLabel}
       className={className}
@@ -140,11 +153,12 @@ export default function ViewportPopover({
         left: position.left,
         top: position.top,
         maxHeight: position.maxHeight || undefined,
+        maxWidth: "calc(100vw - 24px)",
         visibility: position.maxHeight ? "visible" : "hidden",
       }}
     >
       {children}
-    </div>,
-    document.body,
+    </div>
   );
+  return portal ? createPortal(panel, document.body) : panel;
 }

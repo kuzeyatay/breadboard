@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "incremental": false },
+  "include": [
+    "src/vendor/genoffice/pdf2docx/src/bidi-js.d.ts",
+    "src/lib/hermes/image-search-service.ts",
+    "src/lib/hermes/image-search-preview.ts",
+    "src/lib/hermes/image-results.ts",
+    "src/lib/url-source-images.ts",
+    "src/app/api/hermes/tools/image-search/route.ts",
+    "src/app/components/chat-image-results.tsx",
+    "src/app/components/chat-markdown.tsx"
+  ]
+}

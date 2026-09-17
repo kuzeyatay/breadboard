@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { requireUserId } from "@/lib/server-auth";
 import {
   ApiError,
@@ -11,8 +12,10 @@ import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
-import { chatMessageAttachments } from "@/lib/chat-attachments.ts";
+import { attachmentOnlyMessageText, chatMessageAttachments } from "@/lib/chat-attachments.ts";
+import { hydrateDocumentAttachments, stageEditableDocumentAttachments } from "@/lib/document-attachments-server.ts";
 import { hermesMessageId } from "@/lib/hermes/message-id.ts";
+import { chatTextSelectionQuestionPrompt, normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import {
   appendConversationSteerMessage,
   ConversationStoreError,
@@ -52,10 +55,25 @@ export async function POST(
     requireEnabled();
     const { sessionId } = await params;
     const session = authorizeRuntimeReference(userId, sessionId);
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, 16 * 1024 * 1024);
     const runId = requireString(body.runId, "runId", 200);
-    const text = requireString(body.text, "text", 200_000);
     const attachments = parseChatAttachments(body.attachments);
+    const textSelection = normalizeChatTextSelectionReference(body.textSelection);
+    if (body.textSelection != null && !textSelection) {
+      throw new ApiError(400, "invalid_text_selection", "The selected-text reference is invalid.");
+    }
+    const text = requireString(
+      body.text || attachmentOnlyMessageText(attachments), "text", 200_000,
+    );
+    // Bind retries to the complete input, without storing base64 image bytes
+    // in the deduplication table. Text-only request identities stay compatible.
+    const requestContent = attachments.length || textSelection
+      ? JSON.stringify({
+          text,
+          ...(attachments.length ? { attachments: createHash("sha256").update(JSON.stringify(attachments)).digest("hex") } : {}),
+          ...(textSelection ? { textSelection } : {}),
+        })
+      : text;
     const clientRequestId = requireString(
       body.clientRequestId,
       "clientRequestId",
@@ -96,12 +114,12 @@ export async function POST(
           runtimeSessionId: session.row.id,
           runId,
           clientRequestId,
-          content: text,
+          content: requestContent,
         });
     if (!reserved.created) {
       if (
         reserved.request.run_id !== runId ||
-        reserved.request.content !== text
+        reserved.request.content !== requestContent
       ) {
         throw new ApiError(
           409,
@@ -133,14 +151,23 @@ export async function POST(
     }
 
     try {
+      const resolvedAttachments = await hydrateDocumentAttachments(userId, attachments, request.signal);
+      const staged = stageEditableDocumentAttachments({
+        userId,
+        attachments: resolvedAttachments,
+        workspace: session.activeDirectory,
+      });
+      const correction = textSelection
+        ? chatTextSelectionQuestionPrompt(text, textSelection)
+        : text;
       const accepted = await getAgentRuntimeByKind(session.runtimeKind).steerRun({
         externalSessionId: session.externalSessionId,
         liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         agentName: session.agentName,
-        text,
-        attachments,
+        text: staged.context ? `${correction}\n\n${staged.context}` : correction,
+        attachments: resolvedAttachments,
         model: dispatch.model,
         variant: dispatch.variant,
         tools: dispatch.tools,
@@ -177,6 +204,7 @@ export async function POST(
           surface: session.row.surface,
           content: text,
           attachments: chatMessageAttachments(attachments),
+          ...(textSelection ? { textSelection } : {}),
           targetClientMessageId: courseCorrectionTargetClientMessageId,
           assistantContentOffset,
         });

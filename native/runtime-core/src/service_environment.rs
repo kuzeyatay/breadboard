@@ -124,6 +124,7 @@ const OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_SOLIDWORKS_EXE",
     "BREADBOARD_SOLIDWORKS_VERSION",
     "AGENT_BROWSER_EXECUTABLE_PATH",
+    "HYPERFRAMES_BROWSER_PATH",
     "SF3D_DEVICE",
     "SF3D_PRETRAINED_MODEL",
     "SF3D_TIMEOUT_MS",
@@ -583,6 +584,7 @@ pub enum TrustedServiceEnvironmentProfile {
     PostizCoordinator,
     InboxZeroStack,
     SpotifyPlayback,
+    BambuPrinter,
     Cliproxy,
     Quartz,
     UiTars,
@@ -621,6 +623,7 @@ impl TrustedServiceEnvironmentProfile {
             Self::PostizCoordinator => "postiz-coordinator",
             Self::InboxZeroStack => "inbox-zero-stack",
             Self::SpotifyPlayback => "spotify-playback",
+            Self::BambuPrinter => "bambu-printer",
             Self::Cliproxy => "cliproxy",
             Self::Quartz => "quartz",
             Self::UiTars => "ui-tars",
@@ -659,6 +662,7 @@ impl TrustedServiceEnvironmentProfile {
             Self::PostizCoordinator => TrustedServiceEnvironmentSource::PostizCoordinator,
             Self::InboxZeroStack => TrustedServiceEnvironmentSource::InboxZeroStack,
             Self::SpotifyPlayback => TrustedServiceEnvironmentSource::SpotifyPlayback,
+            Self::BambuPrinter => TrustedServiceEnvironmentSource::BambuPrinter,
             Self::Cliproxy => TrustedServiceEnvironmentSource::Cliproxy,
             Self::Quartz => TrustedServiceEnvironmentSource::Quartz,
             Self::UiTars => TrustedServiceEnvironmentSource::UiTars,
@@ -697,6 +701,7 @@ impl TrustedServiceEnvironmentProfile {
             "postiz-coordinator" => Some(Self::PostizCoordinator),
             "inbox-zero-stack" => Some(Self::InboxZeroStack),
             "spotify-playback" => Some(Self::SpotifyPlayback),
+            "bambu-printer" => Some(Self::BambuPrinter),
             "cliproxy" => Some(Self::Cliproxy),
             "quartz" => Some(Self::Quartz),
             "ui-tars" => Some(Self::UiTars),
@@ -805,6 +810,7 @@ pub struct TrustedServiceEnvironmentSet {
     postiz_coordinator: TrustedServiceEnvironment,
     inbox_zero_stack: TrustedServiceEnvironment,
     spotify_playback: TrustedServiceEnvironment,
+    bambu_printer: TrustedServiceEnvironment,
     cliproxy: TrustedServiceEnvironment,
     quartz: TrustedServiceEnvironment,
     ui_tars: TrustedServiceEnvironment,
@@ -889,6 +895,10 @@ impl TrustedServiceEnvironmentSet {
             dashboard_control.token.as_bytes(),
             b"breadboard-runtime-v2/spotify-playback/v1",
         );
+        let bambu_printer_token = derive_gateway_token(
+            dashboard_control.token.as_bytes(),
+            b"breadboard-runtime-v2/bambu-printer/v1",
+        );
         let solidworks_mcp_token = derive_gateway_token(
             dashboard_control.token.as_bytes(),
             b"breadboard-runtime-v2/solidworks-mcp/v1",
@@ -961,6 +971,7 @@ impl TrustedServiceEnvironmentSet {
             postiz_coordinator_token: &postiz_coordinator_token,
             inbox_zero_token: &inbox_zero_token,
             spotify_playback_token: &spotify_playback_token,
+            bambu_printer_token: &bambu_printer_token,
             solidworks_mcp_token: &solidworks_mcp_token,
             ui_tars_token: &ui_tars_token,
             cad_token: &cad_token,
@@ -1036,6 +1047,13 @@ impl TrustedServiceEnvironmentSet {
             paths,
             endpoints,
             &spotify_playback_token,
+            os_environment,
+        )?;
+        let bambu_printer = build_bambu_printer_environment(
+            mode,
+            paths,
+            endpoints,
+            &bambu_printer_token,
             os_environment,
         )?;
         let cliproxy = build_cliproxy_environment(
@@ -1124,6 +1142,7 @@ impl TrustedServiceEnvironmentSet {
             postiz_coordinator,
             inbox_zero_stack,
             spotify_playback,
+            bambu_printer,
             cliproxy,
             quartz,
             ui_tars,
@@ -1191,6 +1210,7 @@ impl TrustedServiceEnvironmentSet {
             TrustedServiceEnvironmentProfile::PostizCoordinator => &self.postiz_coordinator,
             TrustedServiceEnvironmentProfile::InboxZeroStack => &self.inbox_zero_stack,
             TrustedServiceEnvironmentProfile::SpotifyPlayback => &self.spotify_playback,
+            TrustedServiceEnvironmentProfile::BambuPrinter => &self.bambu_printer,
             TrustedServiceEnvironmentProfile::Cliproxy => &self.cliproxy,
             TrustedServiceEnvironmentProfile::Quartz => &self.quartz,
             TrustedServiceEnvironmentProfile::UiTars => &self.ui_tars,
@@ -1371,7 +1391,6 @@ pub struct TrustedWorkerEnvironmentSet {
     vimax: TrustedWorkerEnvironment,
     vox_director: TrustedWorkerEnvironment,
     outer_shorts: TrustedWorkerEnvironment,
-    outer_open_gym: TrustedWorkerEnvironment,
     agent_reach_setup: TrustedWorkerEnvironment,
     gbrain_sync: TrustedWorkerEnvironment,
     outer_agent_reach: TrustedWorkerEnvironment,
@@ -1442,6 +1461,13 @@ impl TrustedWorkerEnvironmentSet {
         let excluded = [
             "PORT",
             "HOSTNAME",
+            // Match the supervisor's dashboard-only boundary. Optional product
+            // keys must not make every scheduled background job fail to launch.
+            "COMPOSIO_API_KEY",
+            "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
+            "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
+            "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
+            "BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME",
             "BREADBOARD_DASHBOARD_BUNDLER",
             "BREADBOARD_SUPERVISOR_CONTROL_URL",
             "BREADBOARD_SUPERVISOR_CONTROL_TOKEN",
@@ -1469,6 +1495,9 @@ impl TrustedWorkerEnvironmentSet {
             "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_URL",
             "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_TOKEN",
             "BREADBOARD_SPOTIFY_PLAYBACK_RUNTIME_MANAGED",
+            "BREADBOARD_BAMBU_SERVICE_URL",
+            "BREADBOARD_BAMBU_SERVICE_TOKEN",
+            "BREADBOARD_BAMBU_RUNTIME_MANAGED",
             "BREADBOARD_SOLIDWORKS_SERVICE_URL",
             "BREADBOARD_SOLIDWORKS_SERVICE_TOKEN",
             "BREADBOARD_SOLIDWORKS_RUNTIME_MANAGED",
@@ -2172,43 +2201,6 @@ impl TrustedWorkerEnvironmentSet {
             mode,
             source: TrustedWorkerEnvironmentSource::OuterShorts,
             pairs: outer_shorts_pairs,
-        };
-        let mut outer_open_gym_pairs = tool_pairs.clone();
-        for (name, value) in [
-            ("OPEN_GYM_ROOT", paths.app_root().join("openGym")),
-            (
-                "OPEN_GYM_AGENT_DATA_DIR",
-                paths.data_root().join("open-gym-agent").join("state"),
-            ),
-            (
-                "OPEN_GYM_MEDIA_CACHE_DIR",
-                paths
-                    .data_root()
-                    .join("open-gym-agent")
-                    .join("media")
-                    .join("gif"),
-            ),
-        ] {
-            outer_open_gym_pairs.push((OsString::from(name), value.into_os_string()));
-        }
-        outer_open_gym_pairs.push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
-        for name in [
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "NODE_EXTRA_CA_CERTS",
-        ] {
-            if let Some(value) = product_environment_value(os_environment, name) {
-                outer_open_gym_pairs.push((OsString::from(name), value.to_os_string()));
-            }
-        }
-        let outer_open_gym = TrustedWorkerEnvironment {
-            mode,
-            source: TrustedWorkerEnvironmentSource::OuterOpenGym,
-            pairs: outer_open_gym_pairs,
         };
         let mut agent_reach_setup_pairs = tool_pairs.clone();
         if let Some(browser_home) = agent_reach_setup_pairs
@@ -3268,10 +3260,6 @@ impl TrustedWorkerEnvironmentSet {
                 paths.runtime_root().join("bin").join("ffprobe.exe"),
             ),
             (
-                "HYPERFRAMES_BROWSER_PATH",
-                agent_browser_executable_path(paths, os_environment),
-            ),
-            (
                 "CODEX_BIN",
                 paths.runtime_root().join("bin").join("codex.exe"),
             ),
@@ -3279,6 +3267,11 @@ impl TrustedWorkerEnvironmentSet {
             hyperframes_pairs.push((OsString::from(name), value.into_os_string()));
         }
         hyperframes_pairs.push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
+        // HyperFrames selects a compatible headless Chromium itself. Sharing
+        // the interactive browser default forces Edge and bypasses that path.
+        if let Some(value) = product_environment_value(os_environment, "HYPERFRAMES_BROWSER_PATH") {
+            hyperframes_pairs.push((OsString::from("HYPERFRAMES_BROWSER_PATH"), value.to_os_string()));
+        }
         for name in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -4143,7 +4136,6 @@ impl TrustedWorkerEnvironmentSet {
             vimax,
             vox_director,
             outer_shorts,
-            outer_open_gym,
             agent_reach_setup,
             gbrain_sync,
             outer_agent_reach,
@@ -4234,7 +4226,6 @@ impl TrustedWorkerEnvironmentSet {
             TrustedWorkerEnvironmentSource::Vimax => self.vimax.mint_for_launch(),
             TrustedWorkerEnvironmentSource::VoxDirector => self.vox_director.mint_for_launch(),
             TrustedWorkerEnvironmentSource::OuterShorts => self.outer_shorts.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterOpenGym => self.outer_open_gym.mint_for_launch(),
             TrustedWorkerEnvironmentSource::AgentReachSetup => {
                 self.agent_reach_setup.mint_for_launch()
             }
@@ -4367,7 +4358,6 @@ impl fmt::Debug for TrustedWorkerEnvironmentSet {
                     "vimax",
                     "vox-director",
                     "outer-shorts",
-                    "outer-open-gym",
                     "agent-reach-setup",
                     "gbrain-sync",
                     "outer-agent-reach",
@@ -4945,6 +4935,7 @@ fn service_only_product_environment_name(name: &str) -> bool {
             | "BREADBOARD_VISUAL_BROWSER_PATH"
             | "BREADBOARD_SPOTIFY_BROWSER_PATH"
             | "AGENT_BROWSER_EXECUTABLE_PATH"
+            | "HYPERFRAMES_BROWSER_PATH"
             | "SF3D_DEVICE"
             | "SF3D_PRETRAINED_MODEL"
             | "SF3D_TIMEOUT_MS"
@@ -5846,6 +5837,29 @@ fn build_spotify_playback_environment(
     Ok(builder.finish())
 }
 
+fn build_bambu_printer_environment(
+    mode: RuntimeMode,
+    paths: &RuntimePaths,
+    endpoints: &ServiceEndpointMap,
+    token: &str,
+    os_environment: &TrustedOsEnvironment,
+) -> Result<TrustedServiceEnvironment, TrustedServiceEnvironmentError> {
+    let mut builder = build_node_service_environment(
+        mode,
+        TrustedServiceEnvironmentProfile::BambuPrinter,
+        paths,
+        os_environment,
+    )?;
+    builder.insert("BREADBOARD_DATA_DIR", paths.data_root().as_os_str())?;
+    builder.insert("BREADBOARD_BAMBU_SERVICE_TOKEN", token)?;
+    builder.insert("BREADBOARD_BAMBU_RUNTIME_MANAGED", "1")?;
+    builder.insert(
+        "BREADBOARD_BAMBU_DASHBOARD_ORIGIN",
+        endpoints.base_url(TrustedServiceEnvironmentSource::Dashboard),
+    )?;
+    Ok(builder.finish())
+}
+
 fn runtime_v2_service_root(paths: &RuntimePaths, service_id: &str) -> PathBuf {
     paths
         .data_root()
@@ -6690,18 +6704,24 @@ fn build_gateway_environment(
             || name_text.starts_with("VIDEO_TRANSCRIPTION_")
             || name_text.starts_with("BREADBOARD_EMBEDDING_")
             || name_text.starts_with("BREADBOARD_SPOTIFY_")
+            || name_text.starts_with("BREADBOARD_BAMBU_")
             || name_text.starts_with("BREADBOARD_SOLIDWORKS_")
             || name_text.starts_with("BREADBOARD_ACESTEP_")
             || matches!(
                 name_text.as_ref(),
                 "PORT"
                     | "HOSTNAME"
+                    | "COMPOSIO_API_KEY"
                     | "BREADBOARD_DASHBOARD_BUNDLER"
                     | "BREADBOARD_SUPERVISOR_CONTROL_URL"
                     | "BREADBOARD_SUPERVISOR_CONTROL_TOKEN"
                     | "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN"
                     | "BREADBOARD_PACKAGED_SERVICE_EVIDENCE"
                     | "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS"
+                    | "BREADBOARD_HERMES_PYTHON"
+                    | "BREADBOARD_HERMES_APP_DIR"
+                    | "BREADBOARD_HERMES_HOME"
+                    | "HERMES_CUA_DRIVER_CMD"
                     | "BREADBOARD_TELEGRAM_GATEWAY_URL"
                     | "BREADBOARD_TELEGRAM_GATEWAY_TOKEN"
                     | "BREADBOARD_WHATSAPP_GATEWAY_URL"
@@ -6955,6 +6975,10 @@ fn build_hermes_environment(
     builder.insert("PYTHONUNBUFFERED", "1")?;
     builder.insert("PYTHONDONTWRITEBYTECODE", "1")?;
     builder.insert("HERMES_HOME", hermes_home(mode, paths).into_os_string())?;
+    builder.insert(
+        "HERMES_CUA_DRIVER_CMD",
+        hermes_computer_use_driver(paths).into_os_string(),
+    )?;
     builder.insert("HERMES_DESKTOP", "1")?;
     builder.insert("HERMES_SERVE_HEADLESS", "1")?;
     builder.insert(
@@ -7088,6 +7112,7 @@ fn write_hermes_runtime_config(
             "toolsets:\n",
             "  - breadboard\n",
             "  - web\n",
+            "  - computer_use\n",
             "web:\n",
             "  search_backend: ddgs\n",
             "  extract_backend: fetch\n",
@@ -7183,6 +7208,7 @@ struct DashboardEnvironmentInputs<'a> {
     postiz_coordinator_token: &'a str,
     inbox_zero_token: &'a str,
     spotify_playback_token: &'a str,
+    bambu_printer_token: &'a str,
     solidworks_mcp_token: &'a str,
     ui_tars_token: &'a str,
     cad_token: &'a str,
@@ -7217,6 +7243,7 @@ fn build_dashboard_environment(
         postiz_coordinator_token,
         inbox_zero_token,
         spotify_playback_token,
+        bambu_printer_token,
         solidworks_mcp_token,
         ui_tars_token,
         cad_token,
@@ -7314,6 +7341,27 @@ fn build_dashboard_environment(
     )?;
     builder.insert("COUNCIL_LEDGER_DIR", ledger.as_os_str())?;
     builder.insert("HERMES_HOME", hermes_home(mode, paths).into_os_string())?;
+    builder.insert(
+        "BREADBOARD_HERMES_PYTHON",
+        paths
+            .runtime_root()
+            .join("runtimes")
+            .join("python")
+            .join("python.exe")
+            .into_os_string(),
+    )?;
+    builder.insert(
+        "BREADBOARD_HERMES_APP_DIR",
+        paths.app_root().join("hermes-agent").into_os_string(),
+    )?;
+    builder.insert(
+        "BREADBOARD_HERMES_HOME",
+        hermes_home(mode, paths).into_os_string(),
+    )?;
+    builder.insert(
+        "HERMES_CUA_DRIVER_CMD",
+        hermes_computer_use_driver(paths).into_os_string(),
+    )?;
     insert_product_environment(&mut builder, os_environment)?;
     if let Some(token) = packaged_service_evidence_token(mode, os_environment)? {
         let endpoint_pairs = TrustedServiceEnvironmentSource::ALL
@@ -7520,6 +7568,12 @@ fn build_dashboard_environment(
             TrustedServiceEnvironmentSource::SpotifyPlayback,
             "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_TOKEN",
             spotify_playback_token,
+        ),
+        (
+            "BREADBOARD_BAMBU_SERVICE_URL",
+            TrustedServiceEnvironmentSource::BambuPrinter,
+            "BREADBOARD_BAMBU_SERVICE_TOKEN",
+            bambu_printer_token,
         ),
         (
             "BREADBOARD_SOLIDWORKS_SERVICE_URL",
@@ -8074,6 +8128,14 @@ fn hermes_home(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
     }
 }
 
+fn hermes_computer_use_driver(paths: &RuntimePaths) -> PathBuf {
+    paths
+        .runtime_root()
+        .join("bin")
+        .join("cua-driver")
+        .join("cua-driver.exe")
+}
+
 fn comfyui_toolchain_directory(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
     match mode {
         RuntimeMode::Lean | RuntimeMode::Hot => paths
@@ -8204,7 +8266,7 @@ mod tests {
             [
                 7737, 7741, 7738, 7739, 7740, 7742, 7743, 7744, 7745, 7746, 7747, 7748, 7749, 7750,
                 7751, 7752, 7753, 7754, 7755, 7756, 7757, 7758, 7759, 7760, 7761, 7762, 7763, 7764,
-                7765, 7766, 7767, 7768, 7769,
+                7765, 7766, 7767, 7768, 7769, 7790,
             ],
             [7770, 7771, 7772, 7773, 7774],
         )
@@ -8568,7 +8630,7 @@ mod tests {
         assert!(ServiceEndpointMap::new(
             [
                 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30, 31, 32, 33
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 40
             ],
             [34, 35, 36, 37, 38],
         )
@@ -8576,7 +8638,7 @@ mod tests {
         for duplicate_index in 1..TrustedServiceEnvironmentSource::COUNT {
             let mut ports = [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 40,
             ];
             ports[duplicate_index] = ports[duplicate_index - 1];
             assert!(ServiceEndpointMap::new(ports, [34, 35, 36, 37, 38]).is_err());
@@ -8586,7 +8648,7 @@ mod tests {
                 41_001, 41_002, 41_003, 41_004, 41_005, 41_006, 41_007, 41_008, 41_009, 41_010,
                 41_011, 41_012, 41_013, 41_014, 41_015, 41_016, 41_017, 41_018, 41_019, 41_020,
                 41_021, 41_022, 41_023, 41_024, 41_025, 41_026, 41_027, 41_028, 41_029, 41_030,
-                41_031, 41_032, 41_033,
+                41_031, 41_032, 41_033, 41_040,
             ],
             [41_034, 41_035, 41_036, 41_037, 41_038],
         )
@@ -8599,7 +8661,7 @@ mod tests {
                 41_001, 41_002, 41_003, 41_004, 41_005, 41_006, 41_007, 41_008, 41_009, 41_010,
                 41_011, 41_012, 41_013, 41_014, 41_015, 41_016, 41_017, 41_018, 41_019, 41_020,
                 41_021, 41_022, 41_023, 41_024, 41_025, 41_026, 41_027, 41_028, 41_029, 41_030,
-                41_031, 41_032, 41_033,
+                41_031, 41_032, 41_033, 41_040,
             ]
         );
         assert_eq!(
@@ -8610,7 +8672,7 @@ mod tests {
         assert!(ServiceEndpointMap::new(
             [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30, 31, 32, 33
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 40
             ],
             [33, 35, 36, 37, 38],
         )
@@ -8671,6 +8733,54 @@ mod tests {
             ),
             Err(TrustedOsEnvironmentCaptureError::InvalidVariable)
         ));
+    }
+
+    #[test]
+    fn dashboard_only_credentials_do_not_break_messaging_or_background_launches() {
+        for mode in [RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged] {
+            let (_temporary, paths, config, _) = fixture();
+            let os_environment = TrustedOsEnvironment::from_captured_values(
+                OsString::from(r"C:\Windows"),
+                vec![("USERPROFILE", OsString::from(r"C:\Users\Breadboard"))],
+                vec![
+                    ("COMPOSIO_API_KEY", OsString::from("composio-test-key")),
+                    ("BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN", OsString::from(MEMORY_EVIDENCE_TOKEN)),
+                ],
+            ).unwrap();
+            let services = TrustedServiceEnvironmentSet::load(
+                mode, &paths, &config, &endpoints(), control(), &os_environment,
+            ).unwrap();
+            let workers = TrustedWorkerEnvironmentSet::from_service_environments(
+                mode, &services, &paths, &os_environment,
+            );
+            assert_eq!(values(&services.dashboard)["COMPOSIO_API_KEY"], "composio-test-key");
+
+            // These names are rejected by the supervisor outside the dashboard.
+            // Exercise the actual derived environments, including optional keys.
+            for (profile, pairs) in [
+                ("telegram-gateway", &services.telegram_gateway.pairs),
+                ("whatsapp-gateway", &services.whatsapp_gateway.pairs),
+                ("background-worker", &workers.background.pairs),
+            ] {
+                for name in [
+                    "COMPOSIO_API_KEY",
+                    "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
+                    "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
+                    "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
+                    "BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME",
+                ] {
+                    assert!(
+                        !pairs.iter().any(|(candidate, _)| candidate == OsStr::new(name)),
+                        "{mode:?} {profile} inherits dashboard-only {name}",
+                    );
+                }
+                for required in ["HERMES_HOME", "BREADBOARD_DATA_DIR", "BREADBOARD_INTERNAL_URL"] {
+                    assert!(pairs.iter().any(|(candidate, _)| candidate == OsStr::new(required)));
+                }
+            }
+            assert!(values(&services.telegram_gateway).contains_key("BREADBOARD_TELEGRAM_GATEWAY_TOKEN"));
+            assert!(values(&services.whatsapp_gateway).contains_key("BREADBOARD_WHATSAPP_GATEWAY_TOKEN"));
+        }
     }
 
     #[test]
@@ -9711,6 +9821,7 @@ mod tests {
                 "PYTHONUNBUFFERED",
                 "PYTHONDONTWRITEBYTECODE",
                 "HERMES_HOME",
+                "HERMES_CUA_DRIVER_CMD",
                 "HERMES_DESKTOP",
                 "HERMES_SERVE_HEADLESS",
                 "HERMES_DASHBOARD_SESSION_TOKEN",
@@ -9723,6 +9834,13 @@ mod tests {
             HERMES_SESSION_TOKEN
         );
         assert_eq!(hermes["BREADBOARD_INTERNAL_URL"], "http://127.0.0.1:7738");
+        assert_eq!(
+            hermes["HERMES_CUA_DRIVER_CMD"],
+            paths
+                .runtime_root()
+                .join("bin/cua-driver/cua-driver.exe")
+                .to_string_lossy()
+        );
         assert!(!hermes.contains_key("OPENAI_BASE_URL"));
         assert!(!hermes.contains_key("CHATMOCK_BASE_URL"));
 
@@ -9795,6 +9913,10 @@ mod tests {
                 "NEXT_PUBLIC_QUARTZ_URL",
                 "COUNCIL_LEDGER_DIR",
                 "HERMES_HOME",
+                "BREADBOARD_HERMES_PYTHON",
+                "BREADBOARD_HERMES_APP_DIR",
+                "BREADBOARD_HERMES_HOME",
+                "HERMES_CUA_DRIVER_CMD",
                 "NEXTAUTH_SECRET",
                 "NEXTAUTH_URL",
                 "SECOND_BRAIN_INITIAL_INVITE_CODE",
@@ -9903,6 +10025,8 @@ mod tests {
                 "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_URL",
                 "BREADBOARD_SPOTIFY_PLAYBACK_SERVICE_TOKEN",
                 "BREADBOARD_SPOTIFY_PLAYBACK_RUNTIME_MANAGED",
+                "BREADBOARD_BAMBU_SERVICE_URL",
+                "BREADBOARD_BAMBU_SERVICE_TOKEN",
                 "BREADBOARD_SOLIDWORKS_SERVICE_URL",
                 "BREADBOARD_SOLIDWORKS_SERVICE_TOKEN",
                 "BREADBOARD_SOLIDWORKS_RUNTIME_MANAGED",
@@ -9928,6 +10052,24 @@ mod tests {
                 "RECALL_DATA_DIR",
                 "RECALL_API_KEY",
             ],
+        );
+        assert_eq!(
+            dashboard["BREADBOARD_HERMES_PYTHON"],
+            paths
+                .runtime_root()
+                .join("runtimes/python/python.exe")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            dashboard["BREADBOARD_HERMES_APP_DIR"],
+            paths.app_root().join("hermes-agent").to_string_lossy()
+        );
+        assert_eq!(
+            dashboard["HERMES_CUA_DRIVER_CMD"],
+            paths
+                .runtime_root()
+                .join("bin/cua-driver/cua-driver.exe")
+                .to_string_lossy()
         );
         assert_eq!(dashboard["NODE_ENV"], "development");
         assert_eq!(
@@ -10016,6 +10158,12 @@ mod tests {
         );
         assert!(!spotify.contains_key("NEXTAUTH_SECRET"));
         assert!(!spotify.contains_key("OPENAI_API_KEY"));
+        let bambu = values(&set.prepare_for_launch_profile("bambu-printer", &launch_profile(RuntimeMode::Hot, TrustedServiceEnvironmentSource::BambuPrinter)).unwrap());
+        assert_exact_names(&bambu, &["SystemRoot", "USERPROFILE", "PATH", "TEMP", "TMP", "ComSpec", "PATHEXT", "NODE_ENV", "NODE_OPTIONS", "BREADBOARD_DATA_DIR", "BREADBOARD_BAMBU_SERVICE_TOKEN", "BREADBOARD_BAMBU_RUNTIME_MANAGED", "BREADBOARD_BAMBU_DASHBOARD_ORIGIN"]);
+        assert_eq!(bambu["BREADBOARD_BAMBU_DASHBOARD_ORIGIN"], "http://127.0.0.1:7738");
+        assert_eq!(bambu["BREADBOARD_BAMBU_SERVICE_TOKEN"], dashboard["BREADBOARD_BAMBU_SERVICE_TOKEN"]);
+        assert!(!bambu.contains_key("NEXTAUTH_SECRET"));
+        assert!(!spotify.contains_key("BREADBOARD_BAMBU_SERVICE_TOKEN"));
 
         let solidworks = set
             .prepare_for_launch_profile(
@@ -10244,6 +10392,7 @@ mod tests {
                 "toolsets:\n",
                 "  - breadboard\n",
                 "  - web\n",
+                "  - computer_use\n",
                 "web:\n",
                 "  search_backend: ddgs\n",
                 "  extract_backend: fetch\n",
@@ -10605,7 +10754,7 @@ mod tests {
     }
 
     #[test]
-    fn shorts_and_open_gym_workers_receive_only_sealed_source_and_data_roots() {
+    fn shorts_workers_receive_only_sealed_source_and_data_roots() {
         let (_temporary, paths, config, os_environment) = fixture();
         let services = TrustedServiceEnvironmentSet::load(
             RuntimeMode::Packaged,
@@ -10641,31 +10790,6 @@ mod tests {
         assert_eq!(shorts["CHATMOCK_API_KEY"], "local");
         assert!(!shorts.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
         assert!(!shorts.contains_key("NEXTAUTH_SECRET"));
-
-        let open_gym = worker_values(
-            &workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterOpenGym),
-        );
-        assert_eq!(
-            open_gym["OPEN_GYM_ROOT"],
-            paths.app_root().join("openGym").to_string_lossy()
-        );
-        assert_eq!(
-            open_gym["OPEN_GYM_AGENT_DATA_DIR"],
-            paths
-                .data_root()
-                .join("open-gym-agent/state")
-                .to_string_lossy()
-        );
-        assert_eq!(
-            open_gym["OPEN_GYM_MEDIA_CACHE_DIR"],
-            paths
-                .data_root()
-                .join("open-gym-agent/media/gif")
-                .to_string_lossy()
-        );
-        assert_eq!(open_gym["CHATMOCK_API_KEY"], "local");
-        assert!(!open_gym.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
-        assert!(!open_gym.contains_key("NEXTAUTH_SECRET"));
     }
 
     #[test]
@@ -11117,6 +11241,32 @@ mod tests {
     }
 
     #[test]
+    fn hyperframes_honors_only_its_explicit_browser_override() {
+        let (_temporary, paths, config, _) = fixture();
+        let os_environment = TrustedOsEnvironment::from_captured_values(
+            OsString::from(r"C:\Windows"),
+            vec![("USERPROFILE", OsString::from(r"C:\Users\Original"))],
+            vec![("HYPERFRAMES_BROWSER_PATH", OsString::from(r"C:\Tools\chrome.exe"))],
+        )
+        .unwrap();
+        let services = TrustedServiceEnvironmentSet::load(
+            RuntimeMode::Packaged, &paths, &config, &endpoints(), control(), &os_environment,
+        )
+        .unwrap();
+        let workers = TrustedWorkerEnvironmentSet::from_service_environments(
+            RuntimeMode::Packaged, &services, &paths, &os_environment,
+        );
+        let hyperframes = worker_values(
+            &workers.prepare_for_source(TrustedWorkerEnvironmentSource::Hyperframes),
+        );
+        assert_eq!(hyperframes["HYPERFRAMES_BROWSER_PATH"], r"C:\Tools\chrome.exe");
+        let codex = worker_values(
+            &workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterCodex),
+        );
+        assert!(!codex.contains_key("HYPERFRAMES_BROWSER_PATH"));
+    }
+
+    #[test]
     fn openplanter_and_manim_workers_receive_fixed_interpreters_and_docker_policy() {
         let (temporary, paths, config, _) = fixture();
         let docker = temporary.path().join("Docker").join("docker.exe");
@@ -11362,6 +11512,7 @@ mod tests {
         assert!(formsmith["SHAPER_TOOL_PATH"].contains("formsmith"));
         let hyperframes =
             worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::Hyperframes));
+        assert!(!hyperframes.contains_key("HYPERFRAMES_BROWSER_PATH"));
         assert_eq!(
             hyperframes["HYPERFRAMES_ROOT"],
             paths.app_root().join("hyperframes").to_string_lossy()

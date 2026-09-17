@@ -1,5 +1,6 @@
 import { externalRuntimeFilesystem as fs } from './external-runtime-filesystem.ts';
 import { externalRuntimePath as path } from './external-runtime-path.ts';
+import { isGardenUserPath } from './garden-user-content.ts';
 import {
   MAX_PUBLIC_CONCEPTS,
   SEMANTIC_SCHEMA_VERSION,
@@ -677,7 +678,8 @@ export function strictModelAuthoredClaimProjectionProblems(gardenDir: string): s
     }
 
     const pages: ClaimProjectionPageState[] = [];
-    for (const file of walkMarkdown(gardenDir)) {
+    // Reader folders (a copied lesson folder, notes) are detached from Learn.
+    for (const file of walkMarkdown(gardenDir).filter(file => !isGardenUserPath(file.relPath))) {
       const parsed = parseSemanticMarkdown(readFileSyncWithRetry(file.absPath, 'utf8'));
       if (!isLearnerPage(file.relPath, parsed.data)) continue;
       const learningUnitId = semanticFrontmatterString(parsed.data, 'learningUnitId');
@@ -925,7 +927,7 @@ export function migrateGardenSemantics(
 
   const units = asRecords(contract.learningUnits ?? contract.units);
   const unitById = new Map(units.map((unit) => [compactSemanticText(unit.id), unit]));
-  const pageFiles = walkMarkdown(gardenDir);
+  const pageFiles = walkMarkdown(gardenDir).filter(file => !isGardenUserPath(file.relPath));
   const learnerPages: Array<{
     relPath: string;
     parsed: ParsedMarkdown;
@@ -1396,7 +1398,9 @@ export function validateGardenSemantics(gardenDir: string): {
   const pages: PageConceptAssignment[] = [];
   const registryIds = new Set(registry.concepts.map((concept) => concept.id));
   const claimIds = new Set<string>();
-  for (const file of walkMarkdown(gardenDir)) {
+  // Reader folders keep whatever frontmatter they were copied with; Learn's
+  // semantic audit covers only the folders Learn owns.
+  for (const file of walkMarkdown(gardenDir).filter(file => !isGardenUserPath(file.relPath))) {
     const parsed = parseSemanticMarkdown(readFileSyncWithRetry(file.absPath, 'utf8'));
     const tags = semanticFrontmatterArray(parsed.data, 'tags');
     if (!isLearnerPage(file.relPath, parsed.data)) {

@@ -84,6 +84,16 @@ export function recordVisit(href: string): void {
   for (const listener of listeners) listener();
 }
 
+/** A fresh Profile tab has no trail of its own, so carry its source in the link. */
+export function withProfileReturnTo(href: string, sourceHref: string): string {
+  const destination = parse(href);
+  const source = normalize(sourceHref);
+  if (!destination || destination.origin !== window.location.origin ||
+      destination.pathname !== '/profile' || !source || parse(source)?.pathname === '/profile') return href;
+  destination.searchParams.set('returnTo', `${source}${parse(sourceHref)?.hash ?? ''}`);
+  return `${destination.pathname}${destination.search}${destination.hash}`;
+}
+
 /**
  * The previous page whose pathname differs from the current one, so that moving
  * around inside a single surface (opening notes in a garden, switching a query
@@ -94,6 +104,14 @@ export function recordVisit(href: string): void {
 export function resolveBackHref(currentHref: string, fallbackHref: string): string {
   const current = parse(currentHref);
   if (!current) return fallbackHref;
+
+  // A source carried across tabs takes precedence over any copied session
+  // history. Only same-origin, non-auth pages can become return destinations.
+  const returnTo = current.pathname === '/profile' ? current.searchParams.get('returnTo') : null;
+  const returnHref = returnTo ? normalize(returnTo) : null;
+  if (returnTo && returnHref && parse(returnHref)?.pathname !== current.pathname) {
+    return `${returnHref}${parse(returnTo)?.hash ?? ''}`;
+  }
 
   const trail = readTrail();
   for (let index = trail.length - 1; index >= 0; index -= 1) {
@@ -154,7 +172,11 @@ export function consumeBackTo(href: string): void {
 }
 
 const LABELS: Array<{ match: RegExp; label: string }> = [
+  { match: /^\/new-tab(?:\/|$)/, label: 'Back to new tab' },
   { match: /^\/dashboard(?:\/|$)/, label: 'Back to dashboard' },
+  { match: /^\/plan(?:\/|$)/, label: 'Back to Plan' },
+  { match: /^\/buzz(?:\/|$)/, label: 'Back to Organization' },
+  { match: /^\/browser(?:\/|$)/, label: 'Back to Browser' },
   { match: /^\/gardens\/[^/]+\/pdf(?:\/|$)/, label: 'Back to PDF' },
   { match: /^\/gardens\/[^/]+(?:\/|$)/, label: 'Back to workspace' },
   { match: /^\/garden\/[^/]+(?:\/|$)/, label: 'Back to garden' },

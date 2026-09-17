@@ -5,6 +5,7 @@ from typing import Iterable
 
 
 DEFAULT_MODEL = "gpt-5.6-sol"
+LUNA_RESERVE_MODEL = "gpt-5.6-luna-reserve"
 ALL_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 DEFAULT_REASONING_EFFORTS = frozenset(("none", "minimal", "low", "medium", "high", "xhigh"))
 
@@ -45,6 +46,17 @@ _MODEL_SPECS = (
         public_id="gpt-5.6-luna",
         upstream_id="gpt-5.6-luna",
         aliases=("gpt5.6-luna", "gpt-5.6-luna-latest"),
+        allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
+    ),
+    # Luna Reserve is exposed by the ChatGPT/Codex backend under its own
+    # service slug. Keep a friendlier public id so the picker can distinguish
+    # the reserve pool from ordinary Luna, while sending the backend's actual
+    # reserve route.
+    ModelSpec(
+        public_id=LUNA_RESERVE_MODEL,
+        upstream_id="gpt-reserve",
+        aliases=("gpt5.6-luna-reserve", "gpt-5.6-luna-reserve-latest"),
         allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
         variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
     ),

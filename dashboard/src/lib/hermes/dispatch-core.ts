@@ -27,6 +27,8 @@ import type { CapabilityDecision } from "./capability-policy.ts";
 
 export interface PrepareTurnInput {
   request: string;
+  /** Worker output is evidence for synthesis, never a fresh filesystem request. */
+  internalAgentContinuation?: boolean;
   priorRequests?: string[];
   resolvedResources?: TaskPlan["requiredResources"];
   surface: HermesSurface;
@@ -35,7 +37,7 @@ export interface PrepareTurnInput {
   workspaceRoot: string;
   isolated?: boolean;
   confirmedPermissionIds?: readonly string[];
-  /** False for delivery channels that cannot show a native approval prompt. */
+  /** False when neither a native prompt nor standing approval is available. */
   interactiveApprovals?: boolean;
   /** The user had Super agent on when they sent this message. */
   superAgent?: boolean;
@@ -64,9 +66,11 @@ export interface PreparedTurn {
 export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
   const isolated = input.isolated === true || input.userId === null;
   const planned = planTask({
-    request: input.request,
-    priorRequests: input.priorRequests,
-    resolvedResources: input.resolvedResources,
+    request: input.internalAgentContinuation
+      ? "Summarize the completed worker results for the user."
+      : input.request,
+    priorRequests: input.internalAgentContinuation ? [] : input.priorRequests,
+    resolvedResources: input.internalAgentContinuation ? [] : input.resolvedResources,
     authenticated: input.userId !== null,
     isolated,
   });

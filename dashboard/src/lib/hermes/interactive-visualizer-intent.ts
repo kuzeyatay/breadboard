@@ -13,21 +13,48 @@ const STATIC_IMAGE_REQUEST =
   /\b(?:generate|draw|make|create)\b[\s\S]{0,60}\b(?:photo|poster|wallpaper|static image|illustration)\b/i;
 const BASIC_CALCULATION =
   /^\s*(?:calculate|compute|what is|solve)\b[\s\S]{0,180}(?:\d|equation|percent|sum|product)\s*[?.]?\s*$/i;
+// Mentioning a visualizer is not asking to create one. In particular, research
+// questions must not acquire a mandatory artifact at the end of the turn.
+const REQUEST_PREFIX =
+  /^(?:(?:please\s+)?(?:can|could|would|will)\s+you\s+|(?:i\s+(?:want|need|would like)\s+(?:you\s+to\s+)?)|please\s+)?/i;
+const CREATION_REQUEST =
+  /^(?:please\s+)?(?:create|build|make|generate|draw|render|design|visuali[sz]e|simulate|animate|demonstrate|show|give|explain)\b/i;
+const BARE_VISUALIZER_REQUEST =
+  /^(?:an?\s+)?(?:interactive\s+(?:visuali[sz](?:ation|er)|diagram|model|simulation)|[23]d\s+(?:model|diagram)|simulation)\s+(?:of|for|showing|:)\s*/i;
+const TOOL_DISCOVERY =
+  /\b(?:open[ -]source|alternatives?|libraries|frameworks|software|recommendations?)\b/i;
+
+function hasVisualizationCreationIntent(text: string): boolean {
+  return text.split(/(?:[.!?;]\s+|\n+)/).some((sentence) => {
+    const request = sentence.trim().replace(REQUEST_PREFIX, "");
+    if (BARE_VISUALIZER_REQUEST.test(request)) return true;
+    if (!CREATION_REQUEST.test(request)) return false;
+    if (/^(?:show|give|explain)\b/i.test(request) && TOOL_DISCOVERY.test(request)) return false;
+    if (/^explain\b/i.test(request)) {
+      return MANIPULATION.test(text) && DYNAMIC_EXPLANATION.test(request);
+    }
+    return EXPLICIT_VISUALIZER.test(request) ||
+      (MANIPULATION.test(text) && DYNAMIC_EXPLANATION.test(request));
+  });
+}
 const RETRY_REQUEST =
   /^(?:(?:can|could|would|will)\s+you\s+|please\s+)?(?:(?:try|retry|run|generate|build)(?:\s+it|\s+that|\s+this)?\s+(?:again|once more)|retry(?:\s+it|\s+that|\s+this)?)[?.!]*$/i;
-const VISUALIZER_CONTEXT =
-  /(?:\/interactive-visualizer\b|interactive[-\s]visuali[sz]er|visuali[sz]er|renderer rejected|diagram .*schema|working artifact was produced)/i;
+const VISUALIZER_FAILURE =
+  /(?:visuali[sz]er[\s\S]{0,80}(?:failed|rejected|not published)|renderer rejected|diagram .*schema|no working artifact was produced)/i;
 
 function isVisualizerRetry(input: {
   text: string;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
 }): boolean {
   if (!RETRY_REQUEST.test(input.text.trim())) return false;
-  return (input.priorMessages ?? [])
-    .slice(-8)
-    .some((message) =>
-      message.role === "assistant" && VISUALIZER_CONTEXT.test(message.content),
-    );
+  const prior = input.priorMessages ?? [];
+  const user = prior.findLast((message) => message.role === "user");
+  if (user) {
+    return /^\s*\/interactive-visualizer(?:-in-chat)?\b/i.test(user.content) ||
+      hasVisualizationCreationIntent(user.content);
+  }
+  const assistant = prior.findLast((message) => message.role === "assistant");
+  return Boolean(assistant && VISUALIZER_FAILURE.test(assistant.content));
 }
 
 export function shouldAutoSelectInteractiveVisualizer(input: {
@@ -56,8 +83,7 @@ export function shouldAutoSelectInteractiveVisualizer(input: {
   if (!text || text.startsWith("/")) return false;
   if (SOURCE_CODE_REQUEST.test(text) || BASIC_CALCULATION.test(text)) return false;
   if (STATIC_IMAGE_REQUEST.test(text) && !MANIPULATION.test(text)) return false;
-  return EXPLICIT_VISUALIZER.test(text) ||
-    (MANIPULATION.test(text) && DYNAMIC_EXPLANATION.test(text));
+  return hasVisualizationCreationIntent(text);
 }
 
 export function visualizerCommandText(input: {

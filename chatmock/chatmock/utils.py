@@ -272,9 +272,6 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
     input_items: List[Dict[str, Any]] = []
     for message in messages:
         role = message.get("role")
-        if role == "system":
-            continue
-
         if role == "tool":
             call_id = message.get("tool_call_id") or message.get("id")
             if isinstance(call_id, str) and call_id:
@@ -347,7 +344,15 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
 
         if not content_items:
             continue
-        role_out = "assistant" if role == "assistant" else "user"
+        # Application instructions must remain above conversation history.
+        # ChatGPT Responses accepts developer messages alongside its base
+        # instructions; turning them into user text lets later old requests
+        # override current application policy. Preserve every instruction
+        # message, including clients that split their system prompt in parts.
+        role_out = (
+            "developer" if role in {"system", "developer"}
+            else "assistant" if role == "assistant" else "user"
+        )
         input_items.append({"type": "message", "role": role_out, "content": content_items})
     return input_items
 
@@ -612,6 +617,18 @@ def sse_translate_chat(
     upstream_usage = None
     ws_index: dict[str, int] = {}
     ws_next_index: int = 0
+    streamed_calls: dict[str, dict[str, Any]] = {}
+
+    def _tool_delta(index: int, function: Dict[str, Any], call_id: str = "") -> bytes:
+        tool: Dict[str, Any] = {"index": index, "function": function}
+        if call_id:
+            tool.update(id=call_id, type="function")
+        chunk = {
+            "id": response_id, "object": "chat.completion.chunk",
+            "created": created, "model": model,
+            "choices": [{"index": 0, "delta": {"tool_calls": [tool]}, "finish_reason": None}],
+        }
+        return f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
     
     def _serialize_tool_args(eff_args: Any) -> str:
         """
@@ -725,21 +742,56 @@ def sse_translate_chat(
                     "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
                 }
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+            elif kind == "response.output_item.added":
+                item = evt.get("item") or {}
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    call_id = item.get("call_id") or item.get("id")
+                    item_id = item.get("id") or call_id
+                    name = item.get("name")
+                    if isinstance(call_id, str) and call_id and isinstance(name, str) and name:
+                        if call_id not in ws_index:
+                            ws_index[call_id] = ws_next_index
+                            ws_next_index += 1
+                        args = item.get("arguments") or ""
+                        if not isinstance(args, str):
+                            args = _serialize_tool_args(args)
+                        state = {"index": ws_index[call_id], "arguments": args}
+                        streamed_calls[item_id] = state
+                        streamed_calls[call_id] = state
+                        yield _tool_delta(state["index"], {"name": name, "arguments": args}, call_id)
+            elif kind == "response.function_call_arguments.delta":
+                state = streamed_calls.get(evt.get("item_id") or evt.get("call_id"))
+                delta = evt.get("delta")
+                if state is not None and isinstance(delta, str) and delta:
+                    state["arguments"] += delta
+                    yield _tool_delta(state["index"], {"arguments": delta})
             elif kind == "response.output_item.done":
                 item = evt.get("item") or {}
                 if isinstance(item, dict) and item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id") or ""
                     name = item.get("name") or ""
                     raw_args = item.get("arguments") or item.get("parameters")
+                    state = streamed_calls.get(item.get("id") or call_id)
                     try:
-                        args = _serialize_tool_args(raw_args)
+                        # Keep the original bytes when reconciling streamed JSON;
+                        # reserializing changes whitespace and duplicates arguments.
+                        args = raw_args if state is not None and isinstance(raw_args, str) else _serialize_tool_args(raw_args)
                     except Exception:
                         args = "{}"
                     if call_id not in ws_index:
                         ws_index[call_id] = ws_next_index
                         ws_next_index += 1
                     _idx = ws_index.get(call_id, 0)
-                    if call_id and name and isinstance(args, str):
+                    if state is not None:
+                        prefix = state["arguments"]
+                        if not args.startswith(prefix):
+                            yield b'data: {"error":{"message":"The completed tool arguments differed from the streamed arguments."}}\n\n'
+                            return
+                        suffix = args[len(prefix):]
+                        if suffix:
+                            yield _tool_delta(state["index"], {"arguments": suffix})
+                        args = ""
+                    if state is None and call_id and name and isinstance(args, str):
                         delta_chunk = {
                             "id": response_id,
                             "object": "chat.completion.chunk",
@@ -764,6 +816,7 @@ def sse_translate_chat(
                         }
                         yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
 
+                    if call_id and name and isinstance(args, str):
                         finish_chunk = {
                             "id": response_id,
                             "object": "chat.completion.chunk",

@@ -141,6 +141,18 @@ test("a person with several addresses shows the count, and the primary one", () 
 
 // -------------------------------------------------------------- calendar sync
 
+test("Composio Google calendars are visible in the profile with sync status and a calendar link", () => {
+  const html = renderToStaticMarkup(React.createElement(CalendarSyncPanel, {
+    initial: [calendar({ name: "Google work", googleAccountId: "account-1", googleCalendarId: "work@example.com",
+      caldavUrl: null, caldavUsername: null, readOnly: true, lastSyncedAt: new Date().toISOString() })],
+    vaultConfigured: false,
+  }));
+  assert.match(html, /Google work/);
+  assert.match(html, /View only/);
+  assert.match(html, /just now/);
+  assert.match(html, /href="\/plan\?view=calendar"/);
+});
+
 test("with nothing connected the panel offers calendar links and CalDAV", () => {
   const html = renderToStaticMarkup(
     React.createElement(CalendarSyncPanel, { initial: [], vaultConfigured: true }),

@@ -96,6 +96,7 @@ async function loadCutoverModule() {
                       this.code = code;
                     }
                   }
+                  globalThis[${JSON.stringify(stateKey)} + "ControlError"] = RuntimeJobControlError;
                   export async function submitRuntimeJob(authority, submission) {
                     const current = state();
                     current.submissions.push({
@@ -117,7 +118,11 @@ async function loadCutoverModule() {
                     if (!job) throw new RuntimeJobControlError("JOB_NOT_FOUND");
                     return job;
                   }
-                  export const inspectRuntimeJobForStatus = inspectRuntimeJob;
+                  export async function inspectRuntimeJobForStatus(authority, jobId) {
+                    const failure = state().statusFailure;
+                    if (failure) throw failure;
+                    return inspectRuntimeJob(authority, jobId);
+                  }
                   export async function cancelRuntimeJob(authority, jobId) {
                     const current = state();
                     current.cancellations.push({ authority: structuredClone(authority), jobId });
@@ -166,6 +171,87 @@ async function loadCutoverModule() {
 
 const cutover = await loadCutoverModule();
 
+test("humanizer failure notifications retain the current operation's specific cause", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-humanizer-error-"));
+  try {
+    const state = freshState();
+    const submitted = await cutover.executeLearnOperationForRoute({
+      operation: "humanizer", userId: 7, gardenId: "garden-1",
+      contentPath: temporaryRoot, enabled: true, expectedVersionId: "version-1",
+    }, "rewriting lessons");
+    const failedAt = Date.now() + 1_000;
+    const failure = "The finished Learn prose was not switched: promoted tree failed manifest verification; destination untouched";
+    state.jobs.set(submitted.jobId, {
+      ...snapshot(submitted.jobId, "failed"), updatedAt: failedAt, finishedAt: failedAt,
+      failureCode: "RUNTIME_JOB_FAILED", failureMessage: "Runtime job execution failed.",
+    });
+    const humanizer = {
+      versionId: "version-1", requested: true, activeCopy: "ai", status: "failed",
+      error: failure, updatedAt: new Date(failedAt - 1).toISOString(),
+    };
+    const scope = { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot };
+    const merged = await cutover.mergeRuntimeV2LearnStatus(scope, { humanizer });
+    assert.match(merged.humanizer.error, /rewritten lessons failed verification/i);
+    assert.match(merged.humanizer.error, /published lessons are unchanged/i);
+    assert.doesNotMatch(merged.humanizer.error, /Runtime job execution failed/);
+    assert.equal(merged.humanizer.activeCopy, "ai");
+    // The runtime control-plane contract remains sanitized.
+    assert.equal(merged.runtimeJob.failureMessage, "Runtime job execution failed.");
+
+    const specific = await cutover.mergeRuntimeV2LearnStatus(scope, {
+      humanizer: { ...humanizer, error: "The garden changed while the humanizer prepared its staging copy." },
+    });
+    assert.match(specific.humanizer.error, /Rewriting the finished lessons failed/);
+    assert.match(specific.humanizer.error, /garden changed/);
+
+    for (const stale of [
+      { ...humanizer, updatedAt: "2020-01-01T00:00:00.000Z" },
+      { ...humanizer, updatedAt: new Date(failedAt + 1_000).toISOString() },
+      { ...humanizer, updatedAt: "invalid" },
+      { ...humanizer, versionId: "another-version" },
+      { ...humanizer, requested: false },
+      { ...humanizer, status: "running" },
+      { ...humanizer, error: "Runtime job execution failed." },
+      {},
+    ]) {
+      const projected = await cutover.mergeRuntimeV2LearnStatus(scope, { humanizer: stale });
+      assert.match(projected.humanizer.error, /Could not rewrite the finished lessons/);
+      assert.doesNotMatch(projected.humanizer.error, /Runtime job execution failed|failed verification/);
+    }
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("restoring a Learn copy names the operation and does not carry an error into success", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-humanizer-restore-"));
+  try {
+    const state = freshState();
+    const submitted = await cutover.executeLearnOperationForRoute({
+      operation: "humanizer", userId: 7, gardenId: "garden-1",
+      contentPath: temporaryRoot, enabled: false, expectedVersionId: "version-1",
+    }, "restoring lessons");
+    const scope = { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot };
+    for (const runtimeState of ["failed", "interrupted", "uncertain", "resource_exhausted"]) {
+      state.jobs.set(submitted.jobId, {
+        ...snapshot(submitted.jobId, runtimeState), failureMessage: "Runtime job execution failed.",
+      });
+      const merged = await cutover.mergeRuntimeV2LearnStatus(scope, {});
+      assert.match(merged.humanizer.error, /restore the original AI lessons/);
+      assert.doesNotMatch(merged.humanizer.error, /Runtime job execution failed/);
+    }
+    for (const runtimeState of ["queued", "running", "succeeded", "cancelled"]) {
+      state.jobs.set(submitted.jobId, snapshot(submitted.jobId, runtimeState));
+      const merged = await cutover.mergeRuntimeV2LearnStatus(scope, {
+        humanizer: { error: "An older attempt failed." },
+      });
+      assert.equal(merged.humanizer.error, undefined);
+    }
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 function freshState() {
   const state = {
     submissions: [],
@@ -175,6 +261,7 @@ function freshState() {
     runtimeEvents: [],
     latestLearnJob: null,
     pendingLearnPublication: false,
+    statusFailure: null,
     jobIds: new Map(),
     jobs: new Map(),
   };
@@ -322,6 +409,49 @@ test("queued Runtime Learn state and events bridge the pre-legacy handoff", asyn
     assert.equal(compatibility.events[0].type, "learn_runtime_queued");
     assert.equal(compatibility.events[0].jobId, submitted.jobId);
     assert.equal(state.replays.length, 1);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("an unreachable Runtime degrades status to the durable snapshot instead of failing", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-unreachable-"));
+  try {
+    const state = freshState();
+    const submitted = await cutover.executeLearnOperationForRoute(
+      planRequest(temporaryRoot),
+      "planning",
+    );
+    const scope = { userId: 7, gardenId: "garden-1", contentPath: temporaryRoot };
+    const snapshot = { job: null, hasSources: true, sourceCount: 2 };
+
+    state.statusFailure = new Error("Runtime control transport failed (ECONNREFUSED).");
+    const refused = await cutover.mergeRuntimeV2LearnStatus(scope, snapshot);
+    assert.equal(refused.hasSources, true);
+    assert.equal(refused.job, null);
+    assert.equal(refused.runtimeJob, undefined);
+    assert.equal(refused.runtimeUnavailable.runtimeJobId, submitted.jobId);
+    assert.equal(refused.runtimeUnavailable.operation, "plan");
+    assert.match(refused.runtimeUnavailable.reason, /ECONNREFUSED/);
+
+    const timeout = new Error("This operation was aborted");
+    timeout.name = "AbortError";
+    state.statusFailure = timeout;
+    const timedOut = await cutover.mergeRuntimeV2LearnStatus(scope, snapshot);
+    assert.match(timedOut.runtimeUnavailable.reason, /did not answer in time/);
+
+    // A real answer about the job is still an error the route must surface.
+    const RuntimeJobControlError = globalThis[`${stateKey}ControlError`];
+    state.statusFailure = new RuntimeJobControlError("JOB_SCOPE_FORBIDDEN");
+    await assert.rejects(
+      cutover.mergeRuntimeV2LearnStatus(scope, snapshot),
+      /JOB_SCOPE_FORBIDDEN/,
+    );
+
+    state.statusFailure = null;
+    const recovered = await cutover.mergeRuntimeV2LearnStatus(scope, snapshot);
+    assert.equal(recovered.runtimeUnavailable, undefined);
+    assert.equal(recovered.runtimeJob.jobId, submitted.jobId);
   } finally {
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
@@ -687,6 +817,38 @@ test("an orphaned Runtime Learn job whose durable row is cancelled is cancelled 
         jobId: first.jobId,
       },
     ]);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("a cancelled rewrite releases its stale running marker and permits the next operation", async () => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learn-v2-cancel-rewrite-"));
+  try {
+    const state = freshState();
+    for (const enabled of [true, false]) {
+      const first = await cutover.executeLearnOperationForRoute({
+        operation: "humanizer", userId: 7, gardenId: "garden-1",
+        contentPath: temporaryRoot, enabled, expectedVersionId: "version-1",
+      }, "switching lesson copy");
+      state.jobs.set(first.jobId, snapshot(first.jobId, "running"));
+      await assert.rejects(
+        cutover.executeLearnOperationForRoute(planRequest(temporaryRoot), "planning"),
+        /cancel it in the Learn panel/,
+      );
+      assert.equal(state.cancellations.length, 0);
+      state.jobs.set(first.jobId, snapshot(first.jobId, "cancelled"));
+      const activeCopy = enabled ? "ai" : "humanized";
+      const merged = await cutover.mergeRuntimeV2LearnStatus({
+        userId: 7, gardenId: "garden-1", contentPath: temporaryRoot,
+      }, { humanizer: { activeCopy, status: enabled ? "running" : "restoring_ai" } });
+      assert.equal(merged.humanizer.status, activeCopy);
+      assert.equal(merged.humanizer.activeCopy, activeCopy);
+      const next = await cutover.executeLearnOperationForRoute(planRequest(temporaryRoot), "planning");
+      assert.equal(next.accepted, true);
+      assert.notEqual(next.jobId, first.jobId);
+      state.jobs.set(next.jobId, snapshot(next.jobId, "succeeded"));
+    }
   } finally {
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }

@@ -4,6 +4,7 @@ import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesyst
 import db from "@/lib/db";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
+import { resolveGardenSourcePdfPath as resolveSourcePdfPath } from "@/lib/garden-source-pdf-path";
 import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
@@ -71,32 +72,6 @@ function safeClusterDir(
   const clusterDir = path.resolve(root, clusterSlug.trim());
   if (!clusterDir.startsWith(root + path.sep)) return null;
   return clusterDir;
-}
-
-function resolveSourcePdfPath(
-  contentPath: string,
-  clusterSlug: string,
-  sourcePdf: string,
-): string | null {
-  const clusterDir = safeClusterDir(contentPath, clusterSlug);
-  if (!clusterDir) return null;
-
-  const normalized = sourcePdf.trim().replace(/\\/g, "/");
-  const prefix = `/${clusterSlug.trim()}/assets/`;
-  if (!normalized.startsWith(prefix)) return null;
-
-  const assetName = normalized.slice(prefix.length);
-  if (
-    !assetName ||
-    assetName.includes("/") ||
-    !assetName.toLowerCase().endsWith(".pdf")
-  ) {
-    return null;
-  }
-
-  const pdfPath = path.resolve(clusterDir, "assets", assetName);
-  if (!pdfPath.startsWith(clusterDir + path.sep)) return null;
-  return pdfPath;
 }
 
 async function getHistoryContext(
@@ -200,8 +175,9 @@ export async function DELETE(
     const gardenDir = contentPath
       ? safeClusterDir(contentPath, context.clusterSlug)
       : null;
+    const restorePath = contentPath ? resolveSourcePdfPath(contentPath, context.clusterSlug, entry.source_pdf_path) : null;
     const lease = gardenDir
-      ? acquireGardenMutationLease(gardenDir, "restore-source-pdf")
+      ? acquireGardenMutationLease(gardenDir, "restore-source-pdf", { paths: restorePath ? [path.relative(gardenDir, restorePath)] : undefined })
       : null;
 
     try {
@@ -247,21 +223,16 @@ export async function DELETE(
       db.prepare(`DELETE FROM pdf_document_edit_history WHERE id = ?`).run(
         entry.id,
       );
-      await publishQuartzAfterMutation(
-        `restore source PDF ${context.clusterSlug}/${context.documentSlug}`,
-        { userId: context.userId, gardenSlug: context.clusterSlug },
-      );
-
-      return new Response(pdfBytes, {
-        headers: {
-          "Content-Type": "application/pdf",
-          "Cache-Control": "no-store",
-          "Content-Length": String(pdfBytes.length),
-        },
-      });
     } finally {
       lease?.release();
     }
+    void publishQuartzAfterMutation(
+      `restore source PDF ${context.clusterSlug}/${context.documentSlug}`,
+      { userId: context.userId, gardenSlug: context.clusterSlug },
+    ).catch(error => console.error("[garden] PDF restored; publication failed:", error));
+    return new Response(pdfBytes, { headers: {
+      "Content-Type": "application/pdf", "Cache-Control": "no-store", "Content-Length": String(pdfBytes.length),
+    } });
   } catch (error) {
     return routeErrorResponse(error);
   }

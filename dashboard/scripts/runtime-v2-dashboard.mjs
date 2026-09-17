@@ -36,5 +36,14 @@ if (servers.length !== 1) {
 }
 
 const server = servers[0];
+// Rust's canonical paths include the Windows namespace; Node's realpath omits
+// it. Keep dashboard data paths in Node's spelling, including in existing
+// standalone builds whose artifact guards compare canonical paths directly.
+for (const name of ["BREADBOARD_DATA_DIR", "BREADBOARD_REPO_ROOT"]) {
+  const configured = process.env[name]?.trim();
+  if (configured && process.platform === "win32") {
+    process.env[name] = fs.realpathSync.native(configured);
+  }
+}
 process.chdir(path.dirname(server));
 await import(pathToFileURL(server).href);

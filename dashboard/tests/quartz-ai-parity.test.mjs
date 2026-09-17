@@ -32,9 +32,10 @@ const highlighterStyles = read(
 test("quartz chat route resolves the engine server-side like the terminal", () => {
   assert.match(
     chatRoute,
-    /resolveHermesEngine\(body\.model, body\.reasoningEffort\)/,
+    /resolveHermesEngine\(model, body\.reasoningEffort\)/,
   );
   // Both the first-turn and continuation dispatches carry the resolved engine.
+  assert.match(chatRoute, /const model = body\.model \?\? selectedModelForUser\(userId\)/);
   const modelSends =
     chatRoute.match(
       /model: engine\.model,\s*\n\s*modelIdentity: \{ modelID: engine\.selectedModelID \},\s*\n\s*variant: engine\.variant,/g,

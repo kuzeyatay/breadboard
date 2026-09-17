@@ -22,7 +22,7 @@ test("Garden Chat starts a local draft and persists it on first send", () => {
     workspace.indexOf("async function handleForkCluster"),
   );
   assert.match(start, /pendingNewChatRef\.current = true/);
-  assert.match(start, /setActiveChatId\(null\)/);
+  assert.match(start, /selectChat\(null\)/);
   assert.match(start, /setInput\(""\)/);
   assert.match(start, /setChatAttachments\(\[\]\)/);
   assert.doesNotMatch(start, /createChatSession\(/);
@@ -33,8 +33,40 @@ test("Garden Chat starts a local draft and persists it on first send", () => {
     /writableActiveChat \?\? \(await createChatSession\(\)\)/g,
   ) ?? [];
   assert.ok(lazyCreates.length >= 2);
-  assert.match(workspace, /if \(pendingNewChatRef\.current\) return null/);
-  assert.match(workspace, /pendingNewChatRef\.current = false;[\s\S]{0,100}chatHistoryEpoch\.current \+= 1/);
+  const historyLoad = workspace.slice(
+    workspace.indexOf("const fetchChatSessions"),
+    workspace.indexOf("const refreshChatSession"),
+  );
+  assert.match(
+    historyLoad,
+    /if \(!pendingNewChatRef\.current\) \{[\s\S]*selectChat\(sessions\[0\]\?\.id \?\? null\)/,
+    "history loading must leave an intentional blank chat selected",
+  );
+  assert.match(workspace, /chatHistoryEpoch\.current \+= 1/);
+  assert.match(workspace, /pendingNewChatRef\.current = false/);
+});
+
+test("Garden Chat keeps the selected transcript authoritative across async work and reloads", () => {
+  assert.match(
+    workspace,
+    /const selectChat = useCallback\([\s\S]{0,260}chatSelectionEpochRef\.current \+= 1;[\s\S]{0,160}activeChatIdRef\.current = chatId;[\s\S]{0,120}setActiveChatId\(chatId\)/,
+    "selection must update its synchronous authority before async work can finish",
+  );
+  assert.match(
+    workspace,
+    /if \(activeChatId === null\) url\.searchParams\.delete\("chat"\);[\s\S]{0,120}url\.searchParams\.set\("chat", String\(activeChatId\)\)[\s\S]{0,300}window\.history\.replaceState/,
+    "the persisted tab URL must identify the transcript actually on screen",
+  );
+  const create = workspace.slice(
+    workspace.indexOf("async function createChatSession"),
+    workspace.indexOf("async function persistChatSession"),
+  );
+  assert.match(create, /const selectionEpoch = chatSelectionEpochRef\.current/);
+  assert.match(
+    create,
+    /if \(chatSelectionEpochRef\.current === selectionEpoch\) \{[\s\S]{0,180}selectChat\(session\.id\)/,
+    "a slow creation response must not pull the reader away from a later selection",
+  );
 });
 
 test("Garden Chat rename matches Terminal's optimistic inline contract", () => {

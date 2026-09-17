@@ -4,6 +4,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { BatteryCharging, CalendarDays, Clock3, CloudSun, Globe2, Laptop, Moon, Plus, Search, Sun, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { WeatherIcon, weatherKind } from "@/app/components/weather-icon";
+import { WeatherForecastPopover } from "./browser-weather-forecast";
 import { batteryDuration, DEFAULT_CITY_IDS, MAX_WORLD_CITIES, normalizeCityIds, WORLD_CITIES, worldClock, type DockBattery, type DockNetwork, type DockWeather, type WorldCity } from "./browser-dock-data";
 import styles from "./browser-dock-popovers.module.css";
 
@@ -186,19 +187,36 @@ function useWorldWeather(cities: WorldCity[]) {
 
 export function WorldWeather({ cities, save, localWeather }: { cities: WorldCity[]; save: (ids: string[]) => void; localWeather: DockWeather | null }) {
   const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pointerOpened, setPointerOpened] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
   const { readings, retry } = useWorldWeather(cities);
   const weatherRow = (name: string, reading: DockWeather | "unavailable" | undefined, city?: WorldCity) => {
     const weather = reading && reading !== "unavailable" ? reading : null;
-    return <div key={city?.id ?? "local"} className={styles.weatherRow} data-day={weather?.isDay}>
-      <div className={styles.cityName}><strong>{name}</strong><small>{weather?.condition ?? (reading === "unavailable" ? "Unavailable right now" : "Getting weather…")}</small>{weather && <small>Feels like {weather.apparentC}°</small>}</div>
-      <span className={styles.weatherIcon}>{weather ? <WeatherIcon kind={weatherKind(weather.code)} isDay={weather.isDay} /> : <CloudSun aria-hidden="true" />}</span>
-      <strong className={styles.weatherTemperature}>{weather ? `${weather.temperatureC}°` : "–°"}</strong>
-      {city && <RemoveCity city={city} cities={cities} save={save} />}
-    </div>;
+    const id = city?.id ?? "local";
+    const latitude = city?.latitude ?? weather?.latitude;
+    const longitude = city?.longitude ?? weather?.longitude;
+    const hasCoordinates = typeof latitude === "number" && Number.isFinite(latitude) && typeof longitude === "number" && Number.isFinite(longitude);
+    const open = selectedId === id;
+    return <Popover.Root key={id} open={open} onOpenChange={(next) => setSelectedId((current) => next ? id : current === id ? null : current)}>
+      <div className={styles.weatherRow} data-day={weather?.isDay} data-selected={open}>
+        <Popover.Trigger asChild>
+          <button type="button" className={styles.weatherLocation} data-weather-location-trigger
+            aria-label={`Show seven-day forecast for ${name}`} disabled={!hasCoordinates}
+            onPointerDown={() => setPointerOpened(true)} onKeyDown={() => setPointerOpened(false)}>
+            <span className={styles.cityName}><strong>{name}</strong><small>{weather?.condition ?? (reading === "unavailable" ? "Unavailable right now" : "Getting weather…")}</small>{weather && <small>Feels like {weather.apparentC}°</small>}</span>
+            <span className={styles.weatherIcon}>{weather ? <WeatherIcon kind={weatherKind(weather.code)} isDay={weather.isDay} /> : <CloudSun aria-hidden="true" />}</span>
+            <strong className={styles.weatherTemperature}>{weather ? `${weather.temperatureC}°` : "–°"}</strong>
+          </button>
+        </Popover.Trigger>
+        {city && <RemoveCity city={city} cities={cities} save={save} />}
+      </div>
+      {open && hasCoordinates && <WeatherForecastPopover key={`${latitude},${longitude}`} name={name} latitude={latitude} longitude={longitude} pointerOpened={pointerOpened} listRef={listRef} />}
+    </Popover.Root>;
   };
   return <>
-    <CitySearch cities={cities} save={save} query={query} setQuery={setQuery} />
-    {!query.trim() && <div className={styles.weatherList} aria-label="Weather in saved cities">
+    <CitySearch cities={cities} save={save} query={query} setQuery={(value) => { setQuery(value); setSelectedId(null); }} />
+    {!query.trim() && <div ref={listRef} className={styles.weatherList} aria-label="Weather in saved cities">
       {localWeather && weatherRow("Your location", localWeather)}
       {cities.map((city) => weatherRow(city.name, readings[city.id], city))}
       {!cities.length && <p className={styles.note}>Add a city above to see its weather.</p>}

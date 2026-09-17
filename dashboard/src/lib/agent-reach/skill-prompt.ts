@@ -109,6 +109,8 @@ export function buildSystemPrompt(input: PromptInput): string {
 ## Channel availability right now
 ${channelTable(input.channels)}
 
+This table is the result of the doctor's check already performed for this run. Start retrieving relevant sources using it; repeat the doctor only if a subsequent command reveals a capability mismatch. The installed skill's instruction to check readiness is already satisfied when this table contains results.
+
 Do not attempt a channel marked UNAVAILABLE. If the user's request needs one, say plainly which channel is missing and what would unlock it (the doctor note above), then do what you can with the channels that work. An INSTALLED channel is worth one attempt; if it comes back asking for a login or a key, report that instead of retrying.
 
 ## How you answer

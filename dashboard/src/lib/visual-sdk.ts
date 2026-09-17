@@ -298,6 +298,8 @@ export type GeneratedVisualScene =
   | SpatialScene;
 
 export interface GeneratedVisualizationDefinition {
+  /** Compiler-owned schema-2 skill bundle; never admitted by the declarative compiler. */
+  nativeRuntime?: import("./learn-native-visualizer-contract.ts").LearnNativeVisualizerRuntime;
   schemaVersion: 1;
   sdkVersion: string;
   title: string;

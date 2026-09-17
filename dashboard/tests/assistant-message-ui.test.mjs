@@ -69,7 +69,7 @@ test("thinking remains visible with response metadata and shimmers while active"
     "persisted duration owns completed rows while live rows use wall-clock timestamps",
   );
   assert.match(responseMeta, /formatTokenCount/);
-  assert.match(responseMeta, /↓ counting tokens/);
+  assert.match(responseMeta, /counting tokens/);
   assert.doesNotMatch(responseMeta, /tokens unavailable/);
   // The row states one answer's cost. A cumulative session snapshot belongs to
   // the whole conversation, so it must never be printed as this message's count.
@@ -208,7 +208,7 @@ test("tool-boundary prose stays behind the thinking disclosure", () => {
   assert.match(gardenAssistant, /assistantVisibleContent/);
   assert.match(runtime, /progressNotes=\{thinkingUpdates\}/);
   assert.match(workspace, /progressNotes=\{thinkingUpdates\}/);
-  assert.match(gardenAssistant, /progressNotes=\{message\.progressNotes\}/);
+  assert.match(gardenAssistant, /progressNotes=\{delegatedThinkingUpdates\(message\)\}/);
   assert.match(eventStream, /progressNotes\.length \? \{ progressNotes \} : \{\}/);
   assert.match(sessionPresentation, /metadata\.progressNotes/);
 });
@@ -407,7 +407,7 @@ test("ordinary assistant rows omit missing provider metrics", () => {
     knowledgeTerminal,
     /responseDurationMs !== undefined \? \([\s\S]{0,180}Thinking/,
   );
-  assert.match(responseMeta, /active\s*\?\s*"↓ counting tokens\.\.\."/);
+  assert.match(responseMeta, /counting tokens/);
   assert.match(responseMeta, /:\s*null\s*\n\s*:\s*null/);
   assert.match(responseMeta, /tokenLabel \? " and token usage" : ""/);
 });
@@ -490,7 +490,8 @@ test("user messages accent only the leading slash command", () => {
 
 test("stalled agent turns render a recoverable in-chat error", () => {
   assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
-  assert.match(runtime, /<AssistantResponseNotice/);
+  assert.doesNotMatch(runtime, /AssistantResponseNotice/);
+  assert.match(runtime, /content=\{responseContent\}/);
   const stateRow = runtime.search(
     /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/,
   );
@@ -513,27 +514,30 @@ test("interrupted assistant turns retain their message actions and retry control
   assert.match(runtime, /<ActivityPanel/);
   assert.match(
     runtime,
-    /message\.content \|\|[\s\S]{0,240}message\.interrupted/,
+    /message\.failed \? "Response failed\." : responseInterrupted \? "Response stopped\."/,
   );
   assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
   assert.doesNotMatch(runtime, /canRetryResponseState/);
   assert.match(
     runtime,
-    /onRetry=\{[\s\S]*?\(!responseInterrupted \|\| !disabled\)[\s\S]*?message\.interrupted \|\|\s*index === lastAssistantIndex/,
+    /const retryResponse = onRetryMessage && !activeRun && !conversationLocked && !disabled &&\s*\(message\.interrupted \|\| message\.failed \|\| index === lastAssistantIndex\)/,
   );
   assert.match(runtime, /!activeRun/);
   assert.match(runtime, /\(\) => retryAssistantAsBranch\(index\)/);
   assert.match(actions, /aria-label="Regenerate response"/);
 });
 
-test("response branch navigation remains visible on external-agent cards", () => {
+test("external-agent branch navigation is supplied through the shared action slot", () => {
   assert.match(actions, /export function AssistantResponseBranchNavigation/);
   assert.match(actions, /Previous response branch/);
   assert.match(actions, /Next response branch/);
   assert.match(
     runtime,
-    /isExternalAgentRunMessage\(message\)[\s\S]*?<AssistantResponseBranchNavigation/,
+    /<MessageActionsSlot\s+branch=\{[\s\S]*?branchNavigationForAssistant\(message, index\)/,
   );
+  assert.doesNotMatch(runtime, /<AssistantResponseBranchNavigation/);
+  assert.doesNotMatch(workspace, /<AssistantResponseBranchNavigation/);
+  assert.match(actions, /const responseBranch = branch \?\? contextualBranch/);
   assert.match(
     runtime,
     /branch=\{branchNavigationForAssistant\(message, index\)\}/,

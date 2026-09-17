@@ -15,6 +15,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { areGardenUserWritePaths, mergeCurrentGardenUserContent } from "./garden-user-content.ts";
 
 export interface AtomicPromotionOptions {
   maxAttempts: number;
@@ -81,6 +82,10 @@ export async function promoteStagingGarden(input: {
   /** Keep the previous tree after a successful swap so a caller can complete
    * a second transactional resource (for example SQLite) before discarding it. */
   retainPreviousUntilCallerCommit?: boolean;
+  /** Modern Learn keeps its run lease while allowing independent user edits.
+   * Only the final merge/swap takes the short content-write lease. */
+  learnLease?: GardenLearnLease;
+  refreshMergedNavigation?: (incomingDir: string) => void;
   options?: Partial<AtomicPromotionOptions>;
 }): Promise<AtomicPromotionResult> {
   const options = { ...DEFAULT_PROMOTION_OPTIONS, ...input.options };
@@ -107,6 +112,7 @@ export async function promoteStagingGarden(input: {
   let lastError = "";
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     attempts = attempt;
+    let contentLease: GardenLearnLease | undefined;
     try {
       // 1. Stage the complete tree in a sibling temp dir.
       fs.rmSync(incomingContainer, { recursive: true, force: true });
@@ -127,6 +133,11 @@ export async function promoteStagingGarden(input: {
       // 3. Atomically swap: move the old dest aside, move incoming in. If the
       //    second move fails, restore the old dest so we never leave a
       //    half-old/half-new tree.
+      if (input.learnLease?.lock.scope === "learn-output") {
+        const acquired = acquireGardenContentLease(destination, { learnLease: input.learnLease });
+        if (!acquired.acquired) throw Object.assign(new Error("Garden save is busy; retry publication."), { code: "EBUSY" });
+        contentLease = acquired.lease;
+      }
       const destExists = fs.existsSync(destination);
       if (
         destExists &&
@@ -154,6 +165,13 @@ export async function promoteStagingGarden(input: {
           reason:
             "incoming garden could not merge volatile state; destination untouched",
         };
+      }
+      if (destExists && contentLease) {
+        mergeCurrentGardenUserContent(destination, incoming);
+        input.refreshMergedNavigation?.(incoming);
+        if (!contentLease.heartbeat() || !input.learnLease!.heartbeat()) {
+          throw new Error("Garden save lost ownership before publication.");
+        }
       }
       if (destExists) fs.renameSync(destination, backup);
       try {
@@ -238,6 +256,8 @@ export async function promoteStagingGarden(input: {
         reason: `promoted staging garden to ${destination} on attempt ${attempt}`,
       };
     } catch (error) {
+      contentLease?.release();
+      contentLease = undefined;
       lastError = error instanceof Error ? error.message : String(error);
       // Clean the incoming temp dir before retrying.
       try {
@@ -251,6 +271,8 @@ export async function promoteStagingGarden(input: {
         options.initialDelayMs * 2 ** (attempt - 1),
       );
       await sleep(delay);
+    } finally {
+      contentLease?.release();
     }
   }
   // Ensure the destination is intact (restore from backup if the swap half-ran).
@@ -294,10 +316,14 @@ export interface GardenLearnLock {
   heartbeatAt: string;
   /** Fencing token for this particular ownership period. */
   leaseId?: string;
+  /** Absent on old workers: they retain exclusive access until they finish. */
+  scope?: "learn-output";
   /** Optional process-bound extension used by a blocked finite mutation worker. */
   processId?: number;
   hostname?: string;
   processBoundExpiresAt?: string;
+  /** Exact durable stores needed before a crashed ingestion can be replaced. */
+  ingestionRecovery?: { registryRoot: string; runtimeJobsRoot: string };
 }
 
 const LEGACY_LOCK_REL = ".breadboard/learn-build.lock.json";
@@ -335,6 +361,7 @@ interface LockMutationGuard {
 }
 
 export interface GardenLearnLeaseOptions {
+  scope?: GardenLearnLock["scope"];
   /** Defaults to one third of LOCK_STALE_MS. Must remain below that limit. */
   heartbeatIntervalMs?: number;
   /** Primarily useful for deterministic tests. */
@@ -358,6 +385,7 @@ export interface GardenLearnLeaseOptions {
    * writers use this so only journal recovery can cross an ingestion crash.
    */
   refuseStaleProcessBoundTakeover?: boolean;
+  ingestionRecovery?: GardenLearnLock["ingestionRecovery"];
 }
 
 export type GardenLearnLeaseOwnership = "owned" | "lost" | "uncertain";
@@ -377,6 +405,8 @@ export interface GardenLearnLease {
   heartbeat(): boolean;
   /** Stop the timer and release only if this exact fenced lease still owns it. */
   release(): boolean;
+  /** Stop renewing without admitting another writer after failed recovery. */
+  abandon(): void;
 }
 
 export type GardenLearnLockResult =
@@ -405,6 +435,80 @@ function mutationGuardPath(gardenDir: string): string {
   return `${lockPath(gardenDir)}${MUTATION_GUARD_SUFFIX}`;
 }
 
+function contentLockPath(gardenDir: string): string {
+  return `${lockPath(gardenDir)}.content`;
+}
+
+/** Short mutually exclusive save, shared by note writers and Learn commits.
+ * Uses the same transition guard as run acquisition to close the admission race. */
+export function acquireGardenContentLease(gardenDir: string, input: {
+  paths?: readonly string[];
+  learnLease?: GardenLearnLease;
+}): GardenLearnLeaseResult {
+  const owner = { gardenSlug: path.basename(gardenDir), jobId: `content:${crypto.randomUUID()}`, buildId: "garden-save" };
+  const guard = acquireMutationGuard(gardenDir, owner);
+  if (!guard) return { acquired: false, conflict: transientConflict(gardenDir, owner, Date.now()) };
+  let lock: GardenLearnLock;
+  try {
+    const now = Date.now();
+    const active = readGardenLearnLockState(gardenDir);
+    const writing = readLockFileState(contentLockPath(gardenDir));
+    if (writing.status === "uncertain" || active.status === "uncertain") {
+      return { acquired: false, conflict: transientConflict(gardenDir, owner, now) };
+    }
+    if (writing.status === "found" && (lockIsFresh(writing.lock, now) || !fs.existsSync(gardenDir))) {
+      return { acquired: false, conflict: writing.lock };
+    }
+    if (input.learnLease) {
+      if (input.learnLease.lost || active.status !== "found" ||
+          active.lock.scope !== "learn-output" || active.lock.leaseId !== input.learnLease.lock.leaseId) {
+        return { acquired: false, conflict: active.status === "found" ? active.lock : transientConflict(gardenDir, owner, now) };
+      }
+    } else if (!fs.existsSync(gardenDir) || !areGardenUserWritePaths(gardenDir, input.paths ?? []) ||
+        (active.status === "found" && active.lock.scope !== "learn-output")) {
+      return { acquired: false, conflict: active.status === "found" ? active.lock : transientConflict(gardenDir, owner, now) };
+    }
+    lock = { ...owner, acquiredAt: new Date(now).toISOString(), heartbeatAt: new Date(now).toISOString(),
+      leaseId: crypto.randomUUID(), processId: process.pid, hostname: os.hostname(),
+      processBoundExpiresAt: new Date(now + 30 * 60_000).toISOString() };
+    writeGardenLearnLock(gardenDir, lock, guard.token, true);
+  } finally {
+    releaseMutationGuard(gardenDir, guard.token);
+  }
+  let released = false;
+  let lost = false;
+  const transition = (release: boolean): GardenLearnLeaseOwnership => {
+    if (released || lost) return "lost";
+    if (!release && Date.now() >= Date.parse(lock.processBoundExpiresAt!)) { lost = true; return "lost"; }
+    const guard = acquireMutationGuard(gardenDir, owner);
+    if (!guard) return "uncertain";
+    try {
+      const current = readLockFileState(contentLockPath(gardenDir));
+      if (current.status === "uncertain") return "uncertain";
+      if (current.status !== "found" || current.lock.leaseId !== lock.leaseId) { lost = true; return "lost"; }
+      if (release) { fs.unlinkSync(contentLockPath(gardenDir)); released = true; }
+      else {
+        lock = { ...lock, heartbeatAt: new Date().toISOString() };
+        writeGardenLearnLock(gardenDir, lock, guard.token, true);
+      }
+      return "owned";
+    } finally { releaseMutationGuard(gardenDir, guard.token); }
+  };
+  const release = (): boolean => {
+    const status = transition(true);
+    if (status === "uncertain") {
+      const retry = setTimeout(release, 100);
+      retry.unref?.();
+    }
+    return status === "owned";
+  };
+  return { acquired: true, lease: {
+    get lock() { return lock; }, get lost() { return lost; },
+    confirmOwnership: () => transition(false), heartbeat: () => transition(false) === "owned",
+    release, abandon: () => { released = true; },
+  } };
+}
+
 function isGardenLearnLock(value: unknown): value is GardenLearnLock {
   if (!value || typeof value !== "object") return false;
   const lock = value as Partial<GardenLearnLock>;
@@ -415,6 +519,13 @@ function isGardenLearnLock(value: unknown): value is GardenLearnLock {
     typeof lock.acquiredAt === "string" &&
     typeof lock.heartbeatAt === "string" &&
     (lock.leaseId === undefined || typeof lock.leaseId === "string") &&
+    (lock.scope === undefined || lock.scope === "learn-output") &&
+    (lock.ingestionRecovery === undefined ||
+      (lock.ingestionRecovery !== null &&
+        typeof lock.ingestionRecovery.registryRoot === "string" &&
+        path.isAbsolute(lock.ingestionRecovery.registryRoot) &&
+        typeof lock.ingestionRecovery.runtimeJobsRoot === "string" &&
+        path.isAbsolute(lock.ingestionRecovery.runtimeJobsRoot))) &&
     ((lock.processId === undefined &&
       lock.hostname === undefined &&
       lock.processBoundExpiresAt === undefined) ||
@@ -603,8 +714,9 @@ function writeGardenLearnLock(
   gardenDir: string,
   lock: GardenLearnLock,
   mutationGuardToken: string,
+  contentOnly = false,
 ): void {
-  const abs = lockPath(gardenDir);
+  const abs = contentOnly ? contentLockPath(gardenDir) : lockPath(gardenDir);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   const temporary = `${abs}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
@@ -619,7 +731,7 @@ function writeGardenLearnLock(
     // Upgrade a pre-hardening in-garden lock only after the stable sibling has
     // committed, so a crash can never leave ownership invisible.
     try {
-      fs.rmSync(legacyLockPath(gardenDir), { recursive: true, force: true });
+      if (!contentOnly) fs.rmSync(legacyLockPath(gardenDir), { recursive: true, force: true });
     } catch {
       // Stable ownership is already committed and always takes precedence.
     }
@@ -720,6 +832,8 @@ function acquireGardenLearnLockInternal(
   expectedLeaseId: string | undefined,
   processBoundOwner?: ProcessBoundLockOwner,
   refuseStaleProcessBoundTakeover = false,
+  ingestionRecovery?: GardenLearnLock["ingestionRecovery"],
+  scope?: GardenLearnLock["scope"],
 ): GardenLearnLockResult {
   const guard = acquireMutationGuard(gardenDir, owner);
   if (!guard)
@@ -728,6 +842,13 @@ function acquireGardenLearnLockInternal(
       conflict: transientConflict(gardenDir, owner, now),
     };
   try {
+    // A note save may outlive the Learn run that admitted it. New exclusive
+    // writers must still wait for that save, including during lease takeover.
+    const writing = readLockFileState(contentLockPath(gardenDir));
+    if (expectedLeaseId === undefined && writing.status !== "missing" &&
+        (writing.status === "uncertain" || lockIsFresh(writing.lock, now) || !fs.existsSync(gardenDir))) {
+      return { acquired: false, conflict: writing.status === "found" ? writing.lock : transientConflict(gardenDir, owner, now) };
+    }
     let existing = readLockFile(lockPath(gardenDir));
     if (!existing) {
       const unreadable = unreadableLockConflict(
@@ -805,6 +926,10 @@ function acquireGardenLearnLockInternal(
       // A stale normal acquisition is a new ownership period, even if its
       // public owner fields happen to match the previous job.
       leaseId: continuingLease?.leaseId ?? crypto.randomUUID(),
+      ...(continuingLease?.scope || scope ? { scope: continuingLease?.scope ?? scope } : {}),
+      ...(continuingLease?.ingestionRecovery || ingestionRecovery
+        ? { ingestionRecovery: continuingLease?.ingestionRecovery ?? ingestionRecovery }
+        : {}),
       ...(continuingLease?.processId !== undefined
         ? {
             processId: continuingLease.processId,
@@ -978,6 +1103,8 @@ export function acquireGardenLearnLease(
     // or visualization writer before journal recovery could let a later
     // rollback clobber the new write. Recovery callers must opt in explicitly.
     options.refuseStaleProcessBoundTakeover ?? true,
+    options.ingestionRecovery,
+    options.scope,
   );
   if ("conflict" in acquired)
     return { acquired: false, conflict: acquired.conflict };
@@ -1053,6 +1180,10 @@ export function acquireGardenLearnLease(
       released = true;
       stopTimer();
       return releaseFencedGardenLearnLock(gardenDir, lock.jobId, lock.leaseId);
+    },
+    abandon(): void {
+      released = true;
+      stopTimer();
     },
   };
 

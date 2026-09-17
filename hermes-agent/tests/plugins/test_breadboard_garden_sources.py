@@ -6,6 +6,36 @@ from types import SimpleNamespace
 import plugins.breadboard as breadboard
 
 
+def test_garden_read_pagination_and_missing_page_alternatives(monkeypatch):
+    registered = {}
+    breadboard.register(SimpleNamespace(register_tool=lambda **tool: registered.update({tool["name"]: tool})))
+    requests = []
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, route, *, body, headers):
+            requests.append(json.loads(body))
+
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda limit: b'{"ok":false,"error":"Page not found","data":{"availableMatches":[{"relPath":"sources/current.md"}]}}')
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(breadboard, "HTTPConnection", Connection)
+    monkeypatch.setenv("BREADBOARD_HERMES_TOOL_SECRET", "test-secret")
+    for name, args in [
+        ("garden_get_page", {"slug": "old", "query": "attendance", "offset": 4000, "limit": 4000}),
+        ("garden_get_source_excerpt", {"slug": "old", "query": "attendance"}),
+        ("garden_list_files", {"query": "guide", "folder": "sources", "offset": 50, "limit": 50}),
+    ]:
+        result = json.loads(registered[name]["handler"](args, task_id="read-session"))
+        assert requests[-1] == {"tool": name, "args": args}
+        assert result["availableMatches"] == [{"relPath": "sources/current.md"}]
+
+
 def test_source_tools_register_and_forward_the_exact_source(monkeypatch):
     registered = {}
     breadboard.register(SimpleNamespace(register_tool=lambda **tool: registered.update({tool["name"]: tool})))

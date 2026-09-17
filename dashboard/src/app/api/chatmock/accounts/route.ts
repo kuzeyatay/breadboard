@@ -46,6 +46,28 @@ export async function POST(request: Request) {
   }
 }
 
+/** Make one of the additional accounts the primary — the one requests use first. */
+export async function PATCH(request: Request) {
+  try {
+    await requireUserId();
+    const key = new URL(request.url).searchParams.get("key");
+    if (!key?.trim()) throw new RouteError(400, "An account key is required.");
+
+    const response = await chatmock(
+      request,
+      `/accounts/${encodeURIComponent(key)}/activate`,
+      { method: "POST" },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new RouteError(response.status, "That account could not be made the active one.");
+    }
+    return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return routeErrorResponse(error);
+  }
+}
+
 export async function DELETE(request: Request) {
   try {
     await requireUserId();

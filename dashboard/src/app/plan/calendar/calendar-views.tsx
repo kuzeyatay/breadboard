@@ -26,13 +26,13 @@ import {
   layoutBanners,
   layoutTimedDay,
   rangeForView,
+  TIME_GRID_HOUR_HEIGHT_REM as HOUR_HEIGHT_REM,
+  TIME_GRID_MIN_BLOCK_HEIGHT_REM,
   type CalendarView,
 } from "@/lib/calendar/layout.ts";
 import type { CalendarCollection, CalendarOccurrence } from "@/lib/calendar/types.ts";
 import { dateOf, floorToStep, minutesIntoDay } from "@/lib/calendar/wallclock.ts";
 
-/** Row height of one hour in the week/day grid. */
-const HOUR_HEIGHT_REM = 3;
 const HOURS = 24;
 
 /** Banner lanes a month cell shows before collapsing the rest into "+N more". */
@@ -548,7 +548,11 @@ function TimeGridView(props: ViewProps) {
       )}
 
       {/* Hour grid */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto"
+        style={{ paddingBottom: `${TIME_GRID_MIN_BLOCK_HEIGHT_REM}rem` }}
+      >
         <div
           ref={gridRef}
           className="grid"
@@ -629,7 +633,7 @@ function TimeGridView(props: ViewProps) {
                   return (
                     <div
                       key={block.occurrence.key}
-                      className="absolute z-10 hover:z-30"
+                      className="absolute z-10 hover:z-30 focus-within:z-30"
                       style={{
                         top: `${block.top * 100}%`,
                         height: `${block.height * 100}%`,
@@ -653,7 +657,7 @@ function TimeGridView(props: ViewProps) {
                         onPointerUp={drag.end}
                         onPointerCancel={drag.cancel}
                         title={occurrenceLabel(block.occurrence)}
-                        className={`size-full touch-none overflow-hidden rounded-sm px-1.5 py-0.5 text-left text-[11px] leading-4 text-gray-200 ${
+                        className={`flex size-full touch-none flex-col items-stretch overflow-hidden rounded-sm px-1.5 py-0.5 text-left text-[11px] leading-4 text-gray-200 ${
                           editable ? "cursor-grab" : ""
                         }`}
                         style={{

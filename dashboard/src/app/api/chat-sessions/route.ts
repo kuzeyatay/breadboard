@@ -1,11 +1,15 @@
 import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
+import { chatModelChangeLabels } from "@/lib/chat-model-changes";
+import { readMessageVersions, presentMessageVersions } from "@/lib/conversations/message-versions";
 import { authOptions } from "@/lib/auth-options";
+import { persistedResponseState } from "@/lib/hermes/delegated-response";
 import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
+import { ensureGardenResponseBranches, readGardenResponseBranches } from "@/lib/conversations/garden-response-branches";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import {
   normalizeChatMessageAttachments,
@@ -29,6 +33,7 @@ import {
   summarizeConversationMessages,
 } from "@/lib/conversations/store";
 import { isChatHighlight } from "@/lib/conversations/highlights";
+import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
 import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
@@ -46,8 +51,10 @@ interface QuartzInlineSelectionReference {
 }
 
 type ChatMessage = {
+  contentVersions?: ReturnType<typeof presentMessageVersions>;
   id?: string;
   clientMessageId?: string;
+  branchGroupId?: string;
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
@@ -81,6 +88,7 @@ interface ChatSessionRow {
   updated_at: string;
   conversation_id?: number | null;
   conversation_public_id?: string | null;
+  temporary?: number | null;
   owner_username?: string | null;
 }
 
@@ -333,6 +341,18 @@ function parseSelectedText(value: string | null): string | undefined {
   }
 }
 
+function parseBranchGroupId(value: string | null): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { branchGroupId?: unknown };
+    return typeof parsed?.branchGroupId === "string"
+      ? parsed.branchGroupId.trim().slice(0, 200) || undefined
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseTextSelection(
   value: string | null,
 ): ChatTextSelectionReference | undefined {
@@ -473,7 +493,7 @@ function getClusterAccess(clusterSlug: string): ClusterAccess | null {
   };
 }
 
-function readSessions(
+async function readSessions(
   clusterId: number,
   currentUserId: number,
   filterUserId: number | null,
@@ -483,17 +503,22 @@ function readSessions(
 ) {
   let rows: ChatSessionRow[];
   const sessionFilter = sessionId === undefined ? "" : " AND cs.id = ?";
+  // Temporary conversations can be read by exact id while their originating
+  // view is mounted, but they are never part of a history or rail listing.
+  const historyFilter =
+    sessionId === undefined ? " AND COALESCE(c.temporary, 0) = 0" : "";
 
   if (includeUsername) {
     rows = db
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
                 cs.conversation_id, c.public_id AS conversation_public_id,
+                c.temporary AS temporary,
                 u.username AS owner_username
          FROM chat_sessions cs
          JOIN users u ON u.id = cs.user_id
          LEFT JOIN conversations c ON c.id = cs.conversation_id
-         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}
+         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
       .all(
@@ -505,10 +530,11 @@ function readSessions(
     rows = db
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
-                cs.conversation_id, c.public_id AS conversation_public_id
+                cs.conversation_id, c.public_id AS conversation_public_id,
+                c.temporary AS temporary
          FROM chat_sessions cs
          LEFT JOIN conversations c ON c.id = cs.conversation_id
-         WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ?${sessionFilter}
+         WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
       .all(
@@ -520,10 +546,11 @@ function readSessions(
     rows = db
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
-                cs.conversation_id, c.public_id AS conversation_public_id
+                cs.conversation_id, c.public_id AS conversation_public_id,
+                c.temporary AS temporary
          FROM chat_sessions cs
          LEFT JOIN conversations c ON c.id = cs.conversation_id
-         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}
+         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
       .all(
@@ -535,13 +562,24 @@ function readSessions(
 
   if (rows.length === 0) return [];
 
+  // A restarted dashboard has lost its run observers. Reconcile the selected
+  // owner's workers before reading either the transcript or its active flag.
+  for (const row of rows) {
+    if (row.user_id === currentUserId && row.conversation_id != null) {
+      await reconcileMaxResearchConversation(currentUserId, row.conversation_id);
+    }
+  }
+
   const ids = rows.map((row) => row.id);
   const placeholders = ids.map(() => "?").join(",");
   reconcilePreDispatchTurns(ids);
   const messages = db
     .prepare(
       `SELECT legacy.session_id, legacy.canonical_message_id,
-              canonical.client_message_id, legacy.role, legacy.content,
+              COALESCE(canonical.client_message_id,
+                CASE WHEN json_valid(legacy.tool_calls)
+                  THEN json_extract(legacy.tool_calls, '$.clientMessageId') END
+              ) AS client_message_id, legacy.role, legacy.content,
               legacy.sources, legacy.token_usage, legacy.tool_calls,
               legacy.runtime_status, legacy.runtime_error, legacy.created_at
        FROM chat_messages legacy
@@ -555,6 +593,9 @@ function readSessions(
   const bySession = new Map<number, ChatMessage[]>();
   for (const message of messages) {
     const existing = bySession.get(message.session_id) ?? [];
+    const contentVersions = message.role === "assistant" ? readMessageVersions({
+      content: message.content, metadata: message.tool_calls, created_at: message.created_at,
+    }) : null;
     const usage = parseTokenUsage(message.token_usage);
     const verification = parseVerification(message.tool_calls);
     const responseDurationMs = parseResponseDuration(message.tool_calls);
@@ -581,6 +622,7 @@ function readSessions(
       message.role,
     );
     const attachmentFields = parseAttachmentFields(message.tool_calls);
+    const branchGroupId = parseBranchGroupId(message.tool_calls);
     existing.push({
       ...(message.canonical_message_id !== null
         ? { id: `msg_${message.canonical_message_id}` }
@@ -588,7 +630,11 @@ function readSessions(
       ...(message.client_message_id
         ? { clientMessageId: message.client_message_id }
         : {}),
+      ...(branchGroupId ? { branchGroupId } : {}),
       role: message.role,
+      ...(message.role === "assistant" ? { modelChangesAfter: chatModelChangeLabels(message.tool_calls) } : {}),
+      ...(contentVersions && contentVersions.versions.length > 1
+        ? { contentVersions: presentMessageVersions(contentVersions) } : {}),
       ...delegatedAgentPresentation(message.content, externalAgent),
       ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
       ...(clarificationAnswer ? { clarificationAnswer: true } : {}),
@@ -608,6 +654,8 @@ function readSessions(
       ...(message.role === "assistant" && message.runtime_error
         ? { runtimeError: message.runtime_error }
         : {}),
+      ...(message.role === "assistant"
+        ? persistedResponseState(message.runtime_status, message.tool_calls) : {}),
       ...(uiResources.length ? { uiResources } : {}),
       ...(verification ? { verification } : {}),
       ...attachmentFields,
@@ -640,13 +688,16 @@ function readSessions(
       .filter((id): id is number => id !== null && id !== undefined),
   );
   const latestAssistantVersions = readLatestAssistantVersions(ids);
+  ensureGardenResponseBranches(db);
 
-  return rows.map(({ conversation_public_id: conversationId, ...row }) => ({
+  return rows.map(({ conversation_public_id: conversationId, temporary, ...row }) => ({
     ...row,
     conversationId: conversationId ?? null,
+    temporary: Number(temporary ?? 0) === 1,
     ownerUsername: row.owner_username ?? undefined,
     isOwn: row.user_id === currentUserId,
     messages: bySession.get(row.id) ?? [],
+    branchGroups: readGardenResponseBranches(db, row.id),
     latestAssistantVersion: latestAssistantVersions.get(row.id) ?? null,
     active:
       running.has(row.id) ||
@@ -676,11 +727,13 @@ function readSessionSummaries(
       `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
               u.username AS owner_username,
               c.id AS conversation_row_id, c.public_id AS conversation_public_id,
-              c.pinned_at AS pinned_at, c.highlight AS highlight
+              c.pinned_at AS pinned_at, c.highlight AS highlight,
+              c.temporary AS temporary
        FROM chat_sessions cs
        JOIN users u ON u.id = cs.user_id
        LEFT JOIN conversations c ON c.id = cs.conversation_id
        WHERE cs.cluster_id = ? AND cs.history_surface = ?${filterUserId !== null ? " AND cs.user_id = ?" : ""}
+         AND COALESCE(c.temporary, 0) = 0
        ORDER BY (c.pinned_at IS NOT NULL) DESC, cs.updated_at DESC, cs.id DESC`,
     )
     .all(
@@ -693,6 +746,7 @@ function readSessionSummaries(
       conversation_public_id: string | null;
       pinned_at: string | null;
       highlight: string | null;
+      temporary: number | null;
     }
   >;
 
@@ -807,7 +861,7 @@ export async function GET(request: Request) {
     });
   }
 
-  const sessions = readSessions(
+  const sessions = await readSessions(
     access.id,
     userId,
     includePublicChats ? null : userId,
@@ -825,6 +879,7 @@ export async function POST(request: Request) {
 
   const body = await request.json();
   const historySurface = chatHistorySurface(body.historySurface);
+  const temporary = body.temporary === true;
   const clusterSlug =
     typeof body.clusterSlug === "string" ? body.clusterSlug.trim() : "";
   if (!clusterSlug) {
@@ -852,11 +907,14 @@ export async function POST(request: Request) {
   ensureConversationForLegacyChatSession(
     Number(result.lastInsertRowid),
     userId,
+    db,
+    { temporary },
   );
   const session = db
     .prepare(
       `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
-              cs.conversation_id, c.public_id AS conversation_public_id
+              cs.conversation_id, c.public_id AS conversation_public_id,
+              c.temporary AS temporary
        FROM chat_sessions cs
        LEFT JOIN conversations c ON c.id = cs.conversation_id
        WHERE cs.id = ?`,
@@ -865,6 +923,7 @@ export async function POST(request: Request) {
 
   const {
     conversation_public_id: conversationId,
+    temporary: storedTemporary,
     ...legacySession
   } = session;
 
@@ -872,6 +931,7 @@ export async function POST(request: Request) {
     session: {
       ...legacySession,
       conversationId: conversationId ?? null,
+      temporary: Number(storedTemporary ?? 0) === 1,
       isOwn: true,
       messages: [],
     },

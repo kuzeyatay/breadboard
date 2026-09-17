@@ -1,11 +1,25 @@
-import fs from "fs";
+import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import os from "os";
-import path from "path";
+import { externalRuntimePath as path } from "./external-runtime-path.ts";
 
 export interface UsageLimitWindow {
   used_percent: number;
   window_minutes?: number;
   resets_in_seconds?: number;
+}
+
+/**
+ * The pool OpenAI moves a spent plan onto. `active` is the claim worth showing:
+ * the plan window is closed and requests are being served by `model` from
+ * this pool. Only OpenAI's own report (`chatgpt-codex-usage.ts`) knows it;
+ * the header snapshot below never does.
+ */
+export interface UsageLimitReserve {
+  model: string | null;
+  active: boolean;
+  limit_reached: boolean;
+  primary?: UsageLimitWindow;
+  secondary?: UsageLimitWindow;
 }
 
 export interface UsageLimitsPayload {
@@ -16,6 +30,13 @@ export interface UsageLimitsPayload {
   stale?: boolean;
   primary?: UsageLimitWindow;
   secondary?: UsageLimitWindow;
+  /** Present only when OpenAI's own report was read. */
+  source?: "headers" | "report";
+  account?: string;
+  plan?: string;
+  limit_reached?: boolean;
+  reserve?: UsageLimitReserve | null;
+  banner?: { type: string; title: string | null; description: string | null } | null;
 }
 
 const STALE_AFTER_SECONDS = 15 * 60;

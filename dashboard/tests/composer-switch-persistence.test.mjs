@@ -146,6 +146,7 @@ test("every switch hydrates from the account on load and writes through on chang
   const direct = await import("../src/app/components/use-direct-mode.ts");
   const personalize = await import("../src/app/components/use-personalize.ts");
   const humanizer = await import("../src/app/components/use-humanizer-mode.ts");
+  const learnHumanizer = await import("../src/app/components/use-learn-humanizer-mode.ts");
 
   // A page load hydrates once; a second call shares the first.
   await preferences.hydrateComposerSwitches();
@@ -157,6 +158,8 @@ test("every switch hydrates from the account on load and writes through on chang
   assert.equal(direct.isDirectModeEnabled(), true);
   assert.equal(personalize.isPersonalizeEnabled(), false);
   assert.equal(humanizer.isHumanizerEnabled(), true);
+  assert.equal(learnHumanizer.isLearnHumanizerEnabled(), false,
+    "the Intelligence preference must not hydrate Learn's separate opt-in");
   assert.equal(store.get("breadboard:super-agent"), "true");
   assert.equal(store.get("breadboard:direct-mode"), "true");
   assert.ok(dispatched.includes("breadboard:yolo-mode-change"));

@@ -9,6 +9,7 @@ export const GESTURE_LAUNCH_PARAM = 'gestureRun';
 export interface GestureLaunch { userId: string; control: GestureControl; eventId: string; action: ClapAction; at: number }
 
 export async function openGestureAction(launch: Omit<GestureLaunch, 'at'>, action: ClapAction): Promise<void> {
+  if (action.kind === 'music') throw new Error('Music gestures must use the background player.');
   if (action.kind === 'voice') { await openVoiceWindow(); return; }
   const token = crypto.randomUUID();
   let href: string;
@@ -22,7 +23,7 @@ export async function openGestureAction(launch: Omit<GestureLaunch, 'at'>, actio
       localStorage.removeItem(key);
     }
     localStorage.setItem(PREFIX + token, JSON.stringify({ ...launch, at: Date.now() }));
-    href = action.kind === 'music' ? '/new-tab?panel=spotify&' : '/dashboard?';
+    href = '/dashboard?';
     href += `${GESTURE_LAUNCH_PARAM}=${token}`;
   }
   try {
@@ -54,16 +55,51 @@ export function takeGestureLaunch(userId: string): GestureLaunch | null {
   } catch { return null; }
 }
 
-/** The destination's Spotify dock owns and renews the actual playback lease. */
+/** The listener owns the lease, so music works even on pages without a dock. */
+export function gestureMusicPlayer(lifecycle: AbortSignal) {
+  const viewId = crypto.randomUUID();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let renewing: Promise<unknown> | null = null;
+  const renew = (signal: AbortSignal) => {
+    renewing ??= fetch('/api/hermes/connections/spotify/engine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ viewId }), signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    }).then(async response => {
+      const engine = await response.json();
+      if (!response.ok) throw new Error(engine.message || engine.error || "Breadboard's Spotify player could not start.");
+      return engine;
+    }).finally(() => { renewing = null; });
+    return renewing;
+  };
+  lifecycle.addEventListener('abort', () => {
+    clearInterval(timer);
+    if (timer === undefined) return;
+    void fetch('/api/hermes/connections/spotify/engine', { method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewId }), keepalive: true }).catch(() => {});
+  }, { once: true });
+  return async (signal: AbortSignal) => {
+    signal = AbortSignal.any([signal, lifecycle]);
+    signal.throwIfAborted();
+    // Check the account before acquiring an audio runtime.
+    const response = await fetch('/api/hermes/connections/spotify', { cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+    const state = await response.json();
+    if (!response.ok) throw new Error(state.message || state.error || 'Spotify is unavailable.');
+    if (!state.connected) throw new Error('Connect Spotify in Settings → Connections, then try your gesture again.');
+    if (timer === undefined) timer = setInterval(() => { void renew(lifecycle).catch(() => {}); }, 20_000);
+    const engine = await renew(signal) as { ready?: boolean; deviceId?: string };
+    signal.throwIfAborted();
+    if (!engine.ready || !engine.deviceId) await waitForGesturePlayer(signal);
+  };
+}
+
 export async function waitForGesturePlayer(signal: AbortSignal): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt++) {
     signal.throwIfAborted();
-    const response = await fetch('/api/browser/spotify', { cache: 'no-store', signal });
+    const response = await fetch('/api/hermes/connections/spotify/engine', { cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
     const state = await response.json();
     if (!response.ok) throw new Error(state.error || "Breadboard's Spotify player is unavailable.");
-    if (!state.connected) throw new Error('Connect Spotify in Settings → Connections, then try your gesture again.');
-    if (state.engine?.ready && state.engine.deviceId) return;
-    if (attempt === 39) throw new Error(state.engine?.error || "Breadboard's Spotify player could not start. Try again from the player.");
+    if (state.ready && state.deviceId) return;
+    if (attempt === 39) throw new Error(state.error || "Breadboard's Spotify player could not start. Try again from the player.");
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 }

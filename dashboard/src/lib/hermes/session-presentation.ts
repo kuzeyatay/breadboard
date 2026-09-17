@@ -1,4 +1,6 @@
 import type { ConversationRow } from "../conversations/store.ts";
+import db from "../db.ts";
+import { isPdfAssistantPageContext } from "../pdf-assistant-scope.ts";
 import { conversationOrigin } from "./session-surface.ts";
 import {
   listConversationMessages,
@@ -40,6 +42,7 @@ import {
   generativeUiResourcesFromVerification,
   normalizeGenerativeUiResources,
 } from "../generative-ui/contracts.ts";
+import { uiResourcesForUserRequest } from "../generative-ui/request-policy.ts";
 import { normalizeScheduledChatReceipt } from "../schedules/types.ts";
 import {
   normalizeFocusedDocumentNames,
@@ -148,12 +151,20 @@ function presentActiveRun(runtimeSessionId: number | null) {
 function presentSessionBase(conversation: ConversationRow) {
   const runtime = getRuntimeSessionByConversation(conversation.id);
   const origin = conversationOrigin(conversation);
+  // Agent mode off never creates a runtime. The first reserved user turn
+  // already carries the PDF key, so its chat still restores in that reader.
+  const pdfContext = !runtime?.page_slug && ["PDF", "PDF Assistant"].includes(conversation.origin_label ?? "")
+    ? db.prepare(`SELECT json_extract(metadata, '$.activePageSlug') AS pageSlug
+        FROM conversation_messages WHERE conversation_id = ? AND role = 'user'
+        AND json_valid(metadata) ORDER BY order_index LIMIT 1`).get(conversation.id) as { pageSlug?: unknown } | undefined
+    : undefined;
+  const pageSlug = runtime?.page_slug ?? (isPdfAssistantPageContext(conversation.surface, pdfContext?.pageSlug) ? pdfContext!.pageSlug as string : null);
   return {
     ...presentConversation(conversation),
     surface: conversation.surface,
     originLabel: origin.originLabel,
     gardenId: runtime?.garden_id ?? origin.gardenSlug,
-    pageSlug: runtime?.page_slug ?? null,
+    pageSlug,
     status: runtime?.last_runtime_status ?? "idle",
     activeDirectory: runtime?.active_directory ?? null,
     filesystemMode: runtime?.filesystem_mode ?? "restricted",
@@ -264,9 +275,12 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       metadata.scheduledChatReceipt,
     );
     const persistedUiResources = normalizeGenerativeUiResources(metadata.uiResources);
-    const uiResources = persistedUiResources.length > 0
-      ? persistedUiResources
-      : generativeUiResourcesFromVerification(metadata.verification);
+    const uiResources = uiResourcesForUserRequest(
+      persistedUiResources.length > 0
+        ? persistedUiResources
+        : generativeUiResourcesFromVerification(metadata.verification),
+      conversationMessages.slice(0, messageIndex).findLast((item) => item.role === "user")?.content ?? "",
+    );
     const normalizeModelChangeLabel = (value: unknown) =>
       typeof value === "string"
         ? value
@@ -358,6 +372,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
       ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
       ...(progressNotes.length ? { progressNotes } : {}),
+      ...(typeof metadata.activityLabel === "string" ? { activityLabel: metadata.activityLabel } : {}),
       ...(typeof metadata.reasoning === "string" && metadata.reasoning.trim()
         ? { reasoning: metadata.reasoning }
         : {}),
