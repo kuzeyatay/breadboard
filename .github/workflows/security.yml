@@ -1,0 +1,47 @@
+name: Repository security
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install checksum-verified Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          cd "$RUNNER_TEMP/gitleaks"
+          curl --fail --location --retry 3 "$base/$archive" --output "$archive"
+          curl --fail --location --retry 3 "$base/gitleaks_${version}_checksums.txt" --output checksums.txt
+          grep "  $archive$" checksums.txt | sha256sum --check --strict
+          tar -xzf "$archive" gitleaks
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks/gitleaks" >> "$GITHUB_ENV"
+      - name: Check tracked paths and all new commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == push && "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+            BASE_SHA=$(git merge-base "refs/remotes/origin/$DEFAULT_BRANCH" HEAD)
+          elif [[ -z "$BASE_SHA" ]]; then
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
+          node scripts/check-repository-security.mjs --base "$BASE_SHA"
+      - name: Check security regression tests
+        run: node --test scripts/repository-security.test.mjs

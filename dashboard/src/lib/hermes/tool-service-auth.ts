@@ -10,19 +10,14 @@ import { getBrowserTerminalContext } from "./browser-terminal-context.ts";
 import { ApiError } from "./route-core.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 
-function serviceSecret(runtime: RuntimeKind): string {
-  if (runtime === "hermes") {
-    return (
-      process.env.BREADBOARD_HERMES_TOOL_SECRET ||
-      process.env.HERMES_TOOL_SECRET ||
-      "breadboard-local-dev"
-    );
+function serviceSecret(): string {
+  const secret =
+    process.env.BREADBOARD_HERMES_TOOL_SECRET?.trim() ||
+    process.env.HERMES_TOOL_SECRET?.trim();
+  if (!secret) {
+    throw new ApiError(503, "service_auth_unconfigured", "Agent tool authentication is not configured.");
   }
-  return (
-    process.env.HERMES_TOOL_SECRET ||
-    process.env.HERMES_PASSWORD ||
-    "breadboard-local-dev"
-  );
+  return secret;
 }
 
 function equalSecret(left: string, right: string): boolean {
@@ -56,7 +51,8 @@ export function capabilityForInternalToolRequest(request: Request): string | nul
   const bearer = authorization.toLowerCase().startsWith("bearer ")
     ? authorization.slice(7).trim()
     : "";
-  if (!bearer || !equalSecret(bearer, serviceSecret(runtime))) {
+  const expectedSecret = serviceSecret();
+  if (!bearer || !equalSecret(bearer, expectedSecret)) {
     throw new ApiError(
       401,
       "invalid_service_auth",

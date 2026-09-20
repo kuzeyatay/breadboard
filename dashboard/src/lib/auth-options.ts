@@ -1,6 +1,7 @@
 import type { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import bcrypt from 'bcrypt';
+import { createHash } from 'node:crypto';
 import db from '@/lib/db';
 
 export const authOptions: NextAuthOptions = {
@@ -25,7 +26,10 @@ export const authOptions: NextAuthOptions = {
         const valid = await bcrypt.compare(credentials.password, user.password_hash);
         if (!valid) return null;
 
-        return { id: String(user.id), email: user.email, name: user.username ?? user.email };
+        return {
+          id: String(user.id), email: user.email, name: user.username ?? user.email,
+          passwordVersion: createHash('sha256').update(user.password_hash).digest('hex'),
+        };
       },
     }),
   ],
@@ -37,6 +41,23 @@ export const authOptions: NextAuthOptions = {
         token.id = user.id;
         token.name = user.name;
       }
+      const userId = Number(token.id ?? token.sub);
+      const current = Number.isSafeInteger(userId) && userId > 0
+        ? db.prepare('SELECT password_hash FROM users WHERE id = ?').get(userId) as
+          { password_hash: string } | undefined
+        : undefined;
+      const passwordVersion = current
+        ? createHash('sha256').update(current.password_hash).digest('hex')
+        : undefined;
+      const authenticatedVersion = user
+        ? (user as { passwordVersion?: string }).passwordVersion
+        : token.passwordVersion;
+      if (!passwordVersion || authenticatedVersion !== passwordVersion) {
+        // NextAuth clears the session cookie when JWT validation throws. This
+        // also invalidates sessions minted before password-version binding.
+        throw new Error('Session expired. Please sign in again.');
+      }
+      token.passwordVersion = passwordVersion;
       return token;
     },
     async session({ session, token }) {

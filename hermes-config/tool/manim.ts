@@ -21,9 +21,9 @@ export const create = tool({
   async execute(args: ManimArgs, ctx) {
     const dashboardUrl = process.env.BREADBOARD_INTERNAL_URL || "http://127.0.0.1:3000"
     const serviceSecret =
-      process.env.HERMES_TOOL_SECRET ||
-      process.env.HERMES_PASSWORD ||
-      "breadboard-local-dev"
+      process.env.BREADBOARD_HERMES_TOOL_SECRET?.trim() ||
+      process.env.HERMES_TOOL_SECRET?.trim()
+    if (!serviceSecret) throw new Error("Agent tool authentication is not configured.")
     const response = await fetch(new URL("/api/hermes/tools/manim", dashboardUrl), {
       method: "POST",
       headers: {

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+zero=0000000000000000000000000000000000000000
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  base="$remote_sha"
+  if [ "$base" = "$zero" ]; then
+    base=$(git merge-base refs/remotes/origin/master "$local_sha")
+  fi
+  node scripts/check-repository-security.mjs --base "$base" --head "$local_sha"
+done
