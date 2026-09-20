@@ -11,10 +11,23 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
+      # This public monorepo contains legacy gitlinks without .gitmodules
+      # entries. Fetch directly so no submodule credential setup runs. The
+      # full index and commit graph remain available to both security checks.
+      - name: Fetch public repository and security test inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git sparse-checkout set --no-cone --stdin <<'PATTERNS'
+          /.gitleaks.toml
+          /scripts/check-repository-security.mjs
+          /scripts/repository-security.test.mjs
+          /dashboard/public/vvveb-editor/libs/media/openverse.js
+          /Vvvebjs/libs/media/openverse.js
+          PATTERNS
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git checkout --detach "$GITHUB_SHA"
       - name: Install checksum-verified Gitleaks
         shell: bash
         run: |
