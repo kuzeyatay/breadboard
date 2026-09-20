@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { readFileSync } from "node:fs";
 
 import Database from "better-sqlite3";
 
@@ -1781,4 +1782,61 @@ it("an attempt ChatMock settled for an orphaned process proves a no-answer call 
   const wrong = { ...orphan, modelRouting: [{ ...orphan.modelRouting[0], provider: "openaiweb" }] };
   const [wrongAttempt] = parseLearnCouncilReceiptAttempts([wrong], 1, "failed");
   assert.throws(() => assertExactOrdinaryLearnCouncilReceiptAttempt(wrongAttempt, "openaiweb/gpt-5-6-thinking"), /does not prove/);
+});
+
+it("a failed redispatch that never reached model routing still proves its no-answer call", () => {
+  // 2026-09-17: the openaiweb page was busy with the previous turn, so the
+  // second dispatch failed before ChatMock recorded a routing entry; the
+  // strict one-route rule then failed the whole generation.
+  const routeless = {
+    dispatchGeneration: 2,
+    outcome: "failed_no_final_answer",
+    councilRunId: "crun_routeless",
+    finalAnswerPresent: false,
+    usage: { inputTokens: 7435, outputTokens: 1, totalTokens: 7436, cachedInputTokens: 0, reasoningTokens: 0, callCount: 1, reportedCallCount: 0 },
+    usageEstimated: true,
+    modelRouting: [],
+    requestedModel: "openaiweb/gpt-5-6-thinking",
+    resolvedModel: "openaiweb/gpt-5-6-thinking",
+    createdAt: "2026-09-17T13:27:16.490Z",
+    updatedAt: "2026-09-17T13:27:16.494Z",
+    failureCode: "council_no_final_answer",
+  };
+  const first = { ...routeless, dispatchGeneration: 1, councilRunId: "crun_first", modelRouting: [{
+    schemaVersion: 1, at: "2026-09-17T13:27:14.378Z", requestId: "crun_first", endpoint: "council",
+    requestedModel: "openaiweb/gpt-5-6-thinking", resolvedModel: "openaiweb/gpt-5-6-thinking",
+    upstreamModel: "gpt-5-6-thinking", provider: "openaiweb", outcome: "failed", fallback: false,
+  }] };
+  const attempts = parseLearnCouncilReceiptAttempts([first, routeless], 2, "failed");
+  const attempt = attempts[1];
+  assert.doesNotThrow(() => assertExactOrdinaryLearnCouncilReceiptAttempt(attempt, "openaiweb/gpt-5-6-thinking"));
+  // The first generation's exact route is still required.
+  const brokenFirst = { ...first, modelRouting: [{ ...first.modelRouting[0], provider: "someone-else" }] };
+  const [brokenAttempt] = parseLearnCouncilReceiptAttempts([brokenFirst], 1, "failed");
+  assert.throws(() => assertExactOrdinaryLearnCouncilReceiptAttempt(brokenAttempt, "openaiweb/gpt-5-6-thinking"), /does not prove/);
+});
+
+it("a started checkpoint that outlived the provider stops blocking its stage", () => {
+  // telecom-1 accumulated 274 started checkpoints across a night of killed
+  // workers and then refused to generate at all (2026-09-18). A page repair
+  // embeds the rejected draft in its request, so a resumed run computes a
+  // different hash by construction and can never match the orphan - the stage
+  // was blocked permanently rather than transiently.
+  const source = readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
+  assert.match(source, /function startedLearnCouncilCheckpointOutlivedProvider\(/);
+
+  // The fail-closed filter consults it, so only corpses are ignored.
+  assert.match(
+    source,
+    /candidate\.request_hash !== requestHash &&\s*!startedLearnCouncilCheckpointOutlivedProvider\(candidate\)/,
+  );
+
+  // The boundary is the provider's own lifetime, the same one the expired
+  // started-receipt proof uses - never an arbitrary shorter timeout.
+  assert.match(
+    source,
+    /nowMs - startedAtMs >= LEARN_COUNCIL_STARTED_RECEIPT_MAX_AGE_MS/,
+  );
+  // An unparseable dispatch time is never treated as expired.
+  assert.match(source, /if \(!Number\.isFinite\(startedAtMs\)\) return false;/);
 });

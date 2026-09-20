@@ -1,4 +1,5 @@
 "use client";
+import { PAGE_FLAG_COLORS, type PageUnderstanding } from "@/lib/page-understanding-types";
 import { useStartupLoading } from "@/app/components/startup-readiness";
 import { runGardenInlineQuestion, preserveInlineQuestionMessages, reconcileInlineQuestionMessages } from "@/lib/conversations/garden-inline-question";
 
@@ -162,9 +163,12 @@ import {
 } from "@/app/components/chat-text-selection-ui";
 import {
   chatTextSelectionsOverlap,
+  wholeMessageReply,
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
+import StarredMessagesPanel from "@/app/components/hermes/starred-messages-panel";
+import { initialStarredMessageTarget, useStarredMessageJump, type StarredMessageTarget } from "@/app/components/use-starred-message-jump";
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
   isChatHighlightColor,
@@ -191,6 +195,7 @@ import ArtifactPanel, {
   ArtifactArchiveIcon,
   GARDEN_DOCUMENTS_CHANGED_EVENT,
 } from "@/app/components/hermes/artifact-panel";
+import { useLearnArtifacts, artifactVersionKey, LEARN_ARTIFACTS_CHANGED_EVENT } from "@/app/components/hermes/use-learn-artifacts";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { filterArtifactsForArchive } from "@/lib/hermes/artifact-search";
 import GardenArtifactDock from "@/app/components/hermes/garden-artifact-dock";
@@ -398,6 +403,7 @@ import {
 import {
   desktopTabsBridge,
   openBrowserAgentRunInDesktop,
+  openInDesktopTab,
   sendDesktopTabsCommand,
 } from "@/lib/desktop-browser-tabs";
 import {
@@ -717,6 +723,7 @@ const GARDEN_PANELS: readonly TerminalPanel[] = [
   "uploads",
   "scheduled",
   "hooks",
+  "starred",
   "processes",
 ];
 
@@ -725,6 +732,7 @@ const PANEL_TITLES: Record<TerminalPanel, string> = {
   uploads: "Uploads",
   scheduled: "Scheduled chats",
   hooks: "Hooks",
+  starred: "Starred messages",
   processes: "Processes",
 };
 
@@ -1019,6 +1027,7 @@ interface DocInfo {
   sourcePdf: string;
   sourceMedia: string;
   flagColor: string;
+  understanding?: PageUnderstanding | null;
   locations: string[];
   linkCount: number;
   wordCount: number;
@@ -1050,6 +1059,8 @@ interface LinkImportTask {
   sourceRelPath?: string;
   capturedImages?: number;
   referencedImages?: number;
+  pageCount?: number;
+  imageCaptureWarnings?: number;
   error?: string;
 }
 
@@ -1688,19 +1699,7 @@ function pastedImageName(file: File, index: number): string {
   return `pasted-screenshot-${index + 1}.${ext}`;
 }
 
-const DEFAULT_FLAG_COLOR = "#facc15";
-const FLAG_COLORS = [
-  DEFAULT_FLAG_COLOR,
-  "#fb7185",
-  "#f97316",
-  "#22c55e",
-  "#14b8a6",
-  "#38bdf8",
-  "#60a5fa",
-  "#a78bfa",
-  "#f472b6",
-  "#a3e635",
-];
+const FLAG_COLORS = PAGE_FLAG_COLORS;
 
 function fileKey(f: File) {
   return `${f.name}-${f.size}`;
@@ -1808,6 +1807,8 @@ function hasRunningExternalAgent(message: Message): boolean {
 }
 
 interface ChatTranscriptProps {
+  onReply: (sourceMessageId: string, content: string) => void;
+  temporaryChat: boolean;
   modelChangesFor: (message: Message, index: number) => string[];
   naturalRewriteFor: (message: Message) => NaturalRewriteActivity | undefined;
   clusterName: string;
@@ -1927,6 +1928,8 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
 }
 
 const ChatTranscript = memo(function ChatTranscript({
+  onReply,
+  temporaryChat,
   modelChangesFor,
   naturalRewriteFor,
   clusterName,
@@ -2547,6 +2550,10 @@ const ChatTranscript = memo(function ChatTranscript({
                               onNext: () => onSwitchBranch(branch.id, 1),
                             } : undefined;
                           })() : undefined}
+                          conversationId={chatSessionId ? String(chatSessionId) : null}
+                          messageId={msg.id ?? msg.clientMessageId ?? null}
+                          canStar={!temporaryChat}
+                          onReply={(content) => onReply(messageSelectionSourceId(msg, i), content)}
                           responseStartedAt={msg.createdAt}
                           responseDurationMs={msg.responseDurationMs}
                           responseCompletedAt={msg.responseCompletedAt}
@@ -3666,14 +3673,18 @@ export default function WorkspaceClient({
   const [mediaExpanded, setMediaExpanded] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
+  const selectedLearnArtifacts = useLearnArtifacts(clusterSlug);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   const [artifactCount, setArtifactCount] = useState(0);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
+  const [linkSearch, setLinkSearch] = useState("");
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
+  const [newLinkScope, setNewLinkScope] = useState<"site" | "section" | "page">("site");
   const [savingLink, setSavingLink] = useState(false);
   const [linkImportTasks, setLinkImportTasks] = useState<LinkImportTask[]>([]);
+  const linkImportControllersRef = useRef(new Map<string, AbortController>());
   const [selectedLinkImportId, setSelectedLinkImportId] = useState<string | null>(
     null,
   );
@@ -3698,6 +3709,7 @@ export default function WorkspaceClient({
   const railCollapsed = rail.collapsed;
   // Which panel is open beside the transcript, and whether search is up.
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(null);
+  const [starredMessageTarget, setStarredMessageTarget] = useState<StarredMessageTarget | null>(initialStarredMessageTarget);
   const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
     null,
   );
@@ -4145,6 +4157,7 @@ export default function WorkspaceClient({
           gardenSlug: clusterSlug,
           sourceSurface: "garden_chat",
         });
+        query.set("presentation", "archive");
         const response = await fetch(`/api/hermes/artifacts?${query}`, {
           signal: controller.signal,
         });
@@ -4368,6 +4381,12 @@ export default function WorkspaceClient({
   }, [fetchDocuments]);
 
   useEffect(() => {
+    const refreshUnderstanding = () => { void fetchDocuments(); };
+    window.addEventListener("focus", refreshUnderstanding);
+    return () => window.removeEventListener("focus", refreshUnderstanding);
+  }, [fetchDocuments]);
+
+  useEffect(() => {
     const handleGardenDocumentsChanged = (raw: Event) => {
       const detail = (
         raw as CustomEvent<{
@@ -4485,6 +4504,18 @@ export default function WorkspaceClient({
     learnStatusRequestRef.current = { clusterSlug, controller, promise };
     return promise;
   }, [clusterSlug]);
+
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if ((event as CustomEvent).detail?.gardenSlug !== clusterSlug) return;
+      // A selected aid changes planning inputs immediately, before the next poll.
+      setLearnState(current => current ? { ...current, sourceSetChanged: true } : current);
+      learnStatusRequestRef.current?.controller.abort();
+      void fetchLearnStatus();
+    };
+    window.addEventListener(LEARN_ARTIFACTS_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(LEARN_ARTIFACTS_CHANGED_EVENT, changed);
+  }, [clusterSlug, fetchLearnStatus]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -5284,8 +5315,10 @@ export default function WorkspaceClient({
   });
   const visibleChatJustCreated =
     activeChatId !== null && activeChatId === createdChatId;
+  // Do not hold a saved-message jump behind the separate artifact request.
+  const openingStarredMessage = starredMessageTarget?.chatId === String(activeChatId);
   const chatContentLoading =
-    loadingChats || (!visibleChatJustCreated && !inlineArtifactsReady);
+    loadingChats || (!visibleChatJustCreated && !openingStarredMessage && !inlineArtifactsReady);
   const hasRunningExternalAgentInActiveChat = messages.some(
     hasRunningExternalAgent,
   );
@@ -5370,6 +5403,7 @@ export default function WorkspaceClient({
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
     scrollToBottom: jumpToNewestMessage,
+    scrollToMessage,
   } = useChatAutoScroll<HTMLElement>({
     isResponding: transcriptResponding,
     responseKey: chatAutoScrollResponseKey(messages),
@@ -5379,6 +5413,11 @@ export default function WorkspaceClient({
     enabled: !chatContentLoading,
     conversationKey: activeChatId,
     virtual: transcriptVirtual,
+  });
+  const starredJumpRows = useMemo(() => buildTranscriptRows(messages), [messages]);
+  useStarredMessageJump({
+    target: starredMessageTarget, chatId: activeChatId, loading: chatContentLoading,
+    rows: starredJumpRows, bridge: transcriptVirtual, scrollRef: transcriptScrollRef, scrollToMessage,
   });
 
   // One tick per question asked. Ticks name rows, not messages, so they are read
@@ -5696,6 +5735,16 @@ export default function WorkspaceClient({
     window.getSelection()?.removeAllRanges();
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }
+
+  const replyToMessage = useCallback((sourceMessageId: string, content: string) => {
+    const selection = wholeMessageReply(sourceMessageId, content);
+    if (!selection) return;
+    setComposerSelection(selection);
+    setSelectionMenu(null);
+    setOpenInlineAnswers([]);
+    window.getSelection()?.removeAllRanges();
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, []);
 
   function cancelSelectionQuestion() {
     const selection = composerSelection;
@@ -6547,7 +6596,11 @@ export default function WorkspaceClient({
         title,
         url,
         status: "importing",
-        stage: "Fetching and converting page to Markdown…",
+        stage: newLinkScope === "site"
+          ? "Discovering website pages and importing their full text…"
+          : newLinkScope === "section"
+            ? "Discovering this section and its listed articles…"
+            : "Fetching and converting page to Markdown…",
         startedAt,
       },
       ...current,
@@ -6559,6 +6612,8 @@ export default function WorkspaceClient({
     setLinkDialogOpen(false);
     setSelectedLinkImportId(taskId);
     setSavingLink(true);
+    const controller = new AbortController();
+    linkImportControllersRef.current.set(taskId, controller);
     try {
       const res = await fetch(
         `/api/gardens/${encodeURIComponent(clusterSlug)}/links`,
@@ -6568,7 +6623,9 @@ export default function WorkspaceClient({
           body: JSON.stringify({
             title: newLinkTitle.trim(),
             url,
+            scope: newLinkScope,
           }),
+          signal: controller.signal,
         },
       );
       const data = (await res.json().catch(() => ({}))) as {
@@ -6578,6 +6635,8 @@ export default function WorkspaceClient({
         source?: { sourceTitle?: string; sourceRelPath?: string };
         capturedImages?: number;
         referencedImages?: number;
+        pageCount?: number;
+        imageCaptureWarnings?: number;
       };
       if (!res.ok) {
         const error = data.error ?? "Failed to save link";
@@ -6604,12 +6663,14 @@ export default function WorkspaceClient({
             ? {
                 ...task,
                 status: "completed",
-                stage: data.duplicate ? "Source already available" : "Source ready",
+                stage: data.duplicate ? "Source already available" : `${data.pageCount ?? 1} page${(data.pageCount ?? 1) === 1 ? "" : "s"} imported`,
                 completedAt: Date.now(),
                 duplicate: data.duplicate,
                 sourceRelPath: data.source?.sourceRelPath,
                 capturedImages: data.capturedImages,
                 referencedImages: data.referencedImages,
+                pageCount: data.pageCount,
+                imageCaptureWarnings: data.imageCaptureWarnings,
               }
             : task,
           ),
@@ -6626,6 +6687,8 @@ export default function WorkspaceClient({
         "success",
       );
     } catch {
+      // Cancel already removed the task; an aborted fetch is not a failure.
+      if (controller.signal.aborted) return;
       setLinkImportTasks((current) =>
         current.map((task) =>
           task.id === taskId
@@ -6641,8 +6704,15 @@ export default function WorkspaceClient({
       );
       addToast("Failed to save link");
     } finally {
+      linkImportControllersRef.current.delete(taskId);
       setSavingLink(false);
     }
+  }
+
+  function cancelLinkImport(taskId: string) {
+    linkImportControllersRef.current.get(taskId)?.abort();
+    setLinkImportTasks((current) => current.filter((task) => task.id !== taskId));
+    setSelectedLinkImportId((current) => (current === taskId ? null : current));
   }
 
   async function handleDeleteLink(linkId: string) {
@@ -6674,13 +6744,14 @@ export default function WorkspaceClient({
     }
   }
 
-  async function handleCopyLink(url: string) {
-    try {
-      await navigator.clipboard.writeText(url);
-      addToast("Link copied", "success");
-    } catch {
-      addToast("Could not copy link");
+  function handleOpenLinkUrl(url: string) {
+    if (desktopTabsBridge()) {
+      void openInDesktopTab(url).then((opened) => {
+        if (!opened) window.open(url, "_blank", "noopener,noreferrer");
+      });
+      return;
     }
+    window.open(url, "_blank", "noopener,noreferrer");
   }
 
   function handleMediaSourceCreated(info: {
@@ -6936,6 +7007,10 @@ export default function WorkspaceClient({
   // ── Document delete ─────────────────────────────────────────────────────────
 
   async function handleDocumentFlag(slug: string, flagColor: string) {
+    if (documents.find(doc => doc.slug === slug)?.understanding?.understood) {
+      addToast("Uncheck ‘I understand this’ on the page to change its color.");
+      return;
+    }
     const previous =
       documents.find((doc) => doc.slug === slug)?.flagColor ?? "";
     setSavingFlagSlug(slug);
@@ -14130,10 +14205,9 @@ if (careerOpsAgent) {
     const kind = learnSourceKind(doc);
     return kind === "audio" || kind === "video";
   });
-  const documentSourceDocuments = sourceDocuments.filter((doc) => {
-    const kind = learnSourceKind(doc);
-    return kind !== "audio" && kind !== "video";
-  });
+  const documentSourceDocuments = sourceDocuments.filter(
+    (doc) => learnSourceKind(doc) === "document",
+  );
   const gardenMediaSources = mediaSourceDocuments.map((doc) => ({
     slug: doc.slug,
     title: doc.title,
@@ -14155,6 +14229,17 @@ if (careerOpsAgent) {
       : documentSourceDocuments.filter((doc) => {
           const haystack = documentSearchText(doc);
           return sourceDocSearchTerms.every((term) => haystack.includes(term));
+        });
+  const linkSearchTerms = normalizedSearchText(linkSearch)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const filteredSavedLinks =
+    linkSearchTerms.length === 0
+      ? savedLinks
+      : savedLinks.filter((link) => {
+          const haystack = normalizedSearchText(`${link.title} ${link.url}`);
+          return linkSearchTerms.every((term) => haystack.includes(term));
         });
   const markdownDocuments = documents.filter(
     (doc) => doc.type !== "source-document",
@@ -14658,7 +14743,7 @@ if (careerOpsAgent) {
                       />
                     </svg>
                     Sources {learnTeachingSourceSlugs.length}/
-                    {learnEligibleSourceDocuments.length}
+                    {learnEligibleSourceDocuments.length}{selectedLearnArtifacts.artifacts.length ? ` + ${selectedLearnArtifacts.artifacts.length} artifacts` : ""}
                     <svg
                       className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
                       viewBox="0 0 20 20"
@@ -14772,6 +14857,20 @@ if (careerOpsAgent) {
                           </div>
                         ))}
                       </div>
+                      {selectedLearnArtifacts.artifacts.length > 0 ? (
+                        <div className="mt-2 border-t border-gray-800 pt-2">
+                          <p className="text-xs font-medium text-gray-200">Artifacts · {selectedLearnArtifacts.artifacts.length}</p>
+                          <p className="mt-1 text-[10px] text-gray-500">Learn decides when these help. Add more from the Artifacts tab.</p>
+                          {selectedLearnArtifacts.artifacts.map(artifact => (
+                            <label key={artifactVersionKey(artifact)} className="flex items-center gap-2 py-1.5 text-xs text-gray-400">
+                              <input type="checkbox" checked disabled={learnDocumentSelectionLocked || Boolean(selectedLearnArtifacts.busy)}
+                                onChange={() => void selectedLearnArtifacts.toggle(artifact)} />
+                              <span className="min-w-0 truncate">{artifact.title} · v{artifact.version}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-500">Add optional teaching aids from the Artifacts tab.</p>}
+                      {selectedLearnArtifacts.error ? <p role="alert" className="mt-2 text-xs text-red-400">{selectedLearnArtifacts.error}</p> : null}
                       {learnDocumentSelectionLocked ? (
                         <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
                           This selection is locked for the current Learning Map.
@@ -15875,6 +15974,10 @@ if (careerOpsAgent) {
     slug: string,
     selectableForChat: boolean,
   ) {
+    if (documents.find(doc => doc.slug === slug)?.understanding?.understood) {
+      if (selectableForChat) toggleSelectedDocument(slug);
+      return;
+    }
     if (!selectableForChat) {
       setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
       return;
@@ -15952,7 +16055,7 @@ if (careerOpsAgent) {
                       ? "opacity-50 cursor-wait"
                       : "cursor-pointer",
                   ].join(" ")}
-                  title={`${doc.flagColor ? `Flagged ${doc.flagColor}. ` : ""}${
+                  title={`${doc.understanding?.understood ? "Understood. " : doc.flagColor ? `Flagged ${doc.flagColor}. ` : ""}${
                     isSource
                       ? isSelectedForChat
                         ? "Selected for chat; click once to remove. Double-click to choose a color."
@@ -16348,7 +16451,7 @@ if (careerOpsAgent) {
               slug === doc.slug ? null : doc.slug,
             )
           }
-          disabled={savingFlagSlug === doc.slug}
+          disabled={savingFlagSlug === doc.slug || doc.understanding?.understood}
           className={[
             "h-5 w-5 rounded border border-gray-700 bg-gray-950",
             "flex items-center justify-center transition-colors hover:border-gray-500",
@@ -16356,8 +16459,8 @@ if (careerOpsAgent) {
               ? "opacity-50 cursor-wait"
               : "cursor-pointer",
           ].join(" ")}
-          title={doc.flagColor ? `Flagged ${doc.flagColor}` : "Flag note"}
-          aria-label="Flag note"
+          title={doc.understanding?.understood ? "Understood — uncheck at the end of the page to change" : doc.flagColor ? `Flagged ${doc.flagColor}` : "Flag note"}
+          aria-label={doc.understanding?.understood ? "Page understood" : "Flag note"}
           aria-expanded={openFlagPaletteSlug === doc.slug}
         >
           <span
@@ -16947,7 +17050,11 @@ if (careerOpsAgent) {
               />
             </svg>
             Links
-            {savedLinks.length > 0 ? ` (${savedLinks.length})` : ""}
+            {savedLinks.length > 0
+              ? linkSearchTerms.length > 0
+                ? ` (${filteredSavedLinks.length}/${savedLinks.length})`
+                : ` (${savedLinks.length})`
+              : ""}
           </button>
           <div className="flex shrink-0 items-center gap-1.5 pr-4">
             {isOwner ? (
@@ -17005,6 +17112,55 @@ if (careerOpsAgent) {
             id="garden-links-panel"
             className="bb-neu-accordion-panel border-t border-gray-800/70"
           >
+            {!linksLoading && savedLinks.length > 0 && (
+              <div className="border-b border-gray-800 px-3 py-2">
+                <div className="relative">
+                  <svg
+                    className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.7}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+                    />
+                  </svg>
+                  <input
+                    value={linkSearch}
+                    onChange={(e) => setLinkSearch(e.target.value)}
+                    placeholder="Search links"
+                    className="neu-control h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                    aria-label="Search links"
+                  />
+                  {linkSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setLinkSearch("")}
+                      className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                      aria-label="Clear link search"
+                      title="Clear search"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6 18 18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             {activeLinkImportTasks.length > 0 ? (
               <div className="border-b border-gray-800/70 py-1">
                 {activeLinkImportTasks.map((task) => (
@@ -17042,80 +17198,124 @@ if (careerOpsAgent) {
               <div className="px-4 py-4 text-center">
                 <p className="text-xs text-gray-600">No saved links yet.</p>
               </div>
+            ) : filteredSavedLinks.length === 0 ? (
+              <div className="flex flex-col items-center px-4 py-6 text-center">
+                <p className="text-xs text-gray-600">
+                  No links match {linkSearch.trim()}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setLinkSearch("")}
+                  className="mt-2 text-xs text-gray-500 underline underline-offset-2 transition-colors hover:text-white"
+                >
+                  Clear search
+                </button>
+              </div>
             ) : (
-              <ul className="divide-y divide-gray-800/70">
-                {savedLinks.map((link) => (
-                  <li
-                    key={link.id}
-                    className="group flex items-center gap-2 px-3 py-2.5"
-                  >
-                    <a
-                      href={link.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="min-w-0 flex-1 text-left"
-                      title={link.url}
+              <ul className="py-1">
+                {filteredSavedLinks.map((link) => {
+                  const sourceDocument = sourceDocuments.find((doc) =>
+                    doc.relPath === link.sourceRelPath || doc.slug === link.sourceSlug,
+                  );
+                  const sourceSlug = sourceDocument?.slug;
+                  const isSelectedForChat = Boolean(
+                    sourceSlug && selectedDocumentSlugs.includes(sourceSlug),
+                  );
+                  const documentHref = link.sourceRelPath || link.sourceSlug
+                    ? gardenDocumentHref(clusterSlug, {
+                        slug: link.sourceSlug ?? "",
+                        relPath: link.sourceRelPath,
+                        type: "source-document",
+                      })
+                    : null;
+                  return (
+                    <li
+                      key={link.id}
+                      className={[
+                        "group flex items-start gap-2.5 border-b border-gray-800/50 px-3 py-2 transition-colors last:border-b-0",
+                        isSelectedForChat
+                          ? "border-l-2 border-l-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_8%,transparent)]"
+                          : "",
+                      ].join(" ")}
                     >
-                      <span className="block truncate text-xs font-medium text-gray-300 transition-colors group-hover:text-white">
-                        {link.title}
-                      </span>
-                      <span className="block truncate text-[11px] text-gray-600">
-                        {link.url}
-                      </span>
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyLink(link.url)}
-                      className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
-                      aria-label="Copy link"
-                      title="Copy link"
-                    >
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.8}
-                        aria-hidden="true"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125v-9.75c0-.621.504-1.125 1.125-1.125H8.25m2.25-6.75h8.625c.621 0 1.125.504 1.125 1.125v8.625c0 .621-.504 1.125-1.125 1.125H10.5a1.125 1.125 0 0 1-1.125-1.125V4.125c0-.621.504-1.125 1.125-1.125Z"
-                        />
-                      </svg>
-                    </button>
-                    {isOwner ? (
                       <button
                         type="button"
-                        onClick={() => handleDeleteLink(link.id)}
-                        disabled={deletingLinkId === link.id}
-                        className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-red-950/30 hover:text-red-400 disabled:opacity-40"
-                        aria-label="Delete link"
-                        title="Delete link"
+                        onClick={() => {
+                          if (sourceSlug) toggleSelectedDocument(sourceSlug);
+                        }}
+                        disabled={!sourceSlug}
+                        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-gray-700 bg-gray-950 transition-colors hover:border-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label={isSelectedForChat ? `Remove ${link.title} from chat` : `Select ${link.title} for chat`}
+                        aria-pressed={isSelectedForChat}
+                        title={!sourceSlug ? "Imported source unavailable" : isSelectedForChat ? "Selected for chat; click to remove" : "Select for chat"}
                       >
-                        {deletingLinkId === link.id ? (
-                          <Spinner className="h-3.5 w-3.5" />
-                        ) : (
-                          <svg
-                            className="h-3.5 w-3.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2}
-                            aria-hidden="true"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M6 18 18 6M6 6l12 12"
-                            />
-                          </svg>
-                        )}
+                        <span
+                          className="relative flex h-3 w-3 items-center justify-center rounded-sm border border-gray-800"
+                          style={{ backgroundColor: sourceDocument?.flagColor || "transparent" }}
+                        >
+                          {isSelectedForChat ? (
+                            <svg className="pointer-events-none absolute inset-0 h-3 w-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                              <path d="m2 6.25 2.6 2.6L10 3.35" stroke="rgb(3 7 18)" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="m2 6.25 2.6 2.6L10 3.35" stroke="white" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          ) : null}
+                        </span>
                       </button>
-                    ) : null}
-                  </li>
-                ))}
+                      <Link
+                        href={documentHref ?? "#"}
+                        onClick={(event) => {
+                          if (!documentHref) {
+                            event.preventDefault();
+                            addToast("This link has no imported Markdown yet");
+                          }
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          handleOpenLinkUrl(link.url);
+                        }}
+                        className="min-w-0 flex-1 text-left"
+                        title={documentHref ? "Open Markdown; right-click to open website" : "No imported Markdown; right-click to open website"}
+                      >
+                        <span className="block text-xs font-medium text-gray-300 transition-colors hover:text-white">
+                          <OverflowMarquee>{link.title}</OverflowMarquee>
+                        </span>
+                        <span className="mt-0.5 block truncate text-[10px] text-gray-600">
+                          {link.url}
+                        </span>
+                      </Link>
+                      {isOwner ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteLink(link.id)}
+                          disabled={deletingLinkId === link.id}
+                          className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-700 opacity-60 transition-colors hover:bg-red-950/40 hover:text-red-300 hover:opacity-100 disabled:cursor-wait disabled:opacity-60"
+                          aria-label={`Delete ${link.title}`}
+                          title="Delete link"
+                        >
+                          {deletingLinkId === link.id ? (
+                            <Spinner className="h-3.5 w-3.5" />
+                          ) : (
+                            <svg
+                              className="h-3.5 w-3.5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={1.7}
+                              aria-hidden="true"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166M19.228 5.79 18.16 19.673A2.25 2.25 0 0 1 15.916 21.75H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .563c.34-.059.68-.114 1.022-.166m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -17557,10 +17757,10 @@ if (careerOpsAgent) {
                 />
               </svg>
               Documents
-              {sourceDocuments.length > 0
+              {documentSourceDocuments.length > 0
                 ? sourceDocSearchTerms.length > 0
-                  ? ` (${filteredSourceDocuments.length}/${sourceDocuments.length})`
-                  : ` (${sourceDocuments.length})`
+                  ? ` (${filteredSourceDocuments.length}/${documentSourceDocuments.length})`
+                  : ` (${documentSourceDocuments.length})`
                 : ""}
             </div>
             <div className="flex items-center gap-1.5">
@@ -17604,7 +17804,7 @@ if (careerOpsAgent) {
           </button>
           {sourceDocsExpanded && (
             <div className="border-t border-gray-800">
-              {!loadingDocs && sourceDocuments.length > 0 && (
+              {!loadingDocs && documentSourceDocuments.length > 0 && (
                 <div className="border-b border-gray-800 px-3 py-2">
                   <div className="relative">
                     <svg
@@ -17658,7 +17858,7 @@ if (careerOpsAgent) {
                   <div className="flex justify-center py-6">
                     <Spinner className="w-4 h-4 text-gray-700" />
                   </div>
-                ) : sourceDocuments.length === 0 ? (
+                ) : documentSourceDocuments.length === 0 ? (
                   <div className="flex flex-col items-center py-6 px-4 text-center">
                     <p className="text-xs text-gray-600 mb-2">
                       No source documents yet
@@ -17924,6 +18124,8 @@ if (careerOpsAgent) {
                 onExternalAgentTerminal={handleExternalAgentTerminal}
                 annotationsByMessage={annotationsByMessage}
                 onTextSelection={receiveTextSelection}
+                onReply={replyToMessage}
+                temporaryChat={temporaryChat}
                 onOpenAnnotation={openAnnotation}
                 delegationInFlight={delegationInFlight}
                 transcriptScrollRef={transcriptScrollRef}
@@ -18323,46 +18525,55 @@ onClearCareerOps={() => {
           </div>
         </div>
 
-        {productPanel ? (
-          <SidePanelDock
-            label="Product details"
-            defaultWidth={460}
-            storageKey="breadboard:garden-workspace:panel-width"
-          >
-            <ProductDetailsPanel
-              selection={productPanel}
-              onClose={() => setProductPanel(null)}
-              onAction={handleGenerativeUiAction}
-            />
-          </SidePanelDock>
-        ) : sidePanel ? (
-          <SidePanelDock
-            label={PANEL_TITLES[sidePanel]}
-            defaultWidth={460}
-            storageKey="breadboard:garden-workspace:panel-width"
-          >
-            {sidePanel === "uploads" ? (
-              <UploadsPanel
-                activeSurface="garden_chat"
-                gardenSlug={clusterSlug}
-                onOpenChat={openChatById}
+        {/* Menu panels cover the garden overview without taking another column. */}
+        <div className="absolute inset-y-0 right-0 z-30 flex">
+          {productPanel ? (
+            <SidePanelDock
+              label="Product details"
+              defaultWidth={460}
+              storageKey="breadboard:garden-workspace:panel-width"
+            >
+              <ProductDetailsPanel
+                selection={productPanel}
+                onClose={() => setProductPanel(null)}
+                onAction={handleGenerativeUiAction}
               />
-            ) : sidePanel === "scheduled" ? (
-              <TerminalScheduledPanel
-                surface="garden_chat"
-                gardenSlug={clusterSlug}
-              />
-            ) : sidePanel === "hooks" ? (
-              <HooksPanel gardenSlug={clusterSlug} />
-            ) : (
-              <ProcessesPanel
-                gardenSlug={clusterSlug}
-                onOpenChat={openChatById}
-                onOpenPanel={(panel) => setSidePanel(panel)}
-              />
-            )}
-          </SidePanelDock>
-        ) : null}
+            </SidePanelDock>
+          ) : sidePanel ? (
+            <SidePanelDock
+              label={PANEL_TITLES[sidePanel]}
+              defaultWidth={460}
+              storageKey="breadboard:garden-workspace:panel-width"
+            >
+              {sidePanel === "uploads" ? (
+                <UploadsPanel
+                  activeSurface="garden_chat"
+                  gardenSlug={clusterSlug}
+                  onOpenChat={openChatById}
+                />
+              ) : sidePanel === "scheduled" ? (
+                <TerminalScheduledPanel
+                  surface="garden_chat"
+                  gardenSlug={clusterSlug}
+                />
+              ) : sidePanel === "hooks" ? (
+                <HooksPanel gardenSlug={clusterSlug} />
+              ) : sidePanel === "starred" ? (
+                <StarredMessagesPanel gardenSlug={clusterSlug} onOpenMessage={(message) => {
+                  setStarredMessageTarget({ chatId: message.chatId, messageId: message.messageId, clientMessageId: message.clientMessageId, requestId: Date.now() });
+                  if (String(activeChatId) !== message.chatId) openChatById(message.chatId);
+                  else setSidePanel(null);
+                }} />
+              ) : (
+                <ProcessesPanel
+                  gardenSlug={clusterSlug}
+                  onOpenChat={openChatById}
+                  onOpenPanel={(panel) => setSidePanel(panel)}
+                />
+              )}
+            </SidePanelDock>
+          ) : null}
+        </div>
 
         <KnowledgeGraph
           clusterSlug={clusterSlug}
@@ -18464,6 +18675,30 @@ onClearCareerOps={() => {
                       className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
                       aria-label="Link URL"
                     />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-gray-400">Import</span>
+                    <select
+                      value={newLinkScope}
+                      onChange={(event) => setNewLinkScope(
+                        event.target.value === "page" || event.target.value === "section"
+                          ? event.target.value : "site",
+                      )}
+                      disabled={savingLink}
+                      aria-label="Website import scope"
+                      className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200"
+                    >
+                      <option value="site">Whole website</option>
+                      <option value="section">This section and its articles</option>
+                      <option value="page">Only this page</option>
+                    </select>
+                    <p className="text-xs text-gray-500">
+                      {newLinkScope === "site"
+                        ? "Import all discoverable pages on this site, with full text and figures and no page-count limit. External websites stay as links. Inaccessible pages are reported."
+                        : newLinkScope === "section"
+                          ? "Use this URL as the root. Import its subpages and articles listed in the section’s main content, including articles elsewhere on the same site. No page-count limit; site menus and unrelated article links stay as links."
+                          : "Import only the page at this URL."}
+                    </p>
                   </label>
                   {savingLink ? (
                     <p className="text-xs text-gray-500">
@@ -18570,20 +18805,7 @@ onClearCareerOps={() => {
                 ) : null}
               </div>
 
-              <div>
-                <h3 className="text-xs font-medium text-gray-400">What is happening</h3>
-                <p className="mt-1.5 text-xs leading-5 text-gray-600">
-                  {selectedLinkImportTask.status === "importing"
-                    ? "The page is being fetched, converted to Markdown, enriched with its available images, and indexed as a Garden source."
-                    : selectedLinkImportTask.status === "completed"
-                      ? selectedLinkImportTask.duplicate
-                        ? "This page was already available. The existing source has been linked to this Garden."
-                        : "The page has been converted and is ready to use as a Garden source."
-                      : "The page could not be converted into a Garden source."}
-                </p>
-              </div>
-
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 border-t border-gray-800 pt-4 text-xs">
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
                 <dt className="text-gray-600">Started</dt>
                 <dd className="text-right text-gray-400">
                   {new Date(selectedLinkImportTask.startedAt).toLocaleString()}
@@ -18605,8 +18827,25 @@ onClearCareerOps={() => {
                       className="min-w-0 truncate text-right text-gray-400"
                       title={selectedLinkImportTask.sourceRelPath}
                     >
-                      {selectedLinkImportTask.sourceRelPath}
+                      <Link
+                        href={gardenDocumentHref(clusterSlug, {
+                          slug: "",
+                          relPath: selectedLinkImportTask.sourceRelPath,
+                          type: "source-document",
+                        })}
+                        onClick={() => setSelectedLinkImportId(null)}
+                        className="underline underline-offset-2 hover:text-white"
+                        title="Open imported note"
+                      >
+                        {selectedLinkImportTask.sourceRelPath}
+                      </Link>
                     </dd>
+                  </>
+                ) : null}
+                {selectedLinkImportTask.pageCount !== undefined ? (
+                  <>
+                    <dt className="text-gray-600">Pages imported</dt>
+                    <dd className="text-right text-gray-400">{selectedLinkImportTask.pageCount}</dd>
                   </>
                 ) : null}
                 {selectedLinkImportTask.capturedImages !== undefined ? (
@@ -18624,18 +18863,31 @@ onClearCareerOps={() => {
                   {selectedLinkImportTask.error}
                 </p>
               ) : null}
+              {(selectedLinkImportTask.imageCaptureWarnings ?? 0) > 0 ? (
+                <p className="text-xs leading-5 text-amber-500">
+                  Some figures could not be saved locally. Their original website links have been retained.
+                </p>
+              ) : null}
             </div>
 
             <div className="shrink-0 border-t border-gray-800 px-5 py-4">
-              <button
-                type="button"
-                onClick={() => setSelectedLinkImportId(null)}
-                className="neu-button-primary w-full py-2.5 text-sm"
-              >
-                {selectedLinkImportTask.status === "importing"
-                  ? "Continue in background"
-                  : "Close"}
-              </button>
+              {selectedLinkImportTask.status === "importing" ? (
+                <button
+                  type="button"
+                  onClick={() => cancelLinkImport(selectedLinkImportTask.id)}
+                  className="neu-button w-full py-2.5 text-sm"
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setSelectedLinkImportId(null)}
+                  className="neu-button-primary w-full py-2.5 text-sm"
+                >
+                  Close
+                </button>
+              )}
             </div>
           </section>
         </div>

@@ -96,6 +96,8 @@ export interface CreateConversationInput {
   originLabel?: string;
   scopeKind?: ConversationScopeKind;
   defaultGardenId?: number | null;
+  /** Also create the workspace history row used by the Garden chat UI. */
+  linkToGardenWorkspace?: boolean;
   /** Schedule that created this chat, if it was opened unattended. */
   scheduledChatJobId?: number | null;
   /** Hook that created this chat, if it was opened unattended. */
@@ -108,6 +110,21 @@ export function createConversation(
   input: CreateConversationInput,
   database: Database.Database = db,
 ): ConversationRow {
+  if (input.linkToGardenWorkspace) {
+    if (input.surface !== "garden_chat" || !input.defaultGardenId) {
+      throw new ConversationStoreError(400, "garden_required", "A workspace chat requires a garden.");
+    }
+    return database.transaction(() => {
+      const legacy = database.prepare(`
+        INSERT INTO chat_sessions(cluster_id, user_id, title, history_surface)
+        VALUES (?, ?, ?, 'garden_chat')
+      `).run(input.defaultGardenId, input.userId, normalizeTitle(input.title));
+      return ensureConversationForLegacyChatSession(
+        Number(legacy.lastInsertRowid), input.userId, database,
+        { temporary: input.temporary },
+      );
+    }).immediate();
+  }
   const publicId = `conv_${crypto.randomBytes(18).toString("base64url")}`;
   const result = database.prepare(`
     INSERT INTO conversations(
@@ -1409,6 +1426,27 @@ export function getConversationMessageByClientId(
     role,
     database,
   );
+}
+
+/**
+ * The user turn an assistant answer replied to.
+ *
+ * "The message before it" rather than "the last user message", because a
+ * transcript can carry internal agent deliveries and branch siblings between
+ * the two. Scanning backwards from the answer's own order index is the only
+ * reading that stays correct when it does.
+ */
+export function getPrecedingUserMessage(
+  conversationId: number,
+  orderIndex: number,
+  database: Database.Database = db,
+): ConversationMessageRow | null {
+  return (database.prepare(`
+    SELECT * FROM conversation_messages
+    WHERE conversation_id = ? AND order_index < ? AND role = 'user'
+    ORDER BY order_index DESC
+    LIMIT 1
+  `).get(conversationId, orderIndex) as ConversationMessageRow | undefined) ?? null;
 }
 
 export function presentConversationMessage(row: ConversationMessageRow): PresentedConversationMessage {

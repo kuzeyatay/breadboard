@@ -174,9 +174,11 @@ import {
 } from "@/app/components/chat-text-selection-ui";
 import {
   chatTextSelectionsOverlap,
+  wholeMessageReply,
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
+import { useStarredMessageJump, type StarredMessageTarget } from "../use-starred-message-jump";
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
   isChatHighlightColor,
@@ -201,6 +203,7 @@ import {
 } from "@/lib/hermes/super-agent-activity";
 
 interface Props {
+  starredMessageTarget?: StarredMessageTarget | null;
   messages: AgentMessage[];
   connection: ConnectionState;
   runState: AgentRunState;
@@ -668,6 +671,7 @@ function inlineMapKindForAssistant(
 }
 
 export default function AgentRuntimePanel({
+  starredMessageTarget,
   messages,
   connection,
   runState,
@@ -921,8 +925,11 @@ export default function AgentRuntimePanel({
   // while the queue remains visible and drains as soon as loading settles.
   const visibleConversationJustCreated =
     Boolean(sessionId) && sessionId === createdSessionId;
+  // A saved-message jump needs its transcript immediately; artifact cards can
+  // finish loading in their provider without holding the navigation hostage.
+  const openingStarredMessage = starredMessageTarget?.chatId === sessionId;
   const conversationLoading =
-    loadingTranscript || (!visibleConversationJustCreated && !artifactsReady);
+    loadingTranscript || (!visibleConversationJustCreated && !openingStarredMessage && !artifactsReady);
   const queueHeld = conversationLoading || runInFlight;
   // Messages typed while the conversation is working queue here; each can be
   // applied to the active chat turn as a course correction, and whatever is
@@ -1418,6 +1425,7 @@ export default function AgentRuntimePanel({
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
     scrollToBottom: jumpToNewestMessage,
+    scrollToMessage,
   } = useChatAutoScroll<HTMLDivElement>({
     isResponding: transcriptResponding,
     responseKey: visibleResponseKey,
@@ -1430,6 +1438,10 @@ export default function AgentRuntimePanel({
     // conversations at all", which this one very much does.
     conversationKey: sessionId ?? null,
     virtual: transcriptVirtual,
+  });
+  useStarredMessageJump({
+    target: starredMessageTarget, chatId: sessionId, loading: conversationLoading,
+    rows: transcriptRows, bridge: transcriptVirtual, scrollRef: transcriptScrollRef, scrollToMessage,
   });
 
   // An external agent writes its artifacts from a background run, so no chat
@@ -1986,6 +1998,16 @@ export default function AgentRuntimePanel({
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
 
+  function replyToMessage(message: AgentMessage, index: number, content: string) {
+    const selection = wholeMessageReply(messageSelectionSourceId(message, index), content);
+    if (!selection) return;
+    setComposerSelection(selection);
+    setSelectionMenu(null);
+    setOpenInlineAnswers([]);
+    window.getSelection()?.removeAllRanges();
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+  }
+
   function cancelSelectionQuestion() {
     const selection = composerSelection;
     setComposerSelection(null);
@@ -2043,11 +2065,10 @@ export default function AgentRuntimePanel({
       }
       const thread = inlineSelectionThreads.get(annotationId);
       if (!thread) return;
-      if (!thread.question) {
-        setComposerSelection(thread.selection);
-        window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
-        return;
-      }
+      // Inspecting a saved mark must not turn the main composer's draft into
+      // a new inline question, even when the mark has no submitted turn yet.
+      setSelectionMenu(null);
+      window.getSelection()?.removeAllRanges();
       setOpenInlineAnswers((current) => {
         const openIndex = current.findIndex(
           (openAnswer) => openAnswer.id === annotationId,
@@ -2066,7 +2087,7 @@ export default function AgentRuntimePanel({
           : [{ id: annotationId, anchor }];
       });
     },
-    [composerTextareaRef, inlineSelectionThreads, savedChatHighlights],
+    [inlineSelectionThreads, savedChatHighlights],
   );
 
   function deleteInlineSelection(annotationId: string) {
@@ -2108,6 +2129,7 @@ export default function AgentRuntimePanel({
     if (!trimmed || !onAskSelection || activeRun || conversationLocked) return;
     // A question the composer is still holding for some other highlight is
     // left alone: it belongs to that highlight, not to this turn.
+    setComposerSelection((current) => current?.id === selection.id ? null : current);
     setInlineSelectionRunId(selection.id);
     void onAskSelection(trimmed, selection).catch(() => {
       setInlineSelectionRunId((current) =>
@@ -2361,6 +2383,11 @@ export default function AgentRuntimePanel({
                     <MessageActionsSlot
                       branch={message.role === "assistant" && !(runInFlight && index === lastAssistantIndex)
                         ? branchNavigationForAssistant(message, index) : undefined}
+                      conversationId={surface !== "quartz_ai" ? sessionId : null}
+                      messageId={message.id ?? message.clientMessageId ?? null}
+                      canStar={!temporaryChat && surface !== "quartz_ai"}
+                      onReply={onAskSelection && !conversationLocked
+                        ? (content) => replyToMessage(message, index, content) : undefined}
                       responseStartedAt={
                         message.responseStartedAt ?? message.createdAt
                       }
@@ -3733,6 +3760,11 @@ export default function AgentRuntimePanel({
                         humanizerReview={messageRewriteReview(message)}
                         naturalRewrite={naturalRewriteFor(message)}
                         content={responseContent}
+                        // What happens to this answer is recorded against the
+                        // turn that produced it. Quartz has no conversation of
+                        // the reader's own, so it keeps the browser-local thumb.
+                        conversationId={surface !== "quartz_ai" ? sessionId : null}
+                        messageId={message.id ?? message.clientMessageId ?? null}
                         onEdit={
                           onEditAssistantMessage &&
                           Boolean(message.clientMessageId?.trim()) &&

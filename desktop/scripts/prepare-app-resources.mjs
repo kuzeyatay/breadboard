@@ -2286,6 +2286,7 @@ for (const entry of [
   "runtime-v2-agent-browser-executor.mjs",
   "runtime-v2-quartz-publish-worker.mjs",
   "runtime-v2-quartz-publish-executor.mjs",
+  "quartz-publication-contract.mjs",
   "runtime-v2-quartz-static-service.mjs",
   "quartz-canonical-reader-bridge.mjs",
   "runtime-v2-background-worker.mjs",

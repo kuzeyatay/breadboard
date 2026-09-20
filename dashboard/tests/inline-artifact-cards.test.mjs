@@ -107,7 +107,7 @@ test("clicking an open artifact closes it from inline cards and the archive", ()
     artifactPanel,
     /const toggleOpenArtifact = useCallback\(\(id: string\) => \{\s*setOpenId\(\(current\) => \(current === id \? null : id\)\)/,
   );
-  assert.match(artifactPanel, /else toggleOpenArtifact\(artifact\.id\)/);
+  assert.match(artifactPanel, /else toggleOpenArtifact\(artifactVersionKey\(artifact\)\)/);
 });
 
 test("the whole image artifact opens while redundant Open and Edit actions stay absent", () => {
@@ -229,7 +229,7 @@ test("a chat's artifacts are asked for with its messages, not after they render"
   assert.match(cards, /const pending = artifactRequests\.get\(query\);/);
 });
 
-test("chat rows stay covered until their artifact snapshot is ready", () => {
+test("chat rows await artifacts except when opening a specific starred message", () => {
   assert.match(
     cards,
     /export function useInlineArtifactPrefetch[\s\S]{0,120}?boolean/,
@@ -243,7 +243,7 @@ test("chat rows stay covered until their artifact snapshot is ready", () => {
 
   assert.match(
     runtimePanel,
-    /const conversationLoading =\s*loadingTranscript \|\| \(!visibleConversationJustCreated && !artifactsReady\);/,
+    /const conversationLoading =\s*loadingTranscript \|\| \(!visibleConversationJustCreated && !openingStarredMessage && !artifactsReady\);/,
   );
   const runtimeGate = runtimePanel.slice(
     runtimePanel.indexOf("{conversationLoading ? ("),
@@ -254,7 +254,7 @@ test("chat rows stay covered until their artifact snapshot is ready", () => {
 
   assert.match(
     gardenWorkspace,
-    /const chatContentLoading =\s*loadingChats \|\| \(!visibleChatJustCreated && !inlineArtifactsReady\);/,
+    /const chatContentLoading =\s*loadingChats \|\| \(!visibleChatJustCreated && !openingStarredMessage && !inlineArtifactsReady\);/,
   );
   assert.match(
     gardenWorkspace,
@@ -265,7 +265,7 @@ test("chat rows stay covered until their artifact snapshot is ready", () => {
 
 test("gadgets use the standard artifact placeholder until opened", () => {
   assert.doesNotMatch(cards, /import InlineGadget|isGadgetArtifact/);
-  assert.match(cards, /<ArtifactFileIcon kind=\{artifact\.kind\} renderer=\{artifact\.renderer\} \/>/);
+  assert.match(fs.readFileSync(new URL("../src/app/components/hermes/artifact-card-content.tsx", import.meta.url), "utf8"), /<ArtifactFileIcon kind=\{artifact\.kind\} renderer=\{artifact\.renderer\} \/>/);
   assert.match(viewer, /if \(isGadget\) \{\s*return <InlineGadget artifact=\{artifact\} \/>/);
 });
 

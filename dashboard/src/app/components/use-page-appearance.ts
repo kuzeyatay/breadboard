@@ -14,9 +14,16 @@ import {
 } from "@/lib/page-appearance";
 
 function subscribe(onChange: () => void) {
+  const refresh = () => {
+    if (document.visibilityState !== "hidden") onChange();
+  };
   const events = ["storage", PAGE_APPEARANCE_CHANGE_EVENT, APP_THEME_CHANGE_EVENT, APP_THEME_MODE_CHANGE_EVENT];
-  for (const event of events) window.addEventListener(event, onChange);
-  return () => { for (const event of events) window.removeEventListener(event, onChange); };
+  for (const event of events) window.addEventListener(event, refresh);
+  document.addEventListener("visibilitychange", refresh);
+  return () => {
+    for (const event of events) window.removeEventListener(event, refresh);
+    document.removeEventListener("visibilitychange", refresh);
+  };
 }
 
 const serverSnapshot = JSON.stringify({ preference: { backgrounds: { light: "none", dark: "none" } }, appTheme: "light", ready: false });

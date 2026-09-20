@@ -9,6 +9,7 @@ import {
   net,
   screen,
   session,
+  webContents,
   type BrowserWindowConstructorOptions,
   type Event as ElectronEvent,
   type HandlerDetails,
@@ -91,8 +92,12 @@ import { BrowserToolbarPopover } from "./browser-toolbar-popover";
 import { FindInPage } from "./find-in-page";
 import { browserMenuTemplate, browserMenuShortcut, savedPageFilename, type BrowserMenuAction } from "./browser-menu";
 import { browserContextMenuTemplate, runBrowserContextAction } from "./browser-context-menu";
+import { pasteOnRightClick } from "./right-click-paste";
 import { tabContextMenuTemplate, type TabContextAction } from "./tab-context-menu";
 import {
+  BrowserExtensionCompatibilityError,
+  browserExtensionCompatibilityError,
+  type BrowserWebStoreInstallState,
   browserExtensionInstallId,
   browserWebStoreInstallBootstrapScript,
   browserWebStoreInstallCleanupScript,
@@ -211,6 +216,8 @@ interface BrowserPage extends PageFindState {
 
 /** The hidden chatgpt.com page ChatMock drives; see TabManager.openChatgptWebTab. */
 interface ChatgptWebPage {
+  /** Which of ChatMock's lanes this page serves (see CHATGPT_WEB_DEFAULT_LANE). */
+  lane: string;
   view: WebContentsView;
   contents: WebContents;
   /** Its host window: parked off every display while hidden. */
@@ -220,6 +227,16 @@ interface ChatgptWebPage {
   /** True while the window is parked offscreen rather than in front of anyone. */
   hidden: boolean;
 }
+
+/**
+ * ChatMock keeps one chatgpt.com page per lane: "interactive" for a person's
+ * chat (and signing in), "batch" for Learn, the council and Thought Topology.
+ * A request that names no lane is an older ChatMock and gets the interactive
+ * page, exactly as before there were lanes. Each page is a whole conversation
+ * with the site, so a Learn stage that thinks for fifteen minutes no longer
+ * holds up the chat composer (2026-09-18: three chat turns refused in a row).
+ */
+const CHATGPT_WEB_DEFAULT_LANE = "interactive";
 
 /**
  * How the ChatGPT page stays out of sight without stopping.
@@ -414,6 +431,10 @@ interface ClosedTab {
 }
 
 interface Host {
+  /** One unlisted launcher, prepared before the next Ctrl+T/plus click. */
+  preparedNewTab?: Tab;
+  prepareNewTabTimer?: ReturnType<typeof setTimeout>;
+  newTabPreparationFailed?: boolean;
   tabMenu?: Menu;
   findBar?: FindInPage;
   groups: TabGroup[];
@@ -724,9 +745,9 @@ export class TabManager {
     if (this.browserSignInsResetting || this.browserSignInPageCount() > 0) return false;
     this.browserSignInsResetting = true;
     try {
-      // The hidden ChatGPT page holds this profile too and would quietly
-      // re-create cookies; it goes first. ChatMock asks for a new one later.
-      this.destroyChatgptWebPage();
+      // The hidden ChatGPT pages hold this profile too and would quietly
+      // re-create cookies; they go first. ChatMock asks for new ones later.
+      this.destroyChatgptWebPages();
       const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
       await browserSession.clearStorageData();
       await browserSession.clearAuthCache();
@@ -766,8 +787,8 @@ export class TabManager {
   private readonly options: TabManagerOptions;
   private readonly hosts = new Map<number, Host>();
   private readonly hostByContents = new Map<number, Host>();
-  /** The page lent to ChatMock's "OpenAI (web)" provider; see openChatgptWebTab. */
-  private chatgptWeb: ChatgptWebPage | null = null;
+  /** The pages lent to ChatMock's "OpenAI (web)" provider, by lane; see openChatgptWebTab. */
+  private readonly chatgptWeb = new Map<string, ChatgptWebPage>();
   private enabled = true;
   private newTabUrl: string | null = null;
   private browserUrl: string | null = null;
@@ -784,6 +805,7 @@ export class TabManager {
   readonly browserHistory: BrowserHistory;
   private browserExtensionPaths: string[];
   private readonly browserExtensionInstalls = new Map<string, Promise<boolean>>();
+  private readonly browserExtensionInstallErrors = new Map<string, { state: "failed" | "unsupported"; message: string }>();
   private readonly savedWindows = new Map<number, SavedTabWindow>();
   private sessionDashboardUrl: string | null = null;
   private sessionRestored = false;
@@ -794,6 +816,20 @@ export class TabManager {
 
   constructor(options: TabManagerOptions) {
     this.options = options;
+    // A prepared page must never survive a sign-out or account change.
+    session.defaultSession.cookies.on("changed", (_event, cookie) => {
+      if (!cookie.name.includes("session-token")) return;
+      for (const host of this.hosts.values()) {
+        // Loading the spare can itself refresh the session cookie. Retire that
+        // document, but do not start another load/refresh/dispose loop. An
+        // explicit new-tab request or runtime change can try preparation again.
+        if (host.preparedNewTab && !host.preparedNewTab.painted) {
+          host.newTabPreparationFailed = true;
+        }
+        this.discardPreparedNewTab(host);
+        this.scheduleNewTabPreparation(host);
+      }
+    });
     this.browserPreferences = new BrowserPreferenceStore(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"), message => this.log(message));
     this.browserNotifications = new BrowserNotifications(this.browserPreferences,
       contents => this.hostByContents.get(contents.id)?.window,
@@ -838,7 +874,13 @@ export class TabManager {
 
   /** Where Ctrl+T goes. Nothing until the dashboard is serving. */
   setNewTabUrl(url: string | null): void {
+    if (this.newTabUrl === url) return;
     this.newTabUrl = url;
+    for (const host of this.hosts.values()) {
+      host.newTabPreparationFailed = false;
+      this.discardPreparedNewTab(host);
+      this.scheduleNewTabPreparation(host);
+    }
   }
 
   /** A recovered runtime can bind a different port while these tabs stay open. */
@@ -1080,6 +1122,7 @@ export class TabManager {
     for (const host of this.hosts.values()) this.rememberSession(host);
     this.flushSession();
     this.sessionFrozen = true;
+    for (const host of this.hosts.values()) this.discardPreparedNewTab(host);
   }
 
   private rememberSession(host: Host): void {
@@ -1125,21 +1168,9 @@ export class TabManager {
 
   /** Keep browser and tab-loading surfaces in step with the native scheme. */
   synchronizeBrowserTheme(theme: BreadboardWindowTheme): void {
-    const color = backgroundColorForTheme(theme);
     for (const host of this.hosts.values()) {
       const scene = host.loadingScene;
-      // Every page restates the theme through setTheme as it mounts. Reloading
-      // the field for a scheme it already shows would blank it under a tab
-      // that is mid-reveal, so only an actual change reloads it.
-      if (scene && !scene.contents.isDestroyed() && scene.theme !== theme) {
-        scene.theme = theme;
-        scene.view.setBackgroundColor(color);
-        void scene.contents
-          .loadFile(this.options.loadingHtmlPath(), {
-            query: { theme, embedded: "true" },
-          })
-          .catch(() => undefined);
-      }
+      if (scene) this.updateLoadingSceneTheme(scene, theme);
       for (const tab of host.tabs) {
         const browser = liveBrowserPage(tab.browser);
         if (!browser) continue;
@@ -1156,7 +1187,10 @@ export class TabManager {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     if (!enabled) {
-      for (const host of [...this.hosts.values()]) this.popOutViews(host);
+      for (const host of [...this.hosts.values()]) {
+        this.discardPreparedNewTab(host);
+        this.popOutViews(host);
+      }
     }
     for (const host of this.hosts.values()) this.broadcast(host);
   }
@@ -1177,7 +1211,10 @@ export class TabManager {
   /** Set before loading a private window's trusted browser shell. */
   setPrivateWindow(window: BrowserWindow): void {
     const host = this.hosts.get(window.id);
-    if (host) host.privateBrowsing = true;
+    if (host) {
+      host.privateBrowsing = true;
+      this.discardPreparedNewTab(host);
+    }
   }
 
   private privateBrowserPartition(): string {
@@ -1295,6 +1332,7 @@ export class TabManager {
         this.flushSession();
       }
       this.hosts.delete(window.id);
+      this.discardPreparedNewTab(host);
       if (this.hosts.size === 0) void this.browserTerminal.close();
       host.pending = null;
       host.pendingNavigation = false;
@@ -1325,6 +1363,8 @@ export class TabManager {
     const source = this.hosts.get(from.id);
     const target = this.hosts.get(to.id);
     if (!source || !target || source === target) return;
+    this.discardPreparedNewTab(source);
+    this.discardPreparedNewTab(target);
     source.downloadsPopover?.close();
     target.downloadsPopover?.close();
     source.extensionsPopover?.close();
@@ -1733,8 +1773,9 @@ export class TabManager {
       case "browser-address-suggestions": {
         const tab = host.tabs.find((candidate) => candidate.contents.id === sender.id);
         if (!tab?.browser) return false;
+        if (tab.browser.addressSuggestionsOpen === command.open) return true;
         tab.browser.addressSuggestionsOpen = command.open;
-        this.layout(host);
+        if (host.activeId === tab.id) this.layout(host);
         return true;
       }
       case "browser-extension-load": {
@@ -2390,14 +2431,18 @@ export class TabManager {
 
   /** Keep the Web Store's Breadboard-owned button in step with native state. */
   private refreshBrowserStoreInstallButton(
-    browser: LiveBrowserPage,
-    override?: "available" | "installing" | "installed" | "failed",
+    page: BrowserPage,
+    override?: BrowserWebStoreInstallState,
     errorMessage?: string,
   ): void {
     // Electron queues each executeJavaScript call behind its own loading
     // listener. SPA route changes and extension updates can arrive repeatedly
     // during one stalled load; refresh from did-stop-loading using current state.
-    if (browser.contents.isDestroyed() || browser.contents.isLoadingMainFrame() || !browser.contents.getURL()) return;
+    // Teardown nulls contents/view while these same listeners are still firing,
+    // so resolve the live page here rather than trusting the caller's cast.
+    const browser = liveBrowserPage(page);
+    if (!browser) return;
+    if (browser.contents.isLoadingMainFrame() || !browser.contents.getURL()) return;
     const extensionId = chromeWebStoreExtensionId(browser.contents.getURL());
     if (!extensionId) {
       void browser.contents
@@ -2405,15 +2450,14 @@ export class TabManager {
         .catch(() => undefined);
       return;
     }
-    const state = override ?? (
-      this.browserExtensionSession?.getExtension(extensionId)
-        ? "installed"
-        : this.browserExtensionInstalls.has(extensionId)
-          ? "installing"
-          : "available"
-    );
+    const extension = this.browserExtensionSession?.getExtension(extensionId);
+    const compatibilityError = extension ? browserExtensionCompatibilityError(extension.manifest, extensionId) : undefined;
+    const failure = this.browserExtensionInstallErrors.get(extensionId);
+    const state = override ?? (compatibilityError ? "unsupported"
+      : this.browserExtensionInstalls.has(extensionId) ? "installing"
+      : extension ? "installed" : failure?.state ?? "available");
     void browser.contents
-      .executeJavaScript(browserWebStoreInstallBootstrapScript(extensionId, state, errorMessage))
+      .executeJavaScript(browserWebStoreInstallBootstrapScript(extensionId, state, errorMessage ?? compatibilityError ?? failure?.message))
       .catch(() => undefined);
   }
 
@@ -2422,7 +2466,12 @@ export class TabManager {
     if (!configDir) throw new Error("Browser extension storage is unavailable. Restart Breadboard and try again.");
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
     await this.ensureBrowserExtensions(browserSession);
-    if (browserSession.getExtension(extensionId)) return true;
+    const existingExtension = browserSession.getExtension(extensionId);
+    if (existingExtension) {
+      const compatibilityError = browserExtensionCompatibilityError(existingExtension.manifest, extensionId);
+      if (compatibilityError) throw new BrowserExtensionCompatibilityError(compatibilityError);
+      return true;
+    }
     const chromeVersion = process.versions.chrome;
     if (!chromeVersion) throw new Error("Chromium version is unavailable.");
     const archive = await downloadChromeWebStorePackage(extensionId, chromeVersion, (options) => net.request(options));
@@ -2454,6 +2503,7 @@ export class TabManager {
     }
     const existing = this.browserExtensionInstalls.get(extensionId);
     if (existing) return existing;
+    this.browserExtensionInstallErrors.delete(extensionId);
     const install = this.performBrowserStoreInstall(extensionId);
     this.browserExtensionInstalls.set(extensionId, install);
     this.refreshBrowserStoreInstallButton(browser, "installing");
@@ -2462,17 +2512,21 @@ export class TabManager {
       this.refreshBrowserStoreInstallButton(browser, installed ? "installed" : "failed");
       return installed;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const state = error instanceof BrowserExtensionCompatibilityError ? "unsupported" : "failed";
+      this.browserExtensionInstallErrors.set(extensionId, { state, message });
       this.log(
         `Chrome Web Store extension ${extensionId} failed to install: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      this.refreshBrowserStoreInstallButton(browser, "failed", error instanceof Error ? error.message : String(error));
+      this.refreshBrowserStoreInstallButton(browser, state, message);
       return false;
     } finally {
       if (this.browserExtensionInstalls.get(extensionId) === install) {
         this.browserExtensionInstalls.delete(extensionId);
       }
+      this.refreshBrowserStoreInstallButtons();
     }
   }
 
@@ -2574,6 +2628,8 @@ export class TabManager {
     this.rememberSession(host);
     const state = this.state(host);
     for (const tab of host.tabs) this.send(tab.contents, this.stateForTab(host, tab, state));
+    if (host.preparedNewTab) this.send(host.preparedNewTab.contents, state);
+    this.scheduleNewTabPreparation(host);
     if (host.extensionsPopover) this.send(host.extensionsPopover.contents, state);
     if (host.groupPopover) this.send(host.groupPopover.contents, state);
     const findOwner = host.findBar && tabById(host, host.findBar.ownerId);
@@ -2613,12 +2669,118 @@ export class TabManager {
 
   // ---------------------------------------------------------------- opening
 
+  private discardPreparedNewTab(host: Host): void {
+    if (host.prepareNewTabTimer) clearTimeout(host.prepareNewTabTimer);
+    host.prepareNewTabTimer = undefined;
+    const tab = host.preparedNewTab;
+    host.preparedNewTab = undefined;
+    if (tab) this.dispose(host, tab);
+  }
+
+  private scheduleNewTabPreparation(host: Host): void {
+    if (!this.enabled || this.sessionFrozen || !this.newTabUrl || host.privateBrowsing ||
+        host.window.isDestroyed() || host.preparedNewTab || host.prepareNewTabTimer || host.pending || host.newTabPreparationFailed) return;
+    const active = tabById(host, host.activeId);
+    if (!active?.loaded || active.browser?.privatePartition || !isTabPageUrl(this.options.allowed, active.browser?.shellUrl ?? active.url)) return;
+    if (new URL(active.browser?.shellUrl ?? active.url).pathname.startsWith("/auth/")) return;
+    // Give the page the person just opened priority over preparing its successor.
+    host.prepareNewTabTimer = setTimeout(() => {
+      host.prepareNewTabTimer = undefined;
+      if (host.pending || host.window.isDestroyed()) return;
+      void this.prepareNewTab(host).catch(error => {
+        host.newTabPreparationFailed = true;
+        this.discardPreparedNewTab(host);
+        this.log(`new tab preparation failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, 500);
+    host.prepareNewTabTimer.unref();
+  }
+
+  private async prepareNewTab(host: Host): Promise<void> {
+    const url = this.newTabUrl;
+    if (!url || !this.enabled || this.sessionFrozen || host.privateBrowsing ||
+        host.preparedNewTab || host.window.isDestroyed()) return;
+    const active = tabById(host, host.activeId);
+    if (!active?.loaded || active.browser?.privatePartition ||
+        !isTabPageUrl(this.options.allowed, active.browser?.shellUrl ?? active.url) ||
+        new URL(active.browser?.shellUrl ?? active.url).pathname.startsWith("/auth/")) return;
+    const previousFocus = webContents.getFocusedWebContents();
+    const tab = this.createView(host, url);
+    host.preparedNewTab = tab;
+    const current = () => host.preparedNewTab === tab && !host.window.isDestroyed() && !tab.contents.isDestroyed();
+    // Windows can focus an offscreen WebContentsView as its document loads.
+    // Only a deliberate activation may give the spare keyboard focus.
+    const restoreFocus = () => {
+      if (!current() || !host.window.isFocused()) return;
+      const foreground = tabById(host, host.activeId);
+      const target = foreground === active && previousFocus && !previousFocus.isDestroyed()
+        ? previousFocus
+        : liveBrowserPage(foreground?.browser)?.contents ?? foreground?.contents;
+      if (target && !target.isDestroyed()) target.focus();
+    };
+    tab.contents.on("focus", restoreFocus);
+    const [width, height] = host.window.getContentSize();
+    if (typeof width !== "number" || typeof height !== "number") {
+      this.discardPreparedNewTab(host);
+      return;
+    }
+    setViewBounds(tab.view!, offscreenBounds(width, height));
+    host.window.contentView.addChildView(tab.view!);
+    tab.attached = true;
+    tab.view!.setVisible(true);
+    let ceiling: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ready = await Promise.race([
+        (async () => {
+          if (!tab.loaded) await new Promise<void>(resolve => tab.onLoaded.push(resolve));
+          if (!current() || tab.contents.getURL() !== url) return false;
+          await waitForTabChrome(tab.contents, current);
+          if (!current()) return false;
+          await this.frameReady(tab);
+          return current() && tab.contents.getURL() === url && !tab.recovering;
+        })(),
+        new Promise<false>(resolve => { ceiling = setTimeout(() => resolve(false), 30_000); }),
+      ]);
+      if (!current()) return; // Already claimed or disposed; the foreground owns it now.
+      if (!ready) {
+        host.newTabPreparationFailed = true;
+        this.discardPreparedNewTab(host);
+        return;
+      }
+      tab.painted = true;
+      this.detach(host.window, tab);
+    } catch (error) {
+      if (current()) {
+        host.newTabPreparationFailed = true;
+        this.discardPreparedNewTab(host);
+      }
+      this.log(`new tab preparation failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (ceiling) clearTimeout(ceiling);
+      tab.contents.removeListener("focus", restoreFocus);
+    }
+  }
+
+  private takePreparedNewTab(host: Host, url: string): Tab | undefined {
+    const tab = host.preparedNewTab;
+    if (!tab || url !== this.newTabUrl) return;
+    if (tab.contents.isDestroyed() || tab.contents.isCrashed() || tab.recovering || tab.url !== url) {
+      this.discardPreparedNewTab(host);
+      return;
+    }
+    host.preparedNewTab = undefined;
+    // An in-flight preparation can be claimed too, but must use normal reveal.
+    this.detach(host.window, tab);
+    return tab;
+  }
+
   private openBlankTab(host: Host): boolean {
     if (host.privateBrowsing || tabById(host, host.activeId)?.browser?.privatePartition) {
       return this.openBrowserTab(host) !== null;
     }
     const url = this.newTabUrl;
     if (!url || host.window.isDestroyed()) return false;
+    host.newTabPreparationFailed = false;
     return this.openTab(host, url, { background: false, origin: "blank" }) !== null;
   }
 
@@ -2664,7 +2826,8 @@ export class TabManager {
     options: { background: boolean; origin: "link" | "blank"; from?: Tab; showLoader?: boolean },
   ): Tab | null {
     if (host.window.isDestroyed() || !isTabPageUrl(this.options.allowed, url)) return null;
-    const tab = this.createView(host, url);
+    const tab = (options.origin === "blank" ? this.takePreparedNewTab(host, url) : undefined)
+      ?? this.createView(host, url);
 
     const activeIndex = tabIndex(host, host.activeId);
     const from = options.from ?? tabById(host, host.activeId);
@@ -2993,15 +3156,18 @@ export class TabManager {
     foreground: boolean;
     cdpPort: number | null;
     reset?: boolean;
-  }): Promise<{ ok: true; cdpPort: number; targetId: string } | { ok: false; error: string }> {
+    lane?: string;
+  }): Promise<{ ok: true; cdpPort: number; targetId: string; lane: string } | { ok: false; error: string }> {
     if (!this.enabled) return { ok: false, error: "browser navigation is turned off" };
     if (!options.cdpPort) return { ok: false, error: "the built-in browser has no DevTools port" };
     if (this.browserSignInsResetting) return { ok: false, error: "browser sign-ins are being reset" };
     const cdpPort = options.cdpPort;
+    const lane = options.lane?.trim() || CHATGPT_WEB_DEFAULT_LANE;
 
-    let page = this.chatgptWeb;
+    let page = this.chatgptWeb.get(lane) ?? null;
     if (page && page.contents.isDestroyed()) {
-      this.chatgptWeb = page = null;
+      this.chatgptWeb.delete(lane);
+      page = null;
     }
     // A crashed renderer keeps its WebContents and its DevTools target, so
     // handing this page back would hand back one that answers nothing. The
@@ -3009,14 +3175,14 @@ export class TabManager {
     // replacement costs nothing but a reload.
     if (page && (options.reset === true || page.contents.isCrashed())) {
       this.log(
-        `chatgpt-web page replaced (${options.reset === true ? "asked for a fresh page" : "its renderer had crashed"})`,
+        `chatgpt-web ${lane} page replaced (${options.reset === true ? "asked for a fresh page" : "its renderer had crashed"})`,
       );
-      this.destroyChatgptWebPage();
+      this.destroyChatgptWebPage(lane);
       page = null;
     }
     if (!page) {
-      page = this.createChatgptWebPage();
-      this.chatgptWeb = page;
+      page = this.createChatgptWebPage(lane);
+      this.chatgptWeb.set(lane, page);
     }
     if (!page.targetId) {
       const contents = page.contents;
@@ -3034,24 +3200,24 @@ export class TabManager {
           targetId = await resolveDebuggingTargetId(cdpPort, targetUrl);
         }
         if (!targetId) {
-          this.log(`chatgpt-web page was not listed as ${targetUrl}; url=${contents.getURL()}`);
+          this.log(`chatgpt-web ${lane} page was not listed as ${targetUrl}; url=${contents.getURL()}`);
           return { ok: false, error: "the built-in browser did not list the page" };
         }
         page.targetId = targetId;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        this.log(`chatgpt-web page failed: ${reason}`);
+        this.log(`chatgpt-web ${lane} page failed: ${reason}`);
         return { ok: false, error: reason };
       }
     }
     if (options.foreground) this.showChatgptWebPage(page);
     else if (!page.hidden) this.hideChatgptWebPage(page);
-    return { ok: true, cdpPort, targetId: page.targetId };
+    return { ok: true, cdpPort, targetId: page.targetId, lane };
   }
 
   /** The hidden page's contents, for tests that check it stays alive. */
-  chatgptWebPageContents(): WebContents | null {
-    const page = this.chatgptWeb;
+  chatgptWebPageContents(lane: string = CHATGPT_WEB_DEFAULT_LANE): WebContents | null {
+    const page = this.chatgptWeb.get(lane);
     return page && !page.contents.isDestroyed() ? page.contents : null;
   }
 
@@ -3060,13 +3226,13 @@ export class TabManager {
    * its window is deliberately still shown and on screen, so what settles it
    * is whether anything of it is actually drawn.
    */
-  chatgptWebPageVisible(): boolean {
-    const page = this.chatgptWeb;
+  chatgptWebPageVisible(lane: string = CHATGPT_WEB_DEFAULT_LANE): boolean {
+    const page = this.chatgptWeb.get(lane);
     if (!page || page.window.isDestroyed() || page.hidden) return false;
     return page.window.isVisible() && page.window.getOpacity() > 0;
   }
 
-  private createChatgptWebPage(): ChatgptWebPage {
+  private createChatgptWebPage(lane: string): ChatgptWebPage {
     // Same profile and identity as an ordinary browser tab, so the site sees
     // the browser the person signed into.
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
@@ -3094,7 +3260,7 @@ export class TabManager {
       backgroundColor: browserPageBackgroundColor(this.options.theme()),
     });
     window.setMenuBarVisibility(false);
-    const page: ChatgptWebPage = { view, contents, window, targetId: undefined, hidden: true };
+    const page: ChatgptWebPage = { lane, view, contents, window, targetId: undefined, hidden: true };
     const fit = () => {
       if (window.isDestroyed()) return;
       const { width, height } = window.getContentBounds();
@@ -3143,21 +3309,21 @@ export class TabManager {
     // so the next request builds a fresh page instead of reattaching to a
     // corpse.
     contents.on("render-process-gone", (_event, details) => {
-      this.log(`chatgpt-web page renderer gone: ${details.reason} (exit ${details.exitCode})`);
-      if (this.chatgptWeb === page) this.destroyChatgptWebPage();
+      this.log(`chatgpt-web ${lane} page renderer gone: ${details.reason} (exit ${details.exitCode})`);
+      if (this.chatgptWeb.get(lane) === page) this.destroyChatgptWebPage(lane);
     });
     contents.on("unresponsive", () => {
       // Recoverable on its own; ChatMock asks for a replacement if it is not.
-      this.log("chatgpt-web page is not responding");
+      this.log(`chatgpt-web ${lane} page is not responding`);
     });
     contents.on("destroyed", () => {
-      if (this.chatgptWeb === page) this.chatgptWeb = null;
+      if (this.chatgptWeb.get(lane) === page) this.chatgptWeb.delete(lane);
       if (!window.isDestroyed()) window.destroy();
     });
     // The X is the person saying "I am done signing in", not "destroy the page
     // ChatMock is attached to". It parks the window again.
     window.on("close", (event) => {
-      if (this.chatgptWeb !== page || contents.isDestroyed()) return;
+      if (this.chatgptWeb.get(lane) !== page || contents.isDestroyed()) return;
       event.preventDefault();
       this.hideChatgptWebPage(page);
     });
@@ -3216,12 +3382,16 @@ export class TabManager {
     this.parkChatgptWebWindow(page.window);
   }
 
-  private destroyChatgptWebPage(): void {
-    const page = this.chatgptWeb;
+  private destroyChatgptWebPage(lane: string): void {
+    const page = this.chatgptWeb.get(lane);
     if (!page) return;
-    this.chatgptWeb = null;
+    this.chatgptWeb.delete(lane);
     if (!page.contents.isDestroyed()) page.contents.close();
     if (!page.window.isDestroyed()) page.window.destroy();
+  }
+
+  private destroyChatgptWebPages(): void {
+    for (const lane of [...this.chatgptWeb.keys()]) this.destroyChatgptWebPage(lane);
   }
 
   private navigateBrowser(host: Host, tab: Tab, input: string): boolean {
@@ -3280,6 +3450,8 @@ export class TabManager {
       if (!owner || owner.window.isDestroyed() || owner.activeId !== tab.id || browser.showingHome || !browser.attached) return;
       event.preventDefault();
       const revision = ++contextRevision;
+      browser.menu?.closePopup(owner.window);
+      if (pasteOnRightClick(contents, event, params)) return;
       const menu = Menu.buildFromTemplate(browserContextMenuTemplate(params, {
         canGoBack: browser.homeEntryAvailable || this.browserNavigationTarget(tab, "back") !== null,
         canGoForward: this.browserNavigationTarget(tab, "forward") !== null,
@@ -3316,7 +3488,6 @@ export class TabManager {
           });
         });
       })));
-      browser.menu?.closePopup(owner.window);
       browser.menu = menu;
       // Let Electron anchor to the native pointer; page coordinates are relative
       // to the web view and would otherwise miss the toolbar/fullscreen offset.
@@ -3490,12 +3661,12 @@ export class TabManager {
         browser.homeHistoryIndex = contents.navigationHistory.getActiveIndex();
         browser.pendingHomeNavigation = false;
       }
-      if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
+      if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser);
     });
     contents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
       if (isMainFrame) {
         remember(url);
-        if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
+        if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser);
       }
     });
     contents.on("did-start-loading", () => {
@@ -3518,7 +3689,7 @@ export class TabManager {
     });
     contents.on("did-stop-loading", () => {
       this.setTabLoading(tab, false);
-      if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
+      if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser);
       const owner = current();
       if (!owner) return;
       // The address is published before the response arrives. Keep home
@@ -3544,7 +3715,7 @@ export class TabManager {
           // Sites use it for popups, autoplay and same-document history behavior.
           .executeJavaScript(browserSelectionBootstrapScript())
           .catch(() => undefined);
-        this.refreshBrowserStoreInstallButton(browser as LiveBrowserPage);
+        this.refreshBrowserStoreInstallButton(browser);
       }
       this.broadcast(owner);
     });
@@ -4011,6 +4182,22 @@ export class TabManager {
 
   // ---------------------------------------------------------- loading scene
 
+  private updateLoadingSceneTheme(scene: TabLoadingScene, theme: BreadboardWindowTheme): void {
+    if (scene.contents.isDestroyed() || scene.theme === theme) return;
+    scene.theme = theme;
+    scene.view.setBackgroundColor(backgroundColorForTheme(theme));
+    // A theme change must never navigate or replace a live renderer. If its
+    // first document is still loading, dom-ready below applies the latest pick.
+    if (!scene.contents.isLoadingMainFrame()) this.paintLoadingSceneTheme(scene);
+  }
+
+  private paintLoadingSceneTheme(scene: TabLoadingScene): void {
+    if (scene.contents.isDestroyed()) return;
+    void scene.contents.executeJavaScript(
+      `document.documentElement.dataset.theme = ${JSON.stringify(scene.theme)}`,
+    ).catch(() => undefined);
+  }
+
   /** Create the shared startup field only when a tab first needs it. */
   private ensureLoadingScene(host: Host): TabLoadingScene | null {
     const existing = host.loadingScene;
@@ -4030,6 +4217,7 @@ export class TabManager {
     };
     host.loadingScene = scene;
     hardenWebContents(scene.contents, this.options.allowed);
+    scene.contents.on("dom-ready", () => this.paintLoadingSceneTheme(scene));
     // The tab strip remains clickable above this view. Keyboard tab controls
     // should work when focus happens to be inside the loading field too.
     scene.contents.on("before-input-event", (event, input) => {
@@ -4056,15 +4244,7 @@ export class TabManager {
     const scene = this.ensureLoadingScene(host);
     if (!scene || host.window.isDestroyed()) return;
     const theme = this.options.theme();
-    if (scene.theme !== theme) {
-      scene.theme = theme;
-      scene.view.setBackgroundColor(backgroundColorForTheme(theme));
-      void scene.contents
-        .loadFile(this.options.loadingHtmlPath(), {
-          query: { theme, embedded: "true" },
-        })
-        .catch(() => undefined);
-    }
+    this.updateLoadingSceneTheme(scene, theme);
     this.layoutLoadingScene(host, tab);
     if (!scene.attached) {
       host.window.contentView.addChildView(scene.view);
@@ -4121,6 +4301,7 @@ export class TabManager {
     const [width, height] = host.window.getContentSize();
     if (typeof width !== "number" || typeof height !== "number") return;
     const offscreen = offscreenBounds(width, height);
+    if (host.preparedNewTab?.view) setViewBounds(host.preparedNewTab.view, offscreen);
     for (const tab of host.tabs) {
       if (tab.view) {
         setViewBounds(
@@ -4196,8 +4377,8 @@ export class TabManager {
         if (!browser.attached) {
           host.window.contentView.addChildView(browser.view);
           browser.attached = true;
+          browser.view.setVisible(true);
         }
-        browser.view.setVisible(true);
       }
     }
     // Both browser shells can be transparent here. Put the incoming native
@@ -4216,12 +4397,31 @@ export class TabManager {
     const browser = liveBrowserPage(tab?.browser);
     if (!tab?.view || !tab.attached || !browser?.attached) return;
     const chromeOnTop = browser.addressSuggestionsOpen && !host.browserFullscreen;
-    host.window.contentView.addChildView(chromeOnTop ? tab.view : browser.view);
+    const views: View[] = [chromeOnTop ? tab.view : browser.view];
     for (const popup of [host.downloadsPopover, host.extensionsPopover, host.groupPopover]) {
-      if (popup && !popup.isClosed) host.window.contentView.addChildView(popup.view);
+      if (popup && !popup.isClosed) views.push(popup.view);
     }
-    this.raiseNotificationOverlay(host);
+    if (host.notificationOverlay && !host.notificationOverlay.contents.isDestroyed()) {
+      views.push(host.notificationOverlay.view);
+    }
+    if (host.findBar) views.push(host.findBar.view);
+    this.raiseViews(host, views);
     host.findBar?.layout();
+  }
+
+  /** Reordering native views can reset Windows keyboard focus, even when the
+   * same view is re-added. Leave a correct stack alone and preserve focus when
+   * autocomplete actually needs to move the trusted toolbar over the page. */
+  private raiseViews(host: Host, views: View[]): void {
+    const container = host.window.contentView;
+    const current = container.children;
+    const ordered = [...current.filter(view => !views.includes(view)), ...views];
+    if (ordered.every((view, index) => current[index] === view)) return;
+    const focused = webContents.getFocusedWebContents();
+    for (const [index, view] of ordered.entries()) {
+      if (container.children[index] !== view) container.addChildView(view, index);
+    }
+    if (host.window.isFocused() && focused && !focused.isDestroyed()) focused.focus();
   }
 
   private detachBrowser(window: BrowserWindow, tab: Tab): void {
@@ -4405,9 +4605,7 @@ export class TabManager {
   private raiseNotificationOverlay(host: Host): void {
     const overlay = host.notificationOverlay;
     if (!overlay || host.window.isDestroyed() || overlay.contents.isDestroyed()) return;
-    // Electron explicitly treats re-adding an existing child as a z-order
-    // change. This is required after an ordinary tab or browser page is added.
-    host.window.contentView.addChildView(overlay.view);
+    this.raiseViews(host, [overlay.view, ...(host.findBar ? [host.findBar.view] : [])]);
   }
 
   private layoutNotificationOverlay(host: Host, reportVisibility = false): void {
@@ -4478,6 +4676,11 @@ export class TabManager {
     // replacement window), so every handler asks again rather than closing
     // over the host it was created under.
     const current = (): Host | undefined => this.hostByContents.get(contents.id);
+    contents.on("context-menu", (event, params) => {
+      const owner = current();
+      if (!owner || owner.window.isDestroyed() || owner.activeId !== tab.id) return;
+      pasteOnRightClick(contents, event, params);
+    });
     contents.on("found-in-page", (_event, result) => {
       if (!tab.findQuery || result.requestId !== tab.findRequestId) return;
       tab.find = { matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal };
@@ -4496,7 +4699,10 @@ export class TabManager {
       tab.onLoaded = [];
       for (const resume of waiting) resume();
       const owner = current();
-      if (owner && !contents.isDestroyed()) this.broadcast(owner);
+      if (owner && !contents.isDestroyed()) {
+        if (owner.tabs.includes(tab)) owner.newTabPreparationFailed = false;
+        this.broadcast(owner);
+      }
     };
     // A cold view can be closed before DOM readiness (for example, Ctrl+W
     // during a slow navigation). `reveal()` may already be waiting in
@@ -4564,6 +4770,8 @@ export class TabManager {
       tab.learnActivity = undefined;
       const owner = current();
       if (owner) { this.syncBrowser(owner); this.layoutNotificationOverlay(owner); }
+      if (owner && owner.preparedNewTab !== tab && isTabPageUrl(this.options.allowed, _url) &&
+          new URL(_url).pathname.startsWith("/auth/")) this.discardPreparedNewTab(owner);
       // `painted` describes the current document, not the lifetime of the tab.
       // A full navigation must earn its first frame before it can use the warm
       // reactivation path. Same-document/App Router navigation keeps the live
@@ -4615,11 +4823,23 @@ export class TabManager {
       contents.on("did-fail-load", (_event, errorCode, _description, failedUrl, isMainFrame) => {
         // -3 is an intentional aborted navigation, normally a redirect.
         if (!isMainFrame || errorCode === -3) return;
+        const owner = current();
+        if (owner?.preparedNewTab === tab) {
+          owner.newTabPreparationFailed = true;
+          this.discardPreparedNewTab(owner);
+          return;
+        }
         remember(failedUrl);
         void this.recover(tab, tab.browser?.shellUrl ?? tab.url);
       });
       installRendererRecovery(contents, () => {
-        if (!current()) return;
+        const owner = current();
+        if (!owner) return;
+        if (owner.preparedNewTab === tab) {
+          owner.newTabPreparationFailed = true;
+          this.discardPreparedNewTab(owner);
+          return;
+        }
         void this.recover(tab, tab.browser?.shellUrl ?? tab.url);
       });
     }

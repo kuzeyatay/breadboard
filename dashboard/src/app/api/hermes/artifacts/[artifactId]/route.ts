@@ -7,6 +7,7 @@ import {
   presentArtifact,
   setArtifactHighlight,
   ArtifactStoreError,
+  getArtifactVersion,
 } from "@/lib/hermes/artifact-store.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { isChatHighlight } from "@/lib/conversations/highlights.ts";
@@ -25,8 +26,23 @@ export async function GET(request: Request, { params }: { params: Promise<{ arti
     requireEnabled();
     const conversationId = conversationIdFrom(request);
     const { artifactId } = await params;
-    const artifact = getArtifactForUser({ artifactId, userId, conversationPublicId: conversationId });
+    let artifact = getArtifactForUser({ artifactId, userId, conversationPublicId: conversationId });
     if (artifact.garden_slug) authorizeGardenAccess(userId, artifact.garden_slug);
+    const requestedVersion = new URL(request.url).searchParams.get("version");
+    if (requestedVersion !== null) {
+      const version = Number(requestedVersion);
+      if (!Number.isSafeInteger(version) || version < 1) throw new ApiError(400, "invalid_artifact_version", "Artifact version must be a positive integer.");
+      const stored = getArtifactVersion(artifact.id, version);
+      if (stored.status !== "ready") throw new ApiError(404, "artifact_version_unavailable", "This artifact version is not available.");
+      artifact = { ...artifact, current_version: version, status: stored.status,
+        preview_location: stored.preview_location, output_location: stored.output_location,
+        mime_type: stored.mime_type, byte_size: stored.byte_size, content_hash: stored.content_hash,
+        metadata_json: stored.metadata_json, error_json: stored.error_json };
+      try {
+        const title = JSON.parse(stored.metadata_json)?.interactiveVisualizer?.manifest?.title;
+        if (typeof title === "string" && title.trim()) artifact.title = title;
+      } catch { /* Older artifact versions can have unstructured metadata. */ }
+    }
     return NextResponse.json({ artifact: presentArtifact(artifact) });
   } catch (error) {
     if (error instanceof ArtifactStoreError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });

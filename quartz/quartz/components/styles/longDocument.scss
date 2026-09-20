@@ -1,0 +1,16 @@
+// Keep the complete document searchable/selectable, but let the browser skip
+// layout and paint for offscreen blocks in book-length articles. Headings stay
+// outside containment so the TOC observer does not force every section to render.
+// The shared server renderer marks blocks, including canonical replacements.
+// Avoid :has/:nth-child here: matching them across thousands of siblings costs
+// more than the layout they save. Short notes retain their normal layout.
+@media screen {
+  .quartz-deferred-block {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 6rem;
+  }
+
+  :is(pre, ul, ol, blockquote, .table-container).quartz-deferred-block {
+    contain-intrinsic-block-size: auto 12rem;
+  }
+}

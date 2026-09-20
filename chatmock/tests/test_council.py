@@ -1666,3 +1666,21 @@ class UnslopIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignedOutCouncilMessageTests(unittest.TestCase):
+    def test_a_signed_out_page_is_not_reported_as_a_quota_problem(self) -> None:
+        # 2026-09-17: a signed-out ChatGPT page surfaced as "every candidate
+        # model was out of quota or credits", sending the user to add credits.
+        from chatmock.council.gateway import _empty_final_answer_message
+
+        class _Run:
+            diagnostics = {"error": "OpenAI (web) is not available: not signed in to chatgpt.com"}
+
+            def model_attempts_snapshot(self):
+                return [{"resolvedModel": "openaiweb/gpt-5-6-thinking", "outcome": "failed", "statusCode": 429}]
+
+        message = _empty_final_answer_message(_Run())
+        self.assertIn("signed out", message)
+        self.assertIn("Sign in to chatgpt.com", message)
+        self.assertNotIn("credits", message)

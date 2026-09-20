@@ -111,6 +111,101 @@ def _normalized_tools(tools: Any) -> Any:
     return normalized
 
 
+_IMAGE_PART_TYPES = frozenset({"image_url", "image", "input_image"})
+
+
+def _is_image_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+
+
+def _tool_label(message: Dict[str, Any]) -> str:
+    name = message.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    call_id = message.get("tool_call_id")
+    if isinstance(call_id, str) and call_id.strip():
+        return call_id.strip()
+    return "tool"
+
+
+def _hoist_tool_result_images(messages: Any) -> Any:
+    """Move image parts out of ``role: tool`` messages into a user message.
+
+    Hermes returns every ``browser_terminal`` / ``computer_use`` screenshot as an
+    ``image_url`` part inside the tool result. OpenAI's own wire format only
+    allows text there, and CLIProxyAPI's Gemini translation stringifies the
+    whole content list into the ``functionResponse`` text — data URL included —
+    so the screenshot is billed as base64 *text*: measured 2026-09-18, one 60 KB
+    JPEG cost 1,090 prompt tokens in a user message and 53,326 in a tool
+    message; a 977 KB PNG capture cost 986,157, and the turn died with "The
+    input token count exceeds the maximum number of tokens allowed 1048576".
+
+    The text stays in the tool result, so the tool-call/tool-result pairing the
+    upstream validates is untouched; the images follow the whole run of tool
+    results as one user message (inserting between two results of the same
+    batch would break that pairing). A user message already following the run
+    receives the images at its front instead, so no two user messages are
+    sent back to back.
+    """
+    if not isinstance(messages, list):
+        return messages
+    if not any(
+        isinstance(m, dict)
+        and m.get("role") == "tool"
+        and isinstance(m.get("content"), list)
+        and any(_is_image_part(p) for p in m["content"])
+        for m in messages
+    ):
+        return messages
+
+    out: List[Any] = []
+    pending: List[Dict[str, Any]] = []
+
+    def flush(next_message: Any) -> Any:
+        nonlocal pending
+        if not pending:
+            return next_message
+        parts, pending = pending, []
+        if isinstance(next_message, dict) and next_message.get("role") == "user":
+            content = next_message.get("content")
+            if isinstance(content, list):
+                tail = list(content)
+            elif isinstance(content, str) and content:
+                tail = [{"type": "text", "text": content}]
+            else:
+                tail = []
+            return {**next_message, "content": parts + tail}
+        out.append({"role": "user", "content": parts})
+        return next_message
+
+    for message in messages:
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "tool"
+            and isinstance(message.get("content"), list)
+        ):
+            images = [p for p in message["content"] if _is_image_part(p)]
+            if images:
+                text = [p for p in message["content"] if not _is_image_part(p)]
+                label = _tool_label(message)
+                marker = {
+                    "type": "text",
+                    "text": f"[{len(images)} screenshot(s) from this {label} result follow in the next message]",
+                }
+                pending.append(
+                    {"type": "text", "text": f"Screenshot(s) returned by {label}:"}
+                )
+                pending.extend(images)
+                out.append({**message, "content": text + [marker]})
+                continue
+            out.append(message)
+            continue
+        message = flush(message)
+        out.append(message)
+    flush(None)
+    return out
+
+
 # OpenRouter reserves credit for the whole output allowance before it serves a
 # request, and when a request names no allowance it reserves the model's
 # maximum — 64,000 tokens for Claude Sonnet 4.5, close to a dollar per call at
@@ -167,6 +262,8 @@ def build_payload(
         out.pop("stream_options", None)
     if "tools" in out:
         out["tools"] = _normalized_tools(out["tools"])
+    if "messages" in out:
+        out["messages"] = _hoist_tool_result_images(out["messages"])
     _cap_output_tokens(out, output_token_cap(provider_id))
     return out
 

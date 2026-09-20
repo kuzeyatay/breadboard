@@ -134,6 +134,14 @@ function idempotencyKey(job: VideoTranscriptionJob): string {
 
 function mapControlError(error: unknown): VideoTranscriptionError {
   if (error instanceof VideoTranscriptionError) return error;
+  if (error instanceof RuntimeJobControlError && error.code === "JOB_INPUT_QUOTA_EXCEEDED") {
+    return new VideoTranscriptionError("queue_full", {
+      httpStatus: 429,
+      retryable: true,
+      userMessage: "The processing queue is full. This upload will wait for space and retry automatically.",
+      cause: error,
+    });
+  }
   if (
     error instanceof RuntimeJobControlError &&
     ["BREADBOARD_RESOURCE_EXHAUSTED", "RUNTIME_RESOURCE_EXHAUSTED"].includes(error.code)
@@ -422,7 +430,7 @@ export async function reconcileScriberrRuntimeJobs(input: {
   const control = input.control ?? DEFAULT_CONTROL;
   const env = input.env ?? process.env;
   if (!control.configured(env)) return;
-  const jobs = input.store.listJobsForCluster(input.clusterId, { activeOnly: true, limit: 20 });
+  const jobs = input.store.listJobsForCluster(input.clusterId, { activeOnly: true, limit: 100 });
   const unbound = jobs
     .filter((job) => !job.runtimeJobId)
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));

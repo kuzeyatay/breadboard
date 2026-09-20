@@ -63,6 +63,11 @@ Match Gemini's in-chat simulations:
   decorative badges.
 - Aim for one screen: approximately 700-900 CSS pixels tall on desktop. Adapt
   to the available chat or artifact pane without horizontal overflow.
+  The chat owns scrolling: never require scrolling inside the visualizer or a
+  nested control panel. Use natural content height, wrapping controls, and a
+  compact scene; do not constrain the app with fixed/viewport heights,
+  max-height, or overflow:auto/scroll. All controls must remain reachable when
+  the host expands the frame to its content, including after state changes.
   Phone-size rendering is not a publication requirement.
 - Use the host tokens `--viz-bg`, `--viz-panel`, `--viz-control`,
   `--viz-control-hover`, `--viz-text`, `--viz-muted`, `--viz-line`,

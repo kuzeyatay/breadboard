@@ -29,7 +29,15 @@ export function pageResources(
   staticResources: StaticResources,
 ): StaticResources {
   const contentIndexPath = joinSegments(baseDir, "static/contentIndex.json")
-  const contentIndexScript = `const fetchData = fetch("${contentIndexPath}").then(data => data.json())`
+  const metadataPath = joinSegments(baseDir, "static/contentMetadata.json")
+  const contentIndexScript = `
+    const readContentIndex = response => {
+      if (!response.ok) throw new Error("Could not load the reader index");
+      return response.json();
+    };
+    const fetchSearchData = () => fetch(${JSON.stringify(contentIndexPath)}).then(readContentIndex);
+    const fetchData = fetch(${JSON.stringify(metadataPath)}).then(response =>
+      response.status === 404 ? fetchSearchData() : readContentIndex(response));`
 
   const resources: StaticResources = {
     css: [

@@ -53,7 +53,7 @@ test("one missing causal link can be checked without inventing a second requirem
       calls.push(request.stage);
       return { content: JSON.stringify(request.stage === "plan"
         ? { applicable: true, reason: "An unsupported antecedent", mechanisms: [{ mechanism: "State whether the initial condition was assumed or established.", sourceQuotes: [] }] }
-        : { coverage: [{ id: "m1", status: "covered", quotes: ["The initial condition was an assumption"], reason: "", consequence: "" }] }) };
+        : { concerns: [], coverage: [{ id: "m1", status: "covered", quotes: ["The initial condition was an assumption"], reason: "", consequence: "" }] }) };
     },
   });
   assert.equal(result.report.status, "reviewed");
@@ -82,9 +82,32 @@ test("rendered quotations survive bold and line wrapping but cannot change facts
     const result = await reviewExplanation({ userRequest: "what do you mean", answer, context: "", model: "fixture",
       complete: async request => ({ content: JSON.stringify(request.stage === "plan"
         ? { applicable: true, reason: "Test actual quote coverage", mechanisms: [{ mechanism: "The field causes local motion", sourceQuotes: [] }] }
-        : { coverage: [{ id: "m1", status: "covered", quotes: [quote], reason: "", consequence: "" }] }) }),
+        : { concerns: [], coverage: [{ id: "m1", status: "covered", quotes: [quote], reason: "", consequence: "" }] }) }),
     });
     assert.equal(result.report.status, accepted ? "reviewed" : "unavailable", quote);
     if (accepted) assert.ok(answer.includes(result.report.coverage[0].quotes[0]), "receipt stores the exact original span");
   }
+});
+
+test("selected follow-ups and proposed summaries reach generation and review without magic wording", async () => {
+  for (const request of [
+    "so basically in a giberrish paragraph you say that its fifty fifty",
+    "does that mean two electrons physically sitting next to each other?",
+    "this whole paragraph doesnt make sense to someone that doesnt know what an electron shell is",
+    "Two real little balls next to each other?",
+  ]) {
+    const turn = buildExplanationTurn({ request, messages: [], selectionContext: "Electrons pair up in slots." });
+    assert.equal(turn?.repair, true, request);
+    assert.equal(turn?.hasSelection, true);
+    let called = false;
+    await reviewExplanation({ userRequest: request, hasSelection: turn.hasSelection, context: turn.context,
+      answer: "A reply to check.", model: "fixture", complete: async () => {
+        called = true;
+        return { content: JSON.stringify({ applicable: false, reason: "Admission check only", mechanisms: [] }) };
+      } });
+    assert.equal(called, true, request);
+  }
+  assert.deepEqual(explanationIntent("so basically it is fifty fifty"), { candidate: true, repair: true });
+  for (const request of ["thanks", "got it", "yes", "Translate this into Dutch", "Create an image of this"])
+    assert.equal(explanationIntent(request, true).candidate, false, request);
 });

@@ -34,9 +34,12 @@ export default function DesktopTitleBar() {
   }, []);
 
   const tabs = useDesktopTabs();
+  // Hidden/prepared renderers must not publish caption hit regions over the
+  // visible tab's controls. An unregistered page has no window drag ownership.
+  const canDragWindow = tabs?.selfId != null && tabs.selfId === tabs.activeId;
 
   return (
-    <div className="desktop-title-bar" aria-label="Window controls">
+    <div className="desktop-title-bar" data-window-drag={canDragWindow} aria-label="Window controls">
       {tabs?.enabled ? <TabStrip state={tabs} /> : null}
     </div>
   );
@@ -75,8 +78,8 @@ function browserTabFaviconFallback(address: string | undefined): string | undefi
 /**
  * The window's tabs, drawn along the caption strip: the active
  * one raised, the rest flat with a glyph for the kind of page, a close on
- * each and a plus at the end. The strip is the window's drag handle, so only
- * the tabs and buttons opt out of it.
+ * each and a plus at the end. The empty area after the plus is the window's
+ * drag handle; the control strip itself always receives mouse input.
  *
  * Nothing here is the source of truth. Every gesture is sent to the shell,
  * which owns the tabs and answers with the next state; a tab dragged along

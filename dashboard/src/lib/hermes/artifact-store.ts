@@ -22,6 +22,7 @@ import {
 } from "./artifact-folder.ts";
 import { isChatHighlight } from "../conversations/highlights.ts";
 import { artifactsForTranscript } from "./artifact-transcript.ts";
+import { artifactsForArchive } from "./artifact-archive.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import { scrubFileInPlaceViaRuntime } from "../watermarks/scrub-file.ts";
 import {
@@ -1514,7 +1515,7 @@ export function listArtifactsForUser(input: {
   conversationPublicId?: string;
   gardenSlug?: string;
   sourceSurface?: ArtifactRow["source_surface"];
-  presentation?: "transcript";
+  presentation?: "transcript" | "archive";
   database?: Database.Database;
 }): ArtifactRow[] {
   const database = input.database ?? db;
@@ -1541,7 +1542,7 @@ export function listArtifactsForUser(input: {
   ) as ArtifactRow[];
   const presented = input.presentation === "transcript"
     ? artifactsForTranscript(artifacts, database)
-    : artifacts;
+    : input.presentation === "archive" ? artifactsForArchive(artifacts, database) : artifacts;
   return input.conversationPublicId
     ? reconcileLegacyGardenArtifactOwners(presented, database)
     : presented;

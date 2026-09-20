@@ -77,14 +77,14 @@ test("the garden and Terminal rails keep their green surface", () => {
 test("the rail's panel buttons are the Terminal's, minus the artifact archive", () => {
   assert.match(
     workspace,
-    /const GARDEN_PANELS: readonly TerminalPanel\[\] = \[\s*"uploads",\s*"scheduled",\s*"hooks",\s*"processes",\s*\]/,
+    /const GARDEN_PANELS: readonly TerminalPanel\[\] = \[\s*"uploads",\s*"scheduled",\s*"hooks",\s*"starred",\s*"processes",\s*\]/,
   );
   assert.match(workspace, /panels=\{GARDEN_PANELS\}/);
 
   // The rail defaults to every panel, so the Terminal keeps all of them without
   // naming them, and each one is gated on the same list.
   assert.match(sidebar, /panels = TERMINAL_PANELS/);
-  for (const panel of ["artifacts", "uploads", "scheduled", "hooks", "processes"]) {
+  for (const panel of ["artifacts", "uploads", "scheduled", "hooks", "starred", "processes"]) {
     assert.match(
       sidebar,
       new RegExp(`panels\\.includes\\("${panel}"\\)`),

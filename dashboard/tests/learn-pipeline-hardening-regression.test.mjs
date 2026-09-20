@@ -22,6 +22,7 @@ import {
   transitionLearnTimer,
 } from "../src/lib/learn-timer.ts";
 import { modelAuthoredLearningUnitParseProblems } from "../src/lib/learning-unit-contract.ts";
+import { stripLeadingAuthorPreamble } from "../src/lib/learn-utils.ts";
 import {
   isAmbiguousModelTransportFailure,
   modelTransportFailureEvidence,
@@ -1782,11 +1783,13 @@ describe("Learn validation, reads, and publication contracts", () => {
       {
         cleanCouncilMarkdown: (content, fallback) =>
           typeof content === "string" ? content : fallback,
+        stripLeadingAuthorPreamble,
       },
     );
     const runRepair = executableNamedFunction("runValidatedTextRepairLoop", {
       cleanCouncilMarkdown: (content, fallback) =>
         typeof content === "string" ? content : fallback,
+      stripLeadingAuthorPreamble,
       modelTextCandidateOrThrow,
     });
     const failures = [
@@ -3117,16 +3120,23 @@ test("half-swap plus restore failure exposes the retained previous tree honestly
   assert.match(result.reason, /could not be restored|recovery is required/i);
 });
 
-test("zero-teachable syllabus recovery is bounded, durable, and precedes every map or LUC call", () => {
+test("refused-unit syllabus recovery is bounded, durable, and precedes every map or LUC call", () => {
   const recoveryGate = learnSource.indexOf(
-    "if (!syllabusCoverageHasTeachableUnits(syllabusCoverage))",
+    "if (initialUnteachableUnitIds.length > 0)",
   );
   const sourceMapRequest = learnSource.indexOf("const requestSourceMap = async", recoveryGate);
   const firstLearningSpineRequest = learnSource.indexOf(
     'taskType: "learning_spine"',
     recoveryGate,
   );
-  assert.ok(recoveryGate > 0, "zero-teachable recovery gate must exist");
+  assert.ok(recoveryGate > 0, "refused-unit recovery gate must exist");
+  // Recovery must consider every refused unit, not only a total wipeout: a
+  // partial false negative silently drops that syllabus item forever.
+  assert.equal(
+    learnSource.includes("if (!syllabusCoverageHasTeachableUnits(syllabusCoverage))"),
+    false,
+    "recovery must not be gated on an all-false coverage verdict",
+  );
   assert.ok(sourceMapRequest > recoveryGate, "Source Map must follow recovery");
   assert.ok(firstLearningSpineRequest > sourceMapRequest, "LUC authoring must follow Source Map");
   const recoveryBlock = learnSource.slice(recoveryGate, sourceMapRequest);

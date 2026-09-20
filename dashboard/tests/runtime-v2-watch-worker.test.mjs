@@ -243,6 +243,12 @@ test("Watch worker sends frame bytes only over sealed internal ChatMock access",
       },
     );
     assert.equal(requestBody.model, "default");
+    // The ChatGPT Responses upstream rejects an input item without its `type`
+    // discriminator, and ChatMock passes an image request straight through. A
+    // bare {role, content} item answered HTTP 400 on every single call, so no
+    // garden video was ever actually analyzed.
+    assert.equal(requestBody.input[0].type, "message");
+    assert.equal(requestBody.input[0].role, "user");
     assert.ok(requestBody.input[0].content.some((part) =>
       part.type === "input_image" && part.image_url.startsWith("data:image/jpeg;base64,")));
     assert.match(result.chatmockAnalysis, /interface changes/);

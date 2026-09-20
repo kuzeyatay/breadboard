@@ -124,3 +124,42 @@ describe("learning garden metadata", () => {
     assert.equal(readingOrderRank("generated/phase.md", "knowledge-topic"), 95);
   });
 });
+
+describe("Save page shares the generated/ folder with legacy topic cards", () => {
+  // electromagnetism-1, 2026-09-17: a saved chat page was written to
+  // Generated/, listed as a folder, and then filtered out of every document
+  // list, because the folder name is also the legacy auto-topic folder.
+  test("a saved chat page under generated/ is not a legacy card", () => {
+    assert.equal(
+      isLegacySubtopicRelPath("Generated/1-the-electric-field-of-a-long-charged-wire.md", TEXTBOOK_PAGE_TYPE),
+      false,
+    );
+  });
+
+  test("a legacy knowledge-topic card in the same folder stays hidden", () => {
+    assert.equal(
+      isLegacySubtopicRelPath("generated/apparent-position-of-a-fish-under-water.md", "knowledge-topic"),
+      true,
+    );
+  });
+
+  test("callers that cannot name the type keep the old path-only verdict", () => {
+    assert.equal(isLegacySubtopicRelPath("generated/anything.md"), true);
+  });
+
+  test("the unambiguous legacy folders hide whatever type they carry", () => {
+    for (const relPath of [
+      "generated subtopics/a.md",
+      "subtopics/a.md",
+      "ai topics/a.md",
+      "topic cards/a.md",
+      "legacy/generated subtopics/a.md",
+    ]) {
+      assert.equal(isLegacySubtopicRelPath(relPath, TEXTBOOK_PAGE_TYPE), true, relPath);
+    }
+  });
+
+  test("an ordinary folder is never legacy", () => {
+    assert.equal(isLegacySubtopicRelPath("Concepts/a.md", "knowledge-topic"), false);
+  });
+});

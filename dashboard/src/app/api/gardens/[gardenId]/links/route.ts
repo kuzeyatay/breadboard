@@ -10,6 +10,11 @@ import {
   routeErrorResponse,
 } from "@/lib/server-auth";
 import { importGardenLink } from "@/lib/garden-link-import";
+import { IncompleteWebsiteError } from "@/lib/website-to-markdown";
+import {
+  IncompleteKnowledgeExtractionError,
+  KnowledgeExtractionFailedError,
+} from "@/lib/knowledge";
 
 export const dynamic = "force-dynamic";
 
@@ -62,9 +67,15 @@ export async function POST(
       baseURL: resolveChatmockBaseUrl(request).baseURL,
       url: typeof body.url === "string" ? body.url : "",
       title: typeof body.title === "string" ? body.title : undefined,
+      scope: body.scope === "page" || body.scope === "section" ? body.scope : "site",
+      signal: request.signal,
     });
     return NextResponse.json(result);
   } catch (error) {
+    if (error instanceof IncompleteWebsiteError) {
+      return NextResponse.json({ error: error.message, pageCount: error.snapshot.pages.length,
+        complete: false, failedPages: error.snapshot.failures }, { status: 502 });
+    }
     const message =
       error instanceof Error ? error.message : "Failed to save link";
     if (
@@ -79,6 +90,12 @@ export async function POST(
       message.includes("Reader returned") ||
       message.includes("Reader timed out") ||
       message.includes("Reader returned empty Markdown")
+    ) {
+      return NextResponse.json({ error: message }, { status: 502 });
+    }
+    if (
+      error instanceof KnowledgeExtractionFailedError ||
+      error instanceof IncompleteKnowledgeExtractionError
     ) {
       return NextResponse.json({ error: message }, { status: 502 });
     }

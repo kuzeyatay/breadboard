@@ -11,12 +11,14 @@ import {
   useRef,
   useState,
 } from "react";
+import ArtifactCardContent from "./artifact-card-content";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { shouldRenderInteractiveVisualizerInline } from "@/lib/hermes/interactive-visualizer-skills";
 import ArtifactViewer, {
   ARTIFACT_BROWSER_EVENT,
   artifactDescription,
   artifactPdfHref,
+  artifactVideoHref,
   artifactUrl,
   ArtifactFileIcon,
   useFileExplorerAvailable,
@@ -541,6 +543,7 @@ function InlineArtifactFileCard({
   context: ArtifactCardsContextValue;
 }) {
   const pdfHref = artifactPdfHref(artifact);
+  const videoHref = artifactVideoHref(artifact);
   // A folder card opens the folder itself where a file explorer exists; the
   // in-app listing and ZIP remain behind the viewer, which is also where the
   // click lands when the directory has since been moved or deleted.
@@ -554,21 +557,7 @@ function InlineArtifactFileCard({
     : null;
   const openClasses =
     "flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]";
-  const fileContent = (
-    <>
-      <span className="bb-neu-artifact-preview bb-neu-artifact-preview-tilted inline-flex h-14 w-12 shrink-0 -rotate-3 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] text-[var(--botanical)] shadow-sm [&_svg]:h-5 [&_svg]:w-5 [&_svg]:stroke-current [&_svg]:[stroke-linecap:round] [&_svg]:[stroke-linejoin:round] [&_svg]:[stroke-width:1.6]">
-        <ArtifactFileIcon kind={artifact.kind} renderer={artifact.renderer} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
-          {artifact.title}
-        </span>
-        <span className="mt-0.5 block text-xs text-[var(--ink-muted)]">
-          {artifactDescription(artifact)}
-        </span>
-      </span>
-    </>
-  );
+  const fileContent = <ArtifactCardContent artifact={artifact} />;
 
   return (
     <article className="bb-neu-artifact-card flex min-h-[5.25rem] items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 shadow-[0_8px_24px_rgba(28,45,36,0.06)]">
@@ -583,6 +572,10 @@ function InlineArtifactFileCard({
         </button>
       ) : pdfHref ? (
         <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
+          {fileContent}
+        </a>
+      ) : videoHref ? (
+        <a href={videoHref} className={openClasses} title={`Play ${artifact.title} in the video player`}>
           {fileContent}
         </a>
       ) : artifact.previewAvailable || artifact.downloadAvailable ? (

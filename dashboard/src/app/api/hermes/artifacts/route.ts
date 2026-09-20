@@ -46,7 +46,8 @@ export async function GET(request: Request) {
       conversationPublicId: conversationId,
       gardenSlug,
       sourceSurface,
-      presentation: url.searchParams.get("presentation") === "transcript" ? "transcript" : undefined,
+      presentation: url.searchParams.get("presentation") === "transcript" ? "transcript"
+        : url.searchParams.get("presentation") === "archive" ? "archive" : undefined,
     });
     for (const slug of new Set(artifacts.map((artifact) => artifact.garden_slug).filter((slug): slug is string => Boolean(slug)))) {
       authorizeGardenAccess(userId, slug);

@@ -81,6 +81,59 @@ function finish(chat, id, question = "Explain resonance", answer = "Resonance ex
   store.completeAssistantMessage({ conversationId: chat.id, clientMessageId, content: answer });
 }
 
+test("terminal workspace selection creates one shared workspace conversation and transcript", async () => {
+  const api = route("route.ts", {
+    "@/lib/hermes/session-service.ts": {
+      authorizeGardenAccess(userId, slug) {
+        const garden = db.prepare("SELECT id AS clusterId, slug FROM clusters WHERE user_id = ? AND slug = ?").get(userId, slug);
+        if (!garden) throw new core.ApiError(404, "garden_not_found", "Garden not found.");
+        return garden;
+      },
+    },
+    "@/lib/chat-attachments-request.ts": { parseChatAttachments: () => [] },
+    "@/lib/chat-attachments.ts": { chatMessageAttachments: () => [] },
+    "@/lib/chat-text-selection.ts": { normalizeChatTextSelectionReference: () => null },
+    "@/lib/schedules/receipt-server.ts": { scheduledChatReceiptForUser: () => null },
+  });
+  const create = (body) => api.POST(new Request("http://localhost/api/hermes/sessions", {
+    method: "POST", body: JSON.stringify({ surface: "dashboard_terminal", ...body }),
+  }));
+  const response = await create({ workspaceSlug: "em-1", initialTurn: { clientMessageId: "workspace-first", text: "Explain resonance" } });
+  assert.equal(response.status, 200);
+  const { session, initialTurnReserved } = await response.json();
+  assert.equal(initialTurnReserved, true);
+  const chat = store.getConversationForUser(session.id, 1);
+  assert.equal(chat.surface, "garden_chat");
+  assert.equal(chat.scope_kind, "garden");
+  assert.equal(chat.default_garden_id, 10);
+  const legacy = db.prepare("SELECT * FROM chat_sessions WHERE id = ?").get(chat.legacy_chat_session_id);
+  assert.equal(legacy.cluster_id, 10);
+  assert.equal(legacy.history_surface, "garden_chat");
+  assert.equal(legacy.conversation_id, chat.id);
+  store.retryAssistantMessage(chat.id, "workspace-first");
+  store.completeAssistantMessage({ conversationId: chat.id, clientMessageId: "workspace-first", content: "Shared workspace answer" });
+  assert.deepEqual(db.prepare("SELECT content FROM chat_messages WHERE session_id = ? ORDER BY order_index").all(legacy.id).map(row => row.content), ["Explain resonance", "Shared workspace answer"]);
+  assert.equal(presentation.presentHermesSessionSummary(chat).originLabel, "EM 1: Workspace");
+  // Another selection must never retarget an existing chat's runtime.
+  assert.equal(surfacePolicy.conversationRequestContext(chat, "dashboard_terminal", { activeGardenSlug: "em-2" }).activeGardenSlug, "em-1");
+  assert.equal(surfacePolicy.conversationRequestSurface(chat, "dashboard_terminal"), "garden_chat");
+  const second = await (await create({ workspaceSlug: "em-2" })).json();
+  assert.equal(store.getConversationForUser(second.session.id, 1).default_garden_id, 20);
+  const global = await (await create({})).json();
+  assert.equal(store.getConversationForUser(global.session.id, 1).default_garden_id, null);
+  assert.equal(store.getConversationForUser(global.session.id, 1).surface, "dashboard_terminal");
+  const temporary = await (await create({ workspaceSlug: "em-1", temporary: true })).json();
+  assert.equal(store.getConversationForUser(temporary.session.id, 1).temporary, 1);
+  assert.ok(!store.listConversationsForUser(1).some(item => item.public_id === temporary.session.id));
+  const countBefore = db.prepare("SELECT COUNT(*) AS count FROM conversations").get().count;
+  const legacyCountBefore = db.prepare("SELECT COUNT(*) AS count FROM chat_sessions").get().count;
+  assert.equal((await create({ workspaceSlug: "unavailable" })).status, 404);
+  assert.equal((await create({ workspaceSlug: "em-1", surface: "quartz_ai" })).status, 400);
+  assert.equal((await create({ workspaceSlug: "em-1", initialTurn: { clientMessageId: "x", text: "Invalid turn" } })).status, 400);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM conversations").get().count, countBefore);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM chat_sessions").get().count, legacyCountBefore);
+});
+
 test("terminal history includes every saved surface with source labels before a runtime exists", async () => {
   const terminal = store.createConversation({ userId: 1, title: "General chat" });
   const workspace = gardenChat();

@@ -3,7 +3,8 @@ import { randomInt } from "node:crypto";
 import { getServerSession } from "next-auth/next";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
-import { getClusters } from "@/app/actions/clusters";
+import db from "@/lib/db";
+import { readNewTabGardens } from "@/lib/new-tab-gardens";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import NavBar from "@/app/components/navbar";
 import NewTabClient from "./new-tab-client";
@@ -31,14 +32,7 @@ export default async function NewTabPage() {
 
   const email = session.user.email ?? "";
   const username = session.user.name ?? email;
-  const clusters = await getClusters(userId);
-  const gardens = clusters.map((cluster) => ({
-    slug: cluster.slug,
-    name: cluster.name,
-    noteCount: cluster.noteCount,
-    lastViewedAt: cluster.last_viewed_at,
-    borderColor: cluster.border_color,
-  }));
+  const gardens = readNewTabGardens(db, userId);
 
   return (
     <div className="dashboard-shell h-screen min-h-screen overflow-hidden bg-[var(--paper-bg)] text-white flex flex-col">

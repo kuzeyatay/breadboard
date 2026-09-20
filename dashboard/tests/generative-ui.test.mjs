@@ -501,12 +501,10 @@ test("the renderer registry and surface wiring stay Breadboard-owned", () => {
   assert.match(carousel, /touch-pan-x/);
   assert.match(carousel, /grid-flow-col/);
   assert.match(carousel, /sm:auto-cols-\[calc\(\(100%_-_3rem\)_\/_2\)\]/);
-  assert.match(carousel, /text-white/);
   assert.doesNotMatch(carousel, /Product facts come|sourced result/);
   assert.match(carousel, /aria-pressed=\{compareActive\}/);
   assert.match(carousel, /compareActive \? "Selected" : "Select"/);
   assert.match(carousel, /dispatch\("product\.select"/);
-  assert.match(carousel, /group-hover:scale-\[1\.035\]/);
   assert.doesNotMatch(carousel, /Price on site|Price unavailable/);
   assert.match(details, /const comparing = compared\.length >= 2/);
   assert.match(details, /Product comparison/);

@@ -100,6 +100,10 @@ export default function AppThemeRuntime() {
     const refreshFromPreference = (announce: boolean, reapply = false) => {
       if (!initialized || cancelled) return;
       clearTransitionTimer();
+      // Parked desktop tabs can stay alive overnight. Do not restyle their
+      // renderers, notify every iframe, or change native chrome while hidden.
+      // Visibility/focus resolves the current preference before they return.
+      if (document.visibilityState === "hidden") return;
       const now = new Date();
       // A manual pick made while following the sun stands until the next
       // sunrise or sunset; this tick must not put the sun's answer back early.
@@ -117,7 +121,6 @@ export default function AppThemeRuntime() {
       const changed = nextTheme !== theme;
       theme = nextTheme;
       if (changed || reapply) {
-        rememberEffectiveAppTheme(theme);
         synchronizeTheme(theme);
       }
       if (announce && changed) {
@@ -163,6 +166,7 @@ export default function AppThemeRuntime() {
 
     const handleThemeChange = (event: Event) => {
       if (!initialized || cancelled) return;
+      if (document.visibilityState === "hidden") return;
       const nextTheme = (event as CustomEvent<unknown>).detail;
       if (!isAppTheme(nextTheme)) return;
       theme = nextTheme;

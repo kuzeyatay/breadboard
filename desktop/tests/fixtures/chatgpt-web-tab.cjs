@@ -64,14 +64,15 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command) => manager.handleCommand(event.sender, command));
   ipcMain.handle(IPC_CHANNELS.chatgptWebTab, (event, request) =>
     isChatgptWebTabRequest(request)
-      ? manager.openChatgptWebTab({ foreground: request.foreground, reset: request.reset === true, cdpPort })
+      ? manager.openChatgptWebTab({ foreground: request.foreground, reset: request.reset === true, lane: request.lane, cdpPort })
       : { ok: false, error: 'invalid request' });
 
   const window = windows.createMainWindow();
   await window.loadURL(origin + '/dashboard');
   window.show();
   const page = window.webContents;
-  const ask = (foreground, reset = false) => page.executeJavaScript(`window.breadboardDesktop.chatgptWebTab(${JSON.stringify({ foreground, reset })})`);
+  const ask = (foreground, reset = false, lane = undefined) =>
+    page.executeJavaScript(`window.breadboardDesktop.chatgptWebTab(${JSON.stringify(lane ? { foreground, reset, lane } : { foreground, reset })})`);
 
   const result = { cdpPort };
   // Where the ChatGPT window is, and whether any display can show it. Parked,
@@ -171,9 +172,27 @@ app.whenReady().then(async () => {
     result.probe = line ? JSON.parse(line) : null;
     step('probe ' + line);
 
+    // A request that names no lane is the interactive page, and says so;
+    // the batch lane is a page of its own, so a Learn stage on one never
+    // occupies the chat composer on the other.
+    assert.equal(first.lane, 'interactive', JSON.stringify(first));
+    step('asking for the batch lane');
+    const batch = await ask(false, false, 'batch');
+    step('batch ' + JSON.stringify(batch));
+    result.batch = batch;
+    assert.equal(batch.ok, true, JSON.stringify(batch));
+    assert.equal(batch.lane, 'batch', JSON.stringify(batch));
+    assert.notEqual(batch.targetId, first.targetId, 'the batch lane must be its own page');
+    const listedWithBatch = (await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json()).map(target => target.id);
+    assert.ok(listedWithBatch.includes(first.targetId) && listedWithBatch.includes(batch.targetId), 'both pages must be listed');
+    assert.deepEqual(await ask(false, false, 'batch'), batch, 'the batch lane reuses its page');
+    assert.deepEqual(await ask(false, false, 'interactive'), first, 'naming the interactive lane is the default page');
+    assert.equal(manager.chatgptWebPageVisible('batch'), false);
+    assert.ok(manager.chatgptWebPageContents('batch'), 'the batch page stays alive');
+
     // A page that stopped answering DevTools is recovered by replacing it:
     // ChatMock asks with `reset`, and gets a page of its own target id while
-    // the old one leaves the listing.
+    // the old one leaves the listing. Only that lane's page is replaced.
     step('asking for a replacement');
     const fresh = await ask(false, true);
     step('reset ' + JSON.stringify(fresh));
@@ -183,6 +202,7 @@ app.whenReady().then(async () => {
     const listedNow = async () => (await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json()).map(target => target.id);
     result.oldTargetGone = await until(async () => !(await listedNow()).includes(first.targetId), 'the replaced page to go');
     assert.ok((await listedNow()).includes(fresh.targetId), 'the replacement must be listed');
+    assert.ok((await listedNow()).includes(batch.targetId), 'resetting the interactive page must leave the batch page alone');
     assert.equal(manager.chatgptWebPageVisible(), false);
 
     // ChatMock drove the hidden page; the strip never knew.

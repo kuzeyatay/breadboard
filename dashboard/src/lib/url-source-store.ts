@@ -46,11 +46,13 @@ export function findExistingUrlSource({
   clusterSlug,
   contentHash,
   originalUrl,
+  importScope,
 }: {
   contentPath: string;
   clusterSlug: string;
   contentHash: string;
   originalUrl: string;
+  importScope?: "page" | "site" | "section";
 }): ExistingUrlSource | null {
   const sourcesDir = path.join(clusterDir(contentPath, clusterSlug), SOURCE_NOTE_FOLDER);
   if (!fs.existsSync(sourcesDir)) return null;
@@ -60,12 +62,15 @@ export function findExistingUrlSource({
   for (const file of files) {
     const fullPath = path.join(sourcesDir, file.name);
     const data = parseFrontmatter(fs.readFileSync(fullPath, "utf8"));
+    if (importScope && (data.import_scope || "page") !== importScope) continue;
     const sameHash = data.content_hash && data.content_hash === contentHash;
     const sameUrl =
       data.original_url &&
       data.source_type === "url" &&
       data.original_url.replace(/#.*$/, "") === originalUrl.replace(/#.*$/, "");
-    if (!sameHash && !sameUrl) continue;
+    // A new site crawl must not be mistaken for the earlier homepage-only
+    // source, or for an older crawl whose linked pages have changed.
+    if (!sameHash && (!sameUrl || importScope === "site" || importScope === "section")) continue;
     const sourceSlug = file.name.replace(/\.md$/i, "");
     return {
       sourceSlug,

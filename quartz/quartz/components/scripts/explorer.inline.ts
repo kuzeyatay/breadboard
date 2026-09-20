@@ -8,6 +8,10 @@ import { isVisibleGardenRootEntry } from "../../util/explorerScope"
 import { FilePath, FullSlug, resolveRelative, simplifySlug, slugifyFilePath } from "../../util/path"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
 import { TOPOLOGY_SOURCE_COLORS, topologySourceKind } from "./sourceNodeVisual"
+import {
+  PAGE_FLAG_COLORS,
+  pageFlagColor,
+} from "../../../../dashboard/src/lib/page-understanding-types"
 
 type MaybeHTMLElement = HTMLElement | undefined
 
@@ -26,19 +30,7 @@ type FolderState = {
   collapsed: boolean
 }
 
-const DEFAULT_FLAG_COLOR = "#facc15"
-const FLAG_COLORS = [
-  DEFAULT_FLAG_COLOR,
-  "#fb7185",
-  "#f97316",
-  "#22c55e",
-  "#14b8a6",
-  "#38bdf8",
-  "#60a5fa",
-  "#a78bfa",
-  "#f472b6",
-  "#a3e635",
-]
+const FLAG_COLORS = PAGE_FLAG_COLORS
 const GENERATED_GARDEN_ROOTS = new Set([
   "private-library",
   "public-library",
@@ -149,7 +141,7 @@ function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<Cont
 
 function validFlagColor(value: unknown): string {
   const color = typeof value === "string" ? value.trim() : ""
-  return /^#[0-9a-fA-F]{6}$/.test(color) ? color : ""
+  return /^#[0-9a-fA-F]{6}$/.test(color) ? pageFlagColor(color) : ""
 }
 
 function sendFlagColor(slug: FullSlug, flagColor: string) {
@@ -832,30 +824,19 @@ function toggleExplorer(this: HTMLElement) {
   syncExplorerScrollLock()
 }
 
+const pendingFolderChildren = new WeakMap<HTMLElement, () => void>()
+
 function toggleFolder(evt: MouseEvent) {
   evt.stopPropagation()
-  const target = evt.target as MaybeHTMLElement
+  const target = evt.currentTarget as MaybeHTMLElement
   if (!target) return
 
-  // Check if target was svg icon or button
-  const isSvg = target.nodeName === "svg"
-
-  // corresponding <ul> element relative to clicked button/folder
-  const folderContainer = (
-    isSvg
-      ? // svg -> div.folder-container
-        target.parentElement
-      : // button.folder-button -> div -> div.folder-container
-        target.parentElement?.parentElement
-  ) as MaybeHTMLElement
+  const folderContainer = target.closest<HTMLElement>(".folder-container")
   if (!folderContainer) return
   const childFolderContainer = folderContainer.nextElementSibling as MaybeHTMLElement
   if (!childFolderContainer) return
 
-  childFolderContainer.classList.toggle("open")
-
-  // Collapse folder container
-  const isCollapsed = !childFolderContainer.classList.contains("open")
+  const isCollapsed = childFolderContainer.classList.contains("open")
   setFolderState(childFolderContainer, isCollapsed)
 
   const currentFolderState = currentExplorerState.find(
@@ -930,6 +911,8 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const flag = document.createElement("button")
   flag.type = "button"
   flag.className = "explorer-flag-button"
+  flag.dataset.understandingPage = node.slug
+  flag.dataset.manualFlagColor = flagColor
   flag.title = flagColor ? `Flagged ${flagColor}` : "Choose flag color"
   flag.ariaLabel = "Flag note"
   const swatch = document.createElement("span")
@@ -967,6 +950,7 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
         event.preventDefault()
         event.stopPropagation()
         swatch.style.backgroundColor = color
+        flag.dataset.manualFlagColor = color
         flag.title = `Flagged ${color}`
         clear.hidden = false
         setActiveOption(color)
@@ -982,6 +966,7 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
     event.preventDefault()
     event.stopPropagation()
     swatch.style.backgroundColor = "transparent"
+    flag.dataset.manualFlagColor = ""
     flag.title = "Choose flag color"
     clear.hidden = true
     setActiveOption("")
@@ -1021,6 +1006,16 @@ function createFolderNode(
   const titleContainer = folderContainer.querySelector("div") as HTMLElement
   const folderOuter = li.querySelector(".folder-outer") as HTMLElement
   const ul = folderOuter.querySelector("ul") as HTMLUListElement
+
+  // Bind at creation so descendants created by a later expansion work too.
+  li.querySelector(".folder-icon")?.addEventListener("click", toggleFolder as EventListener, {
+    signal,
+  })
+  if (opts.folderClickBehavior === "collapse") {
+    li.querySelector(".folder-button")?.addEventListener("click", toggleFolder as EventListener, {
+      signal,
+    })
+  }
 
   const folderPath = node.slug
   const { cluster, relFolder } = clusterAndRelFolder(folderPath)
@@ -1142,6 +1137,14 @@ function createFolderNode(
   if (isGardenRoot) {
     folderContainer.classList.add("garden-root")
     bindGardenTitleMarquee(titleContainer, folderTitle, signal)
+    if (
+      insideDashboard &&
+      !isVirtualCluster &&
+      !canonicalFolders.has(cluster) &&
+      !folderSnapshotRetries.has(cluster)
+    ) {
+      requestFolderSnapshot(cluster)
+    }
   }
 
   // if the saved state is collapsed or the default state is collapsed
@@ -1151,19 +1154,26 @@ function createFolderNode(
 
   // if this folder is a prefix of the current path we
   // want to open it anyways
-  const simpleFolderPath = simplifySlug(folderPath)
+  const simpleFolderPath = String(simplifySlug(folderPath)).replace(/\/$/, "")
   const folderIsPrefixOfCurrentSlug =
-    simpleFolderPath === currentSlug.slice(0, simpleFolderPath.length)
+    String(currentSlug) === String(simpleFolderPath) ||
+    currentSlug.startsWith(`${simpleFolderPath}/`)
+
+  pendingFolderChildren.set(folderOuter, () => {
+    if (signal.aborted) return
+    const fragment = document.createDocumentFragment()
+    for (const child of node.children) {
+      fragment.appendChild(
+        child.isFolder
+          ? createFolderNode(currentSlug, child, opts, signal)
+          : createFileNode(currentSlug, child),
+      )
+    }
+    ul.appendChild(fragment)
+  })
 
   if (!isCollapsed || folderIsPrefixOfCurrentSlug) {
-    folderOuter.classList.add("open")
-  }
-
-  for (const child of node.children) {
-    const childNode = child.isFolder
-      ? createFolderNode(currentSlug, child, opts, signal)
-      : createFileNode(currentSlug, child)
-    ul.appendChild(childNode)
+    setFolderState(folderOuter, false)
   }
 
   return li
@@ -1358,23 +1368,6 @@ async function setupExplorer(currentSlug: FullSlug) {
         { once: true },
       )
     }
-
-    // Set up folder click handlers
-    if (opts.folderClickBehavior === "collapse") {
-      const folderButtons = explorer.getElementsByClassName(
-        "folder-button",
-      ) as HTMLCollectionOf<HTMLElement>
-      for (const button of folderButtons) {
-        button.addEventListener("click", toggleFolder, { signal })
-      }
-    }
-
-    const folderIcons = explorer.getElementsByClassName(
-      "folder-icon",
-    ) as HTMLCollectionOf<HTMLElement>
-    for (const icon of folderIcons) {
-      icon.addEventListener("click", toggleFolder, { signal })
-    }
   }
 }
 
@@ -1411,5 +1404,10 @@ document.addEventListener("nav", async (e: CustomEventMap["nav"]) => {
 window.addEventListener("resize", () => syncExplorerViewport())
 
 function setFolderState(folderElement: HTMLElement, collapsed: boolean) {
+  if (!collapsed) {
+    const populate = pendingFolderChildren.get(folderElement)
+    pendingFolderChildren.delete(folderElement)
+    populate?.()
+  }
   return collapsed ? folderElement.classList.remove("open") : folderElement.classList.add("open")
 }

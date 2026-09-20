@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { artifactUrl } from "./artifact-viewer";
 
@@ -11,7 +11,6 @@ interface Props {
 const PROTOCOL = "breadboard:interactive-visualizer:v1";
 const INITIAL_INLINE_HEIGHT = 420;
 const MIN_INLINE_HEIGHT = 280;
-const MAX_INLINE_HEIGHT = 1_200;
 
 function currentTheme(): "dark" | "light" {
   const explicitTheme = document.documentElement.dataset.theme;
@@ -32,31 +31,31 @@ function currentTheme(): "dark" | "light" {
  */
 export default function InlineInteractiveVisualizer({ artifact }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  // A large initial viewport becomes a false content measurement in older
-  // visualizers whose document is min-height: 100%. Start near the compact
-  // inline size; genuinely taller content will report its scroll height.
+  // The preview bridge replaces this initial size with the natural content
+  // height, including every control below the scene.
   const [height, setHeight] = useState(INITIAL_INLINE_HEIGHT);
   const instanceId = useId();
   const channel = `${artifact.id}:${artifact.version}:${instanceId}`;
-  const previewUrl = `${artifactUrl(artifact, "preview")}&channel=${encodeURIComponent(channel)}`;
+  const previewUrl = `${artifactUrl(artifact, "preview")}&channel=${encodeURIComponent(channel)}&presentation=inline`;
+
+  const sendContext = useCallback(() => {
+    const target = frameRef.current?.contentWindow;
+    target?.postMessage({
+      protocol: PROTOCOL,
+      type: "host-theme",
+      channel,
+      theme: currentTheme(),
+    }, "*");
+    target?.postMessage({
+      protocol: PROTOCOL,
+      type: "host-presentation",
+      channel,
+      presentation: "inline",
+    }, "*");
+  }, [channel]);
 
   useEffect(() => {
     const ownedFrame = frameRef.current;
-    const sendContext = () => {
-      const target = frameRef.current?.contentWindow;
-      target?.postMessage({
-        protocol: PROTOCOL,
-        type: "host-theme",
-        channel,
-        theme: currentTheme(),
-      }, "*");
-      target?.postMessage({
-        protocol: PROTOCOL,
-        type: "host-presentation",
-        channel,
-        presentation: "inline",
-      }, "*");
-    };
     const onMessage = (event: MessageEvent) => {
       const frame = frameRef.current;
       const data = event.data as Record<string, unknown> | null;
@@ -69,15 +68,12 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
         data.channel !== channel
       ) return;
       if (data.type === "ready") sendContext();
-      if (data.type === "ready" || data.type === "resize") {
+      // The preview bridge measures natural content. Legacy runtime resize
+      // messages measure the iframe viewport itself and cannot shrink it.
+      if (data.type === "inline-resize") {
         const nextHeight = Number(data.height);
-        if (Number.isFinite(nextHeight)) {
-          setHeight(
-            Math.max(
-              MIN_INLINE_HEIGHT,
-              Math.min(MAX_INLINE_HEIGHT, nextHeight),
-            ),
-          );
+        if (Number.isFinite(nextHeight) && nextHeight > 0) {
+          setHeight(Math.max(MIN_INLINE_HEIGHT, Math.ceil(nextHeight)));
         }
       }
     };
@@ -89,6 +85,8 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     media.addEventListener("change", sendContext);
     window.addEventListener("message", onMessage);
+    // Recover even when a cached preview loaded before this effect subscribed.
+    sendContext();
     return () => {
       observer.disconnect();
       media.removeEventListener("change", sendContext);
@@ -99,7 +97,7 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
         channel,
       }, "*");
     };
-  }, [channel]);
+  }, [channel, sendContext]);
 
   if (!artifact.previewAvailable || artifact.status !== "ready") {
     return null;
@@ -118,6 +116,8 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
         allow=""
         referrerPolicy="no-referrer"
         src={previewUrl}
+        onLoad={sendContext}
+        scrolling="no"
         style={{ height }}
         className="block min-h-[17.5rem] w-full border-0 bg-transparent"
       />

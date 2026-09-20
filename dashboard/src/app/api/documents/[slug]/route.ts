@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { externalRuntimeFilesystem as fs, externalRuntimePortableRealpath } from "@/lib/external-runtime-filesystem";
 import db from "@/lib/db";
+import { pageFlagColor } from "@/lib/page-understanding-types.ts";
 import {
   normalizeTopicTags,
   refreshClusterIndex,
@@ -574,6 +575,9 @@ export async function PATCH(
           { error: "flagColor must be a hex color like #facc15" },
           { status: 400 },
         );
+      }
+      if (flagColor && !pageFlagColor(flagColor)) {
+        return json({ error: "Green is reserved for understood pages. Use the understanding checkbox." }, { status: 400 });
       }
       content = updateFrontmatterValue(content, "flag_color", flagColor);
     }

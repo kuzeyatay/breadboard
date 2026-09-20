@@ -10,7 +10,7 @@ import { installCanonicalQuartzReader } from "../scripts/quartz-canonical-reader
 
 const root = path.resolve(import.meta.dirname, "..");
 const quartz = path.resolve(root, "../quartz");
-const reference = { id: "video-1", conversationId: "chat-1", title: "Lecture recording", kind: "video" };
+const reference = { id: "video-1", conversationId: "chat-1", title: "Lecture recording", kind: "video", version: 2 };
 
 test("artifact references round-trip without allowing titles to escape the fence", () => {
   const ref = { ...reference, title: "A title\n```\n<script>alert(1)</script>" };
@@ -96,6 +96,7 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
       if (url.pathname === "/api/hermes/artifacts/video-1") {
         openRequests++;
         assert.equal(url.searchParams.get("conversationId"), "chat-1");
+        assert.equal(url.searchParams.get("version"), "2");
         return route.fulfill(missing ? { status: 404, json: { error: "Artifact not found." } } : { json: { artifact: { ...ready, gardenId: wrongGarden ? "private" : "demo" } } });
       }
       const item = extraArtifacts.find(item => url.pathname === `/api/hermes/artifacts/${item.id}` || url.pathname === `/api/hermes/artifacts/${item.id}/preview`);

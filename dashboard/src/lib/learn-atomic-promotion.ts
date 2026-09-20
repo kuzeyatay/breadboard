@@ -16,6 +16,7 @@ import os from "node:os";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { areGardenUserWritePaths, mergeCurrentGardenUserContent } from "./garden-user-content.ts";
+import { preserveLiveGardenPolicy } from "./learn-operator-policy.ts";
 
 export interface AtomicPromotionOptions {
   maxAttempts: number;
@@ -173,6 +174,9 @@ export async function promoteStagingGarden(input: {
           throw new Error("Garden save lost ownership before publication.");
         }
       }
+      // This must follow all candidate verification/merge callbacks and run on
+      // every retry. A retained candidate is never authority for live policy.
+      preserveLiveGardenPolicy(destination, incoming);
       if (destExists) fs.renameSync(destination, backup);
       try {
         fs.renameSync(incoming, destination);

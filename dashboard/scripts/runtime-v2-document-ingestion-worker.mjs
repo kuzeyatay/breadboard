@@ -32,6 +32,11 @@ const PUBLIC_INGEST_MAP_WARNING =
 // the vision warning, so the sanitized boundary still holds.
 const PUBLIC_INGEST_MODEL_QUOTA_FAILURE =
   "The selected model and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
+// The other failure a person can act on: the document was read, but no map
+// could be built from it. Nothing was added to the garden, so retrying is the
+// whole fix. Fixed wording, like the warnings above, so the boundary holds.
+const PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE =
+  "The document was read, but building its summary and concepts failed, so nothing was added to the garden. Resume the upload to try again.";
 const INGEST_RECOVERY_PROTOCOL_VERSION = 1;
 const INGEST_RECOVERY_MANIFEST_FILE = "recovery.json";
 const INGEST_RECOVERY_SOURCE_FILE = "source";
@@ -808,6 +813,32 @@ function boundedFailureMessage(error) {
   );
 }
 
+/**
+ * Whether concept extraction is what refused. Matched by error name so this
+ * worker does not have to import the knowledge module, and unwrapped from the
+ * AggregateError a failed garden rollback wraps the original failure in.
+ */
+export function isConceptExtractionFailure(error) {
+  const names = new Set([
+    "KnowledgeExtractionFailedError",
+    "IncompleteKnowledgeExtractionError",
+  ]);
+  if (error instanceof Error && names.has(error.name)) return true;
+  return (
+    error instanceof AggregateError &&
+    error.errors.some((inner) => inner instanceof Error && names.has(inner.name))
+  );
+}
+
+/** The one public sentence a failed ingestion is reported with. */
+export function publicIngestFailureMessage(classification = {}) {
+  if (classification.providerQuota === true) return PUBLIC_INGEST_MODEL_QUOTA_FAILURE;
+  if (classification.conceptExtraction === true) {
+    return PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE;
+  }
+  return SANITIZED_RUNTIME_FAILURE_MESSAGE;
+}
+
 function sanitizeRuntimeV2IngestionResultWarnings(value) {
   if (!isRecord(value)) {
     fail("The document-ingestion executor returned an invalid result.");
@@ -1036,9 +1067,7 @@ function createProgressReporter(launch, events, isStopped) {
   const failed = (error, classification = {}) => {
     if (isStopped()) return;
     failure = {
-      error: classification.providerQuota === true
-        ? PUBLIC_INGEST_MODEL_QUOTA_FAILURE
-        : SANITIZED_RUNTIME_FAILURE_MESSAGE,
+      error: publicIngestFailureMessage(classification),
       visionError:
         error instanceof Error && error.name === "ChatmockVisionError"
           ? PUBLIC_INGEST_VISION_WARNING
@@ -1673,6 +1702,8 @@ async function runRuntimeV2DocumentIngestionWorker() {
     } catch {
       // Classification is advisory; the sanitized message remains the default.
     }
+    const conceptExtraction = !providerQuota && isConceptExtractionFailure(failure);
+    const publicMessage = publicIngestFailureMessage({ providerQuota, conceptExtraction });
     let recoveryId = null;
     if (openedBlob) {
       // Before the terminal event: Runtime may delete the staged blob as soon
@@ -1681,9 +1712,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
         recoveryId = retainIngestRecovery({
           launch,
           blobPath: openedBlob.blobPath,
-          publicMessage: providerQuota
-            ? PUBLIC_INGEST_MODEL_QUOTA_FAILURE
-            : SANITIZED_RUNTIME_FAILURE_MESSAGE,
+          publicMessage,
           failureKind: providerQuota ? "provider-quota" : "runtime",
           lastStep: progress?.currentStep() ?? "",
         });
@@ -1694,7 +1723,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
         );
       }
     }
-    progress?.failed(failure, { providerQuota, recoveryId });
+    progress?.failed(failure, { providerQuota, conceptExtraction, recoveryId });
     events.failed("INGEST_WORKER_FAILED", SANITIZED_RUNTIME_FAILURE_MESSAGE);
     process.exitCode = 1;
     console.error(

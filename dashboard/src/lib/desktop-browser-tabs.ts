@@ -166,12 +166,16 @@ interface DesktopNavigationBridge {
   browserHistoryCommand?: (command: DesktopBrowserHistoryCommand) => Promise<boolean>;
   onBrowserHistoryChanged?: (listener: () => void) => () => void;
   setBrowserRecentSearches?: (ownerKey: string, searches: string[]) => Promise<boolean>;
-  chatgptWebTab?: (request: { foreground: boolean; reset?: boolean }) => Promise<DesktopChatgptWebTabResult>;
+  chatgptWebTab?: (request: { foreground: boolean; reset?: boolean; lane?: string }) => Promise<DesktopChatgptWebTabResult>;
 }
 
-/** The shell answering a request for its ChatGPT tab: where CDP can find it, or why not. */
+/**
+ * The shell answering a request for its ChatGPT tab: where CDP can find it, or
+ * why not. `lane` is echoed by a shell that keeps a page per lane; an older
+ * shell leaves it out and ChatMock shares its one page as before.
+ */
 export type DesktopChatgptWebTabResult =
-  | { ok: true; cdpPort: number; targetId: string }
+  | { ok: true; cdpPort: number; targetId: string; lane?: string }
   | { ok: false; error: string };
 
 /**
@@ -183,10 +187,11 @@ export type DesktopChatgptWebTabResult =
 export function requestChatgptWebTabInDesktop(
   foreground: boolean,
   reset = false,
+  lane?: string,
 ): Promise<DesktopChatgptWebTabResult> | null {
   const desktop = bridge();
   if (typeof desktop?.chatgptWebTab !== "function") return null;
-  return desktop.chatgptWebTab({ foreground, reset }).catch((error: unknown) => ({
+  return desktop.chatgptWebTab(lane ? { foreground, reset, lane } : { foreground, reset }).catch((error: unknown) => ({
     ok: false as const,
     error: error instanceof Error ? error.message : String(error),
   }));

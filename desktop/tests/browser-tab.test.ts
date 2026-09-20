@@ -104,6 +104,17 @@ app.whenReady().then(async () => {
       }
       return execute(code, ...args);
     };
+    contents.on("dom-ready", () => {
+      const frame = contents.mainFrame;
+      const executeFrame = frame.executeJavaScript.bind(frame);
+      frame.executeJavaScript = async (code, ...args) => {
+        if (code === REVEAL_FRAME_PROBE && contents.getURL().endsWith("/browser")) {
+          shellFrameWaiting = true;
+          await shellFrameGate;
+        }
+        return executeFrame(code, ...args);
+      };
+    });
   });
   let holdFirstBrowserShell = true;
   const shellServer = http.createServer((request, response) => {
@@ -179,7 +190,7 @@ app.whenReady().then(async () => {
   const opened = await command(base, { type: "browser", url: webOrigin + "/one" });
   await until(() => releaseShellResponse, "held browser shell request");
   const loadingViewInWindow = () => window.contentView.children.find((view) =>
-    view.webContents.getURL().includes("loading.html"));
+    view.webContents?.getURL().includes("loading.html"));
   const coldLoadingVisible = Boolean(loadingViewInWindow());
   releaseShellResponse();
   await until(() => shellFrameWaiting, "DOM-ready browser shell awaiting its compositor frame");
@@ -191,7 +202,7 @@ app.whenReady().then(async () => {
   await loadingResize;
   const domReadyLoadingVisible = Boolean(loadingViewInWindow());
   const loadingShellView = window.contentView.children.find((view) =>
-    view.webContents.getURL().endsWith("/browser"));
+    view.webContents?.getURL().endsWith("/browser"));
   const loadingShellStillOffscreen = loadingShellView.getBounds().y < 0;
   releaseShellFrame();
   const first = await until(async () => {
@@ -298,7 +309,8 @@ app.whenReady().then(async () => {
     () =>
       created.find(
         (contents) =>
-          !contents.isDestroyed() && contents.getURL() === shellOrigin + "/new-tab",
+          !contents.isDestroyed() && contents.getURL() === shellOrigin + "/new-tab" &&
+          manager.tabs.stateFor(contents).selfId === manager.tabs.stateFor(base).activeId,
       ),
     "new-tab page",
   );

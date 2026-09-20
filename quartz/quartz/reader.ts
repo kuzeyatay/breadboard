@@ -21,6 +21,8 @@ import { BreadboardArtifacts } from "./plugins/transformers/breadboardArtifact"
 import { TableOfContents } from "./plugins/transformers/toc"
 import { slugifyFilePath, type FilePath } from "./util/path"
 import type { BuildCtx } from "./util/ctx"
+import type { Root as MarkdownRoot } from "mdast"
+import { deferLongDocumentBlocks } from "./util/longDocument"
 
 export async function renderQuartzDocument(input: {
   content: string; relativePath: string; contentRoot: string; allFiles: string[]
@@ -50,6 +52,6 @@ export async function renderQuartzDocument(input: {
   const tree = await markdown.run(markdown.parse(file), file)
   const html = await unified().use(remarkRehype, { allowDangerousHtml: true })
     .use(transformers.flatMap(p => p.htmlPlugins?.(ctx) ?? []))
-    .use(rehypeKatex, { output: "html" }).run(tree, file)
-  return { html: toHtml(html), title: file.data.frontmatter?.title, toc: file.data.toc ?? [], slug: file.data.slug }
+    .use(rehypeKatex, { output: "html" }).run(tree as MarkdownRoot, file)
+  return { html: toHtml(deferLongDocumentBlocks(html)), title: file.data.frontmatter?.title, toc: file.data.toc ?? [], slug: file.data.slug }
 }

@@ -48,6 +48,7 @@ async function* processFolderInfo(
       children: [],
       tree,
       allFiles,
+      folderSlug: folder,
     }
 
     const content = renderPage(cfg, slug, componentData, opts, externalResources)

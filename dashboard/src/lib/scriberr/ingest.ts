@@ -2,13 +2,14 @@
 // ingestion: the same writeDocumentKnowledge flow used by uploads and URL
 // imports registers the transcript Markdown under sources/, creates concept
 // scaffolding, refreshes the cluster index, and republishes Quartz. ChatMock is
-// only used for the surrounding knowledge extraction (topics/summary) with a
-// deterministic fallback — it never rewrites the transcript itself.
+// only used for the surrounding knowledge extraction (topics/summary) — it
+// never rewrites the transcript itself, and when it cannot produce a map the
+// job fails instead of publishing a source whose summary is really the opening
+// words of the transcript.
 
 import path from "node:path";
 
 import {
-  DEFAULT_MODEL,
   createChatmockClient,
   extractDocumentKnowledge,
   refreshClusterIndex,
@@ -17,6 +18,7 @@ import {
   type DocumentPage,
   type KnowledgeExtraction,
 } from "../knowledge.ts";
+import { GLOBAL_MODEL_SENTINEL } from "../ai-models.ts";
 import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
 import { publishQuartzAfterMutation } from "../quartz-publish.ts";
 import { sourceSlugExists } from "./video-source-store.ts";
@@ -48,23 +50,6 @@ export interface TranscriptIngestResult {
   sourceRelPath: string;
   sourceTitle: string;
   wordCount: number;
-}
-
-function fallbackExtraction(
-  title: string,
-  plainText: string,
-  mediaKind: "audio" | "video",
-): KnowledgeExtraction {
-  const summary = plainText.trim()
-    ? plainText.trim().replace(/\s+/g, " ").slice(0, 300)
-    : `Imported ${mediaKind} transcript ${title}.`;
-  return {
-    documentTitle: title,
-    summary,
-    topics: [],
-    relationships: [],
-    suggestedTags: [],
-  };
 }
 
 /**
@@ -100,26 +85,16 @@ export async function ingestTranscriptSource(
     { label: "Transcript", text: input.plainText },
   ];
 
-  let extraction: KnowledgeExtraction;
-  try {
-    extraction = await extractDocumentKnowledge({
-      client,
-      model: DEFAULT_MODEL,
-      title: input.sourceTitle,
-      sourceType: input.mediaKind,
-      sourceLabel: input.sourceLabel,
-      pages,
-      text: input.plainText,
-      onProgress: input.onProgress,
-    });
-  } catch {
-    // ChatMock being down must not block the faithful transcript source.
-    extraction = fallbackExtraction(
-      input.sourceTitle,
-      input.plainText,
-      input.mediaKind,
-    );
-  }
+  const extraction: KnowledgeExtraction = await extractDocumentKnowledge({
+    client,
+    model: GLOBAL_MODEL_SENTINEL,
+    title: input.sourceTitle,
+    sourceType: input.mediaKind,
+    sourceLabel: input.sourceLabel,
+    pages,
+    text: input.plainText,
+    onProgress: input.onProgress,
+  });
 
   const sourceTitle = resolveCollisionFreeTitle({
     contentPath: input.contentPath,
@@ -132,7 +107,7 @@ export async function ingestTranscriptSource(
 
   const saved = await writeDocumentKnowledge({
     client,
-    model: DEFAULT_MODEL,
+    model: GLOBAL_MODEL_SENTINEL,
     contentPath: input.contentPath,
     clusterSlug: input.clusterSlug,
     sourceTitle,

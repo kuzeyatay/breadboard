@@ -15,6 +15,8 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { Reply } from "lucide-react";
+import StarMessageButton from "./star-message-button";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
@@ -27,6 +29,12 @@ import {
 } from "@/lib/chat-time-separators";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
+import {
+  type AnswerSignalKind,
+  clearAnswerRating,
+  fetchAnswerRating,
+  recordAnswerSignal,
+} from "@/lib/hermes/answer-signal-client";
 
 type Feedback = "up" | "down" | null;
 type SpeechState = "idle" | "loading" | "playing";
@@ -41,6 +49,17 @@ export interface AssistantResponseBranch {
 
 interface Props {
   content: string;
+  /**
+   * Where this answer lives, so what happens to it can be recorded against the
+   * turn that produced it rather than against a hash of its text.
+   *
+   * Both are optional because not every surface has them: a failure row has no
+   * stored message, and an anonymous Quartz reader has no conversation of their
+   * own. Without them the row still works exactly as before — the rating is
+   * kept in this browser and goes no further. See `answer-signal-client`.
+   */
+  conversationId?: string | null;
+  messageId?: string | null;
   /** Durable response start plus elapsed time reveal when streaming finished. */
   responseStartedAt?: string;
   responseDurationMs?: number;
@@ -164,6 +183,10 @@ export function AssistantResponseBranchNavigation({
  * portalled to the end, so copy/speak/retry always sit below the artifacts.
  */
 const MessageActionsSlotContext = createContext<{
+  conversationId?: string | null;
+  messageId?: string | null;
+  onReply?: (content: string) => void;
+  canStar?: boolean;
   slot: HTMLElement | null;
   suppressActions: boolean;
   branch?: AssistantResponseBranch;
@@ -180,6 +203,10 @@ const MessageActionsSlotContext = createContext<{
 
 export function MessageActionsSlot({
   children,
+  conversationId,
+  messageId,
+  onReply,
+  canStar = true,
   suppressActions = false,
   branch,
   responseStartedAt,
@@ -187,6 +214,10 @@ export function MessageActionsSlot({
   responseCompletedAt,
 }: {
   children: ReactNode;
+  conversationId?: string | null;
+  messageId?: string | null;
+  onReply?: (content: string) => void;
+  canStar?: boolean;
   /** Keep controls from escaping a visually hidden owner through the portal. */
   suppressActions?: boolean;
   /** Shared by nested run cards so navigation lives in their bottom row. */
@@ -200,6 +231,10 @@ export function MessageActionsSlot({
   return (
     <MessageActionsSlotContext.Provider
       value={{
+        conversationId,
+        messageId,
+        onReply,
+        canStar,
         slot,
         suppressActions,
         branch,
@@ -220,6 +255,8 @@ export function MessageActionsSlot({
 
 export default function AssistantMessageActions({
   content,
+  conversationId,
+  messageId,
   responseStartedAt,
   responseDurationMs,
   responseCompletedAt,
@@ -251,12 +288,18 @@ export default function AssistantMessageActions({
   const mountedRef = useRef(true);
   const {
     slot,
+    conversationId: contextualConversationId,
+    messageId: contextualMessageId,
+    onReply,
+    canStar = true,
     suppressActions,
     branch: contextualBranch,
     responseStartedAt: contextualResponseStartedAt,
     responseDurationMs: contextualResponseDurationMs,
     responseCompletedAt: contextualResponseCompletedAt,
   } = useContext(MessageActionsSlotContext);
+  const starConversationId = contextualConversationId ?? conversationId;
+  const starMessageId = contextualMessageId ?? messageId;
   const storageKey = useMemo(() => contentKey(content), [content]);
   const displayedVerification = verification ?? NO_RECORDED_EVIDENCE;
   const responseBranch = branch ?? contextualBranch;
@@ -269,10 +312,47 @@ export default function AssistantMessageActions({
     );
   const responseTime = formatChatClockTime(completedAt);
 
+  /**
+   * An addressable answer records what happens to it on the server; one
+   * without ids keeps the old browser-local behaviour, so no surface loses a
+   * working thumb by not having been wired yet.
+   */
+  const signalTarget = useMemo(
+    () => ({ conversationId: conversationId ?? null, messageId: messageId ?? null }),
+    [conversationId, messageId],
+  );
+  const durableSignals = Boolean(conversationId?.trim() && messageId?.trim());
+
+  /**
+   * Record a side observation about this answer. Deliberately not awaited by
+   * any caller: a signal that fails to record must never delay or block the
+   * action the user actually asked for.
+   */
+  const emitSignal = useCallback(
+    (kind: AnswerSignalKind) => {
+      if (!durableSignals) return;
+      void recordAnswerSignal(signalTarget, kind);
+    },
+    [durableSignals, signalTarget],
+  );
+
   useEffect(() => {
-    const stored = localStorage.getItem(storageKey);
-    setFeedback(stored === "up" || stored === "down" ? stored : null);
-  }, [storageKey]);
+    if (!durableSignals) {
+      const stored = localStorage.getItem(storageKey);
+      setFeedback(stored === "up" || stored === "down" ? stored : null);
+      return;
+    }
+    // The stored rating is the truth once an answer is addressable, and it
+    // follows the account rather than the browser it was given in.
+    let active = true;
+    void fetchAnswerRating(signalTarget).then((rating) => {
+      if (!active) return;
+      setFeedback(rating === "rated_up" ? "up" : rating === "rated_down" ? "down" : null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [durableSignals, signalTarget, storageKey]);
 
   /**
    * The evidence panel is anchored, not stacked: it is measured against the
@@ -385,6 +465,10 @@ export default function AssistantMessageActions({
     }
     const controller = new AbortController();
     speechAbortRef.current = controller;
+    // Asking for an answer to be read aloud is asking for it a second time.
+    // Recorded on the request rather than on playback, so a synthesis that
+    // fails still counts as having been wanted.
+    emitSignal("spoken");
     setSpeechState("loading");
     try {
       const text = await responseTextForSpeech(content, { signal: controller.signal });
@@ -427,6 +511,9 @@ export default function AssistantMessageActions({
   async function copyResponse() {
     try {
       await copyToClipboard(content);
+      // Taking an answer somewhere else is the most common thing anybody does
+      // with a good one, and far more frequent than pressing a thumb.
+      emitSignal("copied");
       setCopied(true);
       if (copyTimerRef.current !== null)
         window.clearTimeout(copyTimerRef.current);
@@ -436,11 +523,22 @@ export default function AssistantMessageActions({
     }
   }
 
+  /**
+   * Pressing a thumb, including pressing the same one twice to take it back.
+   *
+   * The optimistic local update comes first either way: the row has to respond
+   * at the speed of the click, and a rating is not worth a spinner.
+   */
   function setRating(rating: Exclude<Feedback, null>) {
     const next = feedback === rating ? null : rating;
     setFeedback(next);
-    if (next) localStorage.setItem(storageKey, next);
-    else localStorage.removeItem(storageKey);
+    if (!durableSignals) {
+      if (next) localStorage.setItem(storageKey, next);
+      else localStorage.removeItem(storageKey);
+      return;
+    }
+    if (next) void recordAnswerSignal(signalTarget, next === "up" ? "rated_up" : "rated_down");
+    else void clearAnswerRating(signalTarget);
   }
 
   function downloadResponse() {
@@ -505,12 +603,22 @@ export default function AssistantMessageActions({
 
   function retryResponse() {
     setMenuOpen(false);
+    emitSignal("retried");
     onRetry?.();
   }
 
   function rewriteResponse() {
     setMenuOpen(false);
+    // Nobody regenerates an answer they were happy with. This is the strongest
+    // implicit signal on the row, and unlike a thumb it costs the user nothing.
+    emitSignal("regenerated");
     onRewrite?.();
+  }
+
+  /** Editing an answer is the user correcting it themselves. */
+  function editResponse() {
+    emitSignal("edited");
+    onEdit?.();
   }
 
   const actions = (
@@ -586,10 +694,19 @@ export default function AssistantMessageActions({
           <path strokeLinecap="round" strokeLinejoin="round" d="M7 14V4H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h3Zm0-10h9.2a3 3 0 0 1 2.94 2.42l1.1 5.5A2.56 2.56 0 0 1 17.73 15H14l.55 2.74A2.73 2.73 0 0 1 11.87 21L7 14Z" />
         </svg>
       </button>
+      {onReply && content.trim() ? (
+        <button type="button" onClick={() => onReply(content)} className={actionClass}
+          title="Reply" aria-label="Reply to message">
+          <Reply className="h-4 w-4" strokeWidth={1.7} aria-hidden />
+        </button>
+      ) : null}
+      {canStar && starConversationId && starMessageId ? (
+        <StarMessageButton conversationId={starConversationId} messageId={starMessageId} className={actionClass} />
+      ) : null}
       {onEdit ? (
         <button
           type="button"
-          onClick={onEdit}
+          onClick={editResponse}
           className={actionClass}
           title="Edit response"
           aria-label="Edit assistant response"

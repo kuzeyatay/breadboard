@@ -11,8 +11,10 @@ import { GARDEN_SOURCE_IMPORTED_EVENT } from "@/lib/hermes/garden-source-import-
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ChangeEvent,
   type CSSProperties,
   type DragEvent,
@@ -39,6 +41,7 @@ import {
   validateMediaFile,
   validateYouTubeInput,
 } from "@/lib/video-transcription-ui";
+import { gardenMediaUploadQueue, emptyMediaUploads } from "@/lib/garden-media-upload-queue";
 import type { PublicVideoTranscriptionJob } from "@/lib/scriberr/types";
 
 const CLIENT_MAX_UPLOAD_BYTES = 2048 * 1024 * 1024;
@@ -482,9 +485,15 @@ export default function GardenVideoImport({
   onFlagSource,
   onSourceCreated,
 }: GardenVideoImportProps) {
-  const [jobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
+  const [serverJobs, setJobs] = useState<PublicVideoTranscriptionJob[]>([]);
+  const uploads = useSyncExternalStore(gardenMediaUploadQueue.subscribe, gardenMediaUploadQueue.getSnapshot, () => emptyMediaUploads);
+  const gardenUploads = useMemo(() => uploads.filter(entry => entry.job.gardenId === clusterSlug), [uploads, clusterSlug]);
+  const jobs = useMemo(() => [...new Map([
+    ...gardenUploads.map(entry => [entry.job.id, entry.job] as const),
+    ...serverJobs.filter(job => job.gardenId === clusterSlug).map(job => [job.id, job] as const),
+  ]).values()], [gardenUploads, serverJobs, clusterSlug]);
   const [jobsLoaded, setJobsLoaded] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   // "Watch" analysis adds sampled frames + a frame-grounded reading of what
   // the video shows (slides, boards, equations) to the transcript source.
   const [analyzeVisuals, setAnalyzeVisuals] = useState(true);
@@ -496,9 +505,7 @@ export default function GardenVideoImport({
   const [urlError, setUrlError] = useState<string | null>(null);
   const [preview, setPreview] = useState<YouTubePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [duplicateNotice, setDuplicateNotice] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -518,14 +525,8 @@ export default function GardenVideoImport({
 
   const applyJobs = useCallback(
     (nextJobs: PublicVideoTranscriptionJob[]) => {
-      // Server polling is authoritative for accepted jobs, but an upload can
-      // spend time in the browser before the server creates its durable job.
-      // Keep those client handoff rows until the submission response replaces
-      // them with the real job (or a terminal error).
-      setJobs((current) => [
-        ...current.filter((job) => job.id.startsWith("client-")),
-        ...nextJobs.filter((job) => !job.id.startsWith("client-")),
-      ]);
+      gardenMediaUploadQueue.reconcile(nextJobs);
+      setJobs(nextJobs);
       for (const job of nextJobs) {
         if (
           job.status === "completed" &&
@@ -587,6 +588,7 @@ export default function GardenVideoImport({
       const restored = await fetchJobs();
       if (cancelled) return;
       if (restored) {
+        gardenMediaUploadQueue.reconcile(restored);
         for (const job of restored) {
           if (job.status === "completed") completedSeenRef.current.add(job.id);
         }
@@ -632,6 +634,7 @@ export default function GardenVideoImport({
       pollTimerRef.current = null;
       void fetchJobs().then((nextJobs) => {
         if (nextJobs) applyJobs(nextJobs);
+        else setJobs(current => [...current]);
       });
     }, delay);
 
@@ -670,42 +673,48 @@ export default function GardenVideoImport({
     }
   }, [mediaSources, playingSourceSlug]);
 
-  const selectFile = useCallback((file: File | null) => {
+  const selectFiles = useCallback((files: File[]) => {
+    if (!files.length) return;
     setSubmitError(null);
-    setDuplicateNotice(null);
-    if (!file) {
-      setSelectedFile(null);
-      setFileError(null);
-      return;
-    }
     // The inputs are alternatives: choosing a file clears the URL side.
     setYoutubeUrl("");
     setUrlError(null);
     setPreview(null);
-    const validation = validateMediaFile(file, CLIENT_MAX_UPLOAD_BYTES);
-    setFileError(validation.ok ? null : (validation.message ?? null));
-    setSelectedFile(file);
+    const validFiles: File[] = [];
+    const errors: string[] = [];
+    for (const file of files) {
+      const validation = validateMediaFile(file, CLIENT_MAX_UPLOAD_BYTES);
+      if (validation.ok) validFiles.push(file);
+      else errors.push(`${file.name}: ${validation.message}`);
+    }
+    setFileError(errors.length ? errors.join(" ") : null);
+    setSelectedFiles(current => {
+      const next = [...current];
+      for (const file of validFiles) {
+        if (!next.some(item => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) next.push(file);
+      }
+      return next;
+    });
   }, []);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    selectFile(event.target.files?.[0] ?? null);
+    selectFiles(Array.from(event.target.files ?? []));
+    event.target.value = "";
   };
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragActive(false);
-    const file = event.dataTransfer.files?.[0];
-    if (file) selectFile(file);
+    selectFiles(Array.from(event.dataTransfer.files));
   };
 
   const handleUrlChange = (value: string) => {
     setYoutubeUrl(value);
     setSubmitError(null);
-    setDuplicateNotice(null);
     setPreview(null);
     if (value.trim()) {
       // Entering a URL clears the file side (alternative inputs).
-      setSelectedFile(null);
+      setSelectedFiles([]);
       setFileError(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       const validation = validateYouTubeInput(value);
@@ -744,170 +753,51 @@ export default function GardenVideoImport({
     }
   }, [apiBase, youtubeUrl]);
 
-  const canSubmit =
-    !submitting &&
-    ((selectedFile !== null && !fileError) ||
-      (youtubeUrl.trim() !== "" && !urlError && selectedFile === null));
+  const canSubmit = selectedFiles.length > 0 || (youtubeUrl.trim() !== "" && !urlError);
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!canSubmit) return;
-    const submissionFile = selectedFile;
-    const submissionUrl = youtubeUrl.trim();
-    const provisionalId = `client-${crypto.randomUUID()}`;
-    const submittedAt = new Date().toISOString();
-    const provisionalJob: PublicVideoTranscriptionJob = {
-      id: provisionalId,
-      gardenId: clusterSlug,
-      inputKind: submissionFile ? "upload" : "youtube",
-      analysis: analyzeVisuals ? "watch" : "transcript",
-      retainMedia: keepMedia,
-      status: submissionFile ? "uploading" : "validating",
-      progressPercent: null,
-      currentStage: submissionFile ? "Uploading media" : "Checking YouTube URL",
-      originalFilename: submissionFile?.name ?? null,
-      originalUrl: submissionFile ? null : submissionUrl,
-      canonicalUrl: preview?.canonicalUrl ?? null,
-      youtubeVideoId: preview?.videoId ?? null,
-      sourceTitle: preview?.metadata?.title ?? null,
-      videoMetadata: null,
-      outputRelativePath: null,
-      sourceSlug: null,
-      errorCode: null,
-      errorMessage: null,
-      createdAt: submittedAt,
-      updatedAt: submittedAt,
-      completedAt: null,
-    };
-    setJobs((current) => [
-      provisionalJob,
-      ...current.filter((job) => job.id !== provisionalId),
-    ]);
-    setSelectedJobId(provisionalId);
+    const ids = gardenMediaUploadQueue.enqueue({
+      clusterSlug, files: selectedFiles, youtubeUrl, analyzeVisuals, keepMedia,
+    });
+    setSelectedFiles([]);
+    setFileError(null);
+    setYoutubeUrl("");
+    setUrlError(null);
+    setPreview(null);
+    setSubmitError(null);
+    pollStartedAtRef.current = Date.now();
+    setSelectedJobId(ids.length === 1 ? ids[0] : null);
     onExpand();
     onClose();
-    setSubmitting(true);
-    setSubmitError(null);
-    setDuplicateNotice(null);
-    const failProvisionalJob = (message: string) => {
-      const completedAt = new Date().toISOString();
-      setJobs((current) =>
-        current.map((job) =>
-          job.id === provisionalId
-            ? {
-                ...job,
-                status: "failed",
-                currentStage: "Transcription could not start",
-                errorMessage: message,
-                updatedAt: completedAt,
-                completedAt,
-              }
-            : job,
-        ),
-      );
-    };
-    try {
-      let res: Response;
-      if (submissionFile) {
-        const form = new FormData();
-        form.append("media", submissionFile, submissionFile.name);
-        form.append("analysis", analyzeVisuals ? "watch" : "transcript");
-        form.append("retainMedia", keepMedia ? "true" : "false");
-        res = await fetch(apiBase, { method: "POST", body: form });
-      } else {
-        res = await fetch(apiBase, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            youtubeUrl: submissionUrl,
-            analysis: analyzeVisuals ? "watch" : "transcript",
-            retainMedia: keepMedia,
-          }),
-        });
-      }
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        duplicate?: boolean;
-        job?: PublicVideoTranscriptionJob;
-        source?: { title?: string; sourceRelPath?: string };
-      };
-      if (!res.ok) {
-        const message = data.error ?? "Failed to start transcription.";
-        setSubmitError(message);
-        failProvisionalJob(message);
-        return;
-      }
-      if (data.duplicate) {
-        setDuplicateNotice(
-          data.source
-            ? `Already imported as “${data.source.title ?? data.source.sourceRelPath}”.`
-            : "This media file is already being transcribed.",
-        );
-      }
-      if (!data.job && !data.duplicate) {
-        const message = "The upload was accepted but no transcription job was created.";
-        setSubmitError(message);
-        failProvisionalJob(message);
-        return;
-      }
+  };
 
-      // The create response is authoritative for the handoff. Paint that job
-      // before clearing the chosen file, then preserve it if the immediate list
-      // read is briefly stale (or the runner has not committed its next state
-      // yet). Without this bridge an accepted upload appeared to vanish.
-      const acceptedJob = data.job ?? null;
-      if (acceptedJob) {
-        setJobs((current) => [
-          acceptedJob,
-          ...current.filter(
-            (job) => job.id !== provisionalId && job.id !== acceptedJob.id,
-          ),
-        ]);
-        setSelectedJobId(acceptedJob.id);
-      } else {
-        const completedAt = new Date().toISOString();
-        setJobs((current) =>
-          current.map((job) =>
-            job.id === provisionalId
-              ? {
-                  ...job,
-                  status: "completed",
-                  progressPercent: 100,
-                  currentStage: "Source already available",
-                  sourceTitle: data.source?.title ?? job.sourceTitle,
-                  outputRelativePath:
-                    data.source?.sourceRelPath ?? job.outputRelativePath,
-                  updatedAt: completedAt,
-                  completedAt,
-                }
-              : job,
-          ),
-        );
-      }
-      setSelectedFile(null);
-      setFileError(null);
-      setYoutubeUrl("");
-      setUrlError(null);
-      setPreview(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+  const retryJob = async (jobId: string) => {
+    if (jobId.startsWith("client-")) {
+      gardenMediaUploadQueue.retry(jobId);
+      return;
+    }
+    setBusyJobId(jobId);
+    try {
+      const res = await fetch(`${apiBase}/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Could not retry transcription.");
       pollStartedAtRef.current = Date.now();
       const refreshedJobs = await fetchJobs();
-      if (refreshedJobs) {
-        applyJobs(
-          acceptedJob && !refreshedJobs.some((job) => job.id === acceptedJob.id)
-            ? [acceptedJob, ...refreshedJobs]
-            : refreshedJobs,
-        );
-      }
-    } catch {
-      const message = "Failed to start transcription.";
-      setSubmitError(message);
-      failProvisionalJob(message);
+      if (refreshedJobs) applyJobs(refreshedJobs);
+      setSubmitError(null);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Could not retry transcription.");
     } finally {
-      setSubmitting(false);
+      setBusyJobId(null);
     }
   };
 
   const cancelJob = async (jobId: string) => {
+    if (jobId.startsWith("client-")) {
+      gardenMediaUploadQueue.cancel(jobId);
+      return;
+    }
     setBusyJobId(jobId);
     try {
       const res = await fetch(`${apiBase}/${encodeURIComponent(jobId)}/cancel`, {
@@ -939,11 +829,11 @@ export default function GardenVideoImport({
     healthIssues.push("ffprobe not found — uploads cannot be validated.");
   }
 
-  const activeJobs = jobs
-    .filter((job) => !isTerminalJob(job))
-    .slice(0, 6);
-  const selectedJob = selectedJobId
-    ? (jobs.find((job) => job.id === selectedJobId) ?? null)
+  const activeJobs = jobs.filter((job) => !isTerminalJob(job) || job.status === "failed");
+  const selectedUpload = gardenUploads.find(entry => entry.id === selectedJobId);
+  const selectedId = selectedUpload?.job.id ?? selectedJobId;
+  const selectedJob = selectedId
+    ? (jobs.find((job) => job.id === selectedId) ?? null)
     : null;
   const mediaSearchTerms = normalizedMediaSearchText(mediaSearch)
     .trim()
@@ -988,56 +878,37 @@ export default function GardenVideoImport({
               ref={fileInputRef}
               type="file"
               accept={MEDIA_FILE_ACCEPT_ATTR}
+              multiple
               onChange={handleFileChange}
               className="hidden"
               id="garden-media-file-input"
-              aria-label="Video or audio file"
+              aria-label="Video or audio files"
             />
-            {selectedFile ? (
-              <div className="flex items-center justify-between gap-2 text-left">
-                <div className="min-w-0">
-                  <p className="truncate text-xs text-gray-200" title={selectedFile.name}>
-                    {selectedFile.name}
-                  </p>
-                  <p className="text-[10px] text-gray-600">
-                    {formatBytes(selectedFile.size)}
-                    {fileError ? "" : " · ready to transcribe"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    selectFile(null);
-                    if (fileInputRef.current) fileInputRef.current.value = "";
-                  }}
-                  className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
-                  aria-label="Remove selected media file"
-                  title="Remove selected media file"
-                >
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            ) : (
-              <label
-                htmlFor="garden-media-file-input"
-                className="block cursor-pointer"
-              >
-                <span className="text-xs text-gray-400">
-                  Drop video or audio here, or{" "}
-                  <span className="text-[var(--botanical)] underline underline-offset-2 transition-colors hover:text-[var(--botanical-hover)]">
-                    choose a file
-                  </span>
+            {selectedFiles.length > 0 ? (
+              <ul className="mb-3 max-h-48 space-y-2 overflow-y-auto text-left" aria-label="Selected media files">
+                {selectedFiles.map((file, index) => (
+                  <li key={`${file.name}-${file.size}-${file.lastModified}`} className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs text-gray-200" title={file.name}>{file.name}</span>
+                      <span className="block text-[10px] text-gray-600">{formatBytes(file.size)} · ready to transcribe</span>
+                    </span>
+                    <button type="button" onClick={() => setSelectedFiles(files => files.filter((_, i) => i !== index))}
+                      className="shrink-0 rounded p-1 text-gray-600 hover:bg-gray-800 hover:text-white"
+                      aria-label={`Remove ${file.name}`}>×</button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <label htmlFor="garden-media-file-input" className="block cursor-pointer">
+              <span className="text-xs text-gray-400">
+                Drop video or audio here, or{" "}
+                <span className="text-[var(--botanical)] underline underline-offset-2 transition-colors hover:text-[var(--botanical-hover)]">
+                  {selectedFiles.length ? "add more files" : "choose files"}
                 </span>
-                <span className="mt-1 block text-[10px] text-gray-600">
-                  Video: {ACCEPTED_VIDEO_EXTENSIONS.join(" ")}
-                </span>
-                <span className="block text-[10px] text-gray-600">
-                  Audio: {ACCEPTED_AUDIO_EXTENSIONS.join(" ")}
-                </span>
-              </label>
-            )}
+              </span>
+              <span className="mt-1 block text-[10px] text-gray-600">Video: {ACCEPTED_VIDEO_EXTENSIONS.join(" ")}</span>
+              <span className="block text-[10px] text-gray-600">Audio: {ACCEPTED_AUDIO_EXTENSIONS.join(" ")}</span>
+            </label>
             {fileError && (
               <p className="mt-1.5 text-[11px] text-red-400">{fileError}</p>
             )}
@@ -1128,10 +999,10 @@ export default function GardenVideoImport({
                 checked={keepMedia}
                 onChange={(event) => setKeepMedia(event.target.checked)}
                 className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-gray-300"
-                aria-label="Keep the video file"
+                aria-label="Keep the media files"
               />
               <span>
-                Keep the video file
+                Keep the media files
                 <span className="block text-[10px] text-gray-600">
                   Off: the file is deleted once the Markdown is saved (YouTube media is never stored by Breadboard).
                 </span>
@@ -1145,17 +1016,14 @@ export default function GardenVideoImport({
             disabled={!canSubmit}
             className="neu-button flex h-8 w-full items-center justify-center gap-2 rounded-md border border-gray-800 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {submitting ? <Spinner /> : null}
-            {selectedFile
-              ? `Transcribe ${mediaKindForFilename(selectedFile.name)}`
+            {selectedFiles.length
+              ? `Queue ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"}`
               : youtubeUrl.trim()
                 ? "Transcribe video"
                 : "Transcribe media"}
           </button>
           {submitError && <p className="text-[11px] text-red-400">{submitError}</p>}
-          {duplicateNotice && (
-            <p className="text-[11px] text-amber-400/90">{duplicateNotice}</p>
-          )}
+          <p className="text-[10px] text-gray-600">Files upload one at a time. You can close this dialog or switch gardens while the queue continues.</p>
         </div>
       )
     : null;
@@ -1240,13 +1108,13 @@ export default function GardenVideoImport({
                     aria-label={`View transcription progress for ${displayName}`}
                     title="View transcription progress"
                   >
-                    <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
+                    {job.status === "failed" ? <span className="h-4 w-4 shrink-0 text-center text-red-400">!</span> : <Spinner className="h-4 w-4 shrink-0 text-gray-500" />}
                     <span className="min-w-0 flex-1">
                       <OverflowMarquee className="text-xs text-gray-300 group-hover:text-white">
                         {displayName}
                       </OverflowMarquee>
                       <span className="block truncate text-[11px] text-gray-600">
-                        {statusLabel(job)}
+                        {job.currentStage ?? statusLabel(job)}
                         {job.progressPercent !== null
                           ? ` · ${Math.round(job.progressPercent)}%`
                           : ""}
@@ -1521,7 +1389,7 @@ export default function GardenVideoImport({
             <div className="min-h-0 space-y-5 overflow-y-auto px-5 py-4">
               <div>
                 <div className="flex items-center justify-between gap-3 text-xs">
-                  <span className="font-medium text-gray-300">{statusLabel(selectedJob)}</span>
+                  <span className="font-medium text-gray-300">{selectedJob.currentStage ?? statusLabel(selectedJob)}</span>
                   <span className="tabular-nums text-gray-500">
                     {selectedJob.progressPercent !== null
                       ? `${Math.round(selectedJob.progressPercent)}%`
@@ -1601,8 +1469,13 @@ export default function GardenVideoImport({
             </div>
 
             <div className="flex shrink-0 gap-3 border-t border-gray-800 px-5 py-4">
-              {!isTerminalJob(selectedJob) &&
-              !selectedJob.id.startsWith("client-") ? (
+              {submitError ? <p role="alert" className="text-xs text-red-400">{submitError}</p> : null}
+              {selectedJob.status === "failed" ? (
+                <button type="button" onClick={() => void retryJob(selectedJob.id)} disabled={busyJobId === selectedJob.id}
+                  className="neu-button flex-1 py-2.5 text-sm disabled:opacity-40">Retry</button>
+              ) : null}
+              {(!isTerminalJob(selectedJob) || (selectedJob.id.startsWith("client-") && selectedJob.status === "failed")) &&
+              (!selectedJob.id.startsWith("client-") || selectedJob.status !== "uploading") ? (
                 <button
                   type="button"
                   onClick={() => void cancelJob(selectedJob.id)}
@@ -1610,7 +1483,7 @@ export default function GardenVideoImport({
                   className="neu-button flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:opacity-40"
                 >
                   {busyJobId === selectedJob.id ? <Spinner /> : null}
-                  Cancel transcription
+                  {selectedJob.id.startsWith("client-") ? "Remove from queue" : "Cancel transcription"}
                 </button>
               ) : null}
               <button

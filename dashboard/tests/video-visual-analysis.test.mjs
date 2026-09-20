@@ -1,10 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   augmentSourceMarkdown,
   evenlySample,
   transcriptWindow,
 } from "../src/lib/scriberr/visual-analysis.ts";
+
+const moduleSource = fs.readFileSync(
+  path.join(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+    "src", "lib", "scriberr", "visual-analysis.ts",
+  ),
+  "utf8",
+);
 
 const transcript = {
   title: "Lecture", language: "en", durationSeconds: 3600, sourceType: "youtube", speakers: [], transcriptionModel: null,
@@ -55,4 +66,22 @@ test("the source note gains source_images, a what-the-video-shows section, and t
   // Re-running replaces the frontmatter list instead of duplicating it.
   const again = augmentSourceMarkdown({ markdown: out, analysis: "x", frames: [{ url: "/em/assets/lecture-3-page-001.png", timestamp: "0:00", seconds: 0 }], transcript: null });
   assert.equal((again.match(/^source_images:/gm) ?? []).length, 1);
+});
+
+test("a failed reading is never published as what the video shows", () => {
+  // The raw Watch report is a diagnostic: a warning line, encoder settings and
+  // absolute paths to temporary frame files in a worker directory. Two videos
+  // in a real garden carried that under "What the video shows" because the
+  // ChatMock call had answered 400 and the report was used as a stand-in.
+  const analysisStart = moduleSource.indexOf("const analysis = watched.chatmockAnalysis");
+  assert.ok(analysisStart > 0, "expected the analysis to still come from the reading");
+  const write = moduleSource.indexOf("fs.writeFileSync(sourcePath", analysisStart);
+  assert.ok(write > analysisStart, "expected the source note to be written after it");
+  const between = moduleSource.slice(analysisStart, write);
+  assert.match(between, /if \(!analysis\) \{\s*throw new Error\(/);
+  assert.doesNotMatch(moduleSource, /watched\.report/, "the raw report must not reach the note");
+
+  // And the job says it failed rather than reporting Complete with an error
+  // tucked into a field nobody reads.
+  assert.match(moduleSource, /deps\.store\.transition\(job\.id, "failed", \{/);
 });

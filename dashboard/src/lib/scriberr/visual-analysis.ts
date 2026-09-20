@@ -7,7 +7,9 @@
 // video; the sampled frames are saved beside the garden's other page
 // snapshots (`/<garden>/assets/<source>-page-NNN.png`, so Learn's source-visual
 // scan reads them like PDF pages) and the analysis is appended to the source
-// note under "What the video shows". A job that does not keep its media has
+// note under "What the video shows". Only a real frame-grounded reading is
+// ever written there: when the model cannot produce one the job fails and the
+// source note is left untouched. A job that does not keep its media has
 // nothing left on disk afterwards: YouTube media only ever existed inside the
 // Watch runtime's work directory, and an upload's temp file is removed here.
 
@@ -196,6 +198,19 @@ async function runVisualAnalysisForJob(deps: VisualAnalysisDeps, job: VideoTrans
   } catch {
     transcript = null;
   }
+  // Without a frame-grounded reading there is nothing to say about what the
+  // video shows. The raw Watch report is a diagnostic — a warning line, the
+  // encoder settings and absolute worker paths to temporary frame files — and
+  // publishing it under "What the video shows" put that into the garden and
+  // fed it to Learn as if it described the lecture. Fail instead, leaving the
+  // transcript source exactly as it was.
+  const analysis = watched.chatmockAnalysis?.trim();
+  if (!analysis) {
+    throw new Error(
+      watched.chatmockWarning?.trim() ||
+        "The frame-grounded reading of this video produced no analysis.",
+    );
+  }
   const frames = await saveFramesAsPageSnapshots({
     contentPath: deps.contentPath,
     gardenSlug: job.gardenId,
@@ -203,9 +218,6 @@ async function runVisualAnalysisForJob(deps: VisualAnalysisDeps, job: VideoTrans
     ffmpegPath: deps.ffmpegPath,
     frames: evenlySample(watched.framePaths, MAX_SOURCE_FRAMES),
   });
-  const analysis = watched.chatmockAnalysis?.trim()
-    ? watched.chatmockAnalysis
-    : `${watched.chatmockWarning ? `${watched.chatmockWarning}\n\n` : ""}${watched.report}`;
   const markdown = fs.readFileSync(sourcePath, "utf8");
   fs.writeFileSync(sourcePath, augmentSourceMarkdown({ markdown, analysis, frames, transcript }));
   await deps.publish(`video visual analysis for ${sourceSlug}`, job.gardenId);
@@ -239,13 +251,14 @@ export function kickPendingVisualAnalyses(deps: VisualAnalysisDeps, clusterId: n
           errorMessage: null,
         });
       } catch (error) {
-        // The transcript source is already written and usable; the job
-        // completes with the analysis failure recorded, never silently.
+        // The transcript source is already written and usable, but the job as
+        // asked for is not done, so it ends failed rather than complete. A job
+        // that reported "Complete" with an error tucked into a field is how a
+        // video with no visual analysis at all looked finished.
         const message = error instanceof Error ? error.message : String(error);
         deps.log?.(`visual analysis failed for ${job.id}: ${message}`);
-        deps.store.transition(job.id, "completed", {
-          currentStage: "Complete (visual analysis failed)",
-          progressPercent: 100,
+        deps.store.transition(job.id, "failed", {
+          currentStage: "Visual analysis failed",
           errorCode: "visual_analysis_failed",
           errorMessage: `The transcript was saved, but analyzing what the video shows failed: ${message.slice(0, 400)}`,
         });

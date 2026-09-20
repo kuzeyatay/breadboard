@@ -60,7 +60,9 @@ export class FindInPage {
     // A one-pixel strip keeps Chromium painting before the controls are ready.
     // Electron 33 does not reliably resume painting a view created invisible.
     this.view.setBounds({ x: Math.max(0, windowWidth - width), y: this.ready ? Math.max(0, Math.min(this.top, windowHeight - 50)) : -49, width, height: 50 });
-    this.window.contentView.addChildView(this.view);
+    if (this.window.contentView.children.at(-1) !== this.view) {
+      this.window.contentView.addChildView(this.view);
+    }
   };
 
   focus(): void {

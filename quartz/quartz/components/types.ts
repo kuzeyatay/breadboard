@@ -13,6 +13,8 @@ export type QuartzComponentProps = {
   children: (QuartzComponent | JSX.Element)[]
   tree: Node
   allFiles: QuartzPluginData[]
+  /** Published folder path, set by the folder-page emitter (including synthetic indexes). */
+  folderSlug?: string
   displayClass?: "mobile-only" | "desktop-only"
 } & JSX.IntrinsicAttributes & {
     [key: string]: any

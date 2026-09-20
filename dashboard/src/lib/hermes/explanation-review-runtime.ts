@@ -28,7 +28,7 @@ export async function reviewRuntimeExplanation(input: {
     report: { status: "not_applicable", reason: "This turn does not need an explanation review.", model, obligations: [], coverage: [], calls: 0, durationMs: 0 },
   };
   if (/^(?:0|false|off|no)$/i.test(process.env.ENABLE_EXPLANATION_REVIEW?.trim() ?? "") ||
-      !isExplanationCandidate(run.instruction) || dispatch.requiredArtifacts?.length || dispatch.delegatedAgents?.length) return skipped;
+      !isExplanationCandidate(run.instruction, dispatch.explanationContext?.hasSelection) || dispatch.requiredArtifacts?.length || dispatch.delegatedAgents?.length) return skipped;
   if (!model) return { ...skipped, report: { ...skipped.report, status: "unavailable", reason: "The answering model was not recorded; review was skipped." } };
   // The original question and pre-dispatch context define the obligations.
   // Tool summaries are evidence leads, not proof that the source was read.
@@ -42,7 +42,7 @@ export async function reviewRuntimeExplanation(input: {
   // support its requirements with actual source excerpts.
   const sourcePassages = dispatch.explanationContext?.sourcePassages ?? await explanationSourceContext(run.runtime_session_id,
     `${run.instruction}\n${(dispatch.runtimeText ?? "").slice(-6_000)}`);
-  const hash = createHash("sha256").update(JSON.stringify({ version: 5, question: run.instruction, context, sourcePassages, answer: input.answer, model })).digest("hex");
+  const hash = createHash("sha256").update(JSON.stringify({ version: 6, question: run.instruction, hasSelection: dispatch.explanationContext?.hasSelection, context, sourcePassages, answer: input.answer, model })).digest("hex");
   // Retrieval can yield while a stop or supersession changes the run.
   if (getRuntimeRun(input.runId)?.status !== "active") return null;
   const cached = dispatch.explanationReview;
@@ -66,6 +66,7 @@ export async function reviewRuntimeExplanation(input: {
     stopIfCancelled();
     result = await reviewExplanation({
       userRequest: run.instruction, context, sourcePassages, answer: input.answer, model,
+      hasSelection: dispatch.explanationContext?.hasSelection,
       complete: explanationReviewModel(model), signal: controller.signal,
       onStage: input.onStage,
     });

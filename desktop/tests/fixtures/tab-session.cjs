@@ -62,10 +62,11 @@ app.whenReady().then(async () => {
     assert.equal(await command(main, { type: "browser", url: origin + "/external" }), true);
     assert.equal(await command(main, { type: "browser" }), true);
     assert.equal(await command(main, { type: "new" }), true);
-    const newId = state(main).activeId;
-    await command(main, { type: "anchor", id: newId });
-    await command(main, { type: "browser", url: origin + "/replacement", replaceCurrent: true });
+    // Anchor the destination: anchored pages deliberately refuse navigation
+    // to another screen, including replacing New tab with Browser.
+    assert.equal(await command(main, { type: "browser", url: origin + "/replacement", replaceCurrent: true }), true);
     const replacementId = state(main).activeId;
+    await command(main, { type: "anchor", id: replacementId });
     assert.equal(state(main).tabs.find(tab => tab.id === replacementId).anchored, true);
     await command(main, { type: "move", id: replacementId, index: 0 });
     // A shortcut reaches the same close guard as mouse/bridge commands.

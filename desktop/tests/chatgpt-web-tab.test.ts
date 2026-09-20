@@ -30,6 +30,14 @@ test("a tab request is a plain object with a boolean foreground and an optional 
   assert.equal(isChatgptWebTabRequest([true]), false);
 });
 
+test("a tab request may name a lane, which is a short slug", () => {
+  assert.equal(isChatgptWebTabRequest({ foreground: false, lane: "interactive" }), true);
+  assert.equal(isChatgptWebTabRequest({ foreground: false, lane: "batch" }), true);
+  assert.equal(isChatgptWebTabRequest({ foreground: false, lane: "" }), false);
+  assert.equal(isChatgptWebTabRequest({ foreground: false, lane: "Not A Lane" }), false);
+  assert.equal(isChatgptWebTabRequest({ foreground: false, lane: 7 }), false);
+});
+
 async function withFakeDevTools(
   targets: (port: number) => unknown[],
   run: (port: number) => Promise<void>,

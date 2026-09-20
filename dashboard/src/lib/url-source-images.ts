@@ -484,6 +484,7 @@ export async function captureUrlSourceImages({
   maxImageBytes = DEFAULT_MAX_IMAGE_BYTES,
   maxTotalImageBytes = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
   captureTimeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS,
+  signal,
 }: {
   markdown: string;
   pageUrl: string;
@@ -496,6 +497,7 @@ export async function captureUrlSourceImages({
   maxImageBytes?: number;
   maxTotalImageBytes?: number;
   captureTimeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<UrlSourceImageCapture> {
   const references = allImageReferences(markdown);
   if (references.length === 0) {
@@ -542,6 +544,7 @@ export async function captureUrlSourceImages({
   const captureDeadline = Date.now() + Math.max(1, captureTimeoutMs);
 
   await mapWithConcurrency(candidates, IMAGE_FETCH_CONCURRENCY, async ([url, group], index) => {
+    signal?.throwIfAborted();
     const remainingMs = captureDeadline - Date.now();
     if (remainingMs <= 0) {
       warningCount += 1;
@@ -555,6 +558,7 @@ export async function captureUrlSourceImages({
         assertPublicHostImpl,
         maxImageBytes,
         timeoutMs: remainingMs,
+        signal,
       });
       if (capturedByteSize + fetched.bytes.byteLength > maxTotalImageBytes) {
         warningCount += 1;
@@ -579,6 +583,7 @@ export async function captureUrlSourceImages({
         bytes: fetched.bytes,
       });
     } catch {
+      signal?.throwIfAborted();
       warningCount += 1;
     }
   });

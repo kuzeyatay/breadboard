@@ -138,8 +138,15 @@ app.whenReady().then(async () => {
     }
     return menu;
   };
-  const choose = async (selector, id) => {
-    const opened = await rightClick(selector);
+  const choose = async (selector, id, keyboard = false) => {
+    if (keyboard) {
+      menu = undefined;
+      page.focus();
+      page.sendInputEvent({ type: 'keyDown', keyCode: 'F10', modifiers: ['shift'] });
+      page.sendInputEvent({ type: 'keyUp', keyCode: 'F10', modifiers: ['shift'] });
+      await until(() => menu, 'keyboard context menu');
+    }
+    const opened = keyboard ? menu : await rightClick(selector);
     const item = opened.getMenuItemById(id);
     assert.ok(item?.enabled, `${id} enabled; available: ${opened.items.map(item => item.id).join(', ')}`);
     item.click(item, window, {});
@@ -176,10 +183,10 @@ app.whenReady().then(async () => {
   await until(() => !clipboard.readImage().isEmpty(), 'native image copied');
 
   await page.executeJavaScript('document.querySelector("#editor").focus(); document.querySelector("#editor").select()');
-  await choose('#editor', 'copy');
+  await choose('#editor', 'copy', true);
   await until(() => clipboard.readText() === 'Original editable text', 'native editable selection copied');
   clipboard.writeText('Pasted through right click');
-  await choose('#editor', 'paste-plain');
+  await choose('#editor', 'paste-plain', true);
   await until(async () => await page.executeJavaScript('document.querySelector("#editor").value') === 'Pasted through right click', 'paste edits page input');
 
   const outbound = [];

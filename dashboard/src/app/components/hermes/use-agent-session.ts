@@ -1315,6 +1315,8 @@ function isExpectedCancellationError(message: string): boolean {
 
 interface CreateOptions {
   voice?: boolean;
+  /** Destination for new terminal chats; existing chats keep their own context. */
+  workspaceSlug?: string;
   gardenSlug?: string;
   pageSlug?: string;
   title?: string;

@@ -199,7 +199,11 @@ function highlightHTML(searchTerm: string, content: string) {
 const searchSetups = new WeakMap<Element, AbortController>()
 const boundSearchCleanup = new WeakSet<Element>()
 
-function setupSearch(searchElement: Element, currentSlug: FullSlug, data: ContentIndex) {
+function setupSearch(
+  searchElement: Element,
+  currentSlug: FullSlug,
+  loadData: () => Promise<ContentIndex>,
+) {
   const container = searchElement.querySelector(".search-container") as HTMLElement
   if (!container) return
 
@@ -231,7 +235,35 @@ function setupSearch(searchElement: Element, currentSlug: FullSlug, data: Conten
   // another results/preview tree when the search component itself is reused.
   searchLayout.replaceChildren()
 
-  const idDataMap = Object.keys(data) as FullSlug[]
+  let data: ContentIndex = {}
+  let idDataMap: FullSlug[] = []
+  let ready: Promise<void> | undefined
+  let queryGeneration = 0
+  const ensureReady = () => {
+    if (!ready) {
+      searchLayout.setAttribute("aria-busy", "true")
+      ready = loadData()
+        .then((loaded) => {
+          if (signal.aborted) return
+          data = loaded
+          idDataMap = Object.keys(data) as FullSlug[]
+        })
+        .catch((error) => {
+          ready = undefined
+          throw error
+        })
+        .finally(() => {
+          if (!signal.aborted) searchLayout.removeAttribute("aria-busy")
+        })
+    }
+    return ready
+  }
+  const showLoadError = () => {
+    if (!signal.aborted && container.classList.contains("active")) {
+      results.textContent = "Could not load search. Type to retry."
+      searchLayout.classList.add("display-results")
+    }
+  }
   const appendLayout = (el: HTMLElement) => {
     searchLayout.appendChild(el)
   }
@@ -250,6 +282,7 @@ function setupSearch(searchElement: Element, currentSlug: FullSlug, data: Conten
   }
 
   function hideSearch() {
+    queryGeneration++
     container.classList.remove("active")
     searchBar.value = "" // clear the input when we dismiss the search
     if (sidebar) sidebar.style.zIndex = ""
@@ -267,6 +300,7 @@ function setupSearch(searchElement: Element, currentSlug: FullSlug, data: Conten
     if (sidebar) sidebar.style.zIndex = "1"
     container.classList.add("active")
     searchBar.focus()
+    void ensureReady().catch(showLoadError)
   }
 
   let currentHover: HTMLInputElement | null = null
@@ -471,6 +505,15 @@ function setupSearch(searchElement: Element, currentSlug: FullSlug, data: Conten
 
   async function onType(e: HTMLElementEventMap["input"]) {
     if (!searchLayout || !index) return
+    const generation = ++queryGeneration
+    try {
+      await ensureReady()
+    } catch {
+      if (generation === queryGeneration) showLoadError()
+      return
+    }
+    if (signal.aborted || generation !== queryGeneration || !container.classList.contains("active"))
+      return
     currentSearchTerm = (e.target as HTMLInputElement).value
     searchLayout.classList.toggle("display-results", currentSearchTerm !== "")
     searchType = currentSearchTerm.startsWith("#") ? "tags" : "basic"
@@ -512,6 +555,7 @@ function setupSearch(searchElement: Element, currentSlug: FullSlug, data: Conten
       })
     }
 
+    if (signal.aborted || generation !== queryGeneration) return
     const getByField = (field: string): number[] => {
       const results = searchResults.filter((x) => x.field === field)
       return results.length === 0 ? [] : ([...results[0].result] as number[])
@@ -561,6 +605,10 @@ async function fillDocument(entries: Array<[FullSlug, ContentDetails]>, scope: s
   const nextIndex = createSearchIndex()
   const build = async () => {
     for (let start = 0; start < entries.length; start += indexBatchSize) {
+      if (generation !== indexBuildGeneration) {
+        nextIndex.clear()
+        return
+      }
       const batch = entries.slice(start, start + indexBatchSize)
       await Promise.all(
         batch.map(([slug, fileData], offset) => {
@@ -577,7 +625,7 @@ async function fillDocument(entries: Array<[FullSlug, ContentDetails]>, scope: s
     }
 
     if (generation !== indexBuildGeneration) {
-      await nextIndex.destroy()
+      nextIndex.clear()
       return
     }
 
@@ -585,7 +633,7 @@ async function fillDocument(entries: Array<[FullSlug, ContentDetails]>, scope: s
     index = nextIndex
     indexedScope = scope
     fetchContentCache.clear()
-    await previousIndex.destroy()
+    previousIndex.clear()
   }
   const promise = build().finally(() => {
     if (indexBuild?.generation === generation) indexBuild = undefined
@@ -598,17 +646,39 @@ let searchNavigationGeneration = 0
 document.addEventListener("nav", async (e: CustomEventMap["nav"]) => {
   const generation = ++searchNavigationGeneration
   const currentSlug = e.detail.url
-  const data = await fetchData
-  if (generation !== searchNavigationGeneration) return
-
-  const entries = scopeSearchEntries<ContentDetails>(data, currentSlug)
-  const scopedData = Object.fromEntries(entries) as ContentIndex
-  const scope = searchScope(currentSlug) ?? "*"
-  await fillDocument(entries, scope)
-  if (generation !== searchNavigationGeneration) return
+  // Release the previous page's index and cancel its build. Browsing alone
+  // must not fetch or index full note bodies; both search controls share the
+  // one lazy load for this navigation, including retry after a fetch failure.
+  indexBuildGeneration++
+  indexBuild = undefined
+  indexedScope = null
+  const previousIndex = index
+  index = createSearchIndex()
+  // destroy() tears down a mounted database in this FlexSearch version;
+  // clear() releases an in-memory index without requiring such a database.
+  previousIndex.clear()
+  fetchContentCache.clear()
+  let loading: Promise<ContentIndex> | undefined
+  const loadData = () => {
+    if (!loading) {
+      loading = (async () => {
+        // Compatibility with pages emitted before the metadata split.
+        const data = await (typeof fetchSearchData === "function" ? fetchSearchData() : fetchData)
+        if (generation !== searchNavigationGeneration) throw new Error("Search navigation changed")
+        const entries = scopeSearchEntries<ContentDetails>(data, currentSlug)
+        await fillDocument(entries, searchScope(currentSlug) ?? "*")
+        if (generation !== searchNavigationGeneration) throw new Error("Search navigation changed")
+        return Object.fromEntries(entries) as ContentIndex
+      })().catch((error) => {
+        loading = undefined
+        throw error
+      })
+    }
+    return loading
+  }
 
   const searchElement = document.getElementsByClassName("search")
   for (const element of searchElement) {
-    setupSearch(element, currentSlug, scopedData)
+    setupSearch(element, currentSlug, loadData)
   }
 })

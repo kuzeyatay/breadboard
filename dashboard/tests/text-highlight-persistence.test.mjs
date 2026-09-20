@@ -544,11 +544,13 @@ test('installed Quartz builds the same persistence client without development re
   const {stageQuartzHighlightAssets}=await import('../../desktop/scripts/quartz-highlight-assets.mjs');
   const target=path.join(root,'quartz-template');
   const scripts=path.join(target,'quartz','components','scripts');fs.mkdirSync(scripts,{recursive:true});
-  for(const name of ['highlighter.inline.ts','highlightPalette.ts','generatedVisualHost.ts']) {
+  for(const name of ['highlighter.inline.ts','highlightPalette.ts','generatedVisualHost.ts','pageUnderstanding.inline.ts','explorer.inline.ts']) {
     fs.copyFileSync(new URL('../../quartz/quartz/components/scripts/'+name,import.meta.url),path.join(scripts,name));
   }
   stageQuartzHighlightAssets(fileURLToPath(new URL('../../',import.meta.url)),target);
   const bundled=await build({entryPoints:[path.join(scripts,'highlighter.inline.ts')],bundle:true,write:false,platform:'browser',format:'iife'});
   assert.ok(bundled.outputFiles[0].text.includes('/api/text-highlights'));
+  const understanding=await build({entryPoints:[path.join(scripts,'pageUnderstanding.inline.ts')],bundle:true,write:false,platform:'browser',format:'iife'});
+  assert.ok(understanding.outputFiles[0].text.includes('/api/page-understanding'));
   assert.equal(fs.readFileSync(path.join(scripts,'text-highlight-client.ts'),'utf8'),fs.readFileSync(new URL('../src/lib/text-highlight-client.ts',import.meta.url),'utf8'));
 });

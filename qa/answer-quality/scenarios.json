@@ -1,0 +1,72 @@
+{
+  "about": "Answer-quality scenarios grown from real ratings. Each one states a question and the properties any acceptable answer must and must not have. Properties are semantic: a grader model judges them on meaning, never on wording, so an answer that satisfies a property in its own words passes. Run with scripts/evaluate-answer-quality.mjs. Candidates mined from downvotes land in candidates.json and are promoted into this file by hand — see README.md for why that step is not automated.",
+  "reasons": {
+    "wrong": "The answer asserted something the material did not support.",
+    "too_long": "The answer was correct but buried.",
+    "missed_point": "The answer addressed a different question than the one asked.",
+    "style": "The register or shape was wrong. Properties for these are written by a reviewer; there is no subject-independent rule for register."
+  },
+  "scenarios": [
+    {
+      "id": "one-fact-question-gets-the-fact",
+      "reason": "too_long",
+      "origin": "seed",
+      "note": "The answer-depth contract ends with an explicit restraint: a one-fact question still gets the fact. This scenario exists to catch the overcorrection where a gate meant to add depth turns every short question into a survey.",
+      "question": "How many bytes long is an IPv6 address?",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "States that an IPv6 address is 16 bytes (128 bits).",
+          "Gives that figure in the first sentence."
+        ],
+        "mustNot": [
+          "Opens with background on IPv6, its history, or why the question is being asked.",
+          "Surveys IPv4, address notation, or subnetting before answering.",
+          "Runs past a short paragraph."
+        ]
+      }
+    },
+    {
+      "id": "stated-constraint-is-honoured",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "A constraint stated in the question is part of the question. Answering the more familiar version of an ask is the most common way a technically correct answer misses the point.",
+      "question": "Name three programming languages in common use that have no garbage collector. Do not mention Rust.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Names exactly three languages that are in common use and are not garbage collected.",
+          "Honours the exclusion: Rust is not among the three named."
+        ],
+        "mustNot": [
+          "Names Rust, including as an aside, a recommendation, or a fourth example.",
+          "Substitutes a different question, such as which languages are memory safe or which are fastest.",
+          "Asks why Rust is excluded before answering."
+        ]
+      }
+    },
+    {
+      "id": "material-that-does-not-settle-the-question",
+      "reason": "wrong",
+      "origin": "seed",
+      "note": "The failure this catches is not inventing a fact but answering a question the supplied material is silent on, in the confident register the rest of the material invites.",
+      "question": "Here is the tail of a failed deploy log. Did this build run out of memory?",
+      "attachmentName": "deploy.log",
+      "evidence": "2026-04-11T09:14:02Z  info   resolving dependencies (412 packages)\n2026-04-11T09:14:58Z  info   compiling 1,204 modules\n2026-04-11T09:17:31Z  warn   chunk \"vendor\" is 4.2 MB after minification\n2026-04-11T09:19:04Z  info   emitting build artifacts\n2026-04-11T09:19:40Z  error  worker exited unexpectedly (signal SIGKILL)\n2026-04-11T09:19:40Z  error  build failed after 5m38s\n",
+      "rubric": {
+        "must": [
+          "States that the log does not record memory usage and therefore does not settle the question.",
+          "Identifies SIGKILL as consistent with an out-of-memory kill without asserting that is what happened.",
+          "Names at least one concrete thing that would settle it, such as the host's kernel log or the container's exit reason."
+        ],
+        "mustNot": [
+          "States as fact that the build ran out of memory.",
+          "States as fact that the build did not run out of memory.",
+          "Treats the large vendor chunk as evidence of the cause."
+        ]
+      }
+    }
+  ]
+}

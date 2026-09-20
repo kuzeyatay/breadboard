@@ -23,6 +23,7 @@ import CalendarSyncPanel from "./calendar-sync-panel";
 import ClapActionPanel from "./clap-action-panel";
 import VoiceAssistantPanel from "./voice-assistant-panel";
 import UsageLedgerPanel from "./usage-ledger-panel";
+import KeyboardShortcutsPanel from "./keyboard-shortcuts-panel";
 import type { ClapActionSettings } from "@/lib/profile/clap-action";
 import type { Contact } from "@/lib/contacts/types.ts";
 import type { CalendarCollection } from "@/lib/calendar/types.ts";
@@ -2973,6 +2974,10 @@ export default function ProfileClient({
 
           <Packed>
             <LocationPanel />
+          </Packed>
+
+          <Packed>
+            <KeyboardShortcutsPanel />
           </Packed>
 
           <Packed>

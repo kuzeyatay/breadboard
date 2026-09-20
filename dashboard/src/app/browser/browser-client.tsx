@@ -356,6 +356,10 @@ export default function BrowserClient({
   const [searchFocused, setSearchFocused] = useState(false);
   const [highlightedSuggestion, setHighlightedSuggestion] = useState(-1);
   const [addressFocused, setAddressFocused] = useState(false);
+  const addressBlurTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (addressBlurTimer.current !== null) window.clearTimeout(addressBlurTimer.current);
+  }, []);
   const [highlightedAddressSuggestion, setHighlightedAddressSuggestion] = useState(-1);
   const [terminalWidth, setTerminalWidthState] = useState(TERMINAL_DEFAULT_WIDTH);
   const [viewportWidth, setViewportWidth] = useState(
@@ -450,9 +454,15 @@ export default function BrowserClient({
       inputRef.current?.select();
     };
     window.addEventListener("breadboard:focus-browser-address", focusAddress);
-    if (isActive && browser && !browser.address) requestAnimationFrame(() => searchRef.current?.focus());
     return () => window.removeEventListener("breadboard:focus-browser-address", focusAddress);
-  }, [browser, browser?.address, isActive]);
+  }, []);
+
+  const browserHomeActive = isActive && Boolean(browser) && !browser?.address;
+  useEffect(() => {
+    if (!browserHomeActive) return;
+    const frame = window.requestAnimationFrame(() => searchRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [browserHomeActive]);
 
   useEffect(() => {
     if (!selectionKey) {
@@ -778,17 +788,29 @@ export default function BrowserClient({
             placeholder="Search with Google or enter an address"
             value={addressDisplay}
             onFocus={(event) => {
-              setDraftAddress(browser?.address ?? "");
+              // Native autocomplete can briefly blur and refocus the toolbar.
+              // A pending blur must not erase or reselect the in-progress draft.
+              const resumingDraft = addressBlurTimer.current !== null;
+              if (addressBlurTimer.current !== null) window.clearTimeout(addressBlurTimer.current);
+              addressBlurTimer.current = null;
+              setAddressFocused(true);
+              if (!resumingDraft) {
+                setDraftAddress(browser?.address ?? "");
+                event.currentTarget.select();
+              }
               setHighlightedAddressSuggestion(-1);
-              event.currentTarget.select();
             }}
             onPointerDown={() => setAddressFocused(true)}
-            onBlur={() => window.setTimeout(() => {
-              setAddressFocused(false);
-              setDraftAddress(null);
-              setHighlightedAddressSuggestion(-1);
-              void sendDesktopTabsCommand({ type: "browser-address-suggestions", open: false });
-            }, 120)}
+            onBlur={() => {
+              if (addressBlurTimer.current !== null) window.clearTimeout(addressBlurTimer.current);
+              addressBlurTimer.current = window.setTimeout(() => {
+                addressBlurTimer.current = null;
+                setAddressFocused(false);
+                setDraftAddress(null);
+                setHighlightedAddressSuggestion(-1);
+                void sendDesktopTabsCommand({ type: "browser-address-suggestions", open: false });
+              }, 120);
+            }}
             onKeyDown={handleAddressKeys}
             onChange={(event) => {
               setDraftAddress(event.target.value);

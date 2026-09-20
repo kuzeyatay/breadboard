@@ -65,7 +65,8 @@ export async function GET(request: Request) {
     const visibleNodes = knowledge.nodes.filter(
       (node) =>
         includeInternalConcepts ||
-        (node.type !== INTERNAL_CONCEPT_TYPE && !isLegacySubtopicRelPath(node.relPath)),
+        (node.type !== INTERNAL_CONCEPT_TYPE &&
+          !isLegacySubtopicRelPath(node.relPath, node.type)),
     );
     const visibleSlugs = new Set(visibleNodes.map((node) => node.slug));
     const nodes = visibleNodes.map(publicNode);

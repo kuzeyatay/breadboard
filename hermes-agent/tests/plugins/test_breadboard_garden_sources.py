@@ -69,6 +69,28 @@ def test_source_tools_register_and_forward_the_exact_source(monkeypatch):
     assert result["status"] == "queued"
     assert result["jobId"] == "source-job"
 
+    # Attachments are a valid alternative to a URL, including batch selection
+    # by position when two uploaded files share a name.
+    schema = registered["garden_import_source"]["schema"]
+    assert "url" not in schema["parameters"].get("required", [])
+    for selector in [{"attachmentName": "lecture.pdf"}, {"attachmentIndex": 2}]:
+        args = {"gardenId": "circuits", **selector}
+        result = json.loads(registered["garden_import_source"]["handler"](args, task_id="source-session"))
+        assert requests[-1] == {"tool": "garden_import_source", "args": args}
+        assert result["processing"] is True
+
+    # The browser owns the sign-in. The model forwards only a source link and
+    # parser preferences; the broker resolves the linked session server-side.
+    args = {
+        "gardenId": "circuits", "url": "https://canvas.example/courses/42/files/7/download",
+        "useBrowserSession": True, "parseWithAnydoc": True, "parseWithVlm": True,
+    }
+    for name in ("useBrowserSession", "parseWithAnydoc", "parseWithVlm"):
+        assert schema["parameters"]["properties"][name]["type"] == "boolean"
+    result = json.loads(registered["garden_import_source"]["handler"](args, task_id="source-session"))
+    assert requests[-1] == {"tool": "garden_import_source", "args": args}
+    assert result["processing"] is True
+
 
 def test_import_scope_denial_is_not_reported_as_a_success(monkeypatch):
     class Connection:

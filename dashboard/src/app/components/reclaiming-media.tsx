@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   type AudioHTMLAttributes,
+  type MutableRefObject,
   type RefCallback,
   type VideoHTMLAttributes,
 } from "react";
@@ -14,6 +15,10 @@ export { releaseMediaElement } from "@/app/components/media-element-resource";
 
 function useReclaimingMediaRef<T extends HTMLMediaElement>(
   source: string | undefined,
+  // A caller that drives the element itself (a player with its own controls)
+  // still needs a handle on it. It shares this ref rather than owning one, so
+  // release-on-replacement keeps working.
+  sharedRef?: MutableRefObject<T | null>,
 ): RefCallback<T> {
   const elementRef = useRef<T | null>(null);
 
@@ -21,10 +26,11 @@ function useReclaimingMediaRef<T extends HTMLMediaElement>(
     const previous = elementRef.current;
     if (previous && previous !== element) releaseMediaElement(previous);
     elementRef.current = element;
+    if (sharedRef) sharedRef.current = element;
     if (element && source && element.getAttribute("src") !== source) {
       element.setAttribute("src", source);
     }
-  }, [source]);
+  }, [sharedRef, source]);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -43,10 +49,14 @@ function useReclaimingMediaRef<T extends HTMLMediaElement>(
 /** A normal `<video>` whose native decoder state is released on replacement. */
 export function ReclaimingVideo({
   src,
+  elementRef,
   ...props
-}: VideoHTMLAttributes<HTMLVideoElement>) {
+}: VideoHTMLAttributes<HTMLVideoElement> & {
+  elementRef?: MutableRefObject<HTMLVideoElement | null>;
+}) {
   const ref = useReclaimingMediaRef<HTMLVideoElement>(
     typeof src === "string" ? src : undefined,
+    elementRef,
   );
   return <video {...props} ref={ref} src={src} />;
 }

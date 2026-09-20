@@ -390,6 +390,10 @@ test(
       );
       fs.writeFileSync(journalPath, `${JSON.stringify(transaction)}\n`, "utf8");
 
+      // The original asset is valid, but appending a pending-file suffix would
+      // exceed the filesystem's 255-character filename component limit.
+      const longAssetName = `${"figure-".repeat(33)}diagram.png`;
+      fs.writeFileSync(path.join(stagePath, longAssetName), "complete figure", "utf8");
       let lockedRootAttempts = 0;
       fs.renameSync = (source, target) => {
         if (source === publicPath && target === previousPath) {
@@ -408,6 +412,8 @@ test(
       );
       assert.equal(lockedRootAttempts, 12);
       assert.equal(fs.readFileSync(path.join(publicPath, "new.html"), "utf8"), "new");
+      assert.equal(fs.readFileSync(path.join(publicPath, longAssetName), "utf8"), "complete figure");
+      assert.equal(fs.readdirSync(publicPath).some(name => name.startsWith(".pending-")), false);
       assert.equal(fs.existsSync(path.join(publicPath, "old.html")), false);
       assert.equal(fs.existsSync(stagePath), false);
       assert.equal(fs.existsSync(previousPath), false);

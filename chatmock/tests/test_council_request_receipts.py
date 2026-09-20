@@ -2319,3 +2319,25 @@ class LegacyCouncilLookupTests(unittest.TestCase):
             )
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoutelessFailedReceiptTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = StrictCouncilReceiptStore(self.tmp.name)
+        self.request_hash = "b" * 64
+
+    def test_a_failure_recorded_before_routing_still_allows_its_one_redispatch(self) -> None:
+        # 2026-09-17: the openaiweb page was busy, the dispatch failed before a
+        # route was recorded, and redispatchAllowed went false - which stranded
+        # the request and failed every later resume of the Learn job.
+        request_id = "lrq_fixture_routeless_001"
+        self.store.reserve(request_id, self.request_hash, dispatch_mode="direct_council")
+        accounting = receipt_accounting("crun_routeless")
+        accounting["modelRouting"] = []
+        self.store.fail_no_final_answer(request_id, self.request_hash, accounting)
+        metadata = self.store.promptless_metadata(request_id, self.request_hash)
+        self.assertTrue(metadata["redispatchAllowed"], metadata)
+        self.store.claim_failed_redispatch(request_id, self.request_hash)
+        self.assertEqual(self.store.read(request_id, self.request_hash)["state"], "started")

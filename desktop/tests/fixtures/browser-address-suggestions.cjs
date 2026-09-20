@@ -104,7 +104,8 @@ app.whenReady().then(async () => {
   await until(pageView, "web page attaches");
   // Composite the trusted renderer over the native page, not only DOM geometry.
   window.setPosition(24, 24);
-  window.setAlwaysOnTop(true);
+  if (process.env.BB_ADDRESS_INPUT_ONLY) window.setOpacity(0);
+  else window.setAlwaysOnTop(true);
   window.showInactive();
   assert.equal(pageView().getBounds().y, BROWSER_CONTENT_TOP_INSET);
   const chromeView = () => window.contentView.children.find(view => view.webContents?.id === chrome.id);
@@ -164,6 +165,31 @@ app.whenReady().then(async () => {
   assert.ok(eightBottom > twoBottom);
   assert.deepEqual(pageView().getBounds(), initialBounds);
   assert.deepEqual(await metrics(), initialMetrics, 'changing result count never reflows or scrolls the page');
+  const host = manager.hosts.get(window.id);
+  const addChildView = window.contentView.addChildView;
+  let reordered = 0;
+  window.contentView.addChildView = function(...args) {
+    reordered++;
+    return addChildView.apply(this, args);
+  };
+  try {
+    for (let update = 0; update < 5; update++) {
+      manager.layout(host);
+      manager.syncBrowser(host);
+      manager.handleCommand(chrome, { type: 'browser-address-suggestions', open: true });
+    }
+    assert.equal(reordered, 0, 'routine updates leave the focused toolbar in its native view stack');
+    assert.ok(chromeAbovePage(), 'suggestions remain above the page');
+  } finally {
+    window.contentView.addChildView = addChildView;
+  }
+  if (process.env.BB_ADDRESS_INPUT_ONLY) {
+    window.destroy();
+    server.close();
+    external.close();
+    app.exit(0);
+    return;
+  }
   let capture;
   const pixel = (image, x, y) => {
     const bitmap = image.toBitmap(), offset = (y * image.getSize().width + x) * 4;

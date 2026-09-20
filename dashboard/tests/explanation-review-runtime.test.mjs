@@ -41,7 +41,7 @@ function reset() {
     run: { id: "r1", runtime_session_id: 1, status: "active", instruction: "Explain how DNS works", dispatch_json: JSON.stringify({ modelIdentity: { modelID: "gpt-5.6-sol" }, runtimeText: "Explain how DNS works", system: "Keep it concise." }) },
     complete: async request => ({ content: JSON.stringify(request.stage === "plan"
       ? { applicable: true, reason: "Name resolution", mechanisms: [{ mechanism: "Cache", sourceQuotes: ['A retrieved source passage.'] }, { mechanism: "Lookup", sourceQuotes: [] }] }
-      : { coverage: [{ id: "m1", status: "covered", quotes: ["Check cache."], reason: "", consequence: "" }, { id: "m2", status: "covered", quotes: ["Then look up."], reason: "", consequence: "" }] }), usage: { input_tokens: 2, output_tokens: 3 } }),
+      : { concerns: [], coverage: [{ id: "m1", status: "covered", quotes: ["Check cache."], reason: "", consequence: "" }, { id: "m2", status: "covered", quotes: ["Then look up."], reason: "", consequence: "" }] }), usage: { input_tokens: 2, output_tokens: 3 } }),
   });
 }
 const input = { runId: "r1", answer: "Check cache. Then look up.", evidence: [] };
@@ -66,6 +66,15 @@ test("a changed draft cannot reuse the old approval", async () => {
   assert.equal(result.report.status, "unavailable");
   assert.equal(result.answer, "Different answer.");
   assert.equal(fixture.calls.length, 4);
+});
+
+test("a selected fragment keeps its admission through the runtime reviewer", async () => {
+  reset();
+  fixture.run.instruction = "Two real little balls next to each other?";
+  fixture.run.dispatch_json = JSON.stringify({ modelIdentity: { modelID: "fixture" },
+    explanationContext: { repair: true, hasSelection: true, context: "The selected pairing claim.", sourcePassages: "A retrieved source passage." } });
+  assert.equal((await reviewRuntimeExplanation(input)).report.status, "reviewed");
+  assert.equal(fixture.calls.length, 2);
 });
 
 test("a stop during retrieval cannot republish a cached answer", async () => {

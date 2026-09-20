@@ -110,8 +110,8 @@ class WebVoiceBase(unittest.TestCase):
         return started
 
     def assert_page_released(self) -> None:
-        self.assertTrue(web._turn_lock.acquire(blocking=False), "the page lock was left held")
-        web._turn_lock.release()
+        self.assertTrue(web._lane().lock.acquire(blocking=False), "the page lock was left held")
+        web._lane().lock.release()
 
 
 class StatusTests(WebVoiceBase):
@@ -323,12 +323,12 @@ class ReadAloudTests(WebVoiceBase):
 
     def test_a_busy_page_refuses_in_plain_words(self) -> None:
         with patch.object(web, "TURN_QUEUE_WAIT_SECONDS", 0.01):
-            web._turn_lock.acquire()
+            web._lane().lock.acquire()
             try:
                 with self.assertRaises(web_voice.WebSpeechError) as caught:
                     web_voice.synthesize("Hello.", "cove")
             finally:
-                web._turn_lock.release()
+                web._lane().lock.release()
         self.assertEqual(caught.exception.status, 503)
         self.assertIn("still answering", str(caught.exception))
 

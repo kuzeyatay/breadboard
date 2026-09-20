@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CalendarDays, ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Search, Timer, UserRound, UsersRound, X, type LucideIcon } from "lucide-react";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import { BrowserSketchOutline } from "@/app/browser/browser-home-widgets";
@@ -18,14 +18,8 @@ import NewTabNotepad from "./new-tab-notepad";
 import ProviderUsageNotch from "./provider-usage-notch";
 import PageAppearance from "@/app/components/page-appearance";
 import VoiceShortcut from "@/app/components/voice-shortcut";
-
-export interface NewTabGarden {
-  slug: string;
-  name: string;
-  noteCount: number;
-  lastViewedAt: string | null;
-  borderColor: string;
-}
+import type { NewTabGarden } from "@/lib/new-tab-gardens";
+export type { NewTabGarden } from "@/lib/new-tab-gardens";
 
 interface Place {
   href: string;
@@ -85,7 +79,7 @@ function BrowserShortcut({ query }: { query: string }) {
 }
 
 export default function NewTabClient({
-  gardens,
+  gardens: initialGardens,
   addressee: initialAddressee,
   greetingOwnerKey = "local",
   widgetOwnerKey = greetingOwnerKey,
@@ -95,6 +89,21 @@ export default function NewTabClient({
   greetingOwnerKey?: string;
   widgetOwnerKey?: string;
 }) {
+  const [gardens, setGardens] = useState(initialGardens);
+  const tabs = useDesktopTabs();
+  const active = tabs
+    ? tabs.selfId === tabs.activeId
+    : typeof window !== "undefined" && !("breadboardDesktop" in window);
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    // Counts and changes made in another tab arrive after the launcher.
+    void fetch("/api/new-tab/gardens", { cache: "no-store", signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => { if (!controller.signal.aborted && Array.isArray(data?.gardens)) setGardens(data.gardens); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [active]);
   const addressee = useNewTabAddressee(initialAddressee, greetingOwnerKey);
   const appearance = usePageAppearance(widgetOwnerKey, "new-tab");
   const backgroundImage = appearance.wallpaper?.src;
@@ -181,7 +190,7 @@ export default function NewTabClient({
                     <span className={styles.gardenDot} style={{ backgroundColor: garden.borderColor }} aria-hidden="true" />
                     <span className={styles.gardenInfo}>
                       <span className={styles.gardenName} title={garden.name}>{garden.name}</span>
-                      <span className={styles.noteCount}>{garden.noteCount} {garden.noteCount === 1 ? "note" : "notes"}</span>
+                      <span className={styles.noteCount}>{garden.noteCount === null ? "\u00a0" : `${garden.noteCount} ${garden.noteCount === 1 ? "note" : "notes"}`}</span>
                     </span>
                   </div>
                   <LinkContextMenu href={workspace} label={`${garden.name} workspace`}>

@@ -3,8 +3,7 @@
 // Only world geometry, camera orbit and XYZ drag/persistence differ.
 import {
   TopologyCamera3D,
-  sphericalDepthFactor,
-  topologyNodeDepth,
+  sphericalTopologyPositions,
   type Point3D,
 } from "./thoughtTopology3DGeometry"
 import {
@@ -351,7 +350,16 @@ export async function renderThoughtTopology3D(
     recoveryNotice = null
     try {
       const replacement = await renderer.replace(() =>
-        mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, scheduleRecovery),
+        mountThoughtTopology(
+          graph,
+          fullSlug,
+          config,
+          payload,
+          context,
+          settings,
+          spin,
+          scheduleRecovery,
+        ),
       )
       if (replacement && !disposed) {
         active = replacement
@@ -369,7 +377,16 @@ export async function renderThoughtTopology3D(
 
   active =
     (await renderer.replace(() =>
-      mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, scheduleRecovery),
+      mountThoughtTopology(
+        graph,
+        fullSlug,
+        config,
+        payload,
+        context,
+        settings,
+        spin,
+        scheduleRecovery,
+      ),
     )) ?? null
 
   // --- Filters panel -------------------------------------------------------
@@ -667,27 +684,26 @@ async function mountThoughtTopologyScene(
     minConnectionStrength: settings.minConnectionStrength,
     maxConnectionsPerNode: settings.maxConnectionsPerNode,
   }
-  const plan = planThoughtTopology(payload, { ...planOptions, positionOverrides: storedPositions })
+  const plan = planThoughtTopology(payload, planOptions)
   const camera = new TopologyCamera3D()
-  // Use the complete payload count so toggling a folder never shifts its depth.
-  // The planned disc's radius (ignoring nodes a person pinned elsewhere), so
-  // the depth amplitude matches the map's own width and the resulting cloud
-  // is roughly as deep as it is wide.
-  const layoutRadius = plan.nodes.reduce(
-    (max, node) => (node.id in storedPositions ? max : Math.max(max, Math.hypot(node.x, node.y))),
-    0,
+  // Scatter the complete scope once so filtering and compact previews retain
+  // the same round layout. Cached worker coordinates belong to the 2D planner.
+  const plannedHomes = sphericalTopologyPositions(
+    compact || settings.excludedFolderIds.length > 0
+      ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes
+      : plan.nodes,
   )
-  const depthSpread = Math.max(
+  const depthSpread = [...plannedHomes.values()].reduce(
+    (extent, point) => Math.max(extent, Math.hypot(point.x, point.y, point.z)),
     180,
-    Math.sqrt(payload.nodes.length + payload.folders.length) * 65,
-    layoutRadius * 0.85,
   )
-  const defaultDepth = (node: PlannedNode) =>
-    topologyNodeDepth(node, depthSpread) * sphericalDepthFactor(node, layoutRadius)
   for (const planned of plan.nodes) {
     const node = planned as SimNode
-    const savedZ = storedPositions[node.id]?.z
-    node.z = Number.isFinite(savedZ) ? savedZ : defaultDepth(node)
+    const home = plannedHomes.get(node.id)!
+    const saved = storedPositions[node.id]
+    node.x = Number.isFinite(saved?.x) ? saved.x : home.x
+    node.y = Number.isFinite(saved?.y) ? saved.y : home.y
+    node.z = Number.isFinite(saved?.z) ? saved.z : home.z
   }
   const homePositions = new Map(
     plan.nodes.map((node) => [
@@ -701,20 +717,9 @@ async function mountThoughtTopologyScene(
   )
   /** Nodes whose home a person pinned with a right-click or right-drag. */
   const permanentHomeIds = new Set(Object.keys(storedPositions))
-  // The layout the map would have without any pinned position; a released
-  // node drifts back to it. Computed once, only when a node is released.
-  let plannedHomeCache: Map<string, Point3D> | null = null
-  const plannedHome = (nodeId: string): Point3D | undefined => {
-    if (!plannedHomeCache) {
-      plannedHomeCache = new Map(
-        planThoughtTopology(payload, planOptions).nodes.map((node) => [
-          node.id,
-          { x: node.x, y: node.y, z: defaultDepth(node) },
-        ]),
-      )
-    }
-    return plannedHomeCache.get(nodeId)
-  }
+  // The Garden is the centre of rotation; it can still be dragged and pinned.
+  const isHomeFixed = (node: PlannedNode) => node.kind === "garden" || permanentHomeIds.has(node.id)
+  const plannedHome = (nodeId: string): Point3D | undefined => plannedHomes.get(nodeId)
   const debugEnabled = new URLSearchParams(window.location.search).get("topologyTest") === "1"
 
   // --- Surrounding DOM -----------------------------------------------------
@@ -1113,10 +1118,8 @@ async function mountThoughtTopologyScene(
   const edgeById = new Map(connectionViews.map((view) => [view.edge.id, view]))
 
   // --- Legacy Knowledge Map motion ----------------------------------------
-  // Keep Thought Topology's authored home layout, but let the same d3 force
-  // system used by the legacy Knowledge Map animate nodes into it. Invalid
-  // initial coordinates deliberately invoke d3's deterministic phyllotaxis
-  // seed, which creates the familiar slow scatter on first load.
+  // Keep the same d3 springs and settling, starting from a smaller copy of
+  // the spherical homes so the entrance scatters naturally in every axis.
   const simNodes = plan.nodes as SimNode[]
   const simNodeById = new Map(simNodes.map((node) => [node.id, node]))
   // Node proximity follows the rendered name, not just the dot. Full maps
@@ -1142,14 +1145,14 @@ async function mountThoughtTopologyScene(
   const returningNodeIds = new Set<string>()
   let activeDragNodeId: string | null = null
   for (const node of simNodes) {
-    if (permanentHomeIds.has(node.id)) {
+    if (isHomeFixed(node)) {
       const home = homePositions.get(node.id)
       node.fx = home?.x ?? node.x
       node.fy = home?.y ?? node.y
       node.fz = home?.z ?? node.z
     } else if (!reducedMotion && !compactSidebar) {
-      node.x = Number.NaN
-      node.y = Number.NaN
+      node.x *= 0.12
+      node.y *= 0.12
       node.z *= 0.12
     }
   }
@@ -1346,7 +1349,7 @@ async function mountThoughtTopologyScene(
   // --- View transform ------------------------------------------------------
   const canvasSelection = select<HTMLCanvasElement, unknown>(app.canvas)
   const zoomBehavior = zoom<HTMLCanvasElement, unknown>()
-    .scaleExtent([0.2, 5])
+    .scaleExtent([0.01, 5])
     .on("zoom", (event) => {
       transform = event.transform
       world.scale.set(transform.k, transform.k)
@@ -1394,13 +1397,7 @@ async function mountThoughtTopologyScene(
     if (compact) return []
     const canvasRect = graph.getBoundingClientRect()
     const rects: ClipRect[] = []
-    for (const blocker of [
-      heading,
-      searchPanel,
-      overlayClose,
-      calloutRoot,
-      inspectorRoot,
-    ]) {
+    for (const blocker of [heading, searchPanel, overlayClose, calloutRoot, inspectorRoot]) {
       if (blocker === calloutRoot && !calloutVisible) continue
       if (blocker === inspectorRoot && !inspectorRoot?.classList.contains("open")) continue
       if (!blocker || blocker.hidden || blocker.offsetParent === null) continue
@@ -1426,15 +1423,25 @@ async function mountThoughtTopologyScene(
       fitNodes.map((node) => ({ ...node, ...projected(node) })),
       compact ? 18 : 44,
     )
+    // Keep the Garden name centred even in sparse or filtered clouds. Mirror
+    // the bounds about its anchor so fitting still includes every outer node.
+    const focus = projected(gardenAnchor)
+    const halfWidth = Math.max(focus.x - bounds.minX, bounds.maxX - focus.x)
+    const halfHeight = Math.max(focus.y - bounds.minY, bounds.maxY - focus.y)
     const next = fitTransform(
-      bounds,
+      {
+        minX: focus.x - halfWidth,
+        maxX: focus.x + halfWidth,
+        minY: focus.y - halfHeight,
+        maxY: focus.y + halfHeight,
+      },
       { width, height },
       currentInsets(),
       {
-        minScale: compactSidebar ? 0.01 : 0.3,
+        minScale: 0.01,
         maxScale: compact ? 1.25 : 1.35,
       },
-      projected(gardenAnchor),
+      focus,
     )
     fitK = next.k
     viewState = "fit"
@@ -2410,8 +2417,17 @@ async function mountThoughtTopologyScene(
         node.x = home.x
         node.y = home.y
         node.z = home.z
+        if (isHomeFixed(node)) {
+          node.fx = home.x
+          node.fy = home.y
+          node.fz = home.z
+        }
       }
     } else {
+      if (node.kind === "garden" && home) {
+        returnTargets.set(node.id, { ...home, pin: true })
+        returningNodeIds.add(node.id)
+      }
       simulationSettled = false
       simulation.alpha(Math.max(simulation.alpha(), 0.25)).restart()
     }
@@ -2594,7 +2610,7 @@ async function mountThoughtTopologyScene(
             if (state.moved <= CLICK_SLOP_PX) {
               for (const member of state.members) {
                 const home = homePositions.get(member.view.node.id)
-                if (permanentHomeIds.has(member.view.node.id) && home) {
+                if (isHomeFixed(member.view.node) && home) {
                   member.view.node.fx = home.x
                   member.view.node.fy = home.y
                   member.view.node.fz = home.z
@@ -2646,14 +2662,14 @@ async function mountThoughtTopologyScene(
                 member.view.node.x = home.x
                 member.view.node.y = home.y
                 member.view.node.z = home.z
-                member.view.node.fx = permanentHomeIds.has(member.view.node.id) ? home.x : null
-                member.view.node.fy = permanentHomeIds.has(member.view.node.id) ? home.y : null
-                member.view.node.fz = permanentHomeIds.has(member.view.node.id) ? home.z : null
+                member.view.node.fx = isHomeFixed(member.view.node) ? home.x : null
+                member.view.node.fy = isHomeFixed(member.view.node) ? home.y : null
+                member.view.node.fz = isHomeFixed(member.view.node) ? home.z : null
               } else {
                 member.view.node.fx = null
                 member.view.node.fy = null
                 member.view.node.fz = null
-                const pin = permanentHomeIds.has(member.view.node.id)
+                const pin = isHomeFixed(member.view.node)
                 const target = pin ? home : { x: member.x, y: member.y, z: member.z }
                 returnTargets.set(member.view.node.id, { ...target, pin })
                 returningNodeIds.add(member.view.node.id)
@@ -3031,7 +3047,7 @@ async function mountThoughtTopologyScene(
   }
 
   refreshStyles()
-  fitView(false, true)
+  fitView(false, !simulationSettled)
   emitGraphContext()
   requestAnimationFrame(animate)
 

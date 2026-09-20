@@ -25,15 +25,22 @@ const PUBLIC_INGEST_VISION_WARNING =
   "Vision processing was incomplete for this document.";
 const PUBLIC_INGEST_DOCUMENT_WARNING =
   "Some document content or page previews could not be processed.";
+// Nothing produces this any more: an upload that asked for a map and did not
+// get one now fails instead of saving a source with a stand-in summary. It
+// stays accepted so a job submitted before that change, and finishing after
+// it, still parses rather than failing an otherwise-good upload.
 const PUBLIC_INGEST_MAP_WARNING =
   "Map generation failed, so the source was saved without extracted lesson topics. You can retry with Learn after upload.";
 // Mirrors the worker's fixed wording for a quota/credit refusal. Any other
 // failure text is rejected below, so the sanitized boundary stays closed.
 const PUBLIC_INGEST_MODEL_QUOTA_FAILURE =
   "The selected model and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
+const PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE =
+  "The document was read, but building its summary and concepts failed, so nothing was added to the garden. Resume the upload to try again.";
 const PUBLIC_INGEST_FAILURE_MESSAGES = new Set([
   SANITIZED_RUNTIME_FAILURE_MESSAGE,
   PUBLIC_INGEST_MODEL_QUOTA_FAILURE,
+  PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE,
 ]);
 // A retained-upload id the worker attaches to a failure (see
 // `retainIngestRecovery`); it is an opaque handle for the garden's recovery

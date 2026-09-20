@@ -715,6 +715,44 @@ export const SOURCE_COMMENTARY_PHRASES = [
   "according to the source",
 ] as const;
 
+/**
+ * The model narrating its own edit at the top of a lesson: "I'm applying the
+ * repair narrowly: I'll keep the lesson, figures, marker, questions, and
+ * answers unchanged, and only fix...". Six telecom-1 pages carried exactly
+ * that as their first paragraph (2026-09-17) - the repair prompt says "Return
+ * only the final markdown", the model complied for the lesson and prefixed a
+ * plan anyway. The paragraph was accepted into the page receipt, so every
+ * resumed run replayed it, and every strict critic pass then spent a round
+ * finding and stripping the same six lines again.
+ *
+ * Only a leading paragraph is stripped, and only when it is unmistakably the
+ * author talking about the edit (first person plus edit vocabulary): a lesson
+ * that legitimately opens with "I" has none of those words.
+ */
+const AUTHOR_PREAMBLE_OPENER = /^(?:I(?:['’]m|['’]ll|['’]ve| am| will| have)|Here(?:['’]s| is)|Below is)\b/i;
+const AUTHOR_PREAMBLE_EDIT_VOCABULARY =
+  /\b(?:repair(?:s|ing|ed)?|fix(?:es|ing|ed)?|flagged|unchanged|narrow(?:ly)?|revis(?:e|ed|ion)|edit(?:s|ing)?|the (?:final |full |complete |updated |revised )?(?:markdown|lesson|page|draft)|only the|leave the rest)\b/i;
+
+export function stripLeadingAuthorPreamble(markdown: string): { markdown: string; stripped: string | null } {
+  const trimmed = markdown.replace(/^\s+/, "");
+  const paragraphEnd = trimmed.search(/\n\s*\n/);
+  const firstParagraph = (paragraphEnd === -1 ? trimmed : trimmed.slice(0, paragraphEnd)).trim();
+  if (!firstParagraph || /^(?:#|<!--|---|\$\$|```|[-*>]|\d+\.)/.test(firstParagraph)) {
+    return { markdown, stripped: null };
+  }
+  if (!AUTHOR_PREAMBLE_OPENER.test(firstParagraph) || !AUTHOR_PREAMBLE_EDIT_VOCABULARY.test(firstParagraph)) {
+    return { markdown, stripped: null };
+  }
+  // Never empty a page: a one-paragraph body is content, whatever it opens with.
+  if (paragraphEnd === -1) return { markdown, stripped: null };
+  return { markdown: trimmed.slice(paragraphEnd).replace(/^\s+/, ""), stripped: firstParagraph };
+}
+
+/** A repair narration anywhere else in the body is a hard failure the repair
+ * prompt has to remove, like any other author-facing line. */
+export const AUTHOR_PREAMBLE_LINE_PATTERN =
+  /^I(?:['’]m|['’]ll| will| am)\s+(?:apply(?:ing)?|repair(?:ing)?|treat(?:ing)?|keep(?:ing)?|fix(?:ing)?|leav(?:e|ing)|mak(?:e|ing))\b.*\b(?:repair|flagged|unchanged|narrow(?:ly)?|the rest of the (?:lesson|page))\b/im;
+
 /** Meta-instruction / placeholder language that means a page was not actually
  * written. Any of these in a learner page is a hard failure. Shared with the
  * validation script. */
@@ -738,6 +776,10 @@ export const PLACEHOLDER_PATTERNS: RegExp[] = [
   /\b(?:add|write|fill in) (?:the |your |an? )?(?:explanation|example|analogy|content|details?) here\b/i,
   /\bsource says\b/i,
   /\bexpand (?:on )?this (?:later|section|point)\b/i,
+  // The model describing its own edit ("I'm applying the repair narrowly:
+  // I'll keep ... unchanged"). A leading one is stripped before assessment
+  // (stripLeadingAuthorPreamble); one anywhere else is a hard failure.
+  AUTHOR_PREAMBLE_LINE_PATTERN,
 ];
 
 /** Annoying AI-style discourse patterns, especially teaching-by-negation.
@@ -847,6 +889,32 @@ export const SOURCE_COMMENTARY_PATTERNS: RegExp[] = [
   /\bthe source material\b/i,
 ];
 
+/**
+ * Vocabulary that exists only inside the Learn pipeline. A lesson that reaches
+ * for these words is describing its own construction instead of teaching:
+ * A rejected telecom-1 draft (2026-09-19) used re-anchoring and deferral
+ * language. The published 11.3 did not contain those internal notes.
+ *
+ * These are deliberately narrow. A lesson is allowed to state its own limits —
+ * "the material used here does not explain how the speech coder works" is
+ * honest and common — so only machinery nouns and planning verdicts are
+ * rejected, never an honest statement of what a source does not cover.
+ */
+export const PIPELINE_VOCABULARY_PATTERNS: RegExp[] = [
+  /\bre-?anchor(?:ing|ed|s)?\b/i,
+  /\bsource anchors?\b/i,
+  /\b(?:learning|syllabus) units?\b/i,
+  /\blearning unit contract\b/i,
+  /\bcoverage reason\b/i,
+  /\bdossier\b/i,
+  /\bcandidate passages?\b/i,
+  /\bsupplied passages?\b/i,
+  // A planning verdict written into the lesson instead of a lesson.
+  /\bthis (?:unit|page|lesson) is deferred\b/i,
+  /\bdeferred until\b[^.]*\bevidence\b/i,
+  /\b(?:material|evidence|passages?) assigned to this unit\b/i,
+];
+
 /** Bibliography/reference-list chunks ("[12] A. Author, \"Title\", ...") pasted
  * into a lesson as if they were teaching content. */
 export const RAW_REFERENCE_DUMP_RE = /\[\d+\]\s+[A-Z][^"\n]+,\s*["“].+["”]/;
@@ -856,6 +924,9 @@ export const RAW_REFERENCE_DUMP_RE = /\[\d+\]\s+[A-Z][^"\n]+,\s*["“].+["”]/;
 export function teachingProse(markdown: string): string {
   return stripMarkdownFrontmatter(markdown)
     .replace(/```[\s\S]*?```/g, " ")
+    // `<!-- learning-unit:U2:interactive-visual -->` and friends are pipeline
+    // markers the renderer consumes; they are never read by a learner.
+    .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     // Compact provenance caption lines: "*caption text* *(p. 7)*" or "*caption*".
     .replace(/^\s*\*[^*\n]+\*(?:\s*\*\([^)\n]*\)\*)?\s*$/gm, " ");
@@ -917,6 +988,179 @@ export function sourceCommentaryMatches(markdown: string): SourceCommentaryMatch
     distinct.push(candidate);
   }
   return distinct.map(({ matchedText, snippet }) => ({ matchedText, snippet }));
+}
+
+/**
+ * Find pipeline-vocabulary phrases in learner prose. Same reporting contract as
+ * the source-commentary rules: overlapping matches count once and each result
+ * carries its exact line so a repair call acts on evidence, not a count.
+ */
+export function pipelineVocabularyMatches(markdown: string): SourceCommentaryMatch[] {
+  const prose = teachingProse(markdown);
+  const candidates: IndexedSourceCommentaryMatch[] = [];
+  for (const pattern of PIPELINE_VOCABULARY_PATTERNS) {
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    for (const match of prose.matchAll(global)) {
+      const start = match.index;
+      if (start === undefined || !match[0]) continue;
+      const end = start + match[0].length;
+      const lineStart = prose.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+      const nextLineBreak = prose.indexOf("\n", end);
+      const lineEnd = nextLineBreak === -1 ? prose.length : nextLineBreak;
+      candidates.push({
+        matchedText: match[0],
+        snippet: prose.slice(lineStart, lineEnd).trim() || match[0],
+        start,
+        end,
+      });
+    }
+  }
+  candidates.sort((left, right) => left.start - right.start || right.end - left.end);
+  const distinct: IndexedSourceCommentaryMatch[] = [];
+  for (const candidate of candidates) {
+    if (distinct.some((accepted) => candidate.start < accepted.end && candidate.end > accepted.start)) {
+      continue;
+    }
+    distinct.push(candidate);
+  }
+  return distinct.map(({ matchedText, snippet }) => ({ matchedText, snippet }));
+}
+
+/**
+ * A lesson that states it cannot teach its own subject.
+ *
+ * The page writer only ever sees the evidence its planner anchored
+ * (exactSourceSnippetsForAnchors): it cannot widen the window, so when a unit
+ * is anchored to the wrong pages its only honest move is to say so, and that
+ * declination then ships as a lesson. telecom-1 11.2 (2026-09-19) was anchored
+ * to Keiser p.65 and wrote "cannot be derived here" about the step-index vs
+ * graded-index distinction covered elsewhere in the book. The critic re-raised it under
+ * a new type every pass, repair could not re-anchor, and the only exit was an
+ * accepted residue.
+ *
+ * This is narrower than an honest scope note. "The material used here does not
+ * explain how the speech coder works" bounds a digression and is allowed; a
+ * page reporting that its own subject cannot be derived is an anchoring defect
+ * that no amount of rewriting fixes.
+ */
+export const DECLINED_LESSON_PATTERNS: RegExp[] = [
+  /\bcannot be (?:derived|established|taught|developed|compared|determined|explained)\b[^.]{0,90}\b(?:here|on this page|within this unit|in this unit)\b/i,
+  /\b(?:this (?:lesson|page|unit) (?:cannot|does not)|we cannot)\s+(?:teach|explain|establish|compare|derive|describe)\b/i,
+  /\b(?:material used here|assigned evidence) does not (?:explain|establish|teach|describe)\b/i,
+  /\b(?:not|never) (?:explained|established|supplied|developed|taught)\b[^.]{0,80}\b(?:here|on this page|within this unit)\b/i,
+];
+
+export interface LessonTeachingObjective {
+  title?: string;
+  learningQuestion?: string;
+}
+
+const OBJECTIVE_STOPWORDS = new Set("what which where when why how does do the and that this with from into can cannot here lesson page unit explain understand describe establish derive specific physical distinction between about required material".split(" "));
+function objectiveTerms(text: string): string[] {
+  return [...new Set((text.toLowerCase().match(/[a-z]{4,}/g) ?? [])
+    .filter((word) => !OBJECTIVE_STOPWORDS.has(word)).map((word) => word.replace(/(?:ing|es|s)$/, "")))];
+}
+
+/** Conservative evidence of an unmet objective, not a ban on honest limits.
+ * Semantic review remains responsible for omissions without explicit wording. */
+export function declinedLessonMatches(markdown: string, objective: LessonTeachingObjective = {}): SourceCommentaryMatch[] {
+  const prose = teachingProse(markdown);
+  const terms = objectiveTerms(`${objective.title ?? ""} ${objective.learningQuestion ?? ""}`);
+  const found: SourceCommentaryMatch[] = [];
+  for (const pattern of DECLINED_LESSON_PATTERNS) {
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    for (const match of prose.matchAll(global)) {
+      const start = match.index;
+      if (start === undefined || !match[0]) continue;
+      const lineStart = prose.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+      const nextLineBreak = prose.indexOf("\n", start + match[0].length);
+      const lineEnd = nextLineBreak === -1 ? prose.length : nextLineBreak;
+      const snippet = prose.slice(lineStart, lineEnd).trim() || match[0];
+      const sentenceStart = Math.max(prose.lastIndexOf(".", start - 1), prose.lastIndexOf("\n\n", start - 1)) + 1;
+      const sentenceEnd = prose.indexOf(".", start + match[0].length);
+      const sentence = prose.slice(sentenceStart, sentenceEnd < 0 ? prose.length : sentenceEnd + 1);
+      const sentenceTerms = new Set(objectiveTerms(sentence));
+      const overlap = terms.filter((term) => sentenceTerms.has(term)).length;
+      const explicitCentralRefusal = /\bthis (?:lesson|page|unit) (?:cannot|does not)\s+(?:teach|explain|establish|compare|describe)\b/i.test(sentence);
+      const namedCentralDistinction = /\b(?:specific|central|main|defining)\b[^.]{0,100}\b(?:distinction|concept|mechanism|definitions?)\b/i.test(sentence);
+      if (terms.length > 0 ? overlap < Math.min(2, terms.length) : !explicitCentralRefusal && !namedCentralDistinction) continue;
+      if (/\b(?:optional|beyond (?:the )?scope|not (?:needed|required))\b/i.test(sentence)) continue;
+      if (!found.some((entry) => entry.snippet === snippet)) {
+        found.push({ matchedText: match[0], snippet });
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Mathematical apparatus a lesson can introduce, paired with the prose that
+ * would count as introducing it.
+ *
+ * A garden can walk a reader from arithmetic to partial differential equations
+ * without ever saying the entry price changed. telecom-1 (2026-09-19) used
+ * nothing beyond algebra through section 8 and then opened 9.2 with vector
+ * fields, complex notation and six coupled field equations. The pipeline
+ * already tracks which CONCEPTS an earlier page taught; it tracks no notation,
+ * so nothing noticed.
+ *
+ * This is a reading-order heuristic, not a correctness rule: it reports, it
+ * never blocks a publish.
+ */
+export const MATH_APPARATUS: Array<{ id: string; token: RegExp; explained: RegExp }> = [
+  { id: "partial derivative", token: /\\partial\b/,
+    explained: /\b(?:partial |)derivative|\bslope\b|\brate of change\b/i },
+  { id: "integral", token: /\\o?int\b/,
+    explained: /\bintegral\b|\bintegrat(?:e|es|ed|ing|ion)\b|\barea under\b/i },
+  { id: "vector operator", token: /\\nabla\b/,
+    explained: /\b(?:gradient|divergence|curl|nabla)\b/i },
+  { id: "summation", token: /\\sum\b/,
+    explained: /\bsum(?:mation|s|med)?\b|\badd(?:s|ed|ing)? (?:to|up)\b|\btotal of\b/i },
+  { id: "limit", token: /\\lim\b/,
+    explained: /\blimit(?:s|ing)?\b|\btends? toward\b|\bapproaches\b/i },
+  { id: "vector field", token: /\\(?:mathbf|vec)\b/,
+    explained: /\bvector\b|\bmagnitude and direction\b/i },
+  { id: "complex number", token: /(?:\\(?:mathrm|operatorname)\{[ij]\}|\b[ij]\\(?:omega|beta)|e\^\{[ij]|\\sqrt\{-1\})/,
+    explained: /\bcomplex (?:number|amplitude|notation)|\bimaginary unit\b|\bphasor\b/i },
+  { id: "probability distribution", token: /\b(?:Poisson|Bernoulli|exponential distribution)\b/i,
+    explained: /\bprobability\b[^.!?]*\b(?:counts?|arrivals?|outcomes?|durations?)\b/i },
+];
+
+export interface ApparatusProgress {
+  encountered: Set<string>;
+  explained: Set<string>;
+  unresolved: Set<string>;
+}
+
+export function createApparatusProgress(): ApparatusProgress {
+  return { encountered: new Set(), explained: new Set(), unresolved: new Set() };
+}
+
+/**
+ * Apparatus used without a local or earlier explanatory bridge. Encountering
+ * notation never marks it explained; unresolved uses remain visible downstream.
+ */
+export function unexplainedApparatus(markdown: string, progress: Set<string> | ApparatusProgress): string[] {
+  const prose = teachingProse(markdown);
+  const established = progress instanceof Set ? progress : progress.explained;
+  const introduced: string[] = [];
+  for (const entry of MATH_APPARATUS) {
+    // A label, disclaimer or mention in a future-topic promise is not teaching.
+    const explanations = prose.split(/(?<=[.!?])\s+|\n\s*\n/).filter((sentence) =>
+      entry.explained.test(sentence) &&
+      !/\b(?:assum(?:ed|es)|not explained|not derived|outside|later|not (?:yet )?established|requires? prior)\b/i.test(sentence) &&
+      /\b(?:measures?|means?|tells?|represents?|how|because|for example|area under|rate of change|adding up|slope changes|magnitude and direction|two possible)\b/i.test(sentence));
+    if (explanations.length > 0) established.add(entry.id);
+    // A plain-language explanation can precede its first symbolic use.
+    if (!(progress instanceof Set) && established.has(entry.id)) progress.unresolved.delete(entry.id);
+    if (!entry.token.test(prose)) continue;
+    if (!(progress instanceof Set)) progress.encountered.add(entry.id);
+    if (!established.has(entry.id)) {
+      introduced.push(entry.id);
+      if (!(progress instanceof Set)) progress.unresolved.add(entry.id);
+    } else if (!(progress instanceof Set)) progress.unresolved.delete(entry.id);
+  }
+  return introduced;
 }
 
 /** Count source-commentary phrases in the teaching prose (captions excluded). */
@@ -1030,6 +1274,29 @@ export function placeholderTextMatches(markdown: string): PlaceholderTextMatch[]
     distinct.push(candidate);
   }
   return distinct.map(({ matchedText, snippet }) => ({ matchedText, snippet }));
+}
+
+/**
+ * Plan warnings are written by the planner for the planner. Some are fit for
+ * a learner's Scope Notes ("NOMA is not covered because the selected sources
+ * do not teach it"); some are the machinery talking to itself. telecom-1's
+ * Learning Map published "syllabusCoverage marks SU5 unteachable" and
+ * "inherited expectedWordRange lower bounds below 1000 words remain unchanged
+ * ... under the additive update rules" (2026-09-19), and the critic rightly
+ * called it a debug-artifact leak. A note that names an internal field,
+ * identifier, or rule stays out of the learner page; it is still in the plan.
+ */
+const INTERNAL_PLANNING_VOCABULARY =
+  /\b(?:syllabusCoverage|expectedWordRange|wordRange|learningUnitId|learning[- ]unit contract|contract|additive update rules?|planning floor|unteachable|validator|frontmatter|anchor ledger|inputHash|receipts?|checkpoint|councilRunId|SU\d+|U\d{1,3})\b/;
+
+export function learnerFacingScopeNotes(warnings: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (const warning of warnings) {
+    const text = warning.trim();
+    if (!text || INTERNAL_PLANNING_VOCABULARY.test(text)) continue;
+    if (!kept.includes(text)) kept.push(text);
+  }
+  return kept;
 }
 
 /** True when the markdown contains meta-instruction / placeholder language. */
@@ -1232,6 +1499,15 @@ export function assessLessonQuality(
       evidence: chatLeaks,
     });
   }
+  const pipelineVocabulary = pipelineVocabularyMatches(body);
+  if (pipelineVocabulary.length > 0) {
+    problems.push({
+      code: "pipeline-vocabulary",
+      message: "describes its own construction (anchors, units, deferred evidence) instead of teaching the subject",
+      hard: true,
+      evidence: [...new Set(pipelineVocabulary.map((match) => match.snippet))],
+    });
+  }
   const commentary = sourceCommentaryMatches(body);
   if (commentary.length > 0) {
     problems.push({
@@ -1253,9 +1529,19 @@ export function assessLessonQuality(
       evidence: fabricatedCitations,
     });
   }
-  const hasQuestion = /\*\*Question\.\*\*/.test(body) && /\*\*Answer\.\*\*/.test(body);
-  if (!hasQuestion) {
-    problems.push({ code: "no-qa", message: "missing a Question./Answer. pair", hard: true });
+  // The answer may be labelled either way. The writer contract asks for a
+  // collapsed block, `<details><summary>Answer</summary>`, and a bold
+  // "**Answer.**" opening the prose inside it - which puts the word "Answer"
+  // twice in a row, so a careful writer drops the second one. Requiring the
+  // bold marker failed 11.2 of telecom-1 M2 four times over (2026-09-17) on a
+  // page whose three questions each had a correct collapsed answer. The
+  // summary line labels the answer unambiguously; accept it.
+  const hasQuestion = /\*\*Question\.\*\*/.test(body);
+  const hasAnswer =
+    /\*\*Answer\.\*\*/.test(body) || /<details>\s*<summary>\s*Answer\s*<\/summary>/i.test(body);
+  if (!hasQuestion || !hasAnswer) {
+    const missing = !hasQuestion && !hasAnswer ? "Question./Answer. pair" : !hasQuestion ? "Question. block" : "answer for its question";
+    problems.push({ code: "no-qa", message: `missing a ${missing}`, hard: true });
   }
   if (words < 120) {
     // Reject near-empty stubs separately from lessons below the prose minimum.

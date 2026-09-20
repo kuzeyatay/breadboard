@@ -183,12 +183,14 @@ app.whenReady().then(async () => {
     created
       .filter((contents) => !contents.isDestroyed() && contents !== win.webContents)
       .filter((contents) => !BrowserWindow.getAllWindows().some((w) => w.webContents === contents))
+      .filter((contents) => manager.tabs.windowFor(contents) === win && manager.tabs.stateFor(contents).selfId !== null)
       .filter(isOwnedPage)
       .map((contents) => ({ webContents: contents }));
   // Only the tab in front has its view attached to the window.
   const visibleViews = (win) =>
     win.contentView.children
       .filter((child) => child.webContents && isOwnedPage(child.webContents))
+      .filter((child) => child.getBounds().x === 0 && child.getBounds().y === 0)
       .map((view) => ({ webContents: view.webContents }));
 
   // The window's own page is its first tab.
@@ -257,9 +259,8 @@ app.whenReady().then(async () => {
   const warmReactivateMs = Date.now() - warmReactivateStarted;
 
   // Ctrl+T opens the new-tab page in front; a link tab sits beside its opener,
-  // a blank one goes to the end. New tabs are deliberately cold rather than
-  // backed by a permanently resident speculative renderer: the shared loading
-  // field covers its body while the live Garden navbar remains above it.
+  // a blank one goes to the end. Changing the URL invalidates the prepared
+  // launcher, so this click exercises a cold load and its shared loading field.
   manager.tabs.setNewTabUrl(origin + "/fresh?cold=1");
   gardenView.webContents.sendInputEvent({ type: "keyDown", keyCode: "T", modifiers: ["control"] });
   const afterCtrlT = await until(async () => {
@@ -328,6 +329,7 @@ app.whenReady().then(async () => {
   trace("afterCtrlT " + JSON.stringify(afterCtrlT));
   await until(() => !freshView.webContents.isLoading(), "the fresh tab to load");
   const freshTitle = await freshView.webContents.executeJavaScript("document.title");
+  trace("fresh title read");
 
   // Ctrl+W in the front tab closes it and the tab to its left takes over.
   freshView.webContents.sendInputEvent({ type: "keyDown", keyCode: "W", modifiers: ["control"] });
@@ -335,6 +337,7 @@ app.whenReady().then(async () => {
     const state = await stateIn(base);
     return state.tabs.length === 2 ? state : null;
   }, "Ctrl+W");
+  trace("Ctrl+W completed");
   await until(
     () => visibleViews(window)[0]?.webContents.getURL().endsWith("/garden"),
     "the garden tab to return after closing the fresh tab",
@@ -350,6 +353,7 @@ app.whenReady().then(async () => {
     const state = await stateIn(base);
     return state.tabs.length === 3 ? state : null;
   }, "Ctrl+Shift+T");
+  trace("Ctrl+Shift+T completed");
   await until(
     () =>
       visibleViews(window)[0]?.webContents.getURL().includes("/fresh?cold=1") &&
@@ -366,6 +370,7 @@ app.whenReady().then(async () => {
     return state.tabs.length === 2 ? state : null;
   }, "closing the window's own page");
   await until(() => base.getURL() === "about:blank", "the window's own page to be parked");
+  trace("base retired");
   const windowSurvivedBaseClose = !window.isDestroyed() && BrowserWindow.getAllWindows().length === 1;
 
   // A local window.open is still a window of its own, not a tab.
@@ -375,12 +380,14 @@ app.whenReady().then(async () => {
   await until(() => popup.webContents.getURL().endsWith("/popup"), "the popup to reach its page");
   const popupState = await stateIn(popup.webContents);
   popup.destroy();
+  trace("popup closed");
 
   // Closing the remaining tabs closes the window, as it does in a browser.
   const closed = new Promise((resolve) => window.once("closed", resolve));
   for (const tab of afterBaseClose.tabs) {
     const front = visibleViews(window)[0];
-    await command(front.webContents, { type: "close", id: tab.id });
+    // The last close destroys its renderer before executeJavaScript can return.
+    manager.tabs.handleCommand(front.webContents, { type: "close", id: tab.id });
     await sleep(100);
     if (window.isDestroyed()) break;
   }

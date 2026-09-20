@@ -1,4 +1,6 @@
 import { QuartzComponent, QuartzComponentConstructor, QuartzComponentProps } from "./types"
+// @ts-ignore
+import script from "./scripts/folderPdfExport.inline"
 
 function displayNameFromSlug(slug: string): string {
   const segment = slug.split("/").filter(Boolean).at(-1) ?? "folder"
@@ -39,6 +41,7 @@ const FolderPdfExport: QuartzComponent = ({ fileData, allFiles }: QuartzComponen
       data-cluster-slug={clusterSlug}
       data-folder-slug={folderSlug}
       data-folder-title={folderTitle}
+      data-documents={JSON.stringify(documents)}
     >
       <button class="folder-pdf-open" type="button">
         Export folder as PDF
@@ -72,43 +75,7 @@ const FolderPdfExport: QuartzComponent = ({ fileData, allFiles }: QuartzComponen
             </div>
           </div>
 
-          <ol class="folder-pdf-list">
-            {documents.map((document) => (
-              <li
-                class="folder-pdf-item"
-                data-slug={document.slug}
-                data-title={document.title}
-                draggable={true}
-              >
-                <span class="folder-pdf-drag" aria-hidden="true">
-                  ::
-                </span>
-                <label class="folder-pdf-note">
-                  <input class="folder-pdf-checkbox" type="checkbox" checked />
-                  <span>
-                    <strong>{document.title}</strong>
-                    <small>{document.slug}</small>
-                  </span>
-                </label>
-                <div class="folder-pdf-order-actions">
-                  <button
-                    class="folder-pdf-up"
-                    type="button"
-                    aria-label={`Move ${document.title} up`}
-                  >
-                    Up
-                  </button>
-                  <button
-                    class="folder-pdf-down"
-                    type="button"
-                    aria-label={`Move ${document.title} down`}
-                  >
-                    Down
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ol>
+          <ol class="folder-pdf-list" />
 
           <div class="folder-pdf-footer">
             <span class="folder-pdf-status" aria-live="polite" />
@@ -136,6 +103,8 @@ FolderPdfExport.css = `
 .folder-pdf-close,
 .folder-pdf-select-all,
 .folder-pdf-clear,
+.folder-pdf-previous,
+.folder-pdf-next,
 .folder-pdf-up,
 .folder-pdf-down,
 .folder-pdf-cancel,
@@ -237,6 +206,17 @@ FolderPdfExport.css = `
   color: var(--gray);
   font-size: 0.82rem;
 }
+
+.folder-pdf-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--lightgray);
+  font-size: 0.8rem;
+}
+.folder-pdf-pagination[hidden] { display: none; }
 
 .folder-pdf-list {
   counter-reset: folder-pdf-order;
@@ -346,144 +326,6 @@ FolderPdfExport.css = `
 }
 `
 
-FolderPdfExport.afterDOMLoaded = `
-document.addEventListener("nav", () => {
-  for (const root of document.querySelectorAll(".folder-pdf-export")) {
-    if (root.dataset.bound === "true") continue
-    root.dataset.bound = "true"
-
-    const open = root.querySelector(".folder-pdf-open")
-    const modal = root.querySelector(".folder-pdf-modal")
-    const close = root.querySelector(".folder-pdf-close")
-    const cancel = root.querySelector(".folder-pdf-cancel")
-    const selectAll = root.querySelector(".folder-pdf-select-all")
-    const clear = root.querySelector(".folder-pdf-clear")
-    const list = root.querySelector(".folder-pdf-list")
-    const count = root.querySelector(".folder-pdf-count")
-    const status = root.querySelector(".folder-pdf-status")
-    const exportButton = root.querySelector(".folder-pdf-export-button")
-    let dragged = null
-
-    const items = () => Array.from(list?.querySelectorAll(".folder-pdf-item") || [])
-    const selectedItems = () =>
-      items().filter((item) => item.querySelector(".folder-pdf-checkbox")?.checked)
-    const setStatus = (message) => {
-      if (status) status.textContent = message || ""
-    }
-    const updateCount = () => {
-      const selected = selectedItems().length
-      const total = items().length
-      if (count) count.textContent = selected + " of " + total + " notes selected"
-      if (exportButton) exportButton.disabled = selected === 0 || root.dataset.exporting === "true"
-    }
-    const hideModal = () => {
-      if (root.dataset.exporting === "true") return
-      if (modal) modal.hidden = true
-      setStatus("")
-    }
-    const moveItem = (item, direction) => {
-      if (!list || !item) return
-      const sibling = direction < 0 ? item.previousElementSibling : item.nextElementSibling
-      if (!sibling) return
-      if (direction < 0) list.insertBefore(item, sibling)
-      else list.insertBefore(sibling, item)
-    }
-
-    open?.addEventListener("click", () => {
-      if (modal) modal.hidden = false
-      updateCount()
-    })
-    close?.addEventListener("click", hideModal)
-    cancel?.addEventListener("click", hideModal)
-    modal?.addEventListener("click", (event) => {
-      if (event.target === modal) hideModal()
-    })
-    selectAll?.addEventListener("click", () => {
-      for (const item of items()) {
-        const checkbox = item.querySelector(".folder-pdf-checkbox")
-        if (checkbox) checkbox.checked = true
-      }
-      updateCount()
-    })
-    clear?.addEventListener("click", () => {
-      for (const item of items()) {
-        const checkbox = item.querySelector(".folder-pdf-checkbox")
-        if (checkbox) checkbox.checked = false
-      }
-      updateCount()
-    })
-    list?.addEventListener("change", updateCount)
-    list?.addEventListener("click", (event) => {
-      const button = event.target?.closest?.("button")
-      const item = event.target?.closest?.(".folder-pdf-item")
-      if (!button || !item) return
-      if (button.classList.contains("folder-pdf-up")) moveItem(item, -1)
-      if (button.classList.contains("folder-pdf-down")) moveItem(item, 1)
-    })
-    list?.addEventListener("dragstart", (event) => {
-      const item = event.target?.closest?.(".folder-pdf-item")
-      if (!item) return
-      dragged = item
-      item.classList.add("dragging")
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
-    })
-    list?.addEventListener("dragend", () => {
-      dragged?.classList.remove("dragging")
-      dragged = null
-    })
-    list?.addEventListener("dragover", (event) => {
-      if (!dragged || !list) return
-      event.preventDefault()
-      const target = event.target?.closest?.(".folder-pdf-item")
-      if (!target || target === dragged) return
-      const rect = target.getBoundingClientRect()
-      const after = event.clientY > rect.top + rect.height / 2
-      list.insertBefore(dragged, after ? target.nextElementSibling : target)
-    })
-
-    exportButton?.addEventListener("click", () => {
-      const selected = selectedItems().map((item) => ({
-        slug: item.dataset.slug || "",
-        title: item.dataset.title || item.dataset.slug || "Markdown note",
-      }))
-      if (selected.length === 0) return
-      if (window.parent === window) {
-        setStatus("Open this folder from the dashboard to export it.")
-        return
-      }
-
-      const requestId = Date.now().toString(36) + Math.random().toString(36).slice(2)
-      root.dataset.requestId = requestId
-      root.dataset.exporting = "true"
-      setStatus("Preparing PDF...")
-      updateCount()
-      window.parent.postMessage({
-        type: "second-brain:export-folder-pdf",
-        requestId,
-        cluster: root.dataset.clusterSlug || "",
-        folderSlug: root.dataset.folderSlug || "",
-        folderTitle: root.dataset.folderTitle || "Folder",
-        documents: selected,
-      }, "*")
-    })
-
-    updateCount()
-  }
-})
-
-window.addEventListener("message", (event) => {
-  const data = event.data
-  if (!data || data.type !== "second-brain:folder-pdf-result") return
-  for (const root of document.querySelectorAll(".folder-pdf-export")) {
-    if (!data.requestId || root.dataset.requestId !== data.requestId) continue
-    root.dataset.exporting = "false"
-    const status = root.querySelector(".folder-pdf-status")
-    const exportButton = root.querySelector(".folder-pdf-export-button")
-    const selected = root.querySelectorAll(".folder-pdf-checkbox:checked").length
-    if (exportButton) exportButton.disabled = selected === 0
-    if (status) status.textContent = data.ok ? "PDF downloaded." : data.error || "Could not export PDF."
-  }
-})
-`
+FolderPdfExport.afterDOMLoaded = script
 
 export default (() => FolderPdfExport) satisfies QuartzComponentConstructor

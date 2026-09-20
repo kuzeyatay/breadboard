@@ -1,43 +1,65 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 import {
   type GenerativeUiAction,
   type ProductSearchItem,
   type ProductSearchResource,
 } from "@/lib/generative-ui/contracts.ts";
+import styles from "./product-carousel.module.css";
 
 interface Props {
   resource: ProductSearchResource;
   onAction: (action: GenerativeUiAction) => void;
   activeCompareProductIds?: readonly string[];
 }
+
+function ProductImage({ product }: { product: ProductSearchItem }) {
+  const [failedUrl, setFailedUrl] = useState<string>();
+  return (
+    <div className={styles.imageWell}>
+      {product.imageUrl && product.imageUrl !== failedUrl ? (
+        // External merchant images are display-only; no proxy or cookies.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={product.imageUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailedUrl(product.imageUrl)}
+          className={styles.image}
+        />
+      ) : (
+        <span className={styles.imageFallback}>
+          <svg aria-hidden viewBox="0 0 32 32" fill="none" width="32" height="32">
+            <path d="m16 3 12 7v12l-12 7-12-7V10l12-7Zm0 13 12-6M16 16 4 10m12 6v13M10 6.5l12 7V19" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+          </svg>
+          <span>Image unavailable</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Rating({ product }: { product: ProductSearchItem }) {
   if (product.rating === undefined) return null;
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] text-[var(--ink-muted)]">
-      <span aria-hidden className="text-[#9B6C2F]">★</span>
+    <span className={styles.rating} aria-label={`${product.rating.toFixed(1)} out of 5${product.reviewCount !== undefined ? `, ${product.reviewCount.toLocaleString("en")} reviews` : ""}`}>
+      <span aria-hidden className={styles.star}>★</span>
       <span>{product.rating.toFixed(1)}</span>
-      {product.reviewCount !== undefined ? (
-        <span>({product.reviewCount.toLocaleString()})</span>
-      ) : null}
+      {product.reviewCount !== undefined ? <span>({product.reviewCount.toLocaleString("en")})</span> : null}
     </span>
   );
 }
 
-export default function ProductCarousel({
-  resource,
-  onAction,
-  activeCompareProductIds = [],
-}: Props) {
+export default function ProductCarousel({ resource, onAction, activeCompareProductIds = [] }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const allowed = new Set(resource.actions);
   const compared = new Set(activeCompareProductIds);
-  const dispatch = (
-    type: GenerativeUiAction["type"],
-    productId: string,
-  ) => onAction({ type, resource, productId });
+  const dispatch = (type: GenerativeUiAction["type"], productId: string) =>
+    onAction({ type, resource, productId });
   const move = (direction: -1 | 1) => {
     trackRef.current?.scrollBy({
       left: direction * trackRef.current.clientWidth,
@@ -46,11 +68,22 @@ export default function ProductCarousel({
   };
 
   return (
-    <section
-      className="relative my-4 min-w-0"
-      aria-label={resource.title}
-      data-generative-ui="product-carousel"
-    >
+    <section className={`${styles.widget} relative my-4 min-w-0`} aria-label={resource.title} data-generative-ui="product-carousel">
+      <header className={styles.header}>
+        <div className={styles.heading}>Product picks <span className={styles.count}>{resource.data.products.length}</span></div>
+        <div className={styles.navigation}>
+          <button type="button" onClick={() => move(-1)} className={styles.arrow} aria-label="Previous products">
+            <svg aria-hidden viewBox="0 0 20 20" fill="none" width="18" height="18">
+              <path d="m12 5-5 5 5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button type="button" onClick={() => move(1)} className={styles.arrow} aria-label="Next products">
+            <svg aria-hidden viewBox="0 0 20 20" fill="none" width="18" height="18">
+              <path d="m8 5 5 5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+      </header>
       <div
         ref={trackRef}
         className="grid touch-pan-x snap-x snap-mandatory auto-cols-[82%] grid-flow-col gap-3 overflow-x-auto overscroll-x-contain scroll-smooth px-px py-px [scrollbar-width:none] sm:auto-cols-[calc((100%_-_3rem)_/_2)] [&::-webkit-scrollbar]:hidden"
@@ -58,104 +91,33 @@ export default function ProductCarousel({
         {resource.data.products.map((product) => {
           const compareActive = compared.has(product.id);
           return (
-          <article
-            key={product.id}
-            className="group flex min-w-0 flex-col overflow-hidden rounded-2xl bg-[var(--paper-raised)] shadow-[0_1px_2px_rgba(41,55,47,0.06),0_0_0_1px_var(--line)]"
-          >
-            <button
-              type="button"
-              onClick={() => dispatch("product.open-details", product.id)}
-              disabled={!allowed.has("open-details")}
-              className="flex flex-1 flex-col text-left disabled:cursor-default"
-              aria-label={`Open details for ${product.title}`}
-            >
-              <div className="flex h-40 w-full items-center justify-center overflow-hidden bg-white/75">
-                {product.imageUrl ? (
-                  // External product images are display-only HTTPS URLs from
-                  // the inspected source set; no Next image proxy or cookies.
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={product.imageUrl}
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                    referrerPolicy="no-referrer"
-                    className="h-full w-full object-contain p-2 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:scale-[1.035] motion-reduce:transform-none motion-reduce:transition-none"
-                  />
-                ) : (
-                  <span className="text-xs text-[var(--ink-muted)]">No image supplied</span>
-                )}
+            <article key={product.id} className={styles.card} data-selected={compareActive || undefined}>
+              <button type="button" onClick={() => dispatch("product.open-details", product.id)} disabled={!allowed.has("open-details")} className={styles.details} aria-label={`Open details for ${product.title}`}>
+                <ProductImage product={product} />
+                <div className={styles.body}>
+                  <p className={styles.merchant}>{product.merchant}</p>
+                  <p className={styles.title}>{product.title}</p>
+                  {product.price || product.rating !== undefined ? (
+                    <div className={styles.facts}>
+                      {product.price ? <span className={styles.price}>{product.price.display}</span> : null}
+                      <Rating product={product} />
+                    </div>
+                  ) : null}
+                </div>
+              </button>
+              <div className={styles.actions}>
+                <button type="button" disabled={!allowed.has("find-similar")} onClick={() => dispatch("product.find-similar", product.id)} className={styles.secondary} aria-label={`Find products similar to ${product.title}`}>Similar</button>
+                <button type="button" disabled={!allowed.has("compare")} onClick={() => dispatch("product.select", product.id)} aria-pressed={compareActive} aria-label={`${compareActive ? "Deselect" : "Select"} ${product.title} for comparison`} className={styles.secondary}>
+                  {compareActive ? "Selected" : "Select"}
+                </button>
+                <button type="button" disabled={!allowed.has("visit")} onClick={() => dispatch("product.visit", product.id)} className={styles.visit} aria-label={`Visit ${product.merchant} for ${product.title}`}>
+                  Visit <svg aria-hidden viewBox="0 0 16 16" fill="none" width="13" height="13"><path d="M4 12 12 4M4.5 4H12v7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </button>
               </div>
-              <div className="flex flex-1 flex-col px-3 pb-2 pt-3">
-                <p className="line-clamp-2 min-h-10 text-[13px] font-semibold leading-5 text-[var(--ink-heading)]">
-                  {product.title}
-                </p>
-                <p className="mt-1 truncate text-[11px] text-[var(--ink-muted)]">
-                  {product.merchant}
-                </p>
-                {product.price || product.rating !== undefined ? (
-                  <div className="mt-auto flex items-end justify-between gap-2 pt-3">
-                    {product.price ? (
-                      <span className="text-sm font-semibold text-[var(--ink-heading)]">
-                        {product.price.display}
-                      </span>
-                    ) : null}
-                    <Rating product={product} />
-                  </div>
-                ) : null}
-              </div>
-            </button>
-            <div className="grid grid-cols-3 gap-1 px-2 pb-2 pt-1">
-              <button
-                type="button"
-                disabled={!allowed.has("find-similar")}
-                onClick={() => dispatch("product.find-similar", product.id)}
-                className="rounded-lg px-1.5 py-1.5 text-[11px] font-medium text-[var(--ink)] transition-[background-color,transform] duration-150 hover:bg-[var(--paper-strong)] active:scale-[0.97] disabled:opacity-40"
-              >
-                Similar
-              </button>
-              <button
-                type="button"
-                disabled={!allowed.has("compare")}
-                onClick={() => dispatch("product.select", product.id)}
-                aria-pressed={compareActive}
-                className={`rounded-lg px-1.5 py-1.5 text-[11px] font-medium transition-[background-color,color,transform] duration-150 active:scale-[0.97] disabled:opacity-40 ${compareActive ? "bg-[color-mix(in_srgb,var(--botanical)_12%,transparent)] text-[var(--botanical)]" : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"}`}
-              >
-                {compareActive ? "Selected" : "Select"}
-              </button>
-              <button
-                type="button"
-                disabled={!allowed.has("visit")}
-                onClick={() => dispatch("product.visit", product.id)}
-                className="rounded-lg px-1.5 py-1.5 text-[11px] font-medium text-[var(--botanical)] transition-[background-color,transform] duration-150 hover:bg-[var(--paper-strong)] active:scale-[0.97] disabled:opacity-40"
-              >
-                Visit
-              </button>
-            </div>
-          </article>
+            </article>
           );
         })}
       </div>
-      <button
-        type="button"
-        onClick={() => move(-1)}
-        className="absolute left-1 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.72)] transition-transform duration-150 hover:scale-105 active:scale-95"
-        aria-label="Previous products"
-      >
-        <svg aria-hidden viewBox="0 0 20 20" fill="none" className="h-6 w-6">
-          <path d="m12.5 4.5-5 5.5 5 5.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        onClick={() => move(1)}
-        className="absolute right-1 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.72)] transition-transform duration-150 hover:scale-105 active:scale-95"
-        aria-label="Next products"
-      >
-        <svg aria-hidden viewBox="0 0 20 20" fill="none" className="h-6 w-6">
-          <path d="m7.5 4.5 5 5.5-5 5.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
     </section>
   );
 }

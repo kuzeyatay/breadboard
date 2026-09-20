@@ -64,6 +64,7 @@ export default function GardenMarkdownArtifacts({ iframeRef, quartzOrigin }: {
           const reference = parseArtifactReference(JSON.stringify(data.reference));
           if (!reference) throw new Error("This artifact reference is invalid.");
           const query = new URLSearchParams({ conversationId: reference.conversationId });
+          if (reference.version !== undefined) query.set("version", String(reference.version));
           const response = await fetch(`/api/hermes/artifacts/${encodeURIComponent(reference.id)}?${query}`, { signal: controller.signal });
           const body = await response.json();
           if (!response.ok) throw new Error(body.error || "This artifact is no longer available.");

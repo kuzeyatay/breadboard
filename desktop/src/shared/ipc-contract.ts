@@ -184,17 +184,32 @@ export interface ChatgptWebTabRequest {
    * renderer keeps its target listed, so only a new page recovers it.
    */
   reset?: boolean;
+  /**
+   * Which page ChatMock wants: "interactive" (a person's chat, signing in) or
+   * "batch" (Learn, the council). Each lane is its own page, so a long batch
+   * turn never occupies the chat composer. Absent from an older ChatMock,
+   * which then gets the interactive page.
+   */
+  lane?: string;
 }
 
-/** The tab's DevTools address, or why the shell could not provide one. */
+/**
+ * The tab's DevTools address, or why the shell could not provide one. `lane`
+ * echoes the page handed out; ChatMock reads its presence as "this shell
+ * keeps a page per lane" and otherwise shares the one page as before.
+ */
 export type ChatgptWebTabResult =
-  | { ok: true; cdpPort: number; targetId: string }
+  | { ok: true; cdpPort: number; targetId: string; lane: string }
   | { ok: false; error: string };
 
 export function isChatgptWebTabRequest(value: unknown): value is ChatgptWebTabRequest {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const { foreground, reset } = value as { foreground?: unknown; reset?: unknown };
-  return typeof foreground === "boolean" && (reset === undefined || typeof reset === "boolean");
+  const { foreground, reset, lane } = value as { foreground?: unknown; reset?: unknown; lane?: unknown };
+  return (
+    typeof foreground === "boolean" &&
+    (reset === undefined || typeof reset === "boolean") &&
+    (lane === undefined || (typeof lane === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(lane)))
+  );
 }
 
 export interface BrowserSignInsState {

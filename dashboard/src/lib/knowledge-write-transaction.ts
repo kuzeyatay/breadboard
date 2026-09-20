@@ -116,6 +116,14 @@ function normalizedKnowledgePath(value: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
+function sameDirectKnowledgePath(left: string, right: string): boolean {
+  // Rust supplies Windows namespace paths, while Node realpath can omit that
+  // prefix. Compare both in namespace form (including UNC shares), without
+  // resolving links or changing the persisted transaction/registry hashes.
+  return normalizedKnowledgePath(path.toNamespacedPath(left)) ===
+    normalizedKnowledgePath(path.toNamespacedPath(right));
+}
+
 function knowledgeClusterPathSha256(clusterDir: string): string {
   return createHash("sha256")
     .update(normalizedKnowledgePath(clusterDir), "utf8")
@@ -170,11 +178,17 @@ function assertDirectKnowledgeDirectory(
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error(`${label} is not a direct directory.`);
   }
-  if (
-    normalizedKnowledgePath(fs.realpathSync.native(resolved)) !==
-    normalizedKnowledgePath(resolved)
-  ) {
-    throw new Error(`${label} contains an indirect path.`);
+  const real = fs.realpathSync.native(resolved);
+  if (!sameDirectKnowledgePath(real, resolved)) {
+    // Name both paths. The bare message cannot be acted on: it does not say
+    // which directory was indirect, nor what it resolved to, so a caller sees
+    // only that a write was refused (2026-09-17, saving a link to a garden).
+    // The two spellings distinguish the cases that matter - a junction or
+    // symlink somewhere above the garden, versus a short 8.3 path or other
+    // benign alias that realpath expands.
+    throw new Error(
+      `${label} contains an indirect path: ${resolved} resolves to ${real}.`,
+    );
   }
 }
 
@@ -274,8 +288,7 @@ export function hashKnowledgeFile(filePath: string): {
     throw new Error("Knowledge transaction data is not a regular file.");
   }
   if (
-    normalizedKnowledgePath(fs.realpathSync.native(filePath)) !==
-    normalizedKnowledgePath(filePath)
+    !sameDirectKnowledgePath(fs.realpathSync.native(filePath), filePath)
   ) {
     throw new Error("Knowledge transaction data contains an indirect path.");
   }

@@ -366,6 +366,8 @@ test("1/2c. a compatible retained candidate is cloned into the next job without 
     fs.mkdirSync(path.dirname(stagedCheckpoint), { recursive: true });
     fs.writeFileSync(stagedPage, "# Preserved staged page\n");
     fs.writeFileSync(stagedCheckpoint, '{"progress":96}\n');
+    const stalePolicy = path.join(retained.stagingGardenDir, ".breadboard", "accepted-critic-residues.json");
+    fs.writeFileSync(stalePolicy, '{"version":1,"accepted":[{"issueId":"stale"}]}');
     retainLearnBuildWorkspace(retained, {
       reason: "generation_failure",
       failureStage: "Final critic",
@@ -390,6 +392,8 @@ test("1/2c. a compatible retained candidate is cloned into the next job without 
     assert.equal(resumed.resumedFromBuildId, retained.buildId);
     assert.equal(resumed.resumedFromJobId, retained.jobId);
     assert.equal(resumed.resumedFromWorkspaceRoot, retained.workspaceRoot);
+    assert.equal(fs.existsSync(path.join(resumed.stagingGardenDir, ".breadboard", "accepted-critic-residues.json")), false);
+    assert.equal(fs.existsSync(stalePolicy), true, "resuming must not mutate the retained build");
     assert.equal(
       fs.readFileSync(path.join(resumed.stagingGardenDir, "durable.md"), "utf8"),
       "current durable input after retention\n",
@@ -1637,6 +1641,57 @@ test("45/47. atomic promotion swaps in the staging tree without a mixed result",
   assert.equal(result.promoted, true);
   assert.ok(fs.existsSync(path.join(dest, "learning", "new.md")));
   assert.equal(fs.existsSync(path.join(dest, "learning", "old.md")), false); // fully swapped, not merged
+});
+
+test("promotion preserves the latest live operator policy byte-for-byte, including rollback", async () => {
+  const parent = tmp("promote-policy");
+  const staging = path.join(parent, "staging");
+  const dest = path.join(parent, "published");
+  const rel = ".breadboard/accepted-critic-residues.json";
+  for (const garden of [staging, dest]) fs.mkdirSync(path.join(garden, ".breadboard"), { recursive: true });
+  fs.writeFileSync(path.join(staging, rel), '{"accepted":[{"issueId":"stale"}]}');
+  fs.writeFileSync(path.join(dest, rel), '{"accepted":[]}');
+  const latest = '{\r\n "version": 1, "criticMaxRounds": 1, "measurementReviewNewFindings":"warn", "accepted":[{"issueId":"live","reason":"operator decision"}], "custom":true\r\n}\r\n';
+  const result = await promoteStagingGarden({
+    stagingGardenDir: staging, destinationGardenDir: dest, retainPreviousUntilCallerCommit: true,
+    prepareIncomingForCommit: () => { fs.writeFileSync(path.join(dest, rel), latest); return true; },
+  });
+  assert.equal(result.promoted, true, result.reason);
+  assert.equal(fs.readFileSync(path.join(dest, rel), "utf8"), latest);
+  assert.ok(result.previousPreservedAt);
+  const newer = latest.replace('"criticMaxRounds": 1', '"criticMaxRounds": 2');
+  fs.writeFileSync(path.join(dest, rel), newer);
+  const rollback = await promoteStagingGarden({ stagingGardenDir: result.previousPreservedAt, destinationGardenDir: dest });
+  assert.equal(rollback.promoted, true, rollback.reason);
+  assert.equal(fs.readFileSync(path.join(dest, rel), "utf8"), newer);
+});
+
+test("promotion never resurrects absent policy or copies it between gardens", async () => {
+  const parent = tmp("promote-policy-absent");
+  const staging = path.join(parent, "staging");
+  const rel = ".breadboard/accepted-critic-residues.json";
+  fs.mkdirSync(path.join(staging, ".breadboard"), { recursive: true });
+  fs.writeFileSync(path.join(staging, rel), '{"accepted":[{"issueId":"other-garden"}]}');
+  for (const existing of [false, true]) {
+    const dest = path.join(parent, `published-${existing}`);
+    if (existing) fs.mkdirSync(dest);
+    const result = await promoteStagingGarden({ stagingGardenDir: staging, destinationGardenDir: dest });
+    assert.equal(result.promoted, true, result.reason);
+    assert.equal(fs.existsSync(path.join(dest, rel)), false);
+  }
+});
+
+test("failed promotion leaves live policy intact", async () => {
+  const parent = tmp("promote-policy-failed");
+  const staging = path.join(parent, "staging");
+  const dest = path.join(parent, "published");
+  const rel = ".breadboard/accepted-critic-residues.json";
+  for (const garden of [staging, dest]) fs.mkdirSync(path.join(garden, ".breadboard"), { recursive: true });
+  fs.writeFileSync(path.join(dest, rel), "live bytes");
+  fs.writeFileSync(path.join(staging, rel), "stale bytes");
+  const result = await promoteStagingGarden({ stagingGardenDir: staging, destinationGardenDir: dest, verifyManifest: () => false });
+  assert.equal(result.promoted, false);
+  assert.equal(fs.readFileSync(path.join(dest, rel), "utf8"), "live bytes");
 });
 
 test("46. failed manifest verification preserves the previous published garden", async () => {

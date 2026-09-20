@@ -19,7 +19,11 @@ const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 
 async function loadClient() {
   const built = await esbuild.build({
-    entryPoints: [path.join(dashboardRoot, "src", "lib", "runtime-v2", "scriberr-job.ts")],
+    stdin: {
+      contents: 'export * from "./src/lib/runtime-v2/scriberr-job.ts"; export { RuntimeJobControlError } from "./src/lib/supervisor-control.ts";',
+      resolveDir: dashboardRoot,
+      loader: "ts",
+    },
     bundle: true,
     format: "esm",
     platform: "node",
@@ -66,6 +70,23 @@ async function loadClient() {
 }
 
 const client = await loadClient();
+
+test("native input capacity becomes a retryable queue response before streaming the file", async () => {
+  let uploaded = false;
+  await assert.rejects(client.sealScriberrRuntimeUpload({
+    userId: 3,
+    gardenId: "physics",
+    file: new File(["audio"], "lecture.mp3", { type: "audio/mpeg" }),
+    displayFilename: "lecture.mp3",
+    maxBytes: 1024,
+    signal: new AbortController().signal,
+    control: fakeControl({
+      reserve: async () => { throw new client.RuntimeJobControlError("JOB_INPUT_QUOTA_EXCEEDED"); },
+      upload: async () => { uploaded = true; },
+    }),
+  }), error => error.code === "queue_full" && error.httpStatus === 429 && error.retryable);
+  assert.equal(uploaded, false);
+});
 
 function snapshot(overrides = {}) {
   return {

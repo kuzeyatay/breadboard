@@ -13,6 +13,7 @@
 // `node --experimental-strip-types`.
 
 import { createHash } from "node:crypto";
+import type { AcceptedCriticResidue, CriticPolicySnapshot } from "./learn-accepted-residues.ts";
 import { LEARN_FOUNDATION_RULES, LEARN_FOUNDATION_REVIEW_RULES } from "./learn-pedagogy.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
@@ -34,11 +35,13 @@ import {
   type AnchorConfirmationPacket,
   type AnchorCriticDecision,
   type AppliedAnchorDecision,
+  type CanonicalSourceAnchor,
   type FinalAuditResult,
   type FinalGardenState,
 } from "./final-garden-state.ts";
 import { finalizeGardenExport } from "./garden-finalize.ts";
-import { parseJsonObjectResponse } from "./learn-utils.ts";
+import { declinedLessonMatches, parseJsonObjectResponse } from "./learn-utils.ts";
+import { prepareUnitReanchor, type UnitReanchorCandidate } from "./learn-unit-reanchor.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -387,6 +390,8 @@ export interface CriticLoopOptions {
   criticModel: string;
   repairModel?: string;
   strictPublish: boolean;
+  /** See readMeasurementReviewPolicy in learn-accepted-residues.ts. */
+  measurementReviewNewFindings?: "block" | "warn";
 }
 
 export const DEFAULT_CRITIC_LOOP_OPTIONS: CriticLoopOptions = {
@@ -457,6 +462,7 @@ export interface RepairProvenanceRecord {
   modelFailureReason?: string;
   modelCandidateAttempts?: number;
   modelValidationFeedback?: string[];
+  reanchor?: { attempted: boolean; applied: boolean; anchorIds?: string[]; problem?: string };
   changed: boolean;
 }
 
@@ -509,6 +515,19 @@ export interface CriticLoopResult {
   finalResolution?: FinalCriticIssueResolution;
   /** Fix 12/13/14: the single canonical acceptance decision all reports share. */
   finalDecision?: FinalAcceptanceDecision;
+  /** Blocking findings a person accepted for this garden: still true, still
+   * reported, no longer holding publication. Present only when non-empty. */
+  acceptedResidues?: CriticIssue[];
+  appliedAcceptancePolicy?: {
+    snapshot?: CriticPolicySnapshot;
+    effectiveMaxRounds: number;
+    effectiveMeasurementReviewNewFindings: "block" | "warn";
+    matches: Array<{ issue: CriticIssue; exceptions: AcceptedCriticResidue[] }>;
+  };
+  /** Blocking findings the final measurement review raised for the first time
+   * on untouched pages, published as warnings under the "warn" policy. Present
+   * only when non-empty. */
+  demotedMeasurementFindings?: CriticIssue[];
 }
 
 /** The critic: reviews a packet, returns structured issues. ChatMock in prod. */
@@ -531,12 +550,17 @@ export type ArtifactRepairFn = (
 
 // Model repair (ChatMock) for semantic page/section rewrites.
 export interface ModelRepairInput {
+  repairStage?: "reanchor" | "page";
   issue: CriticIssue;
   repairRequest: ArtifactRepairRequest;
   finalGardenStateExcerpt: unknown;
   currentMarkdown?: string;
   learningUnitContract?: unknown;
   sourceAnchors?: unknown[];
+  /** For a source_anchor_mismatch: other anchors in the same source whose text
+   * matches the issue's topic, so the repair can re-anchor rather than only
+   * rephrase. See reanchorCandidates. */
+  reanchorCandidates?: CanonicalSourceAnchor[];
   previousPageSummary?: string;
   nextPageSummary?: string;
   /** A rejected candidate gets one bounded, fresh semantic retry carrying the
@@ -545,6 +569,10 @@ export interface ModelRepairInput {
    * answer. */
   candidateAttempt?: number;
   priorCandidateValidationFeedback?: string[];
+  /** Set when `currentMarkdown` holds only the learning units this repair may
+   * change, rather than the whole contract. The reply is then expected to be
+   * those units alone; see mergePartialLearningUnitContract. */
+  scopedLearningUnitIds?: string[];
 }
 
 export interface ModelRepairOutput {
@@ -1438,6 +1466,16 @@ Output the revised file content only.`;
 
 export function buildModelRepairPrompt(input: ModelRepairInput): { system: string; user: string } {
   const { issue, repairRequest } = input;
+  if (input.repairStage === "reanchor") return {
+    system: "Repair the evidence bindings of exactly one learning unit. Return JSON only, or null if the offered passages do not support its learning question. Never change the question, title, claims, required artifacts, or any other unit. Never claim that the selected sources lack evidence just because this bounded candidate list lacks it.",
+    user: JSON.stringify({
+      problem: issue.problem, expected: issue.expected, evidence: issue.evidence,
+      unit: input.learningUnitContract,
+      assignedEvidence: input.sourceAnchors,
+      candidates: input.reanchorCandidates,
+      instructions: 'Return {"learningUnits":[the complete revised unit]}. Change only sourceAnchors, semanticConcepts[].evidenceAnchors, and knowledgeClaims[].evidenceAnchors/derivationAnchors. Choose new anchors only from candidates, whose exactText is canonical evidence. Preserve correct existing bindings. Bind each claim to a passage that actually supports it; topic word overlap alone is insufficient. If the current bindings already suffice, return null. This is one bounded attempt; unsupported units remain unresolved.',
+    }),
+  };
   const validationFeedback = (input.priorCandidateValidationFeedback ?? [])
     .map((problem) => String(problem).trim())
     .filter(Boolean);
@@ -1448,7 +1486,22 @@ export function buildModelRepairPrompt(input: ModelRepairInput): { system: strin
     `Evidence: ${issue.evidence}`,
     `Expected: ${issue.expected}`,
     `Instructions: ${repairRequest.instructions.join(" ") || issue.suggestedRepair}`,
-    input.sourceAnchors ? `Relevant source anchors: ${JSON.stringify(input.sourceAnchors).slice(0, 1200)}` : "",
+    input.learningUnitContract ? `Learning Unit Contract: ${JSON.stringify(input.learningUnitContract)}` : "",
+    input.sourceAnchors ? `Relevant source anchors: ${JSON.stringify(input.sourceAnchors)}` : "",
+    input.repairStage === "page" ? "The unit has gained validated canonical evidence bindings. Update the page's sourceAnchors to match the Learning Unit Contract and teach the original learning question from the exact passages above. Preserve all other required metadata and artifacts." : "",
+    input.scopedLearningUnitIds?.length && input.reanchorCandidates?.length
+      ? [
+          "This unit's assigned evidence does not cover what it teaches. The same source contains passages that do. Re-anchor the unit: replace the mismatched anchor ids in its sourceAnchors (and in any semanticConcepts/knowledgeClaims evidenceAnchors that cite them) with the ids of the candidates below that actually support the taught material. Choose from these candidates only; do not invent anchor ids. When the target is the learning-unit contract itself, changing its anchors is the repair, not a violation of it.",
+          `Re-anchoring candidates from the same source: ${JSON.stringify(
+            input.reanchorCandidates.map((anchor) => ({
+              id: anchor.id,
+              page: anchor.page,
+              title: anchor.title,
+              excerpt: (anchor.exactText ?? anchor.semanticSummary ?? "").slice(0, 280),
+            })),
+          )}`,
+        ].join("\n")
+      : "",
     input.previousPageSummary ? `Previous page: ${input.previousPageSummary}` : "",
     input.nextPageSummary ? `Next page: ${input.nextPageSummary}` : "",
     validationFeedback.length > 0
@@ -1460,11 +1513,16 @@ export function buildModelRepairPrompt(input: ModelRepairInput): { system: strin
         ].join("\n")
       : "",
     "",
-    "Current file content:",
+    input.scopedLearningUnitIds?.length
+      ? `Only these learning units may change: ${input.scopedLearningUnitIds.join(", ")}. The rest of the contract is unchanged and is not shown.`
+      : "",
+    input.scopedLearningUnitIds?.length ? "The learning units you may revise:" : "Current file content:",
     "-----",
     input.currentMarkdown ?? "(none)",
     "-----",
-    "Return the full revised file content only.",
+    input.scopedLearningUnitIds?.length
+      ? 'Return only a JSON object of the form {"learningUnits": [ ... ]} containing exactly those units, revised. Keep each unit\'s "id" unchanged. Do not return the rest of the contract.'
+      : "Return the full revised file content only.",
     // Seen 2026-09-15: asked for a ~190k-character learning-unit contract,
     // the ChatGPT web Thinking model wrote it to its own sandbox and replied
     // with "[learning-unit-contract.json](sandbox:/mnt/data/...)". Nothing
@@ -1554,9 +1612,216 @@ function adjacentPageSummaries(state: FinalGardenState, rel: string): { previous
   };
 }
 
+/** How large a contract has to be before its repair is scoped to units. */
+const LEARNING_UNIT_CONTRACT_SCOPED_REPAIR_CHARS = 60_000;
+
+/**
+ * The slice of the learning-unit contract a repair should actually be shown.
+ *
+ * Returns null whenever the whole file is still a reasonable thing to ask for:
+ * a different target, a small contract, a request that does not say which
+ * units it affects, or a contract this code cannot parse. In those cases the
+ * caller keeps the existing whole-file behaviour untouched.
+ */
+function scopedLearningUnitContractRepair(
+  request: ArtifactRepairRequest,
+  wholeFile: string | undefined,
+  state?: FinalGardenState,
+  issue?: CriticIssue,
+): { currentMarkdown: string; unitIds: string[] } | null {
+  if (!request.targetPath || !/learning-unit-contract\.json$/i.test(request.targetPath)) return null;
+  if (!wholeFile || wholeFile.length < LEARNING_UNIT_CONTRACT_SCOPED_REPAIR_CHARS) return null;
+  const unitIds = (request.affectedUnitIds ?? []).filter((id): id is string => typeof id === "string" && !!id);
+  // A contract issue usually names the page it came from rather than the unit,
+  // and affectedUnitIds is optional - so scoping that trusted it alone never
+  // engaged, and the repair kept asking for the whole 198 KB file
+  // (telecom-1, 2026-09-18). The page carries its unit id, which is the same
+  // answer by a different route.
+  if (unitIds.length === 0 && issue?.pagePath && state) {
+    const page = state.pages.find((candidate) => candidate.rel === issue.pagePath);
+    if (typeof page?.learningUnitId === "string" && page.learningUnitId) unitIds.push(page.learningUnitId);
+  }
+  if (unitIds.length === 0) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(wholeFile) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const units = parsed.learningUnits;
+  if (!Array.isArray(units)) return null;
+  const wanted = units.filter((unit) => {
+    const id = (unit as { id?: unknown } | null)?.id;
+    return typeof id === "string" && unitIds.includes(id);
+  });
+  if (wanted.length === 0) return null;
+  return {
+    currentMarkdown: JSON.stringify({ learningUnits: wanted }, null, 2),
+    unitIds: wanted.map((unit) => String((unit as { id?: unknown }).id)),
+  };
+}
+
+/**
+ * The stable part of a critic issue id: its leading unit token ("u19"). The
+ * rest is model-authored wording that drifts between runs.
+ */
+function criticIssueUnitToken(issueId: string): string | null {
+  const match = /^(u\d+)-/i.exec(issueId.trim());
+  return match ? match[1].toLowerCase() : null;
+}
+
+function normalizedResiduePagePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\/+/, "").trim().toLowerCase();
+}
+
+/**
+ * Build the matcher for accepted residues.
+ *
+ * Critic issue ids are model-authored and do not survive a run: the same
+ * finding was "u19-step-graded-source-anchor-mismatch", then
+ * "u19-step-graded-source-mismatch", then "step-graded-fiber-source-mismatch"
+ * with the unit prefix gone altogether (telecom-1, 2026-09-18). What a person
+ * actually accepts is a finding of a given kind on a given page, and the page
+ * path is the one field the critic reports stably. So the primary entry form
+ * is `page:<type>:<pagePath>`; an exact id is still honoured for the run it
+ * was read from, and `<unit>:<type>` keeps working while the critic includes
+ * a unit token. Anything that does not parse matches by exact id only, so a
+ * malformed entry can never widen the gate.
+ */
+function acceptedResidueMatcher(entries: readonly string[]): (issue: CriticIssue) => boolean {
+  const exact = new Set<string>();
+  const byUnitAndType = new Set<string>();
+  const byPageAndType = new Set<string>();
+  const pagelessByType = new Set<string>();
+  for (const raw of entries) {
+    const entry = String(raw ?? "").trim();
+    if (!entry) continue;
+    exact.add(entry);
+    // `page:*:<path>` accepts every finding on that page. Used when a page
+    // has been accepted as a whole - the fibre pages of telecom-1 produced a
+    // differently-typed finding on each pass as repairs pushed them back and
+    // forth, and recording them one type at a time only chased the critic.
+    const byPage = /^page:([a-z_*]+):(.+)$/i.exec(entry);
+    if (byPage) {
+      byPageAndType.add(`${byPage[1].toLowerCase()}|${normalizedResiduePagePath(byPage[2])}`);
+      continue;
+    }
+    // `type:<type>` accepts findings of one type that carry NO page at all -
+    // a section index promising a lesson the plan never generated, say
+    // (source_coverage_contradiction on telecom-1, 2026-09-19). Deliberately
+    // restricted to page-less findings: a typed residue never reaches a
+    // finding that names a page, so it cannot silence a real page defect.
+    const byType = /^type:([a-z_]+)$/i.exec(entry);
+    if (byType) {
+      pagelessByType.add(byType[1].toLowerCase());
+      continue;
+    }
+    const explicit = /^(u\d+):([a-z_]+)$/i.exec(entry);
+    if (explicit) {
+      byUnitAndType.add(`${explicit[1].toLowerCase()}:${explicit[2].toLowerCase()}`);
+      continue;
+    }
+    const unit = criticIssueUnitToken(entry);
+    if (unit && /source|anchor/i.test(entry)) byUnitAndType.add(`${unit}:source_anchor_mismatch`);
+  }
+  return (issue) => {
+    if (exact.has(issue.id)) return true;
+    const type = String(issue.type).toLowerCase();
+    if (issue.pagePath) {
+      const page = normalizedResiduePagePath(issue.pagePath);
+      if (byPageAndType.has(`${type}|${page}`) || byPageAndType.has(`*|${page}`)) return true;
+    } else if (pagelessByType.has(type)) {
+      return true;
+    }
+    const unit = criticIssueUnitToken(issue.id);
+    return unit !== null && byUnitAndType.has(`${unit}:${type}`);
+  };
+}
+
+/** How many alternative anchors to offer a re-anchoring repair. */
+const REANCHOR_CANDIDATE_LIMIT = 12;
+
+const REANCHOR_STOPWORDS = new Set([
+  "the", "and", "that", "this", "with", "from", "into", "than", "then", "their", "which", "while", "where",
+  "does", "not", "its", "own", "are", "for", "but", "has", "have", "been", "should", "would", "could",
+  "unit", "page", "contract", "evidence", "teaches", "taught", "assigned", "selected", "describe", "describes",
+  "material", "topics", "claims", "source", "sources", "canonical", "directly", "supports", "support",
+]);
+
+function reanchorTerms(text: string): string[] {
+  return [...new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .map((term) => term.replace(/^-+|-+$/g, ""))
+      .filter((term) => term.length >= 4 && !REANCHOR_STOPWORDS.has(term)),
+  )];
+}
+
+/**
+ * Anchors in the same source that the repair could re-anchor a unit to.
+ *
+ * A source_anchor_mismatch says a unit teaches what its assigned evidence does
+ * not cover. Until now the repair was shown only that unit's existing anchors
+ * - Keiser page 49, a glass-air reflection example, for a unit about plastic
+ * fibre - and asked to fix the mismatch. It could not: the pages that do
+ * cover plastic fibre and index profiles exist in the same 2.6 MB source, but
+ * nothing ever put them in front of the model. Six identical attempts across
+ * three runs changed nothing (telecom-1 U19 and U20, 2026-09-18).
+ *
+ * This ranks the source's other text anchors by how many of the issue's own
+ * words appear in their title, excerpt and keywords, and offers the best of
+ * them. The repair decides; this only makes the decision possible. Candidates
+ * are drawn from the same source ids the unit is already bound to, so a
+ * re-anchoring never quietly pulls in a different book.
+ */
+export function reanchorCandidates(
+  state: FinalGardenState,
+  issue: CriticIssue,
+  currentAnchorIds: ReadonlySet<string>,
+): CanonicalSourceAnchor[] {
+  if (!["source_anchor_mismatch", "explanation_gap", "other"].includes(issue.type)) return [];
+  const sourceIds = new Set(
+    [...currentAnchorIds]
+      .map((id) => state.sourceAnchors[id]?.sourceId)
+      .filter((id): id is string => typeof id === "string" && !!id),
+  );
+  if (sourceIds.size === 0) return [];
+  const terms = reanchorTerms(`${issue.problem} ${issue.expected} ${issue.evidence}`);
+  if (terms.length === 0) return [];
+  const scored = Object.values(state.sourceAnchors)
+    .filter((anchor) =>
+      anchor.kind !== "figure" &&
+      typeof anchor.exactText === "string" && anchor.exactText.length > 0 && anchor.exactText.length <= 8_000 &&
+      anchor.sourceId !== undefined &&
+      sourceIds.has(anchor.sourceId) &&
+      !currentAnchorIds.has(anchor.id),
+    )
+    .map((anchor) => {
+      const haystack = `${anchor.title} ${anchor.exactText ?? ""} ${(anchor.conceptKeywords ?? []).join(" ")}`.toLowerCase();
+      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+      return { anchor, score };
+    })
+    .filter((entry) => entry.score >= 2)
+    .sort((a, b) => b.score - a.score || (a.anchor.page ?? 0) - (b.anchor.page ?? 0));
+  let chars = 0;
+  return scored.filter(({ anchor }) => {
+    const length = anchor.exactText!.length;
+    if (chars + length > 36_000) return false;
+    chars += length;
+    return true;
+  }).slice(0, REANCHOR_CANDIDATE_LIMIT).map((entry) => entry.anchor);
+}
+
 function buildModelRepairInput(state: FinalGardenState, gardenDir: string, request: ArtifactRepairRequest, issue: CriticIssue): ModelRepairInput {
   const abs = request.targetPath ? path.join(gardenDir, request.targetPath) : undefined;
-  const currentMarkdown = abs && fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : undefined;
+  const wholeFile = abs && fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : undefined;
+  // Ask for the units that changed rather than a file the model will not
+  // return. See mergePartialLearningUnitContract for why 198 KB is past what
+  // this repair can get back.
+  const scoped = scopedLearningUnitContractRepair(request, wholeFile, state, issue);
+  const currentMarkdown = scoped?.currentMarkdown ?? wholeFile;
   const targetPage = request.targetPath
     ? state.pages.find((page) => page.rel === request.targetPath)
     : undefined;
@@ -1578,6 +1843,7 @@ function buildModelRepairInput(state: FinalGardenState, gardenDir: string, reque
     }
   }
   const relevantAnchors = Object.values(state.sourceAnchors).filter((a) => anchorIds.has(a.id));
+  const reanchorOptions = reanchorCandidates(state, issue, anchorIds);
   const adj = request.targetPath ? adjacentPageSummaries(state, request.targetPath) : {};
   return {
     issue,
@@ -1586,8 +1852,10 @@ function buildModelRepairInput(state: FinalGardenState, gardenDir: string, reque
     currentMarkdown,
     learningUnitContract,
     sourceAnchors: relevantAnchors.length ? relevantAnchors : undefined,
+    reanchorCandidates: reanchorOptions.length ? reanchorOptions : undefined,
     previousPageSummary: adj.previous,
     nextPageSummary: adj.next,
+    scopedLearningUnitIds: scoped?.unitIds,
   };
 }
 
@@ -1669,11 +1937,75 @@ function normalizeModelCandidateValidation(
   return { passed: false, problems: ["candidate validator returned an invalid result"] };
 }
 
+/**
+ * Accept a contract repair that returns only the learning units it changed.
+ *
+ * The learning-unit contract is the one repair target too large to echo back.
+ * telecom-1's is 197,617 characters, and at that size the ChatGPT web model
+ * does not reply with the file at all: on 2026-09-15 it wrote the content to
+ * its own sandbox and answered with a `sandbox:/mnt/data/...` link, and on
+ * 2026-09-18 it simply returned nothing, twice, which no retry can fix. The
+ * units are 80% of the file and carry stable ids, so a repair can send back
+ * just the ones it rewrote - about 5 KB instead of 198 KB - and they are
+ * merged here by id.
+ *
+ * Deliberately narrow: this only engages for the contract, only when the
+ * candidate contains `learningUnits` and nothing else, and only for ids the
+ * contract already has. A whole-file candidate, any other JSON target, and an
+ * unparseable baseline all pass through exactly as before, so the change
+ * cannot silently accept a partial write anywhere it was not intended.
+ */
+function mergePartialLearningUnitContract(
+  targetPath: string,
+  before: string | null,
+  revised: unknown,
+): { value: unknown; problem?: string } {
+  if (!/learning-unit-contract\.json$/i.test(targetPath) || before === null) return { value: revised };
+  if (!revised || typeof revised !== "object" || Array.isArray(revised)) return { value: revised };
+  const candidate = revised as Record<string, unknown>;
+  const units = candidate.learningUnits;
+  if (!Array.isArray(units) || Object.keys(candidate).some((key) => key !== "learningUnits")) {
+    return { value: revised };
+  }
+  let current: Record<string, unknown>;
+  try {
+    current = JSON.parse(before) as Record<string, unknown>;
+  } catch {
+    return { value: revised, problem: "the contract being repaired is not valid JSON, so a partial candidate cannot be merged" };
+  }
+  const currentUnits = current.learningUnits;
+  if (!Array.isArray(currentUnits)) {
+    return { value: revised, problem: "the contract being repaired has no learningUnits array to merge into" };
+  }
+  const replacements = new Map<string, unknown>();
+  for (const unit of units) {
+    const id = (unit as { id?: unknown } | null)?.id;
+    if (typeof id !== "string" || !id) {
+      return { value: revised, problem: "a returned learning unit has no id, so it cannot be matched to the contract" };
+    }
+    if (!currentUnits.some((existing) => (existing as { id?: unknown } | null)?.id === id)) {
+      return { value: revised, problem: `the candidate returns learning unit ${id}, which the contract does not contain` };
+    }
+    replacements.set(id, unit);
+  }
+  if (replacements.size === 0) return { value: revised, problem: "the candidate returned no learning units" };
+  return {
+    value: {
+      ...current,
+      learningUnits: currentUnits.map((existing) => {
+        const id = (existing as { id?: unknown } | null)?.id;
+        return typeof id === "string" && replacements.has(id) ? replacements.get(id) : existing;
+      }),
+    },
+  };
+}
+
 function applyModelRepairOutput(
   gardenDir: string,
   gardenSlug: string,
   out: ModelRepairOutput,
   validateCandidate?: ModelCandidateValidator,
+  reanchor?: UnitReanchorCandidate,
 ): ModelRepairApplicationResult {
   const abs = path.join(gardenDir, out.targetPath);
   const reject = (...feedback: string[]): ModelRepairApplicationResult => ({
@@ -1682,9 +2014,13 @@ function applyModelRepairOutput(
   });
   if (!fs.existsSync(path.dirname(abs))) return reject(`target directory does not exist: ${path.dirname(out.targetPath)}`);
   const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : null;
+  if (reanchor && fs.readFileSync(path.join(gardenDir, ".breadboard/learning-unit-contract.json"), "utf-8") !== reanchor.contractBefore) {
+    return reject("Learning unit contract changed while the re-anchor candidate was being authored.");
+  }
   const restore = (): void => {
     if (before !== null) fs.writeFileSync(abs, before, "utf-8");
     else fs.rmSync(abs, { force: true });
+    if (reanchor) fs.writeFileSync(path.join(gardenDir, ".breadboard/learning-unit-contract.json"), reanchor.contractBefore, "utf-8");
   };
   let beforeAudit: FinalAuditResult | null = null;
   try {
@@ -1706,15 +2042,29 @@ function applyModelRepairOutput(
     fs.writeFileSync(abs, out.revisedMarkdown.endsWith("\n") ? out.revisedMarkdown : `${out.revisedMarkdown}\n`, "utf-8");
   } else if (out.revisedJson !== undefined) {
     if (modelJsonHasInvalidAnchorLabels(out.revisedJson)) return reject("candidate introduces an invalid source-anchor label");
-    fs.writeFileSync(abs, `${JSON.stringify(out.revisedJson, null, 2)}\n`, "utf-8");
+    const merged = mergePartialLearningUnitContract(out.targetPath, before, out.revisedJson);
+    if (merged.problem) return reject(merged.problem);
+    fs.writeFileSync(abs, `${JSON.stringify(merged.value, null, 2)}\n`, "utf-8");
   } else {
     return reject("candidate contains neither revisedMarkdown nor revisedJson");
   }
   try {
-    const afterAudit = auditFinalGardenState(buildFinalGardenState(gardenDir, gardenSlug));
+    if (reanchor) fs.writeFileSync(path.join(gardenDir, ".breadboard/learning-unit-contract.json"), reanchor.contractAfter, "utf-8");
+    const afterState = buildFinalGardenState(gardenDir, gardenSlug);
+    const afterAudit = auditFinalGardenState(afterState);
     const feedback = introducedAuditProblems(beforeAudit, afterAudit).map(
       (problem) => `candidate introduced final-state audit problem: ${problem}`,
     );
+    if (reanchor && declinedLessonMatches(out.revisedMarkdown ?? "", {
+      title: String(reanchor.unit.title ?? ""), learningQuestion: String(reanchor.unit.learningQuestion ?? ""),
+    }).length) feedback.push("Re-anchored candidate still declines to teach its learning objective.");
+    if (reanchor) {
+      const page = afterState.pages.find((entry) => entry.rel === out.targetPath);
+      const expected = reanchor.unit.sourceAnchors as string[];
+      if (!page || expected.some((id) => !page.sourceAnchors.includes(id)) || page.sourceAnchors.some((id) => !expected.includes(id))) {
+        feedback.push("Re-anchored page sourceAnchors must match the revised unit bindings.");
+      }
+    }
     if (validateCandidate) {
       const validation = normalizeModelCandidateValidation(validateCandidate(gardenDir, gardenSlug));
       if (!validation.passed) {
@@ -1796,6 +2146,7 @@ export function makeCriticArtifactRepair(opts: {
 } = {}): ArtifactRepairFn {
   const allowDeterministicRepairs = opts.allowDeterministicRepairs !== false;
   const maxModelCandidateAttempts = Math.max(1, Math.floor(opts.maxModelCandidateAttempts ?? 1));
+  const reanchorAttemptedUnits = new Set<string>();
   const finalize = opts.deterministicFinalize ?? ((gardenDir: string, gardenSlug: string) => {
     try { finalizeGardenExport({ gardenDir, gardenSlug }); }
     catch { try { reconcileFinalGardenState(gardenDir, gardenSlug); } catch { /* best effort */ } }
@@ -1834,7 +2185,36 @@ export function makeCriticArtifactRepair(opts: {
         // A thrown provider/model request is not semantic evidence and cannot
         // authorize another critic round. Preserve the exact thrown object by
         // allowing it to escape this repair boundary unchanged.
-        const baseInput = buildModelRepairInput(state, gardenDir, req, issue);
+        let baseInput = buildModelRepairInput(state, gardenDir, req, issue);
+        let reanchor: UnitReanchorCandidate | undefined;
+        let reanchorRecord: RepairProvenanceRecord["reanchor"];
+        const reanchorUnitId = (baseInput.learningUnitContract as { id?: string } | undefined)?.id;
+        if (req.targetKind === "unit_page" && reanchorUnitId && !reanchorAttemptedUnits.has(reanchorUnitId) && baseInput.reanchorCandidates?.length) {
+          reanchorAttemptedUnits.add(reanchorUnitId);
+          reanchorRecord = { attempted: true, applied: false };
+          const contractPath = ".breadboard/learning-unit-contract.json";
+          const unitId = reanchorUnitId;
+          const contractBefore = fs.readFileSync(path.join(gardenDir, contractPath), "utf-8");
+          const authoredUnit = JSON.parse(contractBefore).learningUnits?.find((unit: { id: string }) => unit.id === unitId);
+          // One evidence-selection call per target, followed by the existing
+          // bounded page candidates. No full re-plan and no policy mutation.
+          const proposal = await opts.modelRepair({
+            ...baseInput, repairStage: "reanchor", scopedLearningUnitIds: [unitId], learningUnitContract: authoredUnit,
+            repairRequest: { ...req, targetKind: "learning_unit_contract", targetPath: contractPath },
+          });
+          if (proposal) {
+            try {
+              if (proposal.targetPath !== contractPath) throw new Error("Re-anchor candidate changed its target path.");
+              reanchor = prepareUnitReanchor(contractBefore, unitId, proposal.revisedJson, baseInput.reanchorCandidates.map((a) => a.id));
+              const ids = reanchor.unit.sourceAnchors as string[];
+              reanchorRecord.anchorIds = ids;
+              baseInput = { ...baseInput, repairStage: "page", learningUnitContract: reanchor.unit,
+                sourceAnchors: Object.values(state.sourceAnchors).filter((anchor) => ids.includes(anchor.id)), reanchorCandidates: undefined };
+            } catch (error) {
+              reanchorRecord.problem = error instanceof Error ? error.message : String(error);
+            }
+          } else reanchorRecord.problem = "No supported re-anchoring selected from the bounded candidates.";
+        }
         for (let candidateAttempt = 1; candidateAttempt <= maxModelCandidateAttempts; candidateAttempt += 1) {
           modelCandidateAttempts = candidateAttempt;
           const out = await Promise.resolve(opts.modelRepair({
@@ -1851,13 +2231,17 @@ export function makeCriticArtifactRepair(opts: {
             modelFailureReason = "model returned no valid candidate";
             break;
           }
-          const application = applyModelRepairOutput(
+          const application = out.targetPath !== req.targetPath
+            ? { accepted: false, feedback: ["candidate changed the requested target path"] }
+            : applyModelRepairOutput(
             gardenDir,
             gardenSlug,
             out,
             opts.validateModelCandidate,
+            reanchor,
           );
           if (application.accepted) {
+            if (reanchorRecord) reanchorRecord.applied = Boolean(reanchor);
             used = "model";
             changed = true;
             break;
@@ -1877,6 +2261,7 @@ export function makeCriticArtifactRepair(opts: {
           modelFailureReason,
           modelCandidateAttempts,
           modelValidationFeedback: modelValidationFeedback.length ? modelValidationFeedback : undefined,
+          reanchor: reanchorRecord,
           changed,
         });
         handledByModel.add(req.id);
@@ -1906,6 +2291,37 @@ export function makeCriticArtifactRepair(opts: {
 /** Backward-compatible default: deterministic finalization only (no model). */
 export function makeDefaultArtifactRepair(): ArtifactRepairFn {
   return makeCriticArtifactRepair();
+}
+
+/** Give explicit objective refusals one repair opportunity before strict export
+ * validation would stop the run. Each unit is attempted once; export remains
+ * the hard gate and the semantic critic still reviews the resulting lesson. */
+export async function repairDeclinedLearningObjectives(args: {
+  gardenDir: string; gardenSlug: string; modelRepair: ModelRepairFn;
+  validateModelCandidate?: ModelCandidateValidator;
+}): Promise<CriticRepairOutcome> {
+  const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
+  const issues: CriticIssue[] = [];
+  for (const page of state.pages) {
+    const unit = state.learningUnitContract.units.find((entry) => entry.id === page.learningUnitId);
+    if (!unit || !page.rel.startsWith("learning/")) continue;
+    const raw = fs.readFileSync(path.join(args.gardenDir, page.rel), "utf-8");
+    const refusals = declinedLessonMatches(raw, { title: unit.title, learningQuestion: unit.learningQuestion });
+    if (!refusals.length) continue;
+    issues.push({ id: `${unit.id}-declined-learning-objective`, severity: "blocking", type: "source_anchor_mismatch",
+      pagePath: page.rel, sourceAnchorIds: unit.sourceAnchors, repairTarget: "unit_page",
+      problem: `The lesson declines to answer its learning question: ${unit.learningQuestion}`,
+      evidence: refusals.map((entry) => entry.snippet).join("\n"), expected: unit.learningQuestion,
+      suggestedRepair: "Check canonical evidence for a bounded unit re-anchor, then teach the original objective. Missing assigned evidence is not proof that the selected sources lack it.",
+    });
+  }
+  if (!issues.length) return { attempted: 0, resolved: 0, provenance: [] };
+  const repair = makeCriticArtifactRepair({ modelRepair: args.modelRepair, validateModelCandidate: args.validateModelCandidate, allowDeterministicRepairs: false, maxModelCandidateAttempts: 2 });
+  const result = await repair(args.gardenDir, args.gardenSlug, criticIssuesToRepairRequests(issues, state), {
+    round: 0, issuesById: new Map(issues.map((issue) => [issue.id, issue])),
+  });
+  fs.writeFileSync(path.join(args.gardenDir, ".breadboard/declined-objective-repairs.json"), `${JSON.stringify({ issues, ...result }, null, 2)}\n`);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1953,6 +2369,20 @@ export interface RunCriticLoopArgs {
   options?: Partial<CriticLoopOptions>;
   repair?: ArtifactRepairFn;
   deterministicPass?: boolean;
+  /**
+   * Blocking issues a person has read and accepted for this garden.
+   *
+   * Strict publish otherwise requires an empty blocking set, which is right:
+   * an unreviewed blocker must stop a publication. But some findings are
+   * true and not worth another day of regeneration - telecom-1 ended with two
+   * units whose evidence does not cover everything they teach, correctly
+   * flagged, in a module whose other 29 lessons are clean (2026-09-18). An
+   * accepted residue is that judgement made explicitly: named issue ids, held
+   * in the garden, still reported and still listed in the critic record. It
+   * never silences a finding - it only stops one holding publication.
+   */
+  acceptedResidueIssueIds?: string[];
+  acceptedResiduePolicy?: CriticPolicySnapshot;
   /** True when finalize reported a structural/critical problem (draft may be
    *  unusable); drives the publish_failed_structural lifecycle. */
   structuralFailure?: boolean;
@@ -2168,6 +2598,9 @@ export function computeFinalAcceptanceDecision(
 
 export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoopResult> {
   const options: CriticLoopOptions = { ...DEFAULT_CRITIC_LOOP_OPTIONS, ...(args.options ?? {}) };
+  const policyRecords: AcceptedCriticResidue[] = args.acceptedResiduePolicy?.records ??
+    (args.acceptedResidueIssueIds ?? []).map((issueId) => ({ issueId }));
+  const isAcceptedResidue = acceptedResidueMatcher(policyRecords.map((entry) => entry.issueId));
   const repair = args.repair ?? makeDefaultArtifactRepair();
   const rounds: CriticRoundRecord[] = [];
   const draftGenerated = fs.existsSync(path.join(args.gardenDir, "learning"));
@@ -2199,7 +2632,19 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
     ];
     const resolution = resolveFinalCriticIssues(allInstances, chatActive, options.strictPublish);
     finalResolution = resolution;
-    const verifiedBlocking = [...anchorBlocking, ...resolution.blockers];
+    const allVerifiedBlocking = [...anchorBlocking, ...resolution.blockers];
+    // An accepted residue is reported exactly like any other finding - it
+    // simply no longer decides publication. It remains in acceptedResidues
+    // and the policy report with the exact matching exception and reason.
+    // Critic issue ids are not stable across runs: the same U19 finding came
+    // back as "u19-step-graded-source-anchor-mismatch" one run and
+    // "u19-step-graded-source-mismatch" the next (2026-09-18). An acceptance
+    // keyed on the exact id therefore silently stops matching. What is stable
+    // is the unit and the kind of finding, so an accepted residue matches on
+    // the unit prefix of the id plus the issue type, with the exact id still
+    // honoured when it does match.
+    const acceptedResidues = allVerifiedBlocking.filter(isAcceptedResidue);
+    const verifiedBlocking = allVerifiedBlocking.filter((issue) => !isAcceptedResidue(issue));
     const verifiedWarnings = resolution.warnings;
     const status = finalizeStatus({
       draftGenerated,
@@ -2248,7 +2693,7 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
         criticRan,
         criticAvailable: !criticErrored && criticRan,
         criticAvailabilityProblem: criticErrored ? (criticErrorMessage ?? "critic did not run") : undefined,
-        verifiedCriticBlockers: resolution.blockers,
+        verifiedCriticBlockers: resolution.blockers.filter((issue) => !isAcceptedResidue(issue)),
         verifiedWarnings: resolution.warnings,
         repairBudgetExhausted: totalAttempts >= options.maxTotalRepairAttempts,
         includeLegacyAsDeterministic: Boolean(args.enforceLegacyFinalization),
@@ -2264,7 +2709,25 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       }
     } catch { /* keep finalizeStatus result */ }
 
-    const result: CriticLoopResult = { status, rounds, finalBlockingIssues: verifiedBlocking, finalWarnings: verifiedWarnings, finalResolution: resolution, finalDecision };
+    const result: CriticLoopResult = {
+      status,
+      rounds,
+      finalBlockingIssues: verifiedBlocking,
+      finalWarnings: verifiedWarnings,
+      finalResolution: resolution,
+      finalDecision,
+      ...(acceptedResidues.length ? { acceptedResidues } : {}),
+      appliedAcceptancePolicy: {
+        snapshot: args.acceptedResiduePolicy,
+        effectiveMaxRounds: options.maxRounds,
+        effectiveMeasurementReviewNewFindings: options.measurementReviewNewFindings ?? "block",
+        matches: acceptedResidues.map((issue) => ({
+          issue,
+          exceptions: policyRecords.filter((entry) => acceptedResidueMatcher([entry.issueId])(issue)),
+        })),
+      },
+      ...(demotedMeasurementFindings.length ? { demotedMeasurementFindings } : {}),
+    };
     if (args.writeReports !== false) writeCriticReports(args.gardenDir, result);
     return result;
   };
@@ -2306,11 +2769,22 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
 
   let totalAttempts = 0;
   let prevBlocking: CriticIssue[] | null = null;
+  /** The previous round's blocking set and repair count, to detect a loop that
+   * is repeating one attempt without moving. */
+  let prevBlockingKey = "";
+  let prevBlockingKeys = new Set<string>();
+  let prevAttempted = 0;
   let prevRequestsByIssue = new Map<string, string>();
   let prevRoundIdx = -1;
   let endedClean = false;
   let lastBlocking: CriticIssue[] = [];
   let lastWarnings: CriticIssue[] = [];
+  /** Stable across rounds: the unit and the kind of finding, not the
+   * model-authored id, which drifts from round to round. */
+  const stableKey = (item: CriticIssue) => `${criticIssueUnitToken(item.id) ?? item.id}:${item.type}`;
+  /** Findings the measurement review raised for the first time and the
+   * "warn" policy published as warnings; reported so nobody has to infer it. */
+  const demotedMeasurementFindings: CriticIssue[] = [];
 
   const requireCriticIssues = (value: CriticIssue[] | null | undefined): CriticIssue[] => {
     if (!Array.isArray(value)) {
@@ -2330,7 +2804,10 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
     ).slice(0, options.maxIssuesPerRound);
     const review = verifiedReview(state, criticIssues, round);
     allInstances.push(...review.instances);
-    const { blocking, warnings } = review;
+    // Keep accepted findings in the verified instances/report, but do not
+    // spend repair rounds rewriting pages the operator deliberately accepted.
+    const blocking = review.blocking.filter((issue) => !isAcceptedResidue(issue));
+    const { warnings } = review;
     const verificationFields = {
       reportedIssues: review.reportedIssues,
       verifiedBlockingIssues: blocking.length,
@@ -2340,7 +2817,7 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       issueVerifications: review.verifications,
       ...(review.falsePositives.length ? { falsePositives: review.falsePositives } : {}),
     };
-    lastBlocking = blocking;
+    lastBlocking = review.blocking;
     lastWarnings = warnings;
 
     // Directly classify the previous round's issues against this fresh review.
@@ -2412,6 +2889,38 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       ...(anchorDecisions.length ? { anchorDecisions } : {}),
       ...verificationFields,
     });
+    // Stop once repairing stops changing anything. telecom-1 spent rounds 3
+    // through 8 re-attempting one repair against the same two issues, every
+    // round reporting "attempted 1, resolved 0" with both still present
+    // (2026-09-18) - roughly 45 minutes of model calls that could not have
+    // succeeded, since nothing about the attempt differed. The issues remain
+    // blocking either way; this only stops paying to rediscover that.
+    // Compare on what is stable across rounds - the unit and issue type - not
+    // the model-authored id, which drifts. And stop only when the round added
+    // no issue that was not already stuck: a round whose set is "the same two
+    // stuck ones plus a newly found error" has found something repairable,
+    // and stopping there strands the new finding untried (telecom-1 U27's
+    // carried-vs-offered traffic contradiction, 2026-09-18, surfaced in the
+    // round the coarse version cut off).
+    const blockingKeys = new Set(blocking.map(stableKey));
+    const blockingKey = [...blockingKeys].sort().join("|");
+    const introducedNew = [...blockingKeys].some((key) => !prevBlockingKeys.has(key));
+    if (
+      round > 1 &&
+      blockingKey &&
+      blockingKey === prevBlockingKey &&
+      !introducedNew &&
+      prevAttempted > 0 &&
+      outcome.attempted + anchorAttempts > 0
+    ) {
+      prevBlocking = blocking;
+      prevRequestsByIssue = requestsByIssue;
+      prevRoundIdx = rounds.length - 1;
+      break;
+    }
+    prevBlockingKey = blockingKey;
+    prevBlockingKeys = blockingKeys;
+    prevAttempted = outcome.attempted + anchorAttempts;
     prevBlocking = blocking;
     prevRequestsByIssue = requestsByIssue;
     prevRoundIdx = rounds.length - 1;
@@ -2430,9 +2939,49 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       ).slice(0, options.maxIssuesPerRound),
       measurementRound,
     );
+    // A finding this review raises for the first time, on a page no repair
+    // touched, cannot be repaired by this run - there is no round after the
+    // measurement. Under the "warn" policy it is published as a warning and
+    // reported as demoted; anything already known, or on a repaired page (a
+    // possible regression), keeps blocking. See readMeasurementReviewPolicy.
+    let measuredBlocking = finalReview.blocking;
+    let measuredWarnings = finalReview.warnings;
+    if (options.measurementReviewNewFindings === "warn") {
+      // "Known" means the critic confirmed the same kind of finding on the
+      // same unit or page in an earlier review. A false positive it retracted
+      // does not count, and neither does a different kind of finding on a
+      // page it once mentioned: run 7 (2026-09-19) kept three fresh findings
+      // blocking only because their pages had appeared in round 1 as
+      // retracted "misclassified example" reports.
+      const confirmed = allInstances.filter(
+        (instance) => instance.verification.severity === "confirmed_blocking" || instance.verification.severity === "confirmed_warning",
+      );
+      const knownKeys = new Set(confirmed.map((instance) => stableKey(instance.issue)));
+      const knownPageTypes = new Set(
+        confirmed
+          .filter((instance) => instance.issue.pagePath)
+          .map((instance) => `${instance.issue.type}|${instance.issue.pagePath}`),
+      );
+      const repairedPaths = new Set(
+        (rounds[prevRoundIdx].provenance ?? []).map((record) => record.targetPath).filter((targetPath): targetPath is string => Boolean(targetPath)),
+      );
+      const demoted = finalReview.blocking.filter((issue) =>
+        !issue.id.startsWith(ANCHOR_EVIDENCE_ISSUE_PREFIX) &&
+        !knownKeys.has(stableKey(issue)) &&
+        !(issue.pagePath && (knownPageTypes.has(`${issue.type}|${issue.pagePath}`) || repairedPaths.has(issue.pagePath))),
+      );
+      if (demoted.length > 0) {
+        for (const issue of demoted) {
+          issue.severity = "warning";
+          demotedMeasurementFindings.push(issue);
+        }
+        measuredBlocking = finalReview.blocking.filter((issue) => !demoted.includes(issue));
+        measuredWarnings = [...finalReview.warnings, ...demoted];
+      }
+    }
     allInstances.push(...finalReview.instances);
-    lastBlocking = finalReview.blocking;
-    lastWarnings = finalReview.warnings;
+    lastBlocking = measuredBlocking;
+    lastWarnings = measuredWarnings;
     const resolutions = computeIssueResolutions(prevBlocking, lastBlocking, prevRequestsByIssue);
     rounds[prevRoundIdx].resolutions = resolutions;
     rounds[prevRoundIdx].repairsResolved = resolutions.filter((r) => r.status === "resolved").length;
@@ -2514,12 +3063,12 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
   const acceptance = result.finalDecision
     ? { ...result.status, finalDecision: result.finalDecision, deterministicBlockerCount: result.finalDecision.deterministicBlockerCount, verifiedCriticBlockerCount: result.finalDecision.verifiedCriticBlockerCount, verifiedWarningCount: result.finalDecision.verifiedWarningCount }
     : result.status;
-  fs.writeFileSync(path.join(bd, "acceptance-status.json"), `${JSON.stringify(acceptance, null, 2)}\n`, "utf-8");
+  fs.writeFileSync(path.join(bd, "acceptance-status.json"), `${JSON.stringify({ ...acceptance, acceptedResidues: result.acceptedResidues ?? [], appliedAcceptancePolicy: result.appliedAcceptancePolicy }, null, 2)}\n`, "utf-8");
   if (result.finalDecision) reconcileValidationReportWithDecision(gardenDir, result.finalDecision);
 
   fs.writeFileSync(
     path.join(bd, "critic-issues.json"),
-    `${JSON.stringify({ blocking: result.finalBlockingIssues, warnings: result.finalWarnings }, null, 2)}\n`,
+    `${JSON.stringify({ blocking: result.finalBlockingIssues, warnings: result.finalWarnings, acceptedResidues: result.acceptedResidues ?? [], appliedAcceptancePolicy: result.appliedAcceptancePolicy }, null, 2)}\n`,
     "utf-8",
   );
 
@@ -2572,6 +3121,8 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
       ...(r.issueVerifications && r.issueVerifications.length ? { issueVerifications: r.issueVerifications } : {}),
     })),
     finalBlockingIssues: result.finalBlockingIssues.length,
+    acceptedResidues: result.acceptedResidues ?? [],
+    appliedAcceptancePolicy: result.appliedAcceptancePolicy,
     publishReady: s.publishReady,
     ...(result.finalBlockingIssues.length > 0 ? { unresolvedBlockingIssues: result.finalBlockingIssues } : {}),
     ...((() => {
@@ -2598,6 +3149,34 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
     `Accepted: ${s.accepted ? "yes" : "no"}`,
     ...(s.reason ? [`Reason: ${s.reason}`] : []),
     "",
+    "## Operator policy applied",
+    "",
+    `Policy version: ${result.appliedAcceptancePolicy?.snapshot?.version ?? "not recorded"}`,
+    `Policy SHA-256: ${result.appliedAcceptancePolicy?.snapshot?.sha256 ?? "not recorded"}`,
+    `Policy captured: ${result.appliedAcceptancePolicy?.snapshot?.capturedAt ?? "not recorded"}`,
+    `Effective maximum rounds: ${result.appliedAcceptancePolicy?.effectiveMaxRounds ?? "not recorded"}`,
+    `New measurement findings: ${result.appliedAcceptancePolicy?.effectiveMeasurementReviewNewFindings ?? "not recorded"}`,
+    "",
+    "## Recorded exceptions",
+    "",
+    ...(result.appliedAcceptancePolicy?.snapshot?.records.length ? result.appliedAcceptancePolicy.snapshot.records.flatMap((entry) => [
+      `- Exception/scope: ${entry.issueId.replace(/\r?\n/g, " ")}`,
+      `  Accepted: ${entry.acceptedAt ?? "not recorded"}`,
+      `  Reason: ${(entry.reason ?? "not recorded").replace(/\r?\n/g, " ")}`,
+      "",
+    ]) : ["- None recorded.", ""]),
+    "## Accepted findings",
+    "",
+    ...(result.acceptedResidues?.length ? result.acceptedResidues.flatMap((issue) => [
+      `- Issue: ${mdCell(issue.id)}; type: ${mdCell(issue.type)}; page: ${mdCell(issue.pagePath ?? issue.sectionPath)}`,
+      `  Problem: ${mdCell(issue.problem)}`,
+      ...(result.appliedAcceptancePolicy?.matches.find((match) => match.issue.id === issue.id)?.exceptions ?? []).flatMap((entry) => [
+        `  Exception/scope: ${entry.issueId.replace(/\r?\n/g, " ")}`,
+        `  Accepted: ${entry.acceptedAt ?? "not recorded"}`,
+        `  Reason: ${(entry.reason ?? "not recorded").replace(/\r?\n/g, " ")}`,
+      ]),
+      "",
+    ]) : ["- None.", ""]),
     "## Rounds",
     "",
     "| Round | Blocking | Warnings | Repairs attempted | Resolved | Still present | Replaced |",
@@ -2622,6 +3201,20 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
         ]
       : ["- None."]),
     "",
+    ...(result.demotedMeasurementFindings?.length
+      ? [
+          "## Measurement-review findings published as warnings",
+          "",
+          "Raised for the first time by the final measurement review on pages no repair touched; published under the garden's `measurementReviewNewFindings: \"warn\"` policy for a person to read.",
+          "",
+          "| Type | Target | Problem | Suggested repair |",
+          "|---|---|---|---|",
+          ...result.demotedMeasurementFindings.map((i) =>
+            `| ${mdCell(i.type)} | ${mdCell(i.pagePath ?? i.sectionPath ?? i.visualId ?? i.repairTarget)} | ${mdCell(i.problem)} | ${mdCell(i.suggestedRepair)} |`,
+          ),
+          "",
+        ]
+      : []),
     "## Deterministic audit blockers",
     "",
     ...(deterministicProblems.length > 0

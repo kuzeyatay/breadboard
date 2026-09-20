@@ -39,39 +39,66 @@ export class TopologyCamera3D {
   }
 }
 
-function signedHash(id: string): number {
+function seededUnit(id: string, channel: string): number {
   let hash = 2166136261
-  for (let i = 0; i < id.length; i++) hash = Math.imul(hash ^ id.charCodeAt(i), 16777619)
-  return ((hash >>> 0) / 0xffffffff) * 2 - 1
+  const value = `${channel}:${id}`
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619)
+  // Avalanche the seed so sequential page IDs do not form stripes or slabs.
+  hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b)
+  hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35)
+  return ((hash ^ (hash >>> 16)) >>> 0) / 0x100000000
 }
 
-/** Related pages occupy the same depth neighborhood. IDs make the depth
- * independent of filtering, ordering, and the force simulation's settling. */
-export function topologyNodeDepth(
-  node: {
-    id: string
-    kind: string
-    sectorId: string | null
-    folderId: string | null
-  },
-  spread: number,
-): number {
-  if (node.kind === "garden") return 0
-  const sector = node.sectorId ?? node.folderId ?? node.id
-  return spread * (signedHash(sector) * 0.8 + signedHash(node.id) * 0.35)
+type ScatterNode = {
+  id: string
+  kind: string
+  sectorId: string | null
+  folderId: string | null
 }
 
-/** The planned layout is a disc; a depth that ignores where a node sits in it
- * extrudes that disc into a slab, which reads as a rotating rectangle. Scaling
- * the depth by the sphere cap over the node's planned radius keeps rim nodes
- * shallow and central nodes deep, so the cloud rounds out without moving any
- * planned x/y. Returns the depth multiplier in [floor, 1]. */
-export function sphericalDepthFactor(
-  node: { x: number; y: number },
-  layoutRadius: number,
-  floor = 0.22,
-): number {
-  if (!(layoutRadius > 0)) return 1
-  const ratio = Math.min(1, Math.hypot(node.x, node.y) / layoutRadius)
-  return floor + (1 - floor) * Math.sqrt(1 - ratio * ratio)
+/** Plan a round cloud around the Garden, rather than extruding cached 2D
+ * coordinates. Longitude sectors keep folders together; their share of the
+ * sphere follows their population, including a single large folder. Uniform
+ * latitude and cube-root radius fill the volume without poles or box corners.
+ * Pass the complete scope before filtering so toggles and previews use the
+ * same homes. Personal pins are applied afterwards by the renderer. */
+export function sphericalTopologyPositions(nodes: readonly ScatterNode[]): Map<string, Point3D> {
+  const positions = new Map<string, Point3D>()
+  const sectors = new Map<string, ScatterNode[]>()
+  let count = 0
+  for (const node of nodes) {
+    if (node.kind === "garden") {
+      positions.set(node.id, { x: 0, y: 0, z: 0 })
+      continue
+    }
+    const key = node.sectorId ?? node.folderId ?? node.id
+    const members = sectors.get(key) ?? []
+    members.push(node)
+    sectors.set(key, members)
+    count += 1
+  }
+  // Reserve projected area per node so the existing planar collision/charge
+  // forces can settle without flattening dense clouds along the depth axis.
+  const extent = Math.max(180, Math.sqrt(count) * 96)
+  let start = -Math.PI / 2
+  for (const key of [...sectors.keys()].sort()) {
+    const members = sectors.get(key)!
+    const arc = (Math.PI * 2 * members.length) / count
+    for (const node of members) {
+      const anchor = node.kind === "folder"
+      const longitude = start + arc * (anchor ? 0.5 : seededUnit(node.id, "longitude"))
+      const latitude = (seededUnit(node.id, "latitude") * 2 - 1) * (anchor ? 0.35 : 1)
+      // Leave a little breathing room around the central Garden name.
+      const radius =
+        extent * (anchor ? 0.42 : Math.cbrt(0.06 + 0.94 * seededUnit(node.id, "radius")))
+      const ring = radius * Math.sqrt(1 - latitude * latitude)
+      positions.set(node.id, {
+        x: Math.cos(longitude) * ring,
+        y: latitude * radius,
+        z: Math.sin(longitude) * ring,
+      })
+    }
+    start += arc
+  }
+  return positions
 }

@@ -248,20 +248,49 @@ var TopologyCamera3D = class {
     this.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.pitch + dy * 6e-3));
   }
 };
-function signedHash(id) {
+function seededUnit(id, channel) {
   let hash = 2166136261;
-  for (let i = 0; i < id.length; i++) hash = Math.imul(hash ^ id.charCodeAt(i), 16777619);
-  return (hash >>> 0) / 4294967295 * 2 - 1;
+  const value = `${channel}:${id}`;
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+  hash = Math.imul(hash ^ hash >>> 16, 2246822507);
+  hash = Math.imul(hash ^ hash >>> 13, 3266489909);
+  return ((hash ^ hash >>> 16) >>> 0) / 4294967296;
 }
-function topologyNodeDepth(node, spread) {
-  if (node.kind === "garden") return 0;
-  const sector = node.sectorId ?? node.folderId ?? node.id;
-  return spread * (signedHash(sector) * 0.8 + signedHash(node.id) * 0.35);
-}
-function sphericalDepthFactor(node, layoutRadius, floor = 0.22) {
-  if (!(layoutRadius > 0)) return 1;
-  const ratio = Math.min(1, Math.hypot(node.x, node.y) / layoutRadius);
-  return floor + (1 - floor) * Math.sqrt(1 - ratio * ratio);
+function sphericalTopologyPositions(nodes) {
+  const positions = /* @__PURE__ */ new Map();
+  const sectors = /* @__PURE__ */ new Map();
+  let count = 0;
+  for (const node of nodes) {
+    if (node.kind === "garden") {
+      positions.set(node.id, { x: 0, y: 0, z: 0 });
+      continue;
+    }
+    const key = node.sectorId ?? node.folderId ?? node.id;
+    const members = sectors.get(key) ?? [];
+    members.push(node);
+    sectors.set(key, members);
+    count += 1;
+  }
+  const extent = Math.max(180, Math.sqrt(count) * 96);
+  let start = -Math.PI / 2;
+  for (const key of [...sectors.keys()].sort()) {
+    const members = sectors.get(key);
+    const arc = Math.PI * 2 * members.length / count;
+    for (const node of members) {
+      const anchor = node.kind === "folder";
+      const longitude = start + arc * (anchor ? 0.5 : seededUnit(node.id, "longitude"));
+      const latitude = (seededUnit(node.id, "latitude") * 2 - 1) * (anchor ? 0.35 : 1);
+      const radius = extent * (anchor ? 0.42 : Math.cbrt(0.06 + 0.94 * seededUnit(node.id, "radius")));
+      const ring = radius * Math.sqrt(1 - latitude * latitude);
+      positions.set(node.id, {
+        x: Math.cos(longitude) * ring,
+        y: latitude * radius,
+        z: Math.sin(longitude) * ring
+      });
+    }
+    start += arc;
+  }
+  return positions;
 }
 
 // quartz/components/scripts/thoughtTopology3DRenderer.ts
@@ -426,6 +455,13 @@ function topologyNavigationSlug(value) {
     (segment) => segment.replace(/\s/g, "-").replace(/&/g, "-and-").replace(/%/g, "-percent").replace(/\?/g, "").replace(/#/g, "")
   ).join("/");
   return slug2.endsWith("_index") ? slug2.replace(/_index$/, "index") : slug2;
+}
+function normalizeTopologyScopePath(value) {
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+  }
+  return topologyNavigationSlug(value).replace(/\/index$/i, "").toLowerCase();
 }
 function shouldShowTopologyNodeLabel(node) {
   return node.kind !== "page" || node.contentKind !== "markdown";
@@ -626,14 +662,7 @@ function normalizeAngle(angle) {
 }
 function planThoughtTopology(payload, options = {}) {
   const preview = Boolean(options.preview);
-  const normalizeFolderPath = (value) => {
-    const trimmed = value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/\/index$/i, "");
-    try {
-      return decodeURIComponent(trimmed).toLocaleLowerCase();
-    } catch {
-      return trimmed.toLocaleLowerCase();
-    }
-  };
+  const normalizeFolderPath = normalizeTopologyScopePath;
   const requestedScope = options.scopeFolderPath ? normalizeFolderPath(options.scopeFolderPath) : "";
   const sourceRoot = payload.folders.find((folder) => folder.depth === 0) ?? null;
   const sourceScope = requestedScope ? payload.folders.find((folder) => normalizeFolderPath(folder.path) === requestedScope) ?? null : null;
@@ -1340,7 +1369,16 @@ async function renderThoughtTopology3D(graph, fullSlug, config, payload, context
     recoveryNotice = null;
     try {
       const replacement = await renderer.replace(
-        () => mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, scheduleRecovery)
+        () => mountThoughtTopology(
+          graph,
+          fullSlug,
+          config,
+          payload,
+          context,
+          settings,
+          spin,
+          scheduleRecovery
+        )
       );
       if (replacement && !disposed) {
         active = replacement;
@@ -1356,7 +1394,16 @@ async function renderThoughtTopology3D(graph, fullSlug, config, payload, context
     }
   };
   active = await renderer.replace(
-    () => mountThoughtTopology(graph, fullSlug, config, payload, context, settings, spin, scheduleRecovery)
+    () => mountThoughtTopology(
+      graph,
+      fullSlug,
+      config,
+      payload,
+      context,
+      settings,
+      spin,
+      scheduleRecovery
+    )
   ) ?? null;
   const outer = graph.parentElement;
   const controlsHost = outer?.querySelector(
@@ -1600,22 +1647,22 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     minConnectionStrength: settings.minConnectionStrength,
     maxConnectionsPerNode: settings.maxConnectionsPerNode
   };
-  const plan = planThoughtTopology(payload, { ...planOptions, positionOverrides: storedPositions });
+  const plan = planThoughtTopology(payload, planOptions);
   const camera = new TopologyCamera3D();
-  const layoutRadius = plan.nodes.reduce(
-    (max, node) => node.id in storedPositions ? max : Math.max(max, Math.hypot(node.x, node.y)),
-    0
+  const plannedHomes = sphericalTopologyPositions(
+    compact || settings.excludedFolderIds.length > 0 ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes : plan.nodes
   );
-  const depthSpread = Math.max(
-    180,
-    Math.sqrt(payload.nodes.length + payload.folders.length) * 65,
-    layoutRadius * 0.85
+  const depthSpread = [...plannedHomes.values()].reduce(
+    (extent, point) => Math.max(extent, Math.hypot(point.x, point.y, point.z)),
+    180
   );
-  const defaultDepth = (node) => topologyNodeDepth(node, depthSpread) * sphericalDepthFactor(node, layoutRadius);
   for (const planned of plan.nodes) {
     const node = planned;
-    const savedZ = storedPositions[node.id]?.z;
-    node.z = Number.isFinite(savedZ) ? savedZ : defaultDepth(node);
+    const home = plannedHomes.get(node.id);
+    const saved = storedPositions[node.id];
+    node.x = Number.isFinite(saved?.x) ? saved.x : home.x;
+    node.y = Number.isFinite(saved?.y) ? saved.y : home.y;
+    node.z = Number.isFinite(saved?.z) ? saved.z : home.z;
   }
   const homePositions = new Map(
     plan.nodes.map((node) => [
@@ -1628,18 +1675,8 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     ])
   );
   const permanentHomeIds = new Set(Object.keys(storedPositions));
-  let plannedHomeCache = null;
-  const plannedHome = (nodeId) => {
-    if (!plannedHomeCache) {
-      plannedHomeCache = new Map(
-        planThoughtTopology(payload, planOptions).nodes.map((node) => [
-          node.id,
-          { x: node.x, y: node.y, z: defaultDepth(node) }
-        ])
-      );
-    }
-    return plannedHomeCache.get(nodeId);
-  };
+  const isHomeFixed = (node) => node.kind === "garden" || permanentHomeIds.has(node.id);
+  const plannedHome = (nodeId) => plannedHomes.get(nodeId);
   const debugEnabled = new URLSearchParams(window.location.search).get("topologyTest") === "1";
   const outer = graph.parentElement;
   const graphRoot = graph.closest(".graph");
@@ -1983,14 +2020,14 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
   const returningNodeIds = /* @__PURE__ */ new Set();
   let activeDragNodeId = null;
   for (const node of simNodes) {
-    if (permanentHomeIds.has(node.id)) {
+    if (isHomeFixed(node)) {
       const home = homePositions.get(node.id);
       node.fx = home?.x ?? node.x;
       node.fy = home?.y ?? node.y;
       node.fz = home?.z ?? node.z;
     } else if (!reducedMotion && !compactSidebar) {
-      node.x = Number.NaN;
-      node.y = Number.NaN;
+      node.x *= 0.12;
+      node.y *= 0.12;
       node.z *= 0.12;
     }
   }
@@ -2151,7 +2188,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     gfx.stroke({ alpha: view.alpha, width: strokeWidth, color: view.color });
   }
   const canvasSelection = select(app.canvas);
-  const zoomBehavior = zoom().scaleExtent([0.2, 5]).on("zoom", (event) => {
+  const zoomBehavior = zoom().scaleExtent([0.01, 5]).on("zoom", (event) => {
     transform = event.transform;
     world.scale.set(transform.k, transform.k);
     world.position.set(transform.x, transform.y);
@@ -2188,13 +2225,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     if (compact) return [];
     const canvasRect = graph.getBoundingClientRect();
     const rects = [];
-    for (const blocker of [
-      heading,
-      searchPanel,
-      overlayClose,
-      calloutRoot,
-      inspectorRoot
-    ]) {
+    for (const blocker of [heading, searchPanel, overlayClose, calloutRoot, inspectorRoot]) {
       if (blocker === calloutRoot && !calloutVisible) continue;
       if (blocker === inspectorRoot && !inspectorRoot?.classList.contains("open")) continue;
       if (!blocker || blocker.hidden || blocker.offsetParent === null) continue;
@@ -2215,15 +2246,23 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
       fitNodes.map((node) => ({ ...node, ...projected(node) })),
       compact ? 18 : 44
     );
+    const focus = projected(gardenAnchor);
+    const halfWidth = Math.max(focus.x - bounds.minX, bounds.maxX - focus.x);
+    const halfHeight = Math.max(focus.y - bounds.minY, bounds.maxY - focus.y);
     const next = fitTransform(
-      bounds,
+      {
+        minX: focus.x - halfWidth,
+        maxX: focus.x + halfWidth,
+        minY: focus.y - halfHeight,
+        maxY: focus.y + halfHeight
+      },
       { width, height },
       currentInsets(),
       {
-        minScale: compactSidebar ? 0.01 : 0.3,
+        minScale: 0.01,
         maxScale: compact ? 1.25 : 1.35
       },
-      projected(gardenAnchor)
+      focus
     );
     fitK = next.k;
     viewState = "fit";
@@ -2970,8 +3009,17 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
         node.x = home.x;
         node.y = home.y;
         node.z = home.z;
+        if (isHomeFixed(node)) {
+          node.fx = home.x;
+          node.fy = home.y;
+          node.fz = home.z;
+        }
       }
     } else {
+      if (node.kind === "garden" && home) {
+        returnTargets.set(node.id, { ...home, pin: true });
+        returningNodeIds.add(node.id);
+      }
       simulationSettled = false;
       simulation.alpha(Math.max(simulation.alpha(), 0.25)).restart();
     }
@@ -3113,7 +3161,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
           if (state.moved <= CLICK_SLOP_PX) {
             for (const member of state.members) {
               const home = homePositions.get(member.view.node.id);
-              if (permanentHomeIds.has(member.view.node.id) && home) {
+              if (isHomeFixed(member.view.node) && home) {
                 member.view.node.fx = home.x;
                 member.view.node.fy = home.y;
                 member.view.node.fz = home.z;
@@ -3163,14 +3211,14 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
               member.view.node.x = home.x;
               member.view.node.y = home.y;
               member.view.node.z = home.z;
-              member.view.node.fx = permanentHomeIds.has(member.view.node.id) ? home.x : null;
-              member.view.node.fy = permanentHomeIds.has(member.view.node.id) ? home.y : null;
-              member.view.node.fz = permanentHomeIds.has(member.view.node.id) ? home.z : null;
+              member.view.node.fx = isHomeFixed(member.view.node) ? home.x : null;
+              member.view.node.fy = isHomeFixed(member.view.node) ? home.y : null;
+              member.view.node.fz = isHomeFixed(member.view.node) ? home.z : null;
             } else {
               member.view.node.fx = null;
               member.view.node.fy = null;
               member.view.node.fz = null;
-              const pin = permanentHomeIds.has(member.view.node.id);
+              const pin = isHomeFixed(member.view.node);
               const target = pin ? home : { x: member.x, y: member.y, z: member.z };
               returnTargets.set(member.view.node.id, { ...target, pin });
               returningNodeIds.add(member.view.node.id);
@@ -3493,7 +3541,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     requestAnimationFrame(animate);
   }
   refreshStyles();
-  fitView(false, true);
+  fitView(false, !simulationSettled);
   emitGraphContext();
   requestAnimationFrame(animate);
   const cleanup = () => {

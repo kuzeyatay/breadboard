@@ -6,6 +6,7 @@
 !.env*.example
 *.pem
 recall/api-key
+/.claude/settings.local.json
 
 # ---------------------------------------------------------------------------
 # OS and editor clutter
@@ -14,6 +15,10 @@ recall/api-key
 Thumbs.db
 desktop.ini
 .idea/
+*.swp
+*.swo
+*.bak
+*~
 
 # ---------------------------------------------------------------------------
 # Dependencies — never commit, reinstall via npm/bun/uv install
@@ -251,8 +256,29 @@ dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/
 # read by Breadboard at runtime.
 # ---------------------------------------------------------------------------
 .tmp-*
+.tmp/
+*.tmp
+*.temp
+pytest-of-*/
+/tmp-*
+/dashboard/tmp-*
+# This historical filename is a maintained runner used by dashboard tests.
+!/tmp-learn-ui-inspect.mjs
+/agents-tmp.json
+/appdata-usage.txt
+/=ro
 desktop/artifacts/
+/dashboard/artifacts/explanation-review/*.json
+/dashboard/artifacts/product-widget/
+/qa/maxwell-link-import-*.json
+/qa/maxwell-website-import/
 /audits/
 # Nested clone kept for reference; committing it would only leave a broken
 # gitlink in the monorepo.
 /clicky/
+
+# Benchmark candidates mined from rated-down answers. These hold questions and
+# answers verbatim out of private conversations; promoting one into
+# qa/answer-quality/scenarios.json is a deliberate review step, so the raw
+# mined file must never be committed by accident.
+/qa/answer-quality/candidates.json

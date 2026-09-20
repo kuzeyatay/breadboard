@@ -14,7 +14,6 @@ import { mlxText } from "@/lib/document-structure/mlx";
 import {
   cleanGeneratedText,
   extractDocumentKnowledge,
-  IncompleteKnowledgeExtractionError,
   normalizeSourceFileIdentity,
   scanClusterKnowledge,
   slugify,
@@ -3133,57 +3132,42 @@ export async function runIngest({
   // ── Knowledge extraction (optional) ──────────────────────────────────────
 
   let extraction: KnowledgeExtraction;
-  let mapGenerationWarning = "";
   throwIfRequestAborted(request.signal);
   if (generateMap && !skipKnowledgeExtraction) {
-    try {
-      const knowledgeCheckpoint = knowledgeCheckpointLocation({
-        contentPath,
-        clusterSlug: normalizedClusterSlug,
-        filename,
-        buffer: await fileBytes(),
-        model,
-        sourceType: ext || "text",
-        isHandwriting,
-      });
-      completedKnowledgeCheckpointPath = knowledgeCheckpoint.filePath;
-      extraction = await extractDocumentKnowledge({
-        client: client!,
-        model,
-        title: nameWithoutExt,
-        sourceType: ext || "text",
-        sourceLabel: source,
-        isHandwriting,
-        pages,
-        text: plainText,
-        onProgress: emit,
-        checkpoint: knowledgeChunkCheckpoint(knowledgeCheckpoint),
-      });
-    } catch (error) {
-      if (error instanceof IncompleteKnowledgeExtractionError) throw error;
-      const reason = errorMessage(error, "map generation failed");
-      console.warn(
-        `[ingest] Map generation failed for ${filename}; saved source note without extracted lesson topics. ${reason}`,
-      );
-      mapGenerationWarning =
-        "Map generation failed, so the source was saved without extracted lesson topics. You can retry with Learn after upload.";
-      extraction = {
-        documentTitle: nameWithoutExt,
-        summary: plainText.trim()
-          ? plainText.trim().slice(0, 300)
-          : `Uploaded ${filename}; map generation failed.`,
-        topics: [],
-        relationships: [],
-        suggestedTags: [],
-      };
-    }
+    const knowledgeCheckpoint = knowledgeCheckpointLocation({
+      contentPath,
+      clusterSlug: normalizedClusterSlug,
+      filename,
+      buffer: await fileBytes(),
+      model,
+      sourceType: ext || "text",
+      isHandwriting,
+    });
+    completedKnowledgeCheckpointPath = knowledgeCheckpoint.filePath;
+    // An upload that asked for a map and did not get one is a failed upload.
+    // This used to save the source anyway, with the document's own first 300
+    // characters standing in for the summary and a warning beside it, so a
+    // garden filled up with sources whose "Summary" was really page one. The
+    // throw reaches the worker, which retains the blob and offers Resume, so
+    // nothing is lost by refusing.
+    extraction = await extractDocumentKnowledge({
+      client: client!,
+      model,
+      title: nameWithoutExt,
+      sourceType: ext || "text",
+      sourceLabel: source,
+      isHandwriting,
+      pages,
+      text: plainText,
+      onProgress: emit,
+      checkpoint: knowledgeChunkCheckpoint(knowledgeCheckpoint),
+    });
   } else {
-    const summary = plainText.trim()
-      ? plainText.trim().slice(0, 300)
-      : `Uploaded ${filename} without map generation.`;
+    // Map generation was declined, so no model ever read this document. Say
+    // that, rather than passing its opening characters off as a summary.
     extraction = {
       documentTitle: nameWithoutExt,
-      summary,
+      summary: `Uploaded ${filename} without map generation.`,
       topics: [],
       relationships: [],
       suggestedTags: [],
@@ -3264,7 +3248,6 @@ export async function runIngest({
     figureCount,
     visionError: visionError || undefined,
     screenshotWarning: screenshotWarning || undefined,
-    mapGenerationWarning: mapGenerationWarning || undefined,
     hiddenContentWarning: safetyReport?.message || undefined,
     hiddenContentVerdict: safetyReport?.verdict,
     hiddenContentFindings: safetyReport?.findings.length
@@ -3275,8 +3258,8 @@ export async function runIngest({
           detail: finding.detail,
         }))
       : undefined,
-    mapGenerated:
-      generateMap && !mapGenerationWarning && !skipKnowledgeExtraction,
+    // Reaching here at all means extraction succeeded when it was asked for.
+    mapGenerated: generateMap && !skipKnowledgeExtraction,
     topics: saved.topics,
   };
 }

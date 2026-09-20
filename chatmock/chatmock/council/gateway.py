@@ -498,6 +498,9 @@ def _exhausted_route_message(run: CouncilRun) -> Optional[str]:
         elif status == 429 or attempt.get("outcome") == "quota_exhausted":
             reason = f"{label} has reached its usage limit (HTTP 429)"
         else:
+            # A sign-in or availability refusal is not a quota problem, and
+            # telling the user to add credits sends them to the wrong place
+            # (2026-09-17: a signed-out ChatGPT page read as "out of quota").
             return None
         if reason not in reasons:
             reasons.append(reason)
@@ -512,10 +515,22 @@ def _exhausted_route_message(run: CouncilRun) -> Optional[str]:
 
 
 def _empty_final_answer_message(run: CouncilRun) -> str:
+    diagnostics = "\n".join(_run_diagnostic_strings(run))
+    # Sign-in wins over every other classification: no amount of credit or
+    # waiting fixes it, and the fix is one click in Settings.
+    if re.search(
+        r"\bnot signed in to chatgpt\.com\b|\bis signed out\b|\bSign in to chatgpt\.com\b",
+        diagnostics,
+        flags=re.IGNORECASE,
+    ):
+        return (
+            "The council could not produce an answer because ChatGPT is signed out. "
+            "Sign in to chatgpt.com from Settings (or open the ChatGPT tab and sign in), "
+            "then try again."
+        )
     exhausted = _exhausted_route_message(run)
     if exhausted is not None:
         return exhausted
-    diagnostics = "\n".join(_run_diagnostic_strings(run))
     if re.search(r"\bHTTP\s+429\b", diagnostics, flags=re.IGNORECASE):
         match = re.search(r"\bfor\s+([A-Za-z0-9_.:-]+)", diagnostics)
         model = f" for {match.group(1)}" if match else ""

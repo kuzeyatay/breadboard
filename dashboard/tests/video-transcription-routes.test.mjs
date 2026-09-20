@@ -38,6 +38,41 @@ function makeStore() {
   return new VideoTranscriptionJobStore(db);
 }
 
+test("the default queue admits a lecture batch while retaining a bounded worker count", () => {
+  const config = loadVideoTranscriptionConfig({});
+  assert.equal(config.maxQueuedJobsPerGarden, 100);
+  assert.equal(config.maxConcurrentJobs, 1);
+});
+
+test("a full queue rejects a request before buffering its media body", async () => {
+  const deps = makeDeps();
+  try {
+    deps.config.maxQueuedJobsPerGarden = 1;
+    deps.store.createJob({ clusterId: 1, gardenSlug: "physics", userId: 1, inputKind: "upload", originalFilename: "waiting.mp3" });
+    const result = await handleCreateVideoTranscription(deps, "physics", {
+      headers: new Headers({ "content-type": "multipart/form-data" }),
+      formData: () => { throw new Error("The upload body must not be read while the queue is full"); },
+    });
+    assert.equal(result.status, 429);
+    assert.equal(result.body.errorCode, "queue_full");
+  } finally { deps.cleanup(); }
+});
+
+test("recent history cannot hide an older queued lecture", async () => {
+  const deps = makeDeps();
+  try {
+    const waiting = deps.store.createJob({ clusterId: 1, gardenSlug: "physics", userId: 1, inputKind: "upload", originalFilename: "waiting.mp3" });
+    for (let i = 0; i < 105; i++) {
+      const job = deps.store.createJob({ clusterId: 1, gardenSlug: "physics", userId: 1, inputKind: "upload", originalFilename: `done-${i}.mp3` });
+      deps.store.updateJob(job.id, { status: "completed" });
+    }
+    const result = await handleListVideoTranscriptions(deps, "physics", { activeOnly: false });
+    assert.ok(result.body.jobs.some(job => job.id === waiting.id));
+    const active = await handleListVideoTranscriptions(deps, "physics", { activeOnly: true });
+    assert.deepEqual(active.body.jobs.map(job => job.id), [waiting.id]);
+  } finally { deps.cleanup(); }
+});
+
 function makeDeps(overrides = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-vt-routes-"));
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-vt-content-"));
@@ -99,6 +134,33 @@ function makeDeps(overrides = {}) {
   };
   return deps;
 }
+
+test("a newer retry replaces old failure rows without hiding later failures or other analysis modes", async () => {
+  const deps = makeDeps();
+  try {
+    const create = (title, analysis = "transcript") => deps.store.createJob({
+      clusterId: 1, gardenSlug: "physics", userId: 1, inputKind: "youtube",
+      youtubeVideoId: ID, sourceTitle: title, analysis,
+    });
+    const old = create("old attempt");
+    const replacement = create("replacement");
+    const visual = create("visual analysis", "watch");
+    deps.store.transition(old.id, "failed");
+    deps.store.transition(visual.id, "failed");
+    deps.store.db.prepare("UPDATE video_transcription_jobs SET created_at = ? WHERE id = ?").run("2026-09-01T00:00:00Z", old.id);
+    deps.store.db.prepare("UPDATE video_transcription_jobs SET created_at = ? WHERE id = ?").run("2026-09-02T00:00:00Z", replacement.id);
+    let result = await handleListVideoTranscriptions(deps, "physics");
+    assert.deepEqual(new Set(result.body.jobs.map(j => j.id)), new Set([replacement.id, visual.id]));
+    assert.equal(deps.store.getJob(old.id).status, "failed", "history remains intact");
+    deps.store.transition(replacement.id, "cancelled");
+    result = await handleListVideoTranscriptions(deps, "physics");
+    assert.ok(result.body.jobs.some(j => j.id === old.id));
+    deps.store.transition(replacement.id, "failed");
+    deps.store.transition(old.id, "completed");
+    result = await handleListVideoTranscriptions(deps, "physics");
+    assert.ok(result.body.jobs.some(j => j.id === replacement.id && j.status === "failed"));
+  } finally { deps.cleanup(); }
+});
 
 function jsonRequest(body) {
   return new Request("http://localhost/api/gardens/physics/video-transcriptions", {

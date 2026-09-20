@@ -29,6 +29,8 @@ import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import { isModalDialogOpen, isPrimaryShortcut } from "@/lib/keyboard-shortcuts";
 import AgentRuntimePanel from "./agent-runtime-panel";
+import StarredMessagesPanel from "./starred-messages-panel";
+import { initialStarredMessageTarget, type StarredMessageTarget } from "../use-starred-message-jump";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
 import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
@@ -66,6 +68,7 @@ import TerminalSidebar, {
   type TerminalPanel,
   type TerminalSidebarChat,
 } from "./terminal-sidebar";
+import type { TerminalWorkspace } from "./terminal-workspace-menu";
 import SidePanelDock from "./side-panel-dock";
 import ProductDetailsPanel, {
   type ProductPanelSelection,
@@ -979,6 +982,7 @@ function RuntimeTerminal({
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(
     initialPanel,
   );
+  const [starredMessageTarget, setStarredMessageTarget] = useState<StarredMessageTarget | null>(initialStarredMessageTarget);
   const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
     null,
   );
@@ -1326,6 +1330,15 @@ function RuntimeTerminal({
   // turning it on or off always means starting a different chat rather than
   // changing the one on screen — the same bargain ChatGPT's toggle makes.
   const [temporaryChat, setTemporaryChat] = useState(false);
+  const [newChatWorkspace, setNewChatWorkspace] = useState<TerminalWorkspace | null>(null);
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("breadboard:terminal-new-chat-workspace") ?? "null");
+      if (stored && typeof stored.slug === "string" && typeof stored.name === "string") {
+        setNewChatWorkspace(stored);
+      }
+    } catch { /* A missing preference leaves new chats unscoped. */ }
+  }, []);
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
@@ -1342,9 +1355,10 @@ function RuntimeTerminal({
       title: "New chat",
       temporary: temporaryChat,
       browser: drawerPresentation,
+      workspaceSlug: newChatWorkspace?.slug,
       restoreLastConversation: false,
     }),
-    [temporaryChat, drawerPresentation],
+    [temporaryChat, drawerPresentation, newChatWorkspace],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
   const {
@@ -8383,6 +8397,16 @@ if (careerOpsAgent) {
     startNewChat();
   }
 
+  function selectNewChatWorkspace(workspace: TerminalWorkspace | null) {
+    setNewChatWorkspace(workspace);
+    try {
+      window.localStorage.setItem("breadboard:terminal-new-chat-workspace", JSON.stringify(workspace));
+    } catch { /* The current selection still works without browser storage. */ }
+    // Picking a destination while composing should keep the unsent text.
+    if (!session.sessionId && session.messages.length === 0 && !temporaryChat) return;
+    startNewSavedChat();
+  }
+
   // Deleting a chat stops it: the route cancels the turn, the terminal command
   // and any agent run it still has going before it removes the rows. So this no
   // longer refuses while a response is streaming — that was a rule about our
@@ -9206,6 +9230,7 @@ if (careerOpsAgent) {
               openPanel={sidePanel}
               onNewChat={startNewSavedChat}
               newChatDisabled={blankSavedChatSelected}
+              newChatWorkspace={{ selected: newChatWorkspace, onSelect: selectNewChatWorkspace }}
               onTogglePanel={togglePanel}
               onOpenSearch={() => setSearchOpen(true)}
               onPrefetchChat={(chat) => {
@@ -9340,6 +9365,7 @@ if (careerOpsAgent) {
                 </div>
               ) : null}
               <AgentRuntimePanel
+                starredMessageTarget={starredMessageTarget}
                 compact={drawerPresentation}
                 sessionId={session.sessionId}
                 createdSessionId={session.createdSessionId}
@@ -9664,6 +9690,7 @@ onClearCareerOps={() => {
                         ? "Scheduled chats"
                         : sidePanel === "hooks"
                           ? "Hooks"
+                          : sidePanel === "starred" ? "Starred messages"
                           : "Processes"
                 }
                 defaultWidth={520}
@@ -9689,6 +9716,12 @@ onClearCareerOps={() => {
                   <TerminalScheduledPanel surface="dashboard_terminal" />
                 ) : sidePanel === "hooks" ? (
                   <HooksPanel />
+                ) : sidePanel === "starred" ? (
+                  <StarredMessagesPanel onOpenMessage={(message) => {
+                    setStarredMessageTarget({ chatId: message.chatId, messageId: message.messageId, clientMessageId: message.clientMessageId, requestId: Date.now() });
+                    setSidePanel(null);
+                    if (session.sessionId !== message.chatId) openHistorySession(message.chatId);
+                  }} />
                 ) : (
                   <ProcessesPanel
                     onOpenChat={(conversationId) =>

@@ -522,6 +522,22 @@ test("a fresh startup screen asks for the welcome to be dismissed again", async 
   assert.ok(Date.now() - started >= 15, "the gate should have waited for the failsafe");
 });
 
+test("repeated tab theme reports do not repeat native scheme changes", () => {
+  let scheme: "system" | "light" | "dark" = "system";
+  const changes: string[] = [];
+  const target = {
+    get themeSource() { return scheme; },
+    set themeSource(value: "system" | "light" | "dark") {
+      scheme = value;
+      changes.push(value);
+    },
+  };
+  for (const theme of ["light", "light", "dark", "dark", "light"] as const) {
+    synchronizeNativeTheme(theme, target);
+  }
+  assert.deepEqual(changes, ["light", "dark", "light"]);
+});
+
 test("inactive tab renderers use Chromium background throttling", () => {
   const options = tabRendererWebPreferences("C:\\app\\preload.js");
   assert.equal(options.backgroundThrottling, true);

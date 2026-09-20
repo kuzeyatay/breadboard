@@ -38,7 +38,10 @@ export async function GET(request: Request) {
   }
 }
 
-/** `{ nonce, cdpPort, targetId }` on success, `{ nonce, error }` otherwise. */
+/**
+ * `{ nonce, cdpPort, targetId }` on success (plus `lane` when the shell keeps
+ * a page per lane), `{ nonce, error }` otherwise.
+ */
 export async function POST(request: Request) {
   try {
     await requireUserId();
@@ -46,15 +49,17 @@ export async function POST(request: Request) {
       nonce?: unknown;
       cdpPort?: unknown;
       targetId?: unknown;
+      lane?: unknown;
       error?: unknown;
     };
     if (!isChatgptWebTabNonce(body.nonce)) throw new RouteError(400, "A request nonce is required.");
+    const lane = typeof body.lane === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(body.lane) ? body.lane : undefined;
     const answer =
       Number.isInteger(body.cdpPort) &&
       (body.cdpPort as number) > 0 &&
       typeof body.targetId === "string" &&
       body.targetId.trim()
-        ? { cdpPort: body.cdpPort as number, targetId: body.targetId.trim() }
+        ? { cdpPort: body.cdpPort as number, targetId: body.targetId.trim(), ...(lane ? { lane } : {}) }
         : { error: typeof body.error === "string" && body.error.trim() ? body.error.trim() : "the tab could not be opened" };
     const accepted = await answerChatgptWebTabRequest(request, body.nonce, answer);
     return NextResponse.json({ accepted }, NO_STORE);

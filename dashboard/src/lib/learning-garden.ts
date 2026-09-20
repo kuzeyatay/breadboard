@@ -51,16 +51,31 @@ export function showLegacySubtopicPages(value?: string | null): boolean {
   return /^(1|true|yes|on)$/i.test((value ?? "").trim());
 }
 
-export function isLegacySubtopicRelPath(relPath = ""): boolean {
+/**
+ * Legacy auto-generated topic cards, which the garden hides.
+ *
+ * `generated/` is a name collision, not only a legacy folder: Save page writes
+ * chat pages into that same folder (see SAVE_PAGE_FOLDER). Hiding the whole
+ * prefix made every saved page invisible - written to disk, listed as a folder,
+ * and then filtered out of every document list (electromagnetism-1,
+ * 2026-09-17). The two are told apart by what the page is, not where it sits:
+ * legacy cards are "knowledge-topic", a saved chat page is a textbook page.
+ * Pass the page's knowledge type wherever it is known; without it the old
+ * path-only verdict stands, so callers that cannot tell keep hiding both.
+ */
+export function isLegacySubtopicRelPath(relPath = "", knowledgeType?: string): boolean {
   const normalized = normalizedRelPath(relPath);
-  return (
-    normalized.startsWith(`${LEGACY_GENERATED_TOPIC_FOLDER}/`) ||
+  if (
     normalized.startsWith("generated subtopics/") ||
     normalized.startsWith("subtopics/") ||
     normalized.startsWith("ai topics/") ||
     normalized.startsWith("topic cards/") ||
     normalized.startsWith("legacy/generated subtopics/")
-  );
+  ) {
+    return true;
+  }
+  if (!normalized.startsWith(`${LEGACY_GENERATED_TOPIC_FOLDER}/`)) return false;
+  return knowledgeType === undefined || knowledgeType === "knowledge-topic";
 }
 
 export function breadboardType(data: BreadboardMetadata | undefined): string {

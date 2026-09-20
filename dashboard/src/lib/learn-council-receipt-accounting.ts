@@ -219,12 +219,33 @@ export function isOrphanSettledLearnCouncilReceiptAttempt(
   );
 }
 
+/** A failed attempt whose dispatch never reached model routing. ChatMock
+ * records the routing entry when the provider answers or errors inside the
+ * council run; a redispatch refused before that (the web page busy with the
+ * previous turn, live 2026-09-17) leaves the list empty. The attempt's own
+ * model binding still proves which call produced no answer. */
+function isRoutelessFailedLearnCouncilReceiptAttempt(
+  attempt: LearnCouncilReceiptAttempt,
+  expected: { requestedModel: string; resolvedModel: string } | null,
+): boolean {
+  return Boolean(
+    expected &&
+    attempt.outcome !== "completed" &&
+    attempt.modelRouting.length === 0 &&
+    attempt.requestedModel === expected.requestedModel &&
+    attempt.resolvedModel === expected.resolvedModel &&
+    attempt.usage.callCount === 1 &&
+    attempt.usage.reportedCallCount <= 1,
+  );
+}
+
 export function assertExactOrdinaryLearnCouncilReceiptAttempt(
   attempt: LearnCouncilReceiptAttempt,
   requestedModel: string,
 ): void {
   if (isOrphanSettledLearnCouncilReceiptAttempt(attempt)) return;
   const expected = expectedStrictLearnModelRoute(requestedModel);
+  if (isRoutelessFailedLearnCouncilReceiptAttempt(attempt, expected)) return;
   const route = attempt.modelRouting[0];
   const succeeded = attempt.outcome === "completed";
   if (

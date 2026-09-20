@@ -1,7 +1,11 @@
+// Resolve the small TOC once per navigation. Querying the entire document once
+// per visible heading becomes very costly in equation-heavy books.
+const tocEntries = new Map<string, HTMLElement[]>()
+
 const observer = new IntersectionObserver((entries) => {
   for (const entry of entries) {
     const slug = entry.target.id
-    const tocEntryElements = document.querySelectorAll(`a[data-for="${slug}"]`)
+    const tocEntryElements = tocEntries.get(slug) ?? []
     const windowHeight = entry.rootBounds?.height
     if (windowHeight && tocEntryElements.length > 0) {
       if (entry.boundingClientRect.y < windowHeight) {
@@ -39,6 +43,17 @@ document.addEventListener("nav", () => {
 
   // update toc entry highlighting
   observer.disconnect()
+  tocEntries.clear()
+  for (const link of document.querySelectorAll<HTMLElement>(".toc a[data-for]")) {
+    const slug = link.dataset.for!
+    const links = tocEntries.get(slug) ?? []
+    links.push(link)
+    tocEntries.set(slug, links)
+  }
   const headers = document.querySelectorAll("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]")
   headers.forEach((header) => observer.observe(header))
+  window.addCleanup(() => {
+    observer.disconnect()
+    tocEntries.clear()
+  })
 })

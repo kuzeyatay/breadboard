@@ -13,9 +13,9 @@ import {
 import { parseJsonCandidate } from "./learn-utils.ts";
 import type { ModelSourcePageAnchorRecord } from "./model-source-anchor-ledger.ts";
 
-export const SYLLABUS_COVERAGE_RECOVERY_SCHEMA_VERSION = 1 as const;
+export const SYLLABUS_COVERAGE_RECOVERY_SCHEMA_VERSION = 2 as const;
 export const SYLLABUS_COVERAGE_PAGE_SELECTOR_PROMPT_VERSION =
-  "syllabus-coverage-page-selector-v3" as const;
+  "syllabus-coverage-page-selector-v4" as const;
 export const SYLLABUS_COVERAGE_RECOVERY_REVIEW_PROMPT_VERSION =
   "syllabus-coverage-independent-review-v1" as const;
 export const SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTOR_CANDIDATES = 1 as const;
@@ -91,7 +91,13 @@ export interface SyllabusCoverageEvidenceRecoveryReceipt {
   coverageReviewAttempts: [SyllabusCoverageRecoveryAttempt];
   finalCoverageRaw: string;
   finalCoverageDecisionSha256: string;
-  outcome: "recovered" | "zero_teachable";
+  /** Syllabus unit ids the initial review judged unteachable, in plan order.
+   *  Non-empty: it is what authorised this recovery to run. */
+  unteachableUnitIdsBefore: string[];
+  /** Syllabus unit ids still unteachable after the independent rereview, in
+   *  plan order. Empty means every initially-failed unit was recovered. */
+  unteachableUnitIdsAfter: string[];
+  outcome: "recovered" | "unchanged" | "regressed" | "zero_teachable";
   integritySha256: string;
 }
 
@@ -364,6 +370,10 @@ Return ONLY JSON with exactly this shape:
 Hard rules:
 - Selection is semantic and model-authored. Choose only exact aliases from pageCatalog; code will never match a syllabus locator, title, author, or topic to a page for you.
 - Select at least one and no more than the supplied maximumSelectedPages. Do not repeat a page.
+- Spend the page budget first on the units whose prior verdict is teachable=false: those are the
+  verdicts this rereview exists to test, and each one's coverageReason names what the prior
+  reviewer could not see. A unit already judged teachable needs a page only when the same page
+  also serves an untaught unit.
 - Prefer the smallest set that can test both cited-work identity and unit-level support. Bibliographic/front-matter pages may establish exact title/author/edition/publisher or locator identity, but cannot alone establish unit teachability; pair them with substantive teaching pages where needed.
 - Return only the chosen compact alias and your reason. The alias already binds the canonical source and page number; do not repeat, invent, expand, or renumber either identity.
 - The next reviewer receives each selected page in full. Do not quote or rewrite page content in this response.`;
@@ -609,6 +619,36 @@ export function syllabusCoverageHasTeachableUnits(
   return Boolean(coverage?.units.some((unit) => unit.teachable));
 }
 
+/**
+ * The syllabus units a coverage decision refuses to teach, in plan order.
+ *
+ * Evidence recovery used to run only on an all-false verdict, because that was
+ * the case that made the downstream Learning Unit Contract impossible. But the
+ * coverage reviewer reaches `teachable: false` whenever the bounded evidence
+ * transport did not carry the pages that would have proved support, and that
+ * happens per unit. A partial false negative was therefore unrecoverable: the
+ * item was dropped, recorded as an uncoverable syllabus warning, and no later
+ * stage could revisit it (telecom-1, 2026-09-19: "fixed network architectures"
+ * was declared uncoverable while Keiser section 12.1.1 covers it). Recovery is
+ * gated on this list instead, so any refused unit gets the one bounded
+ * page-selection + rereview pass before the plan is built around its absence.
+ */
+export function syllabusCoverageUnteachableUnitIds(
+  coverage: Pick<SyllabusCoverage, "units"> | null | undefined,
+): string[] {
+  return (coverage?.units ?? []).filter((unit) => !unit.teachable).map((unit) => unit.unitId);
+}
+
+export function syllabusCoverageRecoveryOutcome(
+  before: Pick<SyllabusCoverage, "units">,
+  after: Pick<SyllabusCoverage, "units">,
+): SyllabusCoverageEvidenceRecoveryReceipt["outcome"] {
+  if (!syllabusCoverageHasTeachableUnits(after)) return "zero_teachable";
+  const finalUnits = new Map(after.units.map((unit) => [unit.unitId, unit.teachable]));
+  if (before.units.some((unit) => unit.teachable && !finalUnits.get(unit.unitId))) return "regressed";
+  return before.units.some((unit) => !unit.teachable && finalUnits.get(unit.unitId)) ? "recovered" : "unchanged";
+}
+
 export async function runSyllabusCoverageEvidenceRecovery(input: {
   syllabusPlan: SyllabusPlan;
   initialCoverageRaw: string;
@@ -645,8 +685,9 @@ export async function runSyllabusCoverageEvidenceRecovery(input: {
     input.initialCoverageDecision,
     knownSourceIds,
   );
-  if (syllabusCoverageHasTeachableUnits(initialCoverage)) {
-    throw new Error("Syllabus coverage recovery may run only after a valid zero-teachable coverage decision.");
+  const unteachableUnitIdsBefore = syllabusCoverageUnteachableUnitIds(initialCoverage);
+  if (unteachableUnitIdsBefore.length === 0) {
+    throw new Error("Syllabus coverage recovery may run only after a coverage decision that refuses at least one unit.");
   }
   if (!SHA256.test(input.sourceSetHash) || !SHA256.test(input.sourceArtifactInventoryHash)) {
     throw new Error("Syllabus coverage recovery requires valid source-set and source-artifact inventory hashes.");
@@ -734,7 +775,8 @@ export async function runSyllabusCoverageEvidenceRecovery(input: {
   }
   const decision = finalDecision as ModelAuthoredSyllabusCoverageDecision;
   const projected = projectModelAuthoredSyllabusCoverage(input.syllabusPlan, decision, knownSourceIds);
-  const recovered = syllabusCoverageHasTeachableUnits(projected);
+  const outcome = syllabusCoverageRecoveryOutcome(initialCoverage, projected);
+  const recovered = outcome === "recovered";
   const withoutIntegrity: Omit<SyllabusCoverageEvidenceRecoveryReceipt, "integritySha256"> = {
     schemaVersion: SYLLABUS_COVERAGE_RECOVERY_SCHEMA_VERSION,
     protocol: "syllabus_coverage_evidence_recovery",
@@ -763,7 +805,9 @@ export async function runSyllabusCoverageEvidenceRecovery(input: {
     coverageReviewAttempts: [coverageAttempt],
     finalCoverageRaw: coverageResult.rawResponse,
     finalCoverageDecisionSha256: hashJson(decision),
-    outcome: recovered ? "recovered" : "zero_teachable",
+    unteachableUnitIdsBefore,
+    unteachableUnitIdsAfter: syllabusCoverageUnteachableUnitIds(projected),
+    outcome,
   };
   const receipt: SyllabusCoverageEvidenceRecoveryReceipt = {
     ...withoutIntegrity,
@@ -830,7 +874,8 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
     "sourceSetHash", "sourceArtifactInventoryHash", "syllabusPlan", "syllabusPlanSha256",
     "initialCoverageRaw", "initialCoverageRawSha256", "initialCoverageDecisionSha256", "sourceBindings",
     "selectorAttempts", "selectedPages", "coverageReviewAttempts", "finalCoverageRaw",
-    "finalCoverageDecisionSha256", "outcome", "integritySha256",
+    "finalCoverageDecisionSha256", "unteachableUnitIdsBefore", "unteachableUnitIdsAfter",
+    "outcome", "integritySha256",
   ];
   if (!exactKeys(receipt as unknown as Record<string, unknown>, requiredKeys)) {
     problems.push("syllabus coverage evidence-recovery receipt has unexpected or missing fields");
@@ -868,6 +913,7 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
   }
   const knownSourceIds = input.sources.map((source) => source.sourceId);
   let initialDecision: unknown = null;
+  let initialCoverage: SyllabusCoverage | undefined;
   if (typeof receipt.initialCoverageRaw !== "string" ||
       sha256(receipt.initialCoverageRaw ?? "") !== receipt.initialCoverageRawSha256) {
     problems.push("syllabus coverage evidence-recovery initial raw decision hash does not match");
@@ -883,10 +929,15 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
       );
       if (initialProblems.length > 0) {
         problems.push(`syllabus coverage evidence-recovery initial decision is invalid: ${initialProblems.join("; ")}`);
-      } else if (syllabusCoverageHasTeachableUnits(
-        projectModelAuthoredSyllabusCoverage(receipt.syllabusPlan, initialDecision, knownSourceIds),
-      )) {
-        problems.push("syllabus coverage evidence-recovery initial decision was not zero-teachable");
+      } else {
+        initialCoverage = projectModelAuthoredSyllabusCoverage(receipt.syllabusPlan, initialDecision, knownSourceIds);
+        const initialUnteachable = syllabusCoverageUnteachableUnitIds(initialCoverage);
+        if (initialUnteachable.length === 0) {
+          problems.push("syllabus coverage evidence-recovery initial decision refused no unit, so recovery was not authorised");
+        }
+        if (canonicalJson(receipt.unteachableUnitIdsBefore) !== canonicalJson(initialUnteachable)) {
+          problems.push("syllabus coverage evidence-recovery refused-unit list does not match the initial decision");
+        }
       }
     }
   }
@@ -1016,11 +1067,13 @@ export function syllabusCoverageRecoveryReceiptProblems(input: {
         finalDecision,
         knownSourceIds,
       );
-      const expectedOutcome = syllabusCoverageHasTeachableUnits(projected)
-        ? "recovered"
-        : "zero_teachable";
-      if (receipt.outcome !== expectedOutcome) {
+      const expectedOutcome = initialCoverage && syllabusCoverageRecoveryOutcome(initialCoverage, projected);
+      if (expectedOutcome && receipt.outcome !== expectedOutcome) {
         problems.push("syllabus coverage evidence-recovery outcome does not match the final decision");
+      }
+      if (canonicalJson(receipt.unteachableUnitIdsAfter) !==
+          canonicalJson(syllabusCoverageUnteachableUnitIds(projected))) {
+        problems.push("syllabus coverage evidence-recovery post-review refused-unit list does not match the final decision");
       }
       if (input.coverage &&
           canonicalJson(coverageWithoutReceipt(input.coverage)) !==

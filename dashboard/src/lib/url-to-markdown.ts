@@ -33,6 +33,15 @@ function truthy(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test((value ?? "").trim());
 }
 
+/**
+ * An operator who wants pages read only on this machine says so explicitly.
+ * Silence is not a refusal: it means the setting was never considered, and a
+ * link that cannot be read at all is worse than one read remotely.
+ */
+function remoteFallbackRefused(env: ReaderEnv): boolean {
+  return /^(0|false|no|off)$/i.test((env.READER_ALLOW_REMOTE_FALLBACK ?? "").trim());
+}
+
 export function normalizeReaderProvider(value?: string): UrlToMarkdownProvider {
   return value === "jina-reader-remote" ? "jina-reader-remote" : "jina-reader-local";
 }
@@ -153,12 +162,14 @@ async function fetchReaderMarkdown({
   targetUrl,
   timeoutMs,
   fetchImpl,
+  signal,
 }: {
   provider: UrlToMarkdownProvider;
   baseUrl: string;
   targetUrl: string;
   timeoutMs: number;
   fetchImpl: FetchLike;
+  signal?: AbortSignal;
 }): Promise<{ markdown: string; contentType?: string }> {
   const readerUrl = buildReaderRequestUrl(baseUrl, targetUrl);
   const controller = new AbortController();
@@ -170,7 +181,7 @@ async function fetchReaderMarkdown({
         Accept: "text/markdown, text/plain;q=0.9",
         "X-Respond-With": "frontmatter",
       },
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
     });
     const text = await response.text();
     if (!response.ok) {
@@ -182,6 +193,7 @@ async function fetchReaderMarkdown({
       contentType: response.headers.get("content-type") ?? undefined,
     };
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Reader timed out after ${timeoutMs}ms while converting ${targetUrl}.`);
     }
@@ -203,11 +215,13 @@ export async function convertUrlToMarkdown({
   env = process.env,
   fetchImpl = fetch,
   now = () => new Date(),
+  signal,
 }: {
   url: string;
   env?: ReaderEnv;
   fetchImpl?: FetchLike;
   now?: () => Date;
+  signal?: AbortSignal;
 }): Promise<UrlToMarkdownResult> {
   const originalUrl = normalizeSourceUrl(url);
   const provider = normalizeReaderProvider(env.READER_PROVIDER);
@@ -226,6 +240,7 @@ export async function convertUrlToMarkdown({
       targetUrl: originalUrl,
       timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_READER_TIMEOUT_MS,
       fetchImpl,
+      signal,
     });
     return parseReaderMarkdownResult({
       originalUrl,
@@ -240,10 +255,28 @@ export async function convertUrlToMarkdown({
     return tryProvider("jina-reader-remote", remoteBaseUrl);
   }
 
+  // No local Reader configured at all. This used to throw "READER_BASE_URL is
+  // required" as a 500, so saving a link failed with an environment variable's
+  // name and no way forward (2026-09-17: nothing was listening for Reader, and
+  // 8080 - the port the local Reader documents - was held by an unrelated
+  // application). The remote Reader is then the only way to read a page, so
+  // use it unless the operator has explicitly turned it off. The result
+  // records provider "jina-reader-remote", so a page fetched off this machine
+  // is always identifiable as such.
+  if (!localBaseUrl) {
+    if (remoteFallbackRefused(env)) {
+      throw new Error(
+        "No local Reader is configured (set READER_BASE_URL) and the remote Reader is disabled, so this link cannot be read.",
+      );
+    }
+    return tryProvider("jina-reader-remote", remoteBaseUrl);
+  }
+
   try {
     return await tryProvider("jina-reader-local", localBaseUrl);
   } catch (error) {
-    if (!truthy(env.READER_ALLOW_REMOTE_FALLBACK)) throw error;
+    signal?.throwIfAborted();
+    if (remoteFallbackRefused(env) || !truthy(env.READER_ALLOW_REMOTE_FALLBACK)) throw error;
     return tryProvider("jina-reader-remote", remoteBaseUrl);
   }
 }

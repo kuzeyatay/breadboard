@@ -138,6 +138,12 @@ export async function handleCreateVideoTranscription(
       };
     }
 
+    // Apply backpressure before reading a potentially multi-gigabyte body.
+    const pending = deps.store.countPendingForCluster(garden.clusterId);
+    if (pending >= deps.config.maxQueuedJobsPerGarden) {
+      throw new VideoTranscriptionError("queue_full", { httpStatus: 429 });
+    }
+
     const contentType = request.headers.get("content-type") ?? "";
     const isMultipart = contentType.toLowerCase().includes("multipart/form-data");
 
@@ -232,8 +238,7 @@ export async function handleCreateVideoTranscription(
     }
 
     // Queue limits are enforced per garden before any expensive work.
-    const pending = deps.store.countPendingForCluster(garden.clusterId);
-    if (pending >= deps.config.maxQueuedJobsPerGarden) {
+    if (deps.store.countPendingForCluster(garden.clusterId) >= deps.config.maxQueuedJobsPerGarden) {
       throw new VideoTranscriptionError("queue_full", { httpStatus: 429 });
     }
 
@@ -389,8 +394,18 @@ export async function handleListVideoTranscriptions(
     const garden = await deps.requireOwnedGarden(gardenId);
     // A visit is a natural moment to resume interrupted jobs after restarts.
     await deps.runnerKick(garden.clusterId);
-    const jobs = deps.store
-      .listJobsForCluster(garden.clusterId, { activeOnly, limit: 20 })
+    // Recent history must never crowd older waiting files out of a large batch.
+    const active = deps.store.listJobsForCluster(garden.clusterId, { activeOnly: true, limit: 100 });
+    const history = activeOnly ? [] : deps.store.listJobsForCluster(garden.clusterId, { limit: 100 });
+    const allJobs = [...new Map([...history, ...active].map(job => [job.id, job])).values()];
+    // Keep historical attempts in the store, but show the newer replacement
+    // when the same media has been uploaded again after a failure.
+    const jobs = allJobs.filter(job => job.status !== "failed" || !allJobs.some(other =>
+      other.id !== job.id && other.status !== "cancelled" &&
+      other.createdAt > job.createdAt && other.analysis === job.analysis &&
+      ((job.mediaSha256 && other.mediaSha256 === job.mediaSha256) ||
+        (job.youtubeVideoId && other.youtubeVideoId === job.youtubeVideoId))
+    ))
       .map(jobResponse);
     return { status: 200, body: { jobs } };
   } catch (error) {

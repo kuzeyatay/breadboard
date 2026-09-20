@@ -73,11 +73,16 @@ export const discover_sources = tool({
 })
 
 export const import_source = tool({
-  description: "Add one discovered or user-provided source to the Garden when the user asked to upload, add, import or save it. Uses normal document/transcription ingestion; report queued jobs as processing.",
+  description: "Add a chat attachment or source URL to the Garden when the user asks. For signed-in browser files use useBrowserSession=true with the exact downloadUrl or url from browser_terminal links; credentials stay in the browser. For attachments use attachmentName or attachmentIndex and omit url. Set both parseWithAnydoc and parseWithVlm for requested AnyDoc+VLM parsing. Report queued jobs as processing.",
   args: {
     gardenId: tool.schema.string().optional(),
-    kind: tool.schema.enum(["audio", "video", "link", "pdf"]),
-    url: tool.schema.string().describe("Exact importUrl from discovery or URL supplied by the user"),
+    kind: tool.schema.enum(["audio", "video", "link", "pdf", "document", "image"]).describe("Required for public URLs; omit for attachments or browser downloads to infer the file type").optional(),
+    url: tool.schema.string().describe("Exact importUrl, user-supplied URL, or downloadUrl/url from the linked browser's links; omit for attachments").optional(),
+    useBrowserSession: tool.schema.boolean().describe("Download the URL using this conversation's linked signed-in browser tab, then ingest the original file").optional(),
+    parseWithAnydoc: tool.schema.boolean().describe("Use AnyDoc document parsing; set true alongside parseWithVlm when both are requested").optional(),
+    parseWithVlm: tool.schema.boolean().describe("Use VLM visual parsing for PDFs/images; preserves the user's requested parser choice").optional(),
+    attachmentName: tool.schema.string().describe("Exact filename attached to this conversation, including earlier turns").optional(),
+    attachmentIndex: tool.schema.number().int().min(1).max(10).describe("One-based position in the most recent message with uploaded files").optional(),
     title: tool.schema.string().optional(),
   },
   async execute(args, ctx) { return callBreadboard(ctx.sessionID, "garden_import_source", args) },

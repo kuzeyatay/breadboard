@@ -225,21 +225,21 @@ test("artifacts are picked over and deleted in one sweep, never one row at a tim
   assert.match(panel, /aria-label=\{`Select \$\{artifact\.title\}`\}/);
   // While picking, the row checks instead of opening — including a PDF, whose
   // link would otherwise navigate away mid-selection.
-  assert.match(panel, /if \(mode === "selecting"\) toggleChecked\(artifact\.id\)/);
+  assert.match(panel, /if \(mode === "selecting"\) toggleChecked\(artifactVersionKey\(artifact\)\)/);
   assert.match(panel, /\{mode === "idle" && pdfHref \? \(/);
 
   // Checked ids are intersected with the visible list rather than mirrored into
   // a second copy, so a sweep can only remove what the user can see.
   assert.match(
     panel,
-    /const selectedArtifacts = filteredArtifacts\.filter\(\(artifact\) => selectedIds\.has\(artifact\.id\)\)/,
+    /const selectedArtifacts = filteredArtifacts\.filter\(\(artifact\) => selectedIds\.has\(artifactVersionKey\(artifact\)\)\)/,
   );
-  assert.match(panel, /onSelectAll=\{\(\) => setSelectedIds\(new Set\(filteredArtifacts\.map\(\(item\) => item\.id\)\)\)\}/);
+  assert.match(panel, /onSelectAll=\{\(\) => setSelectedIds\(new Set\(filteredArtifacts\.map\(artifactVersionKey\)\)\)\}/);
 
   // One confirmation for the sweep, deletes run one at a time, and a partial
   // result is reported rather than assumed away.
   assert.match(panel, /window\.confirm\(`Delete \$\{subject\}\?/);
-  assert.match(panel, /for \(const artifact of selectedArtifacts\)/);
+  assert.match(panel, /for \(const artifact of uniqueArtifacts\)/);
   assert.match(panel, /artifacts could not be deleted\./);
 
   // The mode is never alive but invisible.

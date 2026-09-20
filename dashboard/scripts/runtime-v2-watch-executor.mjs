@@ -721,7 +721,11 @@ async function analyzeWithChatMock({ question, report, frames, env, signal }) {
       },
       body: JSON.stringify({
         model: env.CHATMOCK_MODEL?.trim() || "default",
-        input: [{ role: "user", content }],
+        // ChatMock passes an image request straight through to the ChatGPT
+        // Responses upstream, which rejects an input item without its `type`
+        // discriminator. A bare `{role, content}` item answered HTTP 400 on
+        // every frame-grounded call, so garden video analysis never once ran.
+        input: [{ type: "message", role: "user", content }],
         max_output_tokens: 3_000,
       }),
       redirect: "error",

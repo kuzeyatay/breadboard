@@ -487,8 +487,9 @@ def _begin_repeat(model: str, prompt: str) -> Tuple["web._Page", str]:
             if "(not_ready)" not in str(exc) or waited == NOT_READY_RETRIES:
                 raise
             _log(f"page not ready to send (wait {waited + 1} of {NOT_READY_RETRIES})")
-            if web._page is not None:
-                web._stop_generation(web._page)
+            current = web._lane().page
+            if current is not None:
+                web._stop_generation(current)
             time.sleep(NOT_READY_WAIT_SECONDS)
     raise AssertionError("unreachable")
 
@@ -575,13 +576,15 @@ def synthesize(text: str, voice: str) -> Tuple[bytes, str]:
         raise WebSpeechError("Text longer than 50,000 characters cannot be read aloud at once.", 413)
     if voice not in VOICES:
         raise WebSpeechError("Choose a ChatGPT voice in Voice settings.", 400)
-    # The page is one composer: a reading waits its turn like any chat message.
-    if not web._turn_lock.acquire(timeout=web.TURN_QUEUE_WAIT_SECONDS):
+    # A reading uses the chat page (an ordinary, non-temporary chat the site
+    # can read back), so it waits its turn behind a chat message like any other.
+    lane = web._lane(web.INTERACTIVE_LANE)
+    if not lane.lock.acquire(timeout=web.TURN_QUEUE_WAIT_SECONDS):
         raise WebSpeechError(
-            "The chatgpt.com page is still answering an OpenAI (web) chat message. "
-            "Try reading aloud again once that answer finishes.",
+            f"{web.busy_message(web.INTERACTIVE_LANE)} Try reading aloud again once that answer finishes.",
             503,
         )
+    web._hold(web.INTERACTIVE_LANE, "a read-aloud request")
     try:
         model = reader_model()
         pieces: List[bytes] = []
@@ -598,4 +601,5 @@ def synthesize(text: str, voice: str) -> Tuple[bytes, str]:
                 raise WebSpeechError("ChatGPT's audio exceeds 64 MB. Read a shorter part.", 413)
         return b"".join(pieces), content_type
     finally:
-        web._turn_lock.release()
+        lane.holder = None
+        lane.lock.release()

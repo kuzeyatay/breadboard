@@ -553,8 +553,13 @@ export function assessVerification(
   requires(/\b(i remember|remembered|from memory)\b/, ["memory", "user_provided"], "Memory claim has no successful retrieval evidence.");
   requires(/\b(saved|wrote|stored).{0,24}\bmemory\b/, ["memory"], "Memory-write claim has no successful memory evidence.");
   requires(/\bgbrain is (?:connected|integrated)\b/, ["memory"], "GBrain status claim has no successful GBrain evidence.");
+  // "According to special relativity" appeals to a theory, not to a source;
+  // only "according to" followed by something that could actually have been
+  // read - a paper, page, lecture, dataset, a named author - is a citation
+  // that needs evidence behind it (an EM1 answer about the electron's spin
+  // was badged contradicted for citing Einstein, 2026-09-18).
   requires(
-    /\b(?:academic|scholarly|peer-reviewed)\s+(?:references?|sources?|citations?)\b|\bdoi\s+links?\b|\baccording to\b/,
+    /\b(?:academic|scholarly|peer-reviewed)\s+(?:references?|sources?|citations?)\b|\bdoi\s+links?\b|\baccording to\s+(?:(?:the|a|an|this|that|these|those|your|our|my|its|their)\s+)?(?:[\w'-]+\s+){0,2}(?:papers?|sources?|articles?|study|studies|reports?|documentation|docs?|websites?|sites?|pages?|notes?|lectures?|slides?|textbooks?|books?|datasets?|manuals?|specs?|specifications?|surveys?|reviews?|data|results?|search|abstract|readme|changelog|transcript|recording|syllabus|chapter|section|figure|table|et al\.?)\b/,
     ["garden", "web_search", "web_source", "user_provided"],
     "Source-backed claim has no successful Garden, web, or user-provided evidence.",
   );
@@ -670,7 +675,15 @@ function geographicClaimRules(): { pattern: RegExp; claim: string }[] {
       claim: "Travel-time claim has no successful routing result.",
     },
     {
-      pattern: /\b(?:the address is|located at|situated at)\b\s+\S/i,
+      // "located at" is geometry as often as it is geography: "charge
+      // elements located at equal distances above and below", "every point
+      // located at a distance $r$ from the wire" (an EM1 chat, 2026-09-16,
+      // whose physics answers were badged contradicted for it). It only
+      // counts as an address when what follows looks like one: a house
+      // number and a name, a named street, or a postcode. "the address is"
+      // says what it is and needs no such check.
+      pattern:
+        /\bthe address is\s+\S|\b(?:located|situated) at\s+(?:\d{1,5}[A-Za-z]?\s+(?!(?:m|cm|mm|km|metres?|meters?|units?|points?|nodes?|positions?|degrees?|radians?|seconds?|s|and|or)\b)[A-Za-z][\w'.-]+|[A-Za-z][\w'.-]+(?:\s+[A-Za-z][\w'.-]+){0,3}\s+(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Lane|Ln\.?|Boulevard|Blvd\.?|Drive|Dr\.?|Way|Square|Plaza|Place|Court|Terrace|Straat|Laan|Weg|Plein|Gracht|Kade)\b|\d{4}\s?[A-Za-z]{2}\b|\d{5}\b)/i,
       claim: "Address claim has no successful map-service result.",
     },
     {

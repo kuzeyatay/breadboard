@@ -340,6 +340,39 @@ export function topologyNavigationSlug(value: string): string {
   return slug.endsWith("_index") ? slug.replace(/_index$/, "index") : slug
 }
 
+function normalizeTopologyScopePath(value: string): string {
+  // Payload paths retain filesystem names; route paths use Quartz slugs.
+  // Decode URL paths before applying the same navigation normalization.
+  try {
+    value = decodeURIComponent(value)
+  } catch {
+    // Literal percent signs in folder names are not necessarily URL escapes.
+  }
+  return topologyNavigationSlug(value).replace(/\/index$/i, "").toLowerCase()
+}
+
+export function topologyFolderScopeForSlug(
+  topology: TopologyPayload,
+  slug: string,
+  fallback: string | null,
+): string | null {
+  const currentSlug = normalizeTopologyScopePath(slug)
+  const gardenSlug = topology.garden.slug
+  const routeFolder = topology.folders.find((folder) => {
+    const folderRoute =
+      folder.pageSlug || (folder.path ? `${gardenSlug}/${folder.path}` : gardenSlug)
+    return normalizeTopologyScopePath(folderRoute) === currentSlug
+  })
+  if (routeFolder) return routeFolder.path || null
+
+  // Individual notes inherit their containing folder's scope.
+  const currentPage = topology.nodes.find(
+    (node) => normalizeTopologyScopePath(node.slug) === currentSlug,
+  )
+  if (!currentPage) return fallback
+  return topology.folders.find((folder) => folder.id === currentPage.folderId)?.path || null
+}
+
 /** Markdown pages stay visible and interactive as dots, but their persistent
  * names are omitted to keep dense topology views legible. */
 export function shouldShowTopologyNodeLabel(
@@ -785,17 +818,7 @@ export function planThoughtTopology(
   options: PlanOptions = {},
 ): TopologyPlan {
   const preview = Boolean(options.preview)
-  const normalizeFolderPath = (value: string) => {
-    const trimmed = value
-      .replace(/\\/g, "/")
-      .replace(/^\/+|\/+$/g, "")
-      .replace(/\/index$/i, "")
-    try {
-      return decodeURIComponent(trimmed).toLocaleLowerCase()
-    } catch {
-      return trimmed.toLocaleLowerCase()
-    }
-  }
+  const normalizeFolderPath = normalizeTopologyScopePath
   const requestedScope = options.scopeFolderPath ? normalizeFolderPath(options.scopeFolderPath) : ""
   const sourceRoot = payload.folders.find((folder) => folder.depth === 0) ?? null
   const sourceScope = requestedScope

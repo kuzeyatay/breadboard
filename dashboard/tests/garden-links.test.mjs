@@ -27,6 +27,11 @@ describe("garden links", () => {
     assert.equal(links.length, 1);
     assert.equal(links[0].id, link.id);
 
+    const upgraded = addGardenLink(root, gardenSlug, {title:"Whole website",url:link.url,sourceSlug:"full-site",sourceRelPath:"sources/full-site.md"});
+    assert.equal(upgraded.id,link.id);
+    assert.equal(readGardenLinks(root,gardenSlug).length,1);
+    assert.equal(readGardenLinks(root,gardenSlug)[0].sourceRelPath,"sources/full-site.md");
+
     assert.equal(deleteGardenLink(root, gardenSlug, link.id), true);
     assert.deepEqual(readGardenLinks(root, gardenSlug), []);
   });

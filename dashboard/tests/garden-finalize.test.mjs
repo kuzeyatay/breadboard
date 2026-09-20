@@ -1056,6 +1056,8 @@ describe("contract-driven semantic repair loop", () => {
               nearbyVisualIntentIds: [],
             },
             reason: "The model approved a source-grounded interaction.",
+            alternativeCoverage: "covered",
+            teachingMediumReason: "Manipulating the input reveals the relationship directly.",
             recommendedVisualType: "generated_module",
           },
           requirement,

@@ -48,7 +48,7 @@ import {
   type ZettelNote,
 } from "./learning-unit-contract.ts";
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
-import { chatAssistantLeakMatches, formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment, stripMarkdownFrontmatter } from "./learn-utils.ts";
+import { chatAssistantLeakMatches, createApparatusProgress, declinedLessonMatches, formulaMeaningMatch, unexplainedApparatus, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment, stripMarkdownFrontmatter } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, projectSourceCoverage, reconcileFinalGardenState } from "./final-garden-state.ts";
 import { assertFormulaAssignmentCompatible, buildFormulaIdentityRegistry, legacyFormulaFamily } from "./formula-identity.ts";
 import { deriveUnitFormulaRequirement, validateFormulaAssignment } from "./formula-assignment.ts";
@@ -9343,6 +9343,60 @@ function runCriticalGate({
         problems.push(`${rel}: unresolved same-page heading link [[#${(match[1] ?? "").trim()}]]`);
       }
     }
+  }
+
+  // A lesson that reports it cannot teach its own subject.
+  //
+  // The page writer only sees the evidence its planner anchored, so this is an
+  // often an under-anchored unit: rewriting against the same evidence may not fix it and
+  // the semantic critic can only re-raise it under a new type each pass. Fail
+  // the export here and name the unit, so the plan is corrected instead of the
+  // declination shipping as a lesson.
+  for (const { abs, rel } of visible) {
+    if (!rel.startsWith("learning/")) continue;
+    const base = rel.slice("learning/".length);
+    if (base === "Learning Map.md" || base === "Topic Overview.md" || base.endsWith("_index.md")) continue;
+    const raw = readFileSyncWithRetry(abs, "utf-8");
+    const { rawFrontmatter, body } = parseFrontmatter(raw);
+    const unitId = rawFrontmatter.match(/^learningUnitId:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const question = rawFrontmatter.match(/^learningQuestion:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const title = rawFrontmatter.match(/^title:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const declined = declinedLessonMatches(body, { title, learningQuestion: question });
+    if (declined.length === 0) continue;
+    problems.push(
+      `${rel}: ${unitId ? `unit ${unitId} ` : ""}reports it cannot teach its own subject` +
+      `${question ? ` ("${question}")` : ""} from its anchored evidence` +
+      ` — re-anchor the unit to the sources that carry it, or cut the unit` +
+      ` (first occurrence: ${declined[0].snippet})`,
+    );
+  }
+
+  // Notation used without a local or earlier explanatory bridge.
+  //
+  // Concept coverage is tracked; notation is not, so a garden can walk a
+  // reader from arithmetic to partial differential equations without saying
+  // the entry price changed. Reported, never blocking: an unexplained symbol
+  // is a teaching gap, not an invalid artifact.
+  const lessonsInReadingOrder = visible
+    .filter((entry) => entry.rel.startsWith("learning/") && !entry.rel.endsWith("_index.md"))
+    .map((entry) => {
+      const numbered = (entry.rel.split("/").pop() ?? "").match(/^(\d+)\.(\d+)/);
+      return numbered
+        ? { ...entry, section: Number(numbered[1]), subsection: Number(numbered[2]) }
+        : null;
+    })
+    .filter((entry): entry is { abs: string; rel: string; section: number; subsection: number } => entry !== null)
+    .sort((left, right) => left.section - right.section || left.subsection - right.subsection);
+  const establishedApparatus = createApparatusProgress();
+  for (const lesson of lessonsInReadingOrder) {
+    const { body } = parseFrontmatter(readFileSyncWithRetry(lesson.abs, "utf-8"));
+    const introduced = unexplainedApparatus(body, establishedApparatus);
+    if (introduced.length === 0) continue;
+    const warning =
+      `${lesson.rel}: uses ${introduced.join(", ")} without an explanatory bridge in prose,` +
+      ` and no earlier lesson established it; prerequisite remains unresolved`;
+    if (!report.warnings.includes(warning)) report.warnings.push(warning);
+    if (!report.notes.includes(warning)) report.notes.push(warning);
   }
 
   // Contradictory anchor usage.

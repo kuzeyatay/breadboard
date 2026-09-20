@@ -40,12 +40,12 @@ const config = {
   opacityScale: 1, removeTags: [], showTags: true, focusOnHover: true, enableRadial: false,
 };
 
-test("3D camera preserves depth, screen-plane dragging, and deterministic folder depth", async () => {
+test("3D camera preserves screen-plane dragging and scatters large scopes into a stable sphere", async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "topology-geometry-"));
   try {
     const outfile = path.join(temporary, "geometry.mjs");
     await build({ entryPoints: [path.join(scripts, "thoughtTopology3DGeometry.ts")], outfile, format: "esm" });
-    const { TopologyCamera3D, topologyNodeDepth, sphericalDepthFactor } = await import(pathToFileURL(outfile));
+    const { TopologyCamera3D, sphericalTopologyPositions } = await import(pathToFileURL(outfile));
     const camera = new TopologyCamera3D();
     const point = { x: 120, y: -80, z: 170 };
     for (const [dx, dy] of [[0, 0], [320, 75], [180, -140], [1500, 600]]) {
@@ -59,14 +59,38 @@ test("3D camera preserves depth, screen-plane dragging, and deterministic folder
       assert.ok(Math.abs(after.y - before.y + 20) < 1e-9);
       assert.ok(Math.abs(after.z - before.z) < 1e-9);
     }
-    const node = { id: "a", kind: "page", sectorId: "folder:waves", folderId: "folder:waves" };
-    assert.equal(topologyNodeDepth(node, 300), topologyNodeDepth({ ...node }, 300));
-    assert.notEqual(topologyNodeDepth(node, 300), topologyNodeDepth({ ...node, id: "b" }, 300));
-    // Depth rounds the planned disc into a sphere: full at the centre, shallow at the rim.
-    assert.equal(sphericalDepthFactor({ x: 0, y: 0 }, 400), 1);
-    assert.ok(Math.abs(sphericalDepthFactor({ x: 400, y: 0 }, 400) - 0.22) < 1e-9);
-    assert.ok(sphericalDepthFactor({ x: 120, y: 160 }, 400) > sphericalDepthFactor({ x: 300, y: 200 }, 400));
-    assert.equal(sphericalDepthFactor({ x: 50, y: 50 }, 0), 1);
+    const garden = { id: "garden", kind: "garden", sectorId: null, folderId: null };
+    assert.deepEqual([...sphericalTopologyPositions([])], []);
+    assert.deepEqual(sphericalTopologyPositions([garden]).get("garden"), { x: 0, y: 0, z: 0 });
+    // A single huge folder and an uneven mix must both fill the whole sphere.
+    for (const folderCount of [1, 7]) {
+      const nodes = [garden, ...Array.from({ length: 1200 }, (_, i) => ({
+        id: `page:${i}`, kind: "page",
+        sectorId: `folder:${i < 900 ? 0 : i % folderCount}`,
+        folderId: `folder:${i < 900 ? 0 : i % folderCount}`,
+        // Legacy worker coordinates must not turn the cloud into a rectangle.
+        x: i * 20, y: (i % 2) * 100,
+      }))];
+      const positions = sphericalTopologyPositions(nodes);
+      assert.deepEqual(positions, sphericalTopologyPositions([...nodes].reverse()));
+      assert.deepEqual(positions.get("garden"), { x: 0, y: 0, z: 0 });
+      const points = [...positions.values()];
+      const radius = Math.max(...points.map((p) => Math.hypot(p.x, p.y, p.z)));
+      for (const axis of ["x", "y", "z"]) {
+        const centroid = points.reduce((sum, p) => sum + p[axis], 0) / points.length;
+        assert.ok(Math.abs(centroid) < radius * 0.08, `${axis} stays centred on the Garden`);
+      }
+      for (let orbit = 0; orbit < 8; orbit++) {
+        camera.yaw = orbit * Math.PI / 4;
+        camera.pitch = (orbit % 3 - 1) * Math.PI / 4;
+        const projected = points.map((p) => camera.project(p));
+        const rim = Array.from({ length: 16 }, (_, i) => {
+          const angle = i * Math.PI / 8;
+          return Math.max(...projected.map((p) => p.x * Math.cos(angle) + p.y * Math.sin(angle)));
+        });
+        assert.ok(Math.min(...rim) / Math.max(...rim) > 0.9, "the outline stays circular throughout orbit");
+      }
+    }
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 });
 
@@ -95,7 +119,8 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
         const renderConfig = { ...${JSON.stringify(config)}, preview: new URLSearchParams(location.search).has("preview") };
         const context = { scopeCluster: 'garden', scopeFolderPath: null, configuredDepth: -1,
           onNavigate: (id, slug) => { window.opened = { id, slug } } };
-        window.remount = async () => { window.dispose?.(); window.dispose = await renderThoughtTopology(host, 'garden', renderConfig, ${JSON.stringify(topology)}, context); };
+        window.topologyPayload = ${JSON.stringify(topology)};
+        window.remount = async () => { window.dispose?.(); window.dispose = await renderThoughtTopology(host, 'garden', renderConfig, window.topologyPayload, context); };
         await window.remount();`, resolveDir: root },
       outfile: path.join(temporary, `${name}.js`), bundle: true, format: "esm", platform: "browser",
     });
@@ -181,6 +206,8 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
     const twoDStorage = await page.evaluate(() => localStorage.getItem("thought-topology-home-positions:v2:garden:root"));
     assert.equal(await background(), baseBackground, "background remains identical");
     const initial = await debug();
+    assert.deepEqual(initial.worldNodes["garden:garden"], { x: 0, y: 0, z: 0 }, "Garden stays at the centre of rotation");
+    assert.deepEqual(initial.nodes["garden:garden"], { x: 640, y: 400 }, "Garden is centred in the viewport");
     assert.ok(new Set(Object.values(initial.worldNodes).map((point) => Math.round(point.z))).size > 3);
     for (const [id, edge] of Object.entries(initial.edges)) {
       assert.equal(edge.restColor, originalEdges[id].restColor);
@@ -366,5 +393,39 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   await page.waitForFunction(() => document.querySelector("canvas") && document.querySelector("canvas") !== window.oldCanvas);
   await ready("3d");
   assert.equal(await page.locator("canvas").count(), 1);
+
+  // Exercise the real force layout with a large, uneven Garden as well as the
+  // pure scatter above. Legacy rectangular worker positions are intentional.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate(async () => {
+    const payload = window.topologyPayload;
+    const template = payload.nodes[0];
+    payload.garden.title = "Large garden";
+    payload.folders = [payload.folders[0], ...[300, 150, 80, 40, 30].map((nodeCount, i) => ({
+      ...payload.folders[1], id: `folder:${i}`, path: `section-${i}`, title: `Section ${i + 1}`, nodeCount,
+    }))];
+    let i = 0;
+    payload.nodes = payload.folders.slice(1).flatMap((folder) => Array.from({ length: folder.nodeCount }, () => {
+      const index = i++;
+      return { ...template, id: index === 0 ? "a" : `large:${index}`, folderId: folder.id,
+        title: `Thought ${index}`, slug: `garden/thought-${index}`, x: (index % 30) * 60, y: Math.floor(index / 30) * 60 };
+    }));
+    payload.edges = payload.nodes.slice(1).map((node, index) => ({
+      ...payload.edges[0], id: `large-edge:${index}`, source: payload.nodes[index].id, target: node.id,
+    }));
+    await window.remount();
+  });
+  await ready("3d");
+  const large = await debug();
+  assert.deepEqual(large.worldNodes["garden:garden"], { x: 0, y: 0, z: 0 });
+  const gardenCentre = large.nodes["garden:garden"];
+  assert.ok(Math.abs(gardenCentre.x - 640) < 2 && Math.abs(gardenCentre.y - 400) < 2, "Garden name is framed in the centre");
+  const cloud = Object.values(large.worldNodes);
+  const spans = ["x", "y", "z"].map((axis) => Math.max(...cloud.map((p) => p[axis])) - Math.min(...cloud.map((p) => p[axis])));
+  await page.screenshot({ path: path.join(screenshotDirectory, "large-garden-3d.png") });
+  assert.ok(Math.min(...spans) / Math.max(...spans) > 0.75, `large settled cloud stays round: ${spans}`);
+  for (const point of Object.values(large.nodes)) {
+    assert.ok(point.x >= 0 && point.x <= 1280 && point.y >= 0 && point.y <= 800, "auto-fit contains the large cloud");
+  }
   assert.deepEqual(errors, []);
 });

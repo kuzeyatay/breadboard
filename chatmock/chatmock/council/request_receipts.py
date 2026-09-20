@@ -699,9 +699,16 @@ def _failed_attempt_proves_one_direct_call(
         or usage["callCount"] != 1
         or usage["reportedCallCount"] not in (0, 1)
         or not isinstance(routing, list)
-        or len(routing) != 1
+        or len(routing) > 1
     ):
         return False
+    if not routing:
+        # The dispatch failed before the council recorded a route (the web page
+        # was still finishing the previous turn, 2026-09-17). One call was made
+        # and it produced no answer, which is exactly what authorizes the one
+        # redispatch; without this the receipt is stuck and every later Learn
+        # job resumes into the same dead request.
+        return _bounded_token(attempt.get("requestedModel")) and _bounded_token(attempt.get("resolvedModel"))
     route = routing[0]
     return bool(
         route.get("schemaVersion") == 1

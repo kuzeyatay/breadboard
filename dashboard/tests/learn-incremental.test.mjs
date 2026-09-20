@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -262,4 +263,53 @@ test("the Learn route and workspace choose additive planning for new material", 
     workspaceSource,
     /learnState\.job\.confirmedLearningMapId ===[\s\S]*?learnState\.confirmedLearningMapId/,
   );
+});
+
+test("a page replayed from its acceptance receipt still binds its visualization placement", () => {
+  // telecom-1 wrote all 31 lessons, replayed 30 from receipts, and was then
+  // refused at export finalize because three opportunities still pointed at
+  // planning-time page ids (2026-09-17). The binding lived only inside
+  // reconcileInteractiveVisuals, which a replayed page never calls.
+  const source = readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
+  assert.match(source, /function bindVisualizationOpportunityToPage\(/);
+
+  const replayBranch = source.slice(
+    source.indexOf("if (acceptedReplay) {", source.indexOf("let visualized:")),
+    source.indexOf("} else {", source.indexOf("let visualized:")),
+  );
+  assert.match(
+    replayBranch,
+    /bindVisualizationOpportunityToPage\(\s*visualizationPlan,\s*subsection,\s*pageRelPath,/,
+    "the replay branch must bind the placement itself",
+  );
+
+  // The binding is assigned in exactly one place - the helper - and reached
+  // from both the generating path and the replay path.
+  assert.equal(source.match(/opportunity\.targetPage = pageRelPath;/g).length, 1);
+  assert.equal(source.match(/bindVisualizationOpportunityToPage\(/g).length, 3);
+
+  // A replayed page takes its anchor from the manifest the earlier run
+  // published. Guessing the after-introduction default contradicted both the
+  // manifest and the page body for telecom-1 U2 and U6 (2026-09-18).
+  assert.match(replayBranch, /loadGeneratedVisualManifest\(artifactContentPath, replayedOpportunity\.id\)/);
+  assert.match(source, /const publishedAnchor = publishedManifest\?\.insertionAnchor;/);
+  assert.match(source, /publishedAnchor\.startsWith\(`learning-unit:\$\{opportunity\.learningUnitId\}:`\)/);
+});
+
+test("a replayed page whose visual manifest is absent takes its anchor from the page body", () => {
+  // Receipts carried over from another run reference visual artifacts that
+  // live in that run's workspace, not this one. loadGeneratedVisualManifest
+  // then returns null, the binding fell to its after-introduction default,
+  // and export finalize refused U6 and U29 whose prose carried the
+  // interactive-visual marker (telecom-1, 2026-09-18). The page body is the
+  // witness that survives.
+  const source = readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
+  assert.match(source, /pageBodyForAnchor\?: string,/);
+  assert.match(source, /const markerInPage = pageBodyForAnchor && pageBodyForAnchor\.includes\(`<!-- learning-unit:\$\{opportunity\.learningUnitId\}:interactive-visual -->`\)/);
+  // The replay branch passes the receipt's body through.
+  const replayBranch = source.slice(
+    source.indexOf("if (acceptedReplay) {", source.indexOf("let visualized:")),
+    source.indexOf("} else {", source.indexOf("let visualized:")),
+  );
+  assert.match(replayBranch, /acceptedReplay\.pageBody,\s*\);/);
 });

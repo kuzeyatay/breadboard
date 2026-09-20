@@ -196,6 +196,8 @@ export type ChatAutoScroll<T extends HTMLElement> = {
   awayFromBottom: boolean;
   /** Glides back to the newest content and resumes following the answer. */
   scrollToBottom: () => void;
+  /** Stop following and open a saved message through the virtualizer. */
+  scrollToMessage: (index: number) => void;
 };
 
 /**
@@ -552,5 +554,14 @@ export function useChatAutoScroll<T extends HTMLElement>({
     [],
   );
 
-  return { ref: containerRef, awayFromBottom, scrollToBottom };
+  const scrollToMessage = useCallback((index: number) => {
+    cancelLanding();
+    followingRef.current = false;
+    jumpingRef.current = false;
+    if (virtual?.activeRef.current) virtual.scrollToIndex(index, "auto");
+    else containerRef.current?.querySelector<HTMLElement>(`[data-index="${index}"]`)?.scrollIntoView({ block: "start" });
+    measureDistance();
+  }, [cancelLanding, measureDistance, virtual]);
+
+  return { ref: containerRef, awayFromBottom, scrollToBottom, scrollToMessage };
 }

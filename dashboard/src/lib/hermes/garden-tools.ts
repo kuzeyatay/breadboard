@@ -21,6 +21,7 @@
 
 import path from "node:path";
 import db from "../db.ts";
+import { pageUnderstanding } from "../page-understanding.ts";
 import type { KnowledgeNode } from "../knowledge.ts";
 import {
   verifyCapabilityToken,
@@ -205,13 +206,16 @@ export async function executeGardenTool(input: {
       const { importGardenSource } = await import("./garden-source-import.ts");
       const data = await importGardenSource({
         userId: token.userId, clusterId: cluster.id, clusterSlug: cluster.slug, contentPath: contentPath(),
+        conversationId: token.conversationId, runtimeSessionId: Number(token.breadboardSessionId) || undefined,
       }, input.args);
       const result = data as Record<string, unknown>;
       return { ok: true, tool: input.tool, data: {
         ...result,
         sourceImport: {
-          gardenId: cluster.slug, kind: input.args.kind,
-          title: typeof input.args.title === "string" ? input.args.title.slice(0, 180) : "Imported source",
+          gardenId: cluster.slug, kind: result.kind ?? input.args.kind,
+          title: typeof result.title === "string" ? result.title.slice(0, 180)
+            : typeof input.args.title === "string" ? input.args.title.slice(0, 180) : "Imported source",
+          ...(typeof result.filename === "string" ? { filename: result.filename } : {}),
           jobId: typeof result.jobId === "string" ? result.jobId : null,
           processing: result.processing === true,
         },
@@ -226,7 +230,7 @@ export async function executeGardenTool(input: {
     if (isProposalTool(input.tool)) {
       return executeProposalTool(input.tool, cluster, token, input.args);
     }
-    return await executeReadTool(input.tool, cluster, input.args);
+    return await executeReadTool(input.tool, cluster, input.args, token.userId);
   } catch (error) {
     return {
       ok: false,
@@ -240,11 +244,15 @@ async function executeReadTool(
   tool: string,
   cluster: ClusterRow,
   args: Record<string, unknown>,
+  userId?: number | null,
 ): Promise<GardenToolResult> {
   if (tool === "garden_get_page" || tool === "garden_get_source_excerpt") {
     const result = await readGardenPage(contentPath(), cluster.slug, String(args.slug ?? args.pageSlug ?? ""));
     if (!result.node) return { ok: false, tool, error: "Page not found or ambiguous. Use an exact relPath from availableMatches; do not guess another slug.", data: { availableMatches: result.availableMatches } };
-    return { ok: true, tool, data: { ...nodeSummary(result.node), ...gardenPageExcerpt(result.node, args) } };
+    return { ok: true, tool, data: { ...nodeSummary(result.node), ...gardenPageExcerpt(result.node, args),
+      understanding: pageUnderstanding.get(userId, cluster.slug, result.node.relPath),
+      understandingSource: "reader self-report, not tested mastery or a review grade",
+    } };
   }
 
   const topologyGraph = async (

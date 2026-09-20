@@ -1,5 +1,6 @@
 // End-stage ChatMock critic loop tests. A programmable FAKE critic stands in for
 // ChatMock: it returns structured issues per round so we can exercise the loop's
+import { readFileSync } from "node:fs";
 // review -> repair-request -> re-review -> acceptance behavior deterministically.
 
 import test, { describe, before } from "node:test";
@@ -24,6 +25,9 @@ import {
   verifyCriticIssueAgainstFinalState,
   DEFAULT_CRITIC_LOOP_OPTIONS,
   writeCriticReports,
+  reanchorCandidates,
+  buildModelRepairPrompt,
+  repairDeclinedLearningObjectives,
 } from "../src/lib/critic-loop.ts";
 import { buildFinalGardenState } from "../src/lib/final-garden-state.ts";
 
@@ -1506,5 +1510,145 @@ describe("Fix 4: direct issue-resolution tracking", { skip }, () => {
     const loop = JSON.parse(read(dir, ".breadboard/critic-loop.json"));
     assert.equal(loop.rounds[0].resolutions[0].status, "still_present", "round1 issue persisted under a new id");
     assert.equal(loop.rounds[1].resolutions[0].status, "resolved", "round2 issue cleared in round3");
+  });
+});
+
+describe("a learning-unit contract too large to echo back", () => {
+  // telecom-1's contract is 197,617 characters. At that size the web model
+  // does not return it: on 2026-09-15 it answered with a sandbox: link, and
+  // on 2026-09-18 it returned nothing at all, twice. The units are 80% of the
+  // file and carry stable ids, so a repair sends back only what it changed.
+  const source = readFileSync(new URL("../src/lib/critic-loop.ts", import.meta.url), "utf8");
+
+  test("a big contract repair is scoped to the units it affects", () => {
+    assert.match(source, /function scopedLearningUnitContractRepair\(/);
+    assert.match(source, /LEARNING_UNIT_CONTRACT_SCOPED_REPAIR_CHARS = 60_000/);
+    // Scoping needs the request to say which units, or it must not engage.
+    assert.match(source, /const unitIds = \(request\.affectedUnitIds \?\? \[\]\)/);
+    assert.match(source, /if \(unitIds\.length === 0\) return null;/);
+    // affectedUnitIds is optional and a contract issue usually names only the
+    // page it came from, so the page's unit id is the fallback route. Without
+    // it the scoping never engaged at all (2026-09-18).
+    assert.match(source, /if \(unitIds\.length === 0 && issue\?\.pagePath && state\)/);
+    assert.match(source, /page\.learningUnitId/);
+  });
+
+  test("the prompt asks for those units, not the whole file", () => {
+    assert.match(source, /Only these learning units may change/);
+    assert.match(source, /Return only a JSON object of the form/);
+    // The whole-file instruction survives for every other target.
+    assert.match(source, /"Return the full revised file content only\."/);
+  });
+
+  test("a partial candidate merges by id and refuses anything ambiguous", () => {
+    assert.match(source, /function mergePartialLearningUnitContract\(/);
+    // Only the contract, only a learningUnits-only candidate.
+    assert.match(source, /!\/learning-unit-contract\\.json\$\/i\.test\(targetPath\)/);
+    assert.match(source, /Object\.keys\(candidate\)\.some\(\(key\) => key !== "learningUnits"\)/);
+    // Unknown or id-less units are rejected rather than merged.
+    assert.match(source, /which the contract does not contain/);
+    assert.match(source, /has no id, so it cannot be matched/);
+  });
+});
+
+describe("a unit anchored to evidence that does not cover what it teaches", () => {
+  // telecom-1 U20 taught plastic optical fibre while anchored only to Keiser
+  // page 49, a glass-air reflection example. The repair was shown only that
+  // anchor and asked to fix the mismatch - which it could not, since nothing
+  // ever put the pages that do cover plastic fibre in front of it. Six
+  // identical attempts across three runs changed nothing (2026-09-18).
+  const source = readFileSync(new URL("../src/lib/critic-loop.ts", import.meta.url), "utf8");
+
+  test("a source_anchor_mismatch repair is offered candidates from the same source", () => {
+    assert.match(source, /function reanchorCandidates\(/);
+    assert.deepEqual(reanchorCandidates({ sourceAnchors: {} }, issue({ type: "repeated_opening" }), new Set()), []);
+    // Same source only: a re-anchoring never quietly pulls in a different book.
+    assert.match(source, /sourceIds\.has\(anchor\.sourceId\)/);
+    assert.match(source, /!currentAnchorIds\.has\(anchor\.id\)/);
+    // A candidate must match the issue on at least two terms to be offered.
+    assert.match(source, /\.filter\(\(entry\) => entry\.score >= 2\)/);
+  });
+
+  test("the prompt tells the repair to re-anchor, and only from the candidates", () => {
+    assert.match(source, /Re-anchor the unit: replace the mismatched anchor ids/);
+    assert.match(source, /Choose from these candidates only; do not invent anchor ids/);
+    // The general no-new-anchors rule must not forbid the contract's own repair.
+    assert.match(source, /When the target is the learning-unit contract itself, changing its anchors is the repair/);
+  });
+});
+
+describe("a blocking finding a person has accepted", () => {
+  const source = readFileSync(new URL("../src/lib/critic-loop.ts", import.meta.url), "utf8");
+
+  test("an accepted residue stops deciding publication but is still reported", () => {
+    assert.match(source, /acceptedResidueIssueIds\?: string\[\];/);
+    // Ids drift between runs, so matching is on the stable unit token + type.
+    assert.match(source, /function acceptedResidueMatcher\(/);
+    assert.match(source, /const verifiedBlocking = allVerifiedBlocking\.filter\(\(issue\) => !isAcceptedResidue\(issue\)\)/);
+    // The primary key is the page, the one field the critic reports stably;
+    // ids lost even their unit prefix between runs ("step-graded-fiber-source-mismatch").
+    assert.match(source, /byPageAndType\.has\(`\$\{type\}\|\$\{page\}`\) \|\| byPageAndType\.has\(`\*\|\$\{page\}`\)/);
+    assert.match(source, /byUnitAndType\.has\(`\$\{unit\}:\$\{type\}`\)/);
+    // Reported, never hidden.
+    assert.match(source, /acceptedResidues\?: CriticIssue\[\];/);
+    assert.match(source, /\.\.\.\(acceptedResidues\.length \? \{ acceptedResidues \} : \{\}\)/);
+  });
+
+  test("an unaccepted blocker still holds strict publish exactly as before", () => {
+    assert.match(source, /args\.deterministicPass && args\.criticRan && criticPass && args\.blocking\.length === 0/);
+  });
+});
+
+describe("a person's bound on critic repair rounds", () => {
+  // telecom-1 M2: eight- and seven-round passes ended with more blockers than
+  // they started with (9 -> 12), five being formula provenance the repairs
+  // themselves stripped from accepted pages (2026-09-19). Past a point the
+  // loop generates findings against its own edits.
+  test("Learn passes a per-garden round bound through to the loop", () => {
+    const learn = readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
+    assert.match(learn, /const criticPolicy = readCriticPolicySnapshot\(repositoryGardenDir\);/);
+    assert.match(learn, /const criticRoundBound = criticPolicy\.criticMaxRounds;/);
+    assert.match(learn, /\.\.\.\(criticRoundBound !== null \? \{ maxRounds: criticRoundBound \} : \{\}\)/);
+  });
+
+  test("the bound is a positive integer or nothing, so a typo cannot disable the critic", () => {
+    const src = readFileSync(new URL("../src/lib/learn-accepted-residues.ts", import.meta.url), "utf8");
+    assert.match(src, /Number\.isInteger\(value\) && value >= 1 \? value : null/);
+  });
+
+  test("recording a residue preserves the other decisions in the file", () => {
+    const src = readFileSync(new URL("../src/lib/learn-accepted-residues.ts", import.meta.url), "utf8");
+    assert.match(src, /const \{ accepted: _accepted, version: _version, \.\.\.rest \} = parsed;/);
+    assert.match(src, /\{ version: 1, \.\.\.others, accepted:/);
+  });
+});
+
+describe("a finding the measurement review raises for the first time", () => {
+  // telecom-1 M2 runs 2, 3, 5 and 6 (2026-09-19) each ended on exactly one
+  // blocker the final measurement review raised on a page no repair had
+  // touched - a page the same critic had passed one review earlier. Nothing
+  // can repair it: the measurement is the last review by construction.
+  const source = readFileSync(new URL("../src/lib/critic-loop.ts", import.meta.url), "utf8");
+
+  test("under the warn policy it is published as a warning and reported as demoted", () => {
+    assert.match(source, /measurementReviewNewFindings\?: "block" \| "warn";/);
+    assert.match(source, /if \(options\.measurementReviewNewFindings === "warn"\) \{/);
+    assert.match(source, /demotedMeasurementFindings\?: CriticIssue\[\];/);
+    assert.match(source, /"## Measurement-review findings published as warnings"/);
+  });
+
+  test("a known finding, or one on a page the round repaired, still blocks", () => {
+    assert.match(source, /!knownKeys\.has\(stableKey\(issue\)\)/);
+    assert.match(source, /knownPageTypes\.has\(`\$\{issue\.type\}\|\$\{issue\.pagePath\}`\) \|\| repairedPaths\.has\(issue\.pagePath\)/);
+    // A retracted false positive on a page does not make later findings there "known".
+    assert.match(source, /instance\.verification\.severity === "confirmed_blocking" \|\| instance\.verification\.severity === "confirmed_warning"/);
+    assert.match(source, /!issue\.id\.startsWith\(ANCHOR_EVIDENCE_ISSUE_PREFIX\)/);
+  });
+
+  test("the default is to block, and only the literal word warn relaxes it", () => {
+    const src = readFileSync(new URL("../src/lib/learn-accepted-residues.ts", import.meta.url), "utf8");
+    assert.match(src, /parsed\?\.measurementReviewNewFindings === "warn" \? "warn" : "block"/);
+    const learn = readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
+    assert.match(learn, /const measurementReviewNewFindings = criticPolicy\.measurementReviewNewFindings;/);
   });
 });

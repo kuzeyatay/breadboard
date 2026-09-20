@@ -122,6 +122,7 @@ export async function POST(request: Request) {
       cluster,
       pageSlug,
       context.graph,
+      userId,
     );
     const systemContext = quartzSystemContext(
       pageContext,

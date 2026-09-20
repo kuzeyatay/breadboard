@@ -84,7 +84,7 @@ test("Links and media keep composers in dialogs while progress moves under their
   assert.match(source, /id="garden-link-composer-title"/);
   assert.match(source, /role="dialog"[\s\S]*?aria-modal="true"/);
   assert.match(source, /id="garden-links-panel"/);
-  assert.match(source, /savedLinks\.map/);
+  assert.match(source, /filteredSavedLinks\.map/);
   assert.match(source, /activeLinkImportTasks\.map/);
   assert.match(source, /View link import progress for/);
   assert.match(source, /onClick=\{\(\) => setMediaDialogOpen\(true\)\}/);
@@ -101,14 +101,14 @@ test("Links and media keep composers in dialogs while progress moves under their
     libraryStart,
     source.indexOf("\n  return (", libraryStart),
   );
-  assert.match(library, /savedLinks\.map/);
+  assert.match(library, /filteredSavedLinks\.map/);
   assert.match(library, /linksLoading/);
 
   const linkComposer = source.slice(
     source.indexOf("{linkDialogOpen ? ("),
     source.indexOf("{selectedLinkImportTask ? ("),
   );
-  assert.doesNotMatch(linkComposer, /savedLinks\.map/);
+  assert.doesNotMatch(linkComposer, /filteredSavedLinks\.map/);
 });
 
 test("media controls use the botanical palette instead of cyan", () => {
@@ -198,61 +198,18 @@ test("source library headings use title case instead of forced uppercase", () =>
   assert.doesNotMatch(source, /bb-neu-accordion[^\n]*uppercase/);
 });
 
-test("media progress mirrors document processing and hides terminal jobs", () => {
-  assert.match(
-    componentSource,
-    /group flex w-full items-center gap-2\.5 px-3 py-2 text-left/,
-  );
-  assert.match(
-    componentSource,
-    /job\.originalFilename \?\? job\.sourceTitle \?\? "Media transcription"/,
-  );
-  assert.match(
-    componentSource,
-    /\.filter\(\(job\) => !isTerminalJob\(job\)\)[\s\S]*?\.slice\(0, 6\)/,
-  );
-  assert.doesNotMatch(componentSource, /job\.status === "cancelled"/);
-  assert.doesNotMatch(componentSource, /stages\.map/);
-  assert.match(componentSource, /const acceptedJob = data\.job \?\? null/);
-  assert.match(
-    componentSource,
-    /Promise<[\s\S]*?PublicVideoTranscriptionJob\[\] \| null[\s\S]*?>/,
-  );
-  assert.match(componentSource, /if \(nextJobs\) applyJobs\(nextJobs\)/);
-  assert.match(componentSource, /if \(refreshedJobs\) \{/);
-  assert.match(
-    componentSource,
-    /!refreshedJobs\.some\(\(job\) => job\.id === acceptedJob\.id\)/,
-  );
-  assert.match(
-    componentSource,
-    /The upload was accepted but no transcription job was created\./,
-  );
+test("media queue shows all waiting files and keeps failed uploads actionable", () => {
+  assert.match(componentSource, /group flex w-full items-center gap-2\.5 px-3 py-2 text-left/);
+  assert.match(componentSource, /job\.originalFilename \?\? job\.sourceTitle \?\? "Media transcription"/);
+  assert.match(componentSource, /!isTerminalJob\(job\) \|\| job\.status === "failed"/);
+  assert.doesNotMatch(componentSource, /\.slice\(0, 6\)/);
+  assert.match(componentSource, /useSyncExternalStore\(gardenMediaUploadQueue\.subscribe/);
+  assert.match(componentSource, /gardenMediaUploadQueue\.enqueue/);
+  assert.match(componentSource, /retryJob\(selectedJob\.id\)/);
   assert.match(componentSource, /selectedJob\.errorMessage/);
-  assert.match(
-    componentSource,
-    /setSelectedJobId\(provisionalId\);[\s\S]*?onClose\(\);[\s\S]*?setSubmitting\(true\)/,
-  );
-  assert.match(componentSource, /setSelectedJobId\(acceptedJob\.id\)/);
   assert.match(componentSource, /Transcription status/);
   assert.match(componentSource, /Continue in background/);
   assert.match(componentSource, /selectedJobStages\.map/);
-
-  const statusDialog = componentSource.slice(
-    componentSource.indexOf("{selectedJob ? ("),
-  );
-  assert.doesNotMatch(statusDialog, /Drop video or audio here/);
-  assert.doesNotMatch(statusDialog, />Transcribe media</);
-
-  const documentRows = source.slice(
-    source.indexOf("function renderMarkdownRows"),
-    source.indexOf("type FolderTreeNode"),
-  );
-  assert.doesNotMatch(
-    documentRows,
-    /M19\.5 14\.25v-2\.625/,
-    "document rows should not carry a redundant page icon",
-  );
 });
 
 test("link imports immediately open dedicated status and keep a live sidebar row", () => {

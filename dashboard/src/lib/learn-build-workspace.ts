@@ -22,6 +22,7 @@ import type { Dirent, Stats } from "node:fs";
 import os from "node:os";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import crypto from "node:crypto";
+import { isLiveGardenPolicyPath } from "./learn-operator-policy.ts";
 import { isGardenUserPath, isGardenUserOrNavigationPath } from "./garden-user-content.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import {
@@ -96,6 +97,7 @@ const DISPOSABLE_TOP_LEVEL = new Set([
  * extraction records the new run must not recompute). Everything else under
  * `.breadboard` is disposable projection output. */
 const DURABLE_BREADBOARD_ENTRIES = new Set([
+  "learn-artifacts.json", // user-selected, versioned supplementary teaching aids
   "source-visuals.json", // canonical source extraction ledger
   "source-visual-source-index.json", // durable garden-global S<n> ownership
   "source-formula-reviews", // AI-authored formula fidelity records + PDF-render evidence
@@ -118,6 +120,11 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "internal",
   "backups",
   "build-workspace.json",
+  // A person's record of critic findings they accepted. It is a decision
+  // about the garden, not an input to the build: the critic reads it from the
+  // live garden directly, so recording one between runs must neither count as
+  // "inputs changed" nor be frozen into a retained workspace.
+  "accepted-critic-residues.json",
   "canonical-shadow",
   "debug",
   "learn-run-snapshots",
@@ -136,6 +143,7 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "critic-issues.json",
   "critic-loop.json",
   "critic-report.md",
+  "declined-objective-repairs.json",
   "formula-assignment-plan.json",
   "formula-identities.json",
   "humanizer",
@@ -650,7 +658,7 @@ export function createLearnBuildWorkspace(input: {
 
   try {
     if (resumableWorkspace) {
-      copyTree(resumableWorkspace.stagingGardenDir, stagingGardenDir);
+      copyTree(resumableWorkspace.stagingGardenDir, stagingGardenDir, (rel) => !isLiveGardenPolicyPath(rel));
       synchronizeDurableInputs(input.repositoryGardenDir, stagingGardenDir, input.separateUserContent);
       // Acceptance is evidence about the exact candidate that produced it.
       // A resumed workspace may reuse pages and visual checkpoints, but it must

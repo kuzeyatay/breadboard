@@ -34,6 +34,8 @@ interface TabRequestRow {
   foreground: boolean;
   /** ChatMock's page stopped answering; the shell is to build a new one. */
   reset?: boolean;
+  /** Which of ChatMock's pages: "interactive" (chat) or "batch" (Learn, council). */
+  lane?: string;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -53,15 +55,21 @@ async function relayOnce(
   nonce: string,
   foreground: boolean,
   reset: boolean,
+  lane: string | undefined,
   cdpPort: { value: number | null },
 ) {
-  const asked = requestChatgptWebTabInDesktop(foreground, reset);
+  const asked = requestChatgptWebTabInDesktop(foreground, reset, lane);
   const result = asked ? await asked : { ok: false as const, error: "this page has no desktop bridge" };
   if (result.ok) cdpPort.value = result.cdpPort;
+  // The shell's `lane` echo goes back as it came: its presence is how ChatMock
+  // learns that this shell keeps a page per lane.
+  const answer = result.ok
+    ? { nonce, cdpPort: result.cdpPort, targetId: result.targetId, ...(typeof result.lane === "string" ? { lane: result.lane } : {}) }
+    : { nonce, error: result.error };
   await fetch("/api/chatmock/openaiweb/tab-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(result.ok ? { nonce, cdpPort: result.cdpPort, targetId: result.targetId } : { nonce, error: result.error }),
+    body: JSON.stringify(answer),
     // Not tied to the loop's signal: a navigation mid-relay must not drop an
     // answer the shell already produced.
     keepalive: true,
@@ -99,7 +107,13 @@ async function relayLoop(signal: AbortSignal): Promise<void> {
     for (const row of rows) {
       if (signal.aborted) return;
       if (typeof row?.nonce !== "string") continue;
-      await relayOnce(row.nonce, row.foreground === true, row.reset === true, cdpPort);
+      await relayOnce(
+        row.nonce,
+        row.foreground === true,
+        row.reset === true,
+        typeof row.lane === "string" && row.lane ? row.lane : undefined,
+        cdpPort,
+      );
     }
     if (rows.length === 0) await sleep(IDLE_PAUSE_MS, signal);
   }

@@ -18,6 +18,9 @@ import {
   sourceSetHashForSources,
   textbookPageFileName,
   textbookSectionFolder,
+  learnerFacingScopeNotes,
+  placeholderTextMatches,
+  stripLeadingAuthorPreamble,
 } from "../src/lib/learn-utils.ts";
 
 describe("learn utilities", () => {
@@ -305,7 +308,10 @@ describe("learn route and council wiring", () => {
     for (const action of ["plan", "generate", "regenerate", "rebuild", "confirm"]) {
       assert.match(
         learnRoute(action),
-        /model: selectedModelForUser\(userId\)|const model = selectedModelForUser\(userId\)/,
+        // The route may take the model straight from the profile or let an
+        // explicit per-run pick override it (resolveLearnRequestModel), but
+        // the profile selection must remain the fallback either way.
+        /model: selectedModelForUser\(userId\)|const model = selectedModelForUser\(userId\)|resolveLearnRequestModel\(body, selectedModelForUser\(userId\)\)/,
       );
       // The choice comes from the user's stored preference, never from the
       // request body — a caller cannot steer a garden onto another model.
@@ -351,7 +357,10 @@ describe("learn route and council wiring", () => {
   test("learn generation retries scaffold/meta-instruction failures before failing", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
 
-    assert.match(learnSource, /envPositiveInt\("LEARN_MAX_PAGE_ATTEMPTS", 2\)/);
+    // Raised from 2 to 4 (2026-09-17): the term/concept review can reject a
+    // page for a reason the repair only half clears, and two attempts left
+    // pages failing that a third or fourth pass carried.
+    assert.match(learnSource, /envPositiveInt\("LEARN_MAX_PAGE_ATTEMPTS", 4\)/);
     assert.match(learnSource, /Final-prose rules \(hard requirements\)/);
     assert.match(learnSource, /placeholderFailure/);
     assert.match(learnSource, /unfinished author-facing wording/);
@@ -772,5 +781,197 @@ describe("anti-placeholder quality gate", () => {
   test("a fully written lesson without scaffolds passes these checks", () => {
     const q = assessLessonQuality(withScaffold("A neuron integrates current until it fires."), {});
     assert.ok(!q.problems.some((p) => p.code === "placeholder" || p.code === "empty-bullet-scaffold"));
+  });
+});
+
+// Six telecom-1 receipts (2026-09-17) opened with the model narrating its own
+// repair. Replaying them handed the strict critic the same six findings on
+// every resumed run.
+describe("a repair narration ahead of the lesson", () => {
+  const lesson = "A shared physical channel has one finite transmission capacity.\n\nSuppose four terminals want it at once.";
+  const preambles = [
+    "I'm applying the repair narrowly: I'll keep the lesson, figures, marker, questions, and answers unchanged, and only fix the first use of \"collision\" so the term is taught before it is used.",
+    "I'll apply the narrow repair only: anchor \"carrier\" immediately to the existing six-slot D-AMPS frame.",
+    "I'm treating this as a focused repair of the existing lesson page: only the flagged repetition changes.",
+    "I'm repairing only the flagged gaps: the Maxwell-to-wave-equation step, the cylindrical wave equation, and the LP naming.",
+    "I'll repair only the five flagged gaps and leave the rest of the lesson intact, using the copy sheet verbatim.",
+  ];
+
+  test("is stripped from the front of the page", () => {
+    for (const preamble of preambles) {
+      const { markdown, stripped } = stripLeadingAuthorPreamble(`${preamble}\n\n${lesson}`);
+      assert.equal(stripped, preamble);
+      assert.equal(markdown, lesson);
+    }
+  });
+
+  test("a lesson that opens in the first person is left alone", () => {
+    const body = "I will start with the simplest picture: one carrier, one user.\n\nA second user changes everything.";
+    assert.deepEqual(stripLeadingAuthorPreamble(body), { markdown: body, stripped: null });
+    const heading = `# Reading a TDMA Radio Allocation\n\n${lesson}`;
+    assert.deepEqual(stripLeadingAuthorPreamble(heading), { markdown: heading, stripped: null });
+  });
+
+  test("a one-paragraph body is never emptied", () => {
+    assert.equal(stripLeadingAuthorPreamble(preambles[0]).stripped, null);
+  });
+
+  test("the same narration later in the body is a hard placeholder failure", () => {
+    const matches = placeholderTextMatches(`${lesson}\n\n${preambles[0]}\n\nMore lesson.`);
+    assert.ok(matches.some((match) => match.snippet.startsWith("I'm applying the repair narrowly")));
+    assert.equal(placeholderTextMatches(lesson).length, 0);
+  });
+});
+
+// telecom-1's Learning Map published the planner's own notes ("syllabusCoverage
+// marks SU5 unteachable", "expectedWordRange lower bounds ... additive update
+// rules") as learner-facing Scope Notes (2026-09-19).
+describe("scope notes a learner should see", () => {
+  test("planner machinery stays out, coverage decisions stay in", () => {
+    const notes = learnerFacingScopeNotes([
+      "M2.a.v: NOMA remains uncoverable because syllabusCoverage marks SU5 unteachable and the selected sources do not provide substantive NOMA teaching content.",
+      "Existing learning units are preserved verbatim under the additive update rules, so inherited expectedWordRange lower bounds below 1000 words remain unchanged even though newly authored units use the current 1000-word planning floor.",
+      "The exact bibliographic identity of the selected 'Intro to wireless MAC and queuing theory' lecture is unresolved, although its content directly supports the MAC and queueing material.",
+      'Syllabus item "M2.a.v: NOMA" could not be fully supported by the available source material and was left uncovered.',
+      'Syllabus item "M2.a.v: NOMA" could not be fully supported by the available source material and was left uncovered.',
+    ]);
+    assert.deepEqual(notes, [
+      "The exact bibliographic identity of the selected 'Intro to wireless MAC and queuing theory' lecture is unresolved, although its content directly supports the MAC and queueing material.",
+      'Syllabus item "M2.a.v: NOMA" could not be fully supported by the available source material and was left uncovered.',
+    ]);
+  });
+});
+
+describe("pipeline vocabulary never reaches a learner", () => {
+  test("machinery nouns and planning verdicts are a hard page failure", async () => {
+    const { assessLessonQuality, pipelineVocabularyMatches } =
+      await import("../src/lib/learn-utils.ts");
+    // telecom-1 11.3, 2026-09-19: this prose shipped to a learner and the
+    // critic could only catch it late as a non-deterministic debug_artifact_leak.
+    const body = [
+      "None of the supplied passages directly establishes the material-level properties.",
+      "",
+      "This unit is deferred until direct plastic-optical-fiber evidence is added.",
+      "",
+      "The available material assigned to this unit discusses other parts of the theory.",
+    ].join(String.fromCharCode(10));
+    const matches = pipelineVocabularyMatches(body);
+    assert.ok(matches.length >= 3, "each machinery phrase is reported");
+    const problem = assessLessonQuality(body, { minWords: 1 }).problems
+      .find((entry) => entry.code === "pipeline-vocabulary");
+    assert.ok(problem, "pipeline vocabulary is reported as its own problem");
+    assert.equal(problem.hard, true);
+    assert.ok(
+      problem.evidence.some((line) => line.includes("This unit is deferred")),
+      "the offending line travels with the failure so a repair can act on it",
+    );
+  });
+
+  test("an honest statement of what a source does not cover is allowed", async () => {
+    const { pipelineVocabularyMatches } = await import("../src/lib/learn-utils.ts");
+    // Every one of these ships in accepted telecom-1 lessons. A lesson stating
+    // its own limits is teaching; only machinery vocabulary is rejected.
+    for (const line of [
+      "The material used here does not explain how the speech coder converts speech.",
+      "Its full derivation is outside the assigned treatment.",
+      "The information available here does not provide a rule for calculating that value.",
+      "A complete accounting would need the detailed relationship between the fields.",
+      "The base station serves several users, and each cell reuses its frequency set.",
+    ]) {
+      assert.deepEqual(pipelineVocabularyMatches(line), [], line);
+    }
+  });
+
+  test("interactive-visual markers are machinery, not prose", async () => {
+    const { pipelineVocabularyMatches } = await import("../src/lib/learn-utils.ts");
+    const body = [
+      "Frequency, time and code are three answers to one shared-resource problem.",
+      "",
+      "<!-- learning-unit:U2:interactive-visual -->",
+      "",
+      "Switch between the bands while the underlying channel stays fixed.",
+    ].join(String.fromCharCode(10));
+    assert.deepEqual(pipelineVocabularyMatches(body), []);
+  });
+});
+
+describe("a lesson that declines to teach its own subject", () => {
+  test("objective-aware refusals distinguish missing teaching from optional derivations", async () => {
+    const { declinedLessonMatches } = await import("../src/lib/learn-utils.ts");
+    const objective = { title: "Step-index and graded-index fiber", learningQuestion: "How do step-index and graded-index profiles differ?" };
+    for (const text of [
+      "This lesson cannot explain the difference between step-index and graded-index profiles.",
+      "The material used here does not explain how step-index and graded-index profiles differ.",
+      "The step-index and graded-index profiles cannot be compared here.",
+    ]) assert.equal(declinedLessonMatches(text, objective).length, 1, text);
+    for (const text of [
+      "The full Maxwell derivation cannot be derived here; this lesson teaches how to use Snell's law.",
+      "This lesson does not explain the full Maxwell derivation.",
+      "An optional derivation of graded-index propagation cannot be established here.",
+      "The critical angle cannot be calculated without both refractive indices.",
+    ]) assert.deepEqual(declinedLessonMatches(text, objective), [], text);
+  });
+  test("is reported with the offending line", async () => {
+    const { declinedLessonMatches } = await import("../src/lib/learn-utils.ts");
+    // A refusal of the central distinction, even when wrapped across lines.
+    const body = [
+      "The names step-index fiber and graded-index fiber identify two profile classes.",
+      "",
+      "The specific physical distinction between the step-index and graded-index",
+      "profiles cannot be derived here without adding information.",
+    ].join(String.fromCharCode(10));
+    const declined = declinedLessonMatches(body);
+    assert.equal(declined.length, 1);
+    assert.ok(declined[0].snippet.includes("cannot be derived here"));
+  });
+
+  test("an honest scope note about a digression is not a declination", async () => {
+    const { declinedLessonMatches } = await import("../src/lib/learn-utils.ts");
+    for (const line of [
+      "The material used here does not explain how the speech coder converts speech.",
+      "Its full derivation requires the refraction law, which has not been established.",
+      "A complete accounting would need the detailed frame description.",
+      "The critical angle cannot be calculated without both refractive indices.",
+    ]) {
+      assert.deepEqual(declinedLessonMatches(line), [], line);
+    }
+  });
+});
+
+describe("notation continuity across a garden", () => {
+  test("mentions, assumptions, code and HTML markers do not establish prerequisites", async () => {
+    const { unexplainedApparatus, createApparatusProgress } = await import("../src/lib/learn-utils.ts");
+    const progress = createApparatusProgress();
+    assert.deepEqual(unexplainedApparatus("We assume partial derivatives are familiar. $$\\partial E$$", progress), ["partial derivative"]);
+    assert.deepEqual([...progress.encountered], ["partial derivative"]);
+    assert.deepEqual([...progress.unresolved], ["partial derivative"]);
+    assert.equal(progress.explained.size, 0);
+    assert.deepEqual(unexplainedApparatus("A partial derivative measures how one quantity changes while the other inputs stay fixed. $$\\partial E$$", progress), []);
+    assert.equal(progress.unresolved.size, 0);
+    assert.deepEqual(unexplainedApparatus("$$\\partial F$$", progress), []);
+    assert.deepEqual(unexplainedApparatus("<!-- \\nabla -->\n```js\nconst formula = '\\int';\n```", createApparatusProgress()), []);
+    assert.deepEqual(unexplainedApparatus("$$e^{j\\omega t}$$", createApparatusProgress()), ["complex number"]);
+    const proseFirst = createApparatusProgress();
+    unexplainedApparatus("An integral measures the total accumulated quantity, like the area under a curve.", proseFirst);
+    assert.deepEqual(unexplainedApparatus("$$\\int f(x)dx$$", proseFirst), []);
+  });
+  test("unexplained apparatus remains unresolved in later lessons", async () => {
+    const { unexplainedApparatus } = await import("../src/lib/learn-utils.ts");
+    const BS = String.fromCharCode(92);
+    const bare = `The field obeys $$${BS}frac{${BS}partial^2 E}{${BS}partial r^2} + q^2 E = 0$$ here.`;
+    const established = new Set();
+    assert.deepEqual(unexplainedApparatus(bare, established), ["partial derivative"]);
+    assert.deepEqual(unexplainedApparatus(bare, established), ["partial derivative"]);
+    assert.equal(established.size, 0);
+  });
+
+  test("apparatus the lesson names in prose is not reported", async () => {
+    const { unexplainedApparatus } = await import("../src/lib/learn-utils.ts");
+    const BS = String.fromCharCode(92);
+    // telecom-1 9.2 explains the symbol as a radial slope before leaning on it.
+    const explained = `The radial slope changes outward, so $$${BS}frac{${BS}partial E}{${BS}partial r}$$ appears.`;
+    assert.deepEqual(unexplainedApparatus(explained, new Set()), []);
+    const summed = `Adding up every state gives $$${BS}sum_{n=0}^{C} P_n = 1$$ for the trunk.`;
+    assert.deepEqual(unexplainedApparatus(summed, new Set()), []);
   });
 });

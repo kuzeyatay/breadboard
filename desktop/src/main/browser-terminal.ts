@@ -3,6 +3,9 @@ import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { WebContents } from "electron";
 import { capturePagePreservingVisibility } from "./capture-page";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { BROWSER_SOURCE_MAX_BYTES, BROWSER_SOURCE_TIMEOUT_MS, fetchBrowserSource } from "./browser-source-download";
 
 export interface BrowserTerminalAccess { port: number; token: string }
 type Target = () => WebContents | null;
@@ -22,20 +25,23 @@ async function bounded<T>(operation: Promise<T>): Promise<T> {
 export class BrowserTerminalBridge {
   private server: http.Server | null = null;
   private starting: Promise<number> | null = null;
-  private grants = new Map<string, { target: Target; expires: number; options: ContextOptions }>();
+  private grants = new Map<string, { target: Target; expires: number; options: ContextOptions; downloads: Set<AbortController> }>();
 
   async grant(target: Target, options: ContextOptions = {}): Promise<BrowserTerminalAccess> {
     for (const [key, grant] of this.grants) {
-      if (grant.expires < Date.now() || !grant.target()) this.grants.delete(key);
+      if (grant.expires < Date.now() || !grant.target()) this.revoke({ port: 0, token: key });
     }
     if (this.grants.size >= 128) throw new Error("Too many browser sessions. Try again shortly.");
     const port = await this.start();
     const token = randomBytes(32).toString("hex");
-    this.grants.set(token, { target, expires: Date.now() + TTL, options });
+    this.grants.set(token, { target, expires: Date.now() + TTL, options, downloads: new Set() });
     return { port, token };
   }
 
-  revoke(access: BrowserTerminalAccess): void { this.grants.delete(access.token); }
+  revoke(access: BrowserTerminalAccess): void {
+    for (const download of this.grants.get(access.token)?.downloads ?? []) download.abort();
+    this.grants.delete(access.token);
+  }
 
   private start(): Promise<number> {
     if (this.starting) return this.starting;
@@ -54,6 +60,7 @@ export class BrowserTerminalBridge {
   }
 
   async close(): Promise<void> {
+    for (const token of this.grants.keys()) this.revoke({ port: 0, token });
     this.grants.clear();
     const server = this.server;
     this.server = null;
@@ -79,11 +86,11 @@ export class BrowserTerminalBridge {
       let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 4096) { send(413, { error: "Browser request is too large." }); return; }
+        if (size > 8192) { send(413, { error: "Browser request is too large." }); return; }
         chunks.push(Buffer.from(chunk));
       }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (!body || !["read", "screenshot", "scroll"].includes(body.action)) {
+      if (!body || !["read", "screenshot", "scroll", "download"].includes(body.action)) {
         send(400, { error: "Use read, screenshot, or scroll." }); return;
       }
       if (body.surface !== undefined && !["page", "app"].includes(body.surface)) {
@@ -101,6 +108,67 @@ export class BrowserTerminalBridge {
       const onNavigation = (_event: unknown, _url: string, _inPlace: boolean, isMainFrame: boolean) => { if (isMainFrame) navigated = true; };
       target.on("did-start-navigation", onNavigation);
       cleanup = () => target.removeListener("did-start-navigation", onNavigation);
+      if (body.action === "download") {
+        if (body.surface === "app") { send(403, { error: "Downloads require the linked browser page." }); return; }
+        const controller = new AbortController();
+        grant.downloads.add(controller);
+        const abort = () => controller.abort();
+        const abortNavigation = (_event: unknown, _url: string, _inPlace: boolean, main: boolean) => { if (main) abort(); };
+        const timer = setTimeout(abort, BROWSER_SOURCE_TIMEOUT_MS);
+        target.on("did-start-navigation", abortNavigation);
+        target.once("destroyed", abort);
+        res.once("close", abort);
+        const assertCurrent = () => {
+          if (this.grants.get(token!) !== grant || grant.expires < Date.now() || navigated || resolveTarget() !== target || target.isDestroyed() || target.getURL() !== url) {
+            controller.abort();
+            throw new Error("The linked browser page changed or access expired during download. Read it again.");
+          }
+        };
+        try {
+          const { response, filename } = await fetchBrowserSource(target.session, url, body.url, controller.signal, assertCurrent);
+          if (!response.body) throw new Error("The browser returned no file.");
+          let bytes = 0;
+          const transferId = randomBytes(16).toString("hex");
+          // No cookies, authorization headers, redirect URLs or model-selected
+          // filesystem paths cross this bridge. The body goes directly to ingestion.
+          res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store",
+            "x-breadboard-filename": encodeURIComponent(filename), "x-breadboard-transfer-id": transferId,
+            "transfer-encoding": "chunked", connection: "close" });
+          await pipeline(
+            Readable.fromWeb(response.body as import("node:stream/web").ReadableStream<Uint8Array>),
+            new Transform({ transform(chunk, _encoding, callback) {
+              try {
+                assertCurrent();
+                bytes += chunk.length;
+                if (bytes > BROWSER_SOURCE_MAX_BYTES) throw new Error("The browser file exceeds the 64 MiB download limit.");
+                callback(null, chunk);
+              } catch (error) { callback(error as Error); }
+            }, flush(callback) {
+              try {
+                assertCurrent();
+                if (!bytes) throw new Error("The browser returned an empty file.");
+                // Some fetch clients accept a prematurely closed chunked body.
+                // Only successful EOF emits this nonce + uint64 byte receipt.
+                // Source bytes cannot forge it: the nonce is private to this hop.
+                const receipt = Buffer.alloc(40);
+                receipt.write(transferId, 0, "ascii");
+                receipt.writeBigUInt64BE(BigInt(bytes), 32);
+                callback(null, receipt);
+              }
+              catch (error) { callback(error as Error); }
+            } }),
+            res, { signal: controller.signal },
+          );
+        } finally {
+          grant.downloads.delete(controller);
+          clearTimeout(timer);
+          target.removeListener("did-start-navigation", abortNavigation);
+          target.removeListener("destroyed", abort);
+          res.removeListener("close", abort);
+          controller.abort();
+        }
+        return;
+      }
       if (body.action === "scroll") {
         if (!["up", "down", "top", "bottom"].includes(body.direction)) {
           send(400, { error: "Choose up, down, top, or bottom." }); return;
@@ -128,8 +196,28 @@ export class BrowserTerminalBridge {
           }
           text = visible.join('\\n');
         }
+        let linkCharacters = 0;
+        const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 2000).flatMap(anchor => {
+          try {
+            const link = new URL(anchor.href, location.href);
+            if (!['http:', 'https:'].includes(link.protocol) || link.username || link.password || link.href.length > 4096) return [];
+            let downloadUrl;
+            // Canvas embeds preview wrappers in course pages. Derive the file
+            // endpoint only for its marked file anchors, preserving query tokens.
+            if (anchor.matches('.instructure_file_link') && link.origin === location.origin && new RegExp('^/(?:courses/[0-9]+/)?files/[0-9]+(?:/preview)?$').test(link.pathname)) {
+              const download = new URL(link);
+              download.pathname = (download.pathname.endsWith('/preview') ? download.pathname.slice(0, -8) : download.pathname) + '/download';
+              download.searchParams.delete('wrap'); download.searchParams.delete('preview');
+              downloadUrl = download.href;
+            }
+            const text = (anchor.innerText || anchor.getAttribute('aria-label') || '').trim().slice(0, 240);
+            linkCharacters += text.length + link.href.length + (downloadUrl?.length || 0);
+            return linkCharacters <= 32000 ? [{ text, url: link.href, ...(downloadUrl ? { downloadUrl } : {}) }] : [];
+          } catch { return []; }
+        }).slice(0, 200);
         return {
         text: text.slice(0, 24000),
+        links,
         selection: (window.getSelection()?.toString() || '').slice(0, 8000),
         scrollY: window.scrollY, viewportHeight: innerHeight,
         pageHeight: document.documentElement.scrollHeight
@@ -167,7 +255,8 @@ export class BrowserTerminalBridge {
         ...(grant.options.source ? { source: grant.options.source, surface: body.surface ?? "page", app: appPage } : {}),
         ...(screenshot ? { screenshot } : {}) });
     } catch (error) {
-      send(400, { error: error instanceof Error ? error.message : "Browser capture failed." });
+      if (res.headersSent) res.destroy();
+      else send(400, { error: error instanceof Error ? error.message : "Browser capture failed." });
     } finally {
       cleanup?.();
     }

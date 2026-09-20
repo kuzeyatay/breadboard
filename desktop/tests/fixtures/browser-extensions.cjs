@@ -4,7 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, session, webContents } = require('electron');
 const { TabManager, BROWSER_SESSION_PARTITION } = require('../../dist/main/tab-manager.js');
-const { browserWebStoreInstallBootstrapScript, readBrowserExtensionPaths } = require('../../dist/main/browser-extensions.js');
+const { browserWebStoreInstallBootstrapScript, browserWebStoreInstallCleanupScript, readBrowserExtensionPaths } = require('../../dist/main/browser-extensions.js');
 const [dir] = process.argv.slice(2);
 app.setPath('userData', path.join(dir, 'profile'));
 app.on('window-all-closed', () => {});
@@ -19,6 +19,7 @@ const until = async (probe, label) => {
 
 app.whenReady().then(async () => {
   const id = fs.readFileSync(path.join(dir, 'extension-id.txt'), 'utf8');
+  const unsupportedId = fs.readFileSync(path.join(dir, 'unsupported-id.txt'), 'utf8');
   const listing = `https://chromewebstore.google.com/detail/fixture/${id}`;
   const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
   const html = `<!doctype html><meta charset="utf-8"><title>Store fixture</title>
@@ -36,10 +37,11 @@ app.whenReady().then(async () => {
     if (new URL(request.url).hostname === 'clients2.google.com') {
       attempts += 1;
       if (attempts === 1) return new Response('unavailable', { status: 503 });
-      return new Response(null, { status: 302, headers: { location: 'https://clients2.googleusercontent.com/fixture.crx' } });
+      const filename = new URL(request.url).searchParams.get('x').includes(unsupportedId) ? 'unsupported.crx' : 'package.crx';
+      return new Response(null, { status: 302, headers: { location: `https://clients2.googleusercontent.com/${filename}` } });
     }
     redirects += 1;
-    return new Response(fs.readFileSync(path.join(dir, 'package.crx')), { headers: { 'content-type': 'application/x-chrome-extension' } });
+    return new Response(fs.readFileSync(path.join(dir, new URL(request.url).pathname.slice(1))), { headers: { 'content-type': 'application/x-chrome-extension' } });
   });
   const shell = path.join(dir, 'shell.html');
   fs.writeFileSync(shell, '<!doctype html><title>Browser shell</title>');
@@ -74,6 +76,7 @@ app.whenReady().then(async () => {
       error:window.installRoot.querySelector('[role=alert]')?.textContent };
   })()`);
   await until(async () => (await buttonState())?.text === 'Add to Breadboard', 'available button');
+  assert.equal(await page.executeJavaScript("getComputedStyle(document.getElementById('chrome')).visibility"), 'hidden');
   const click = () => page.executeJavaScript("window.installRoot.querySelector('button').click()", true);
   await click();
   await until(async () => (await buttonState())?.text === 'Try again', 'failed install');
@@ -83,6 +86,8 @@ app.whenReady().then(async () => {
   assert.equal(state.lines, 1);
   assert.equal(state.fits, true, JSON.stringify(state));
   assert.ok(state.width >= 200);
+  manager.refreshBrowserStoreInstallButtons();
+  await until(async () => (await buttonState())?.error?.includes('HTTP 503'), 'failure survives refresh');
   await click();
   await until(async () => (await buttonState())?.text === 'Added to Breadboard', 'successful retry');
   state = await buttonState();
@@ -99,13 +104,34 @@ app.whenReady().then(async () => {
   assert.equal((await browserSession.loadExtension(paths[0])).id, id);
   for (const width of [800, 375]) {
     await viewport(width);
-    for (const installState of ['available', 'installing', 'installed', 'failed']) {
+    for (const installState of ['available', 'installing', 'installed', 'failed', 'unsupported']) {
       await page.executeJavaScript(browserWebStoreInstallBootstrapScript(id, installState, 'A readable failure message.'), true);
       state = await buttonState();
       assert.equal(state.lines, 1, `${width}: ${installState}`);
       assert.equal(state.fits, true, `${width}: ${installState}`);
     }
   }
-  console.log('Verified retry, HTTPS redirect, install, persistence, and single-line labels at desktop and narrow widths.');
+  await page.executeJavaScript(browserWebStoreInstallCleanupScript());
+  assert.equal(await page.executeJavaScript("getComputedStyle(document.getElementById('chrome')).visibility"), 'visible');
+  assert.equal(await page.executeJavaScript("document.getElementById('chrome').getAttribute('aria-hidden')"), null);
+  assert.equal(await page.executeJavaScript("document.getElementById('breadboard-web-store-install') === null"), true);
+  await page.loadURL(`https://chromewebstore.google.com/detail/downloader/${unsupportedId}`);
+  await until(async () => (await buttonState())?.text === 'Add to Breadboard', 'unsupported listing before checking package');
+  await click();
+  await until(async () => (await buttonState())?.text === 'Not supported', 'incompatible package');
+  state = await buttonState();
+  assert.equal(state.disabled, true);
+  assert.match(state.error, /file downloads, context menus, page navigation events/);
+  assert.equal(browserSession.getExtension(unsupportedId), null);
+  assert.deepEqual(readBrowserExtensionPaths(dir), paths);
+  assert.equal(fs.existsSync(path.join(dir, 'browser-extensions', unsupportedId)), false);
+  await page.reload();
+  await until(() => !page.isLoading(), 'reloaded unsupported listing');
+  await until(async () => (await buttonState())?.text === 'Not supported', 'unsupported state survives reload');
+  const attemptsBeforeClick = attempts;
+  await click();
+  assert.equal(attempts, attemptsBeforeClick);
+  assert.equal(await page.executeJavaScript("document.querySelector('.info').textContent"), "Uzantıları ve temaları yüklemek için Chrome'a geçiş yapın");
+  console.log('Verified retry, redirects, persistence, incompatible package rejection, native button cleanup, and responsive labels.');
   fs.writeFileSync(path.join(dir, 'passed.json'), JSON.stringify({ passed: true }));
 }).catch(error => { console.error(error); app.exit(1); });

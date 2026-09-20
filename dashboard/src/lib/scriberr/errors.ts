@@ -27,6 +27,8 @@ export type VideoTranscriptionErrorCode =
   | "transcript_malformed"
   | "transcript_incomplete"
   | "markdown_write_failed"
+  | "concept_extraction_failed"
+  | "visual_analysis_failed"
   | "indexing_failed"
   | "job_interrupted"
   | "duplicate_source"
@@ -78,6 +80,10 @@ const USER_MESSAGES: Record<VideoTranscriptionErrorCode, string> = {
     "The generated Markdown did not contain the complete transcript, so it was not saved.",
   markdown_write_failed:
     "Writing the transcript Markdown into the garden failed.",
+  concept_extraction_failed:
+    "The transcript was read, but building its summary and concepts failed, so nothing was added to the garden. Retry once the model is reachable again.",
+  visual_analysis_failed:
+    "The transcript was saved, but reading what the video shows on screen failed, so no frame analysis was added. Retry to analyze the video again.",
   indexing_failed:
     "The transcript was saved, but indexing the new source failed. Retry to finish indexing without re-transcribing.",
   job_interrupted:
@@ -94,6 +100,19 @@ export function userMessageForCode(code: VideoTranscriptionErrorCode): string {
   return USER_MESSAGES[code] ?? USER_MESSAGES.internal_error;
 }
 
+/**
+ * Whether concept extraction is what refused. Matched by error name rather
+ * than by `instanceof` so the job runner, which runs in a worker that keeps
+ * clear of the knowledge module's dependencies, can still tell the two apart.
+ */
+export function isKnowledgeExtractionFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "KnowledgeExtractionFailedError" ||
+      error.name === "IncompleteKnowledgeExtractionError")
+  );
+}
+
 const RETRYABLE_CODES: ReadonlySet<VideoTranscriptionErrorCode> = new Set([
   "BREADBOARD_RESOURCE_EXHAUSTED",
   "scriberr_unavailable",
@@ -104,6 +123,8 @@ const RETRYABLE_CODES: ReadonlySet<VideoTranscriptionErrorCode> = new Set([
   "transcription_timeout",
   "transcript_unavailable",
   "markdown_write_failed",
+  "concept_extraction_failed",
+  "visual_analysis_failed",
   "indexing_failed",
   "job_interrupted",
   "internal_error",

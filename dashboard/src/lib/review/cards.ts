@@ -20,6 +20,7 @@ import path from "node:path";
 import { gardenDirectory } from "../garden-directory.ts";
 import { parseSemanticMarkdown } from "../garden-semantics.ts";
 import type { ReviewStore } from "./store.ts";
+import { understandingPageSlug } from "../page-understanding-types.ts";
 
 /** Frontmatter that marks a page as generated learning material. */
 function isLearningPage(data: Record<string, unknown>): boolean {
@@ -134,7 +135,7 @@ export function collectCandidates(
       ? data.title.trim()
       : path.basename(file, ".md");
     candidates.push({
-      pageSlug: path.basename(file, ".md"),
+      pageSlug: understandingPageSlug(path.relative(dir, file)),
       pageTitle: title,
       answer,
       hash: sourceHash(answer),
@@ -237,6 +238,19 @@ export async function seedGarden(options: {
     unchanged: 0,
     modelQuestions: 0,
   };
+
+  // Only migrate an old basename when it identifies exactly one page.
+  const basenameCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const base = path.posix.basename(candidate.pageSlug);
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
+  for (const candidate of candidates) {
+    const base = path.posix.basename(candidate.pageSlug);
+    if (base !== candidate.pageSlug && basenameCounts.get(base) === 1) {
+      options.store.migratePageSlug(options.userId, options.gardenSlug, base, candidate.pageSlug);
+    }
+  }
 
   // Only pages whose card is missing need a question written; a garden that has
   // already been seeded therefore costs no model calls at all. The existing

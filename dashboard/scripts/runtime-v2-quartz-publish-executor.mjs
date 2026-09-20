@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  QUARTZ_PUBLICATION_MARKER,
+  QUARTZ_PUBLICATION_VERSION,
+} from "./quartz-publication-contract.mjs";
 
 const PROTOCOL_VERSION = 1;
 const START_MANIFEST_FILE = "start.json";
@@ -20,6 +24,7 @@ const MAX_SCOPE_ROOTS = 32;
 const MAX_SCOPE_ROOT_BYTES = 512;
 const SCOPE_SEGMENT = /^(?!\.)[^\\/\0\p{Cc}]{1,255}$/u;
 const CONTENT_INDEX_RELATIVE_PATH = "static/contentIndex.json";
+const CONTENT_METADATA_RELATIVE_PATH = "static/contentMetadata.json";
 const MAX_CONTENT_INDEX_BYTES = 512 * 1024 * 1024;
 // Large gardens can exceed V8's default ~4 GiB old-space limit while Quartz
 // builds its in-memory content graph. Keep the build below the supervisor's
@@ -480,7 +485,10 @@ async function copyDirectTree(sourceDirectory, targetDirectory, signal) {
       await copyDirectTree(sourcePath, targetPath, signal);
       continue;
     }
-    const temporaryPath = `${targetPath}.pending.${process.pid}.${randomUUID()}`;
+    // Asset basenames can already approach the filesystem's 255-character
+    // component limit. Keep the atomic replacement in the same directory,
+    // using a bounded name instead of extending the original asset filename.
+    const temporaryPath = path.join(targetDirectory, `.pending-${process.pid}-${randomUUID()}`);
     try {
       // The stage is discarded after promotion, so a hard link is as good as
       // a copy and avoids duplicating gigabytes of garden assets.
@@ -1061,7 +1069,7 @@ async function overlayPreviousDirectory({
       });
       continue;
     }
-    if (relativePath === CONTENT_INDEX_RELATIVE_PATH) continue;
+    if (relativePath === CONTENT_INDEX_RELATIVE_PATH || relativePath === CONTENT_METADATA_RELATIVE_PATH) continue;
     // The build's own output (component resources, static assets, 404 page)
     // is current; only fill in what it did not produce.
     if (fs.existsSync(targetPath)) continue;
@@ -1098,6 +1106,14 @@ function mergeContentIndex({ publicPath, stagePath, scope }) {
   Object.assign(merged, staged);
   fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
   fs.writeFileSync(stagedPath, JSON.stringify(merged));
+  // The staged metadata initially covers only the rebuilt roots. Regenerate
+  // it from the complete merged index so other Gardens remain navigable, and
+  // never overwrite a hard link into the previous publication.
+  const metadata = Object.fromEntries(Object.entries(merged).map(
+    ([slug, { content: _text, richContent: _html, ...details }]) =>
+      [slug, { ...details, content: "" }],
+  ));
+  fs.writeFileSync(path.join(stagePath, CONTENT_METADATA_RELATIVE_PATH), JSON.stringify(metadata));
   return Object.keys(merged).length;
 }
 
@@ -1136,6 +1152,51 @@ function transactionFor(identity) {
   };
 }
 
+function quartzRendererRevision(sourceRoot) {
+  const hash = createHash("sha256");
+  hash.update(`quartz-publication:${QUARTZ_PUBLICATION_VERSION}\0`);
+  const visit = (relative) => {
+    const target = path.join(sourceRoot, relative);
+    if (!fs.existsSync(target)) return;
+    const stat = fs.lstatSync(target);
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(target).sort()) {
+        // Build caches are outputs; including them would invalidate every build.
+        if (name.startsWith(".") || name === "node_modules") continue;
+        visit(path.join(relative, name));
+      }
+    } else if (stat.isFile()) {
+      hash.update(relative.split(path.sep).join("/")).update("\0");
+      hash.update(fs.readFileSync(target)).update("\0");
+    }
+  };
+  for (const relative of [
+    "quartz",
+    "quartz.config.ts",
+    "quartz.layout.ts",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+  ]) {
+    visit(relative);
+  }
+  return hash.digest("hex");
+}
+
+function publishedRendererRevision(publicPath) {
+  try {
+    const marker = readBoundedJson(
+      path.join(publicPath, QUARTZ_PUBLICATION_MARKER),
+      1024,
+      "Quartz renderer revision",
+    );
+    return marker.version === QUARTZ_PUBLICATION_VERSION ? marker.revision : null;
+  } catch {
+    // Publications from before renderer versioning must be refreshed in full.
+    return null;
+  }
+}
+
 async function runSealedQuartzPublication(attestation, rawOptions) {
   const options = normalizeBuildOptions(rawOptions);
   const quartzRoot = path.dirname(attestation.contentPath);
@@ -1162,15 +1223,20 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
     if (fs.existsSync(stagePath) || fs.existsSync(previousPath)) {
       fail("The fenced Quartz publication paths already exist.");
     }
-    // A scoped request can only be satisfied on top of a complete previous
-    // publication; a fresh profile gets the full site instead.
+    const rendererRevision = quartzRendererRevision(attestation.sourceRoot);
+    // Reusing old HTML after a shared component/layout change mixes versions
+    // across Gardens. Carry pages forward only when their renderer matches.
+    const rendererIsCurrent =
+      publishedRendererRevision(publicPath) === rendererRevision;
     const scope =
-      options.scope.length > 0 && fs.existsSync(path.join(publicPath, "index.html"))
+      options.scope.length > 0 &&
+      rendererIsCurrent &&
+      fs.existsSync(path.join(publicPath, "index.html"))
         ? options.scope
         : [];
     if (options.scope.length > 0 && scope.length === 0) {
       console.warn(
-        "[quartz] No previous publication to overlay; building the whole site instead of " +
+        "[quartz] No current renderer publication to overlay; rebuilding all Gardens instead of " +
           options.scope.join(", "),
       );
     }
@@ -1204,6 +1270,15 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
             `and indexed ${overlay.indexed} page(s).`,
         );
       }
+      if (quartzRendererRevision(attestation.sourceRoot) !== rendererRevision) {
+        throw new Error(
+          "Quartz renderer changed during publication; retry to publish one consistent version.",
+        );
+      }
+      atomicWriteJson(path.join(stagePath, QUARTZ_PUBLICATION_MARKER), {
+        version: QUARTZ_PUBLICATION_VERSION,
+        revision: rendererRevision,
+      });
       atomicWriteJson(path.join(stagePath, COMPLETE_MARKER_FILE_NAME), {
         version: 1,
         jobId: transaction.jobId,

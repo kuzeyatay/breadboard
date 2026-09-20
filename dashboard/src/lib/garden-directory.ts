@@ -86,3 +86,30 @@ export function countClusterMarkdown(clusterDir: string): number {
   walk(clusterDir, 0);
   return count;
 }
+
+/** The same count for background refreshes, without blocking the server's event loop. */
+export async function countClusterMarkdownAsync(clusterDir: string): Promise<number> {
+  const internalRoot = INTERNAL_CONCEPT_FOLDER.split("/")[0];
+  const walk = async (dir: string, depth: number): Promise<number> => {
+    let dirents: Dirent[];
+    try {
+      dirents = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    let count = 0;
+    for (const dirent of dirents) {
+      const name = dirent.name;
+      if (dirent.isDirectory()) {
+        if (name === "assets" || name.startsWith(".") || (depth === 0 && name === internalRoot)) continue;
+        count += await walk(path.join(dir, name), depth + 1);
+      } else if (dirent.isFile() && name.endsWith(".md")) {
+        const lower = name.toLowerCase();
+        if (lower !== "_index.md" && lower !== "index.md") count += 1;
+      }
+    }
+    return count;
+  };
+  return walk(clusterDir, 0);
+}

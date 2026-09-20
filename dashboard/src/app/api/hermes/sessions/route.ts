@@ -143,11 +143,20 @@ export async function POST(request: Request) {
     const userId = await requireUserId();
     requireEnabled();
     const body = await readJsonBody(request, MAX_SESSION_REQUEST_BYTES);
-    const surface = parseSurface(body.surface ?? "dashboard_terminal");
-    const title = typeof body.title === "string" ? body.title.slice(0, 200) : undefined;
-    const gardenSlug = typeof body.gardenSlug === "string" && body.gardenSlug.trim()
-      ? body.gardenSlug.trim()
+    const requestedSurface = parseSurface(body.surface ?? "dashboard_terminal");
+    const workspaceSlug = typeof body.workspaceSlug === "string" && body.workspaceSlug.trim()
+      ? body.workspaceSlug.trim()
       : undefined;
+    if (workspaceSlug && requestedSurface !== "dashboard_terminal") {
+      throw new ApiError(400, "invalid_workspace_surface", "Workspace selection is only available in the terminal.");
+    }
+    // A terminal-created workspace chat must be the same conversation that
+    // the workspace opens, including its legacy history link and message mirror.
+    const surface = workspaceSlug ? "garden_chat" : requestedSurface;
+    const title = typeof body.title === "string" ? body.title.slice(0, 200) : undefined;
+    const gardenSlug = workspaceSlug ?? (typeof body.gardenSlug === "string" && body.gardenSlug.trim()
+      ? body.gardenSlug.trim()
+      : undefined);
     const garden = gardenSlug ? authorizeGardenAccess(userId, gardenSlug) : null;
     const pageSlug = typeof body.pageSlug === "string"
       ? body.pageSlug.slice(0, 500)
@@ -175,6 +184,7 @@ export async function POST(request: Request) {
           ? "garden"
           : "global",
       defaultGardenId: garden?.clusterId ?? null,
+      linkToGardenWorkspace: Boolean(workspaceSlug),
     };
     const conversation = initialTurn
       ? createConversationWithInitialTurn({

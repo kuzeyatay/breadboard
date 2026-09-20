@@ -7,6 +7,7 @@ import { presentArtifact } from "@/lib/hermes/artifact-store.ts";
 import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-pdf-save.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { withInteractiveVisualizerWheelZoom } from "@/lib/hermes/interactive-visualizer-wheel.ts";
+import { withInteractiveVisualizerInlineLayout } from "@/lib/hermes/interactive-visualizer-inline.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -84,9 +85,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ arti
         },
       );
     }
-    const body = interactive
+    let body = interactive
       ? guardInteractiveVisualizerPreview(fs.readFileSync(file.path, "utf8"))
       : fs.readFileSync(file.path);
+    if (interactive && url.searchParams.get("presentation") === "inline") {
+      body = withInteractiveVisualizerInlineLayout(String(body));
+    }
     return new Response(body, {
       headers: {
         ...baseHeaders,

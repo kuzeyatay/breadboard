@@ -22,6 +22,7 @@ const {
   connectionStrength,
   connectionOpacity,
   topologyNavigationSlug,
+  topologyFolderScopeForSlug,
   CONNECTION_STROKE_WIDTH,
   AUTHORED_CONNECTION_STRENGTH,
 } = layout;
@@ -493,6 +494,58 @@ test("a folder page plans only that folder, its pages, and its internal connecti
     ),
     false,
   );
+});
+
+test("published folder slugs resolve raw folder names and keep only their descendants", () => {
+  const rawFolder = "learning/1. Sharing One Physical Channel";
+  const nestedFolder = `${rawFolder}/Q&A 100%`;
+  const publishedFolder = topologyNavigationSlug(rawFolder);
+  const payload = fixture([
+    edge("edge:inside", "page:w1", "page:nested", 0.91),
+    edge("edge:outside", "page:w1", "page:q1", 0.9),
+    edge("edge:prefix", "page:w1", "page:sibling", 0.89),
+  ]);
+  const selected = payload.folders.find((item) => item.id === "folder:waves");
+  selected.path = rawFolder;
+  selected.depth = 2;
+  payload.folders.push(
+    folder("folder:nested", nestedFolder, "Q&A", 3, 1, selected.id),
+    folder("folder:sibling", `${rawFolder} Extra`, "Sibling", 2, 1),
+  );
+  const current = payload.nodes.find((item) => item.id === "page:w1");
+  current.slug = `physics/${rawFolder}/1.1 Channel sharing`;
+  payload.nodes.push(
+    page("page:nested", "folder:nested", "Nested note"),
+    page("page:sibling", "folder:sibling", "Sibling note"),
+    page("page:root", "folder:$root", "Root note"),
+  );
+
+  for (const route of [
+    `physics/${publishedFolder}/index`,
+    `physics/${encodeURIComponent(rawFolder).replace(/%2F/g, "/")}/`,
+    topologyNavigationSlug(current.slug),
+  ]) {
+    assert.equal(topologyFolderScopeForSlug(payload, route, "missing"), rawFolder);
+  }
+  assert.equal(topologyFolderScopeForSlug(payload, "physics/index", "missing"), null);
+  assert.equal(topologyFolderScopeForSlug(payload, "physics/absent/index", "absent"), "absent");
+
+  for (const scope of [rawFolder, publishedFolder, `${publishedFolder}/index`]) {
+    const plan = planThoughtTopology(payload, { scopeFolderPath: scope });
+    assert.equal(plan.scopeFolder.path, rawFolder);
+    assert.equal(plan.totalPageCount, 12);
+    assert.equal(plan.visiblePageCount, 12);
+    assert.deepEqual(plan.edges.map((item) => item.id), ["edge:inside"]);
+    assert.ok(plan.nodes.some((node) => node.id === "page:nested"));
+    assert.ok(plan.nodes.every((node) => !["page:q1", "page:sibling", "page:root"].includes(node.id)));
+  }
+  const nested = planThoughtTopology(payload, {
+    scopeFolderPath: topologyNavigationSlug(nestedFolder),
+  });
+  assert.equal(nested.totalPageCount, 1);
+  assert.equal(nested.scopeFolder.path, nestedFolder);
+  assert.deepEqual(nested.edges, []);
+  assert.equal(planThoughtTopology(payload, { scopeFolderPath: "absent" }).totalPageCount, 0);
 });
 
 test("preview keeps the Garden, folders, a handful of pages, and only the strongest bridges", () => {

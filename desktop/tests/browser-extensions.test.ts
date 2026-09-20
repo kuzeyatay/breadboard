@@ -11,6 +11,9 @@ import {
   BROWSER_EXTENSIONS_STATE_FILE,
   MAX_EXTENSION_ARCHIVE_BYTES,
   MAX_EXTENSION_UNPACKED_BYTES,
+  GOOGLE_PIP_EXTENSION_ID,
+  BrowserExtensionCompatibilityError,
+  browserExtensionCompatibilityError,
   browserExtensionInstallId,
   browserWebStoreInstallBootstrapScript,
   browserWebStoreInstallCleanupScript,
@@ -305,6 +308,32 @@ test("compressed extensions with filter data larger than 256 MiB install success
   assert.equal(JSON.parse(fs.readFileSync(path.join(installed, "manifest.json"), "utf8")).key, publicKey.toString("base64"));
 });
 
+test("required unsupported browser APIs are reported without rejecting optional APIs or the PiP adapter", () => {
+  const manifest = { permissions: ["storage", "downloads", "contextMenus", "webNavigation", "downloads"] };
+  const error = browserExtensionCompatibilityError(manifest, "a".repeat(32));
+  assert.match(error!, /requires file downloads, context menus, page navigation events/);
+  assert.equal(browserExtensionCompatibilityError({ permissions: ["storage", "webRequest", "https://example.com/*"], optional_permissions: ["downloads"] }, "a".repeat(32)), undefined);
+  assert.equal(browserExtensionCompatibilityError({ permissions: ["contextMenus"] }, GOOGLE_PIP_EXTENSION_ID), undefined);
+  assert.match(browserExtensionCompatibilityError({ permissions: ["downloads"] }, GOOGLE_PIP_EXTENSION_ID)!, /file downloads/);
+  assert.equal(browserExtensionCompatibilityError({}, "a".repeat(32)), undefined);
+});
+
+test("incompatible packages do not replace an installed copy or leave a staged installation", t => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bb-browser-incompatible-"));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(fixture)), path.resolve(os.tmpdir()));
+    fs.rmSync(fixture, { recursive: true, force: true });
+  });
+  const publicKey = Buffer.from("incompatible-extension-fixture");
+  const id = chromeExtensionIdFromPublicKey(publicKey);
+  const makeArchive = (permissions: string[]) => crx2(publicKey, zip([{ name: "manifest.json", contents: Buffer.from(JSON.stringify({ manifest_version: 3, name: "Downloader", version: "1.0", permissions })) }]));
+  const installed = installChromeWebStorePackage(fixture, id, makeArchive(["storage"]));
+  const original = fs.readFileSync(path.join(installed, "manifest.json"), "utf8");
+  assert.throws(() => installChromeWebStorePackage(fixture, id, makeArchive(["downloads", "contextMenus", "webNavigation"])), BrowserExtensionCompatibilityError);
+  assert.equal(fs.readFileSync(path.join(installed, "manifest.json"), "utf8"), original);
+  assert.deepEqual(fs.readdirSync(path.join(fixture, "browser-extensions")), [id]);
+});
+
 test("oversized and misdeclared compressed extensions fail without replacing an installed copy", (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bb-browser-extension-limits-"));
   t.after(() => {
@@ -361,6 +390,11 @@ test("the Web Store button retries a failed download, installs and restores an e
   ]));
   fs.writeFileSync(path.join(dir, "package.crx"), archive);
   fs.writeFileSync(path.join(dir, "extension-id.txt"), id);
+  const unsupportedKey = Buffer.from("unsupported-web-store-integration-fixture");
+  fs.writeFileSync(path.join(dir, "unsupported-id.txt"), chromeExtensionIdFromPublicKey(unsupportedKey));
+  fs.writeFileSync(path.join(dir, "unsupported.crx"), crx2(unsupportedKey, zip([
+    { name: "manifest.json", contents: Buffer.from(JSON.stringify({ manifest_version: 3, name: "Downloader fixture", version: "1.0", permissions: ["storage", "downloads", "contextMenus", "webNavigation"] })) },
+  ])));
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.NODE_TEST_CONTEXT;

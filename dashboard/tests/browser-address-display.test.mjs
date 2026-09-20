@@ -28,7 +28,7 @@ test("the idle address bar elides only the ordinary secure scheme", () => {
 
 test("the browser edits and submits the canonical address", () => {
   assert.match(client, /value=\{addressDisplay\}/);
-  assert.match(client, /setDraftAddress\(browser\.address\)/);
+  assert.match(client, /setDraftAddress\(browser\?\.address \?\? ""\)/);
   assert.match(client, /navigate\(suggestion\?\.value \?\? address\)/);
   assert.doesNotMatch(client, /navigate\(suggestion\?\.value \?\? addressDisplay\)/);
 });

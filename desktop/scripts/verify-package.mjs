@@ -2720,6 +2720,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-interactive-visualizer-executor.mjs",
     "runtime-v2-quartz-publish-worker.mjs",
     "runtime-v2-quartz-publish-executor.mjs",
+    "quartz-publication-contract.mjs",
     "runtime-v2-quartz-static-service.mjs",
     "quartz-canonical-reader-bridge.mjs",
     "runtime-v2-managed-python-service.mjs",

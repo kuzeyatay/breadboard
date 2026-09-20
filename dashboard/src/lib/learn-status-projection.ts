@@ -1679,7 +1679,7 @@ function isContractBackedLearningMap(
     }
     const receipt = persistedRecovery as Record<string, unknown>;
     if (
-      receipt.outcome !== "recovered" ||
+      !["recovered", "unchanged"].includes(String(receipt.outcome)) ||
       typeof receipt.integritySha256 !== "string" ||
       !LOWERCASE_SHA256.test(receipt.integritySha256) ||
       coverage.syllabusCoverageEvidenceRecoveryHash !== receipt.integritySha256 ||

@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { VideoTranscriptionJobStore } from "../src/lib/scriberr/job-store.ts";
 import { VideoTranscriptionRunner } from "../src/lib/scriberr/job-runner.ts";
 import { ScriberrClient } from "../src/lib/scriberr/client.ts";
+import { VideoTranscriptionError } from "../src/lib/scriberr/errors.ts";
 import { findExistingVideoSource } from "../src/lib/scriberr/video-source-store.ts";
 import { loadVideoTranscriptionConfig } from "../src/lib/scriberr/config.ts";
 import { writeFileAtomic } from "../src/lib/scriberr/paths.ts";
@@ -169,7 +170,7 @@ function createFakeScriberr({
 
 function makeHarness(
   fake,
-  { ingestFails = false, resumeIndexingFails = false, signal } = {},
+  { ingestFails = false, resumeIndexingFails = false, signal, decorateClient = client => client } = {},
 ) {
   const db = new Database(":memory:");
   db.exec(`
@@ -202,8 +203,9 @@ function makeHarness(
   const runner = new VideoTranscriptionRunner({
     config,
     store,
-    createScriberrClient: () =>
+    createScriberrClient: () => decorateClient(
       new ScriberrClient({ baseUrl: fake.baseUrl, apiToken: "test-key", requestTimeoutMs: 5_000 }),
+    ),
     withScriberrLease: (_reason, operation) => operation(),
     signal,
     probeMedia: async () => ({
@@ -406,6 +408,38 @@ test("Scriberr transcription failure surfaces as a specific retryable error", as
     assert.equal(failed.errorCode, "transcription_failed");
     assert.ok(failed.errorMessage.length > 0);
     assert.ok(!failed.errorMessage.includes("exploded"), "internal Scriberr detail stays server-side");
+  } finally {
+    await fake.close();
+    harness.cleanup();
+  }
+});
+
+test("temporary Scriberr status timeouts keep the worker lease and recover", async () => {
+  const fake = await createFakeScriberr();
+  let failedPolls = 0;
+  const harness = makeHarness(fake, {
+    decorateClient: client => new Proxy(client, {
+      get(target, property) {
+        if (property === "getJobStatus") {
+          return async (...args) => {
+            if (failedPolls < 2) {
+              failedPolls += 1;
+              throw new VideoTranscriptionError("scriberr_unavailable");
+            }
+            return target.getJobStatus(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }),
+  });
+  try {
+    const job = queueYouTubeJob(harness.store);
+    const done = await harness.runner.runExact(job.id, "start");
+    assert.equal(failedPolls, 2);
+    assert.equal(done.status, "completed");
+    assert.equal(fake.state.startCalls, 1, "transcription was not restarted");
   } finally {
     await fake.close();
     harness.cleanup();

@@ -414,6 +414,23 @@ export function artifactPdfHref(artifact: PresentedArtifact): string | null {
   return `/artifacts/${encodeURIComponent(artifact.id)}/pdf?${query.toString()}`;
 }
 
+/**
+ * Video artifacts open in Breadboard's full-page player. Clicking one used to
+ * fall through to the generic viewer panel, and any route that handed the
+ * frame the raw bytes landed in Chromium's media viewer instead of the app.
+ */
+export function artifactVideoHref(artifact: PresentedArtifact): string | null {
+  if (artifact.kind !== "video") return null;
+  const open = artifact.metadata?.gardenOpenPath;
+  if (typeof open === "string" && open.startsWith("/gardens/")) return open;
+  if (!artifact.previewAvailable || !artifact.conversationId) return null;
+  const query = new URLSearchParams({
+    conversationId: artifact.conversationId,
+    version: String(artifact.version),
+  });
+  return `/artifacts/${encodeURIComponent(artifact.id)}/video?${query.toString()}`;
+}
+
 /** Dedicated editor route for Markdown source artifacts. */
 export function artifactMarkdownEditorHref(
   artifact: PresentedArtifact,

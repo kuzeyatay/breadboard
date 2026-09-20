@@ -23,7 +23,7 @@ function provider(values, { usage = true } = {}) {
     const value = values[calls.length - 1];
     if (value instanceof Error) throw value;
     assert.notEqual(value, undefined, "unexpected extra model call");
-    return { content: JSON.stringify(value), ...(usage ? { usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } } : {}) };
+    return { content: JSON.stringify(request.stage === "review" ? { concerns: [], ...value } : value), ...(usage ? { usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } } : {}) };
   };
   return { calls, complete };
 }
@@ -54,6 +54,49 @@ test("a complete explanation is retained verbatim with two calls", async () => {
   const result = await run(p, { answer: repaired });
   assert.equal(result.answer, repaired);
   assert.equal(result.report.status, "reviewed");
+  assert.equal(p.calls.length, 2);
+});
+
+const spinDraft = "Without a field, both spin states have equal energy, so measuring either is always fifty-fifty.";
+const spinRepair = "Equal energy does not determine the measurement probabilities. They depend on the prepared state and measurement axis; a state prepared as up gives up with certainty along the same axis if unchanged.";
+const spinPlan = { applicable: true, reason: "Check the proposed probability inference", mechanisms: mechanisms("Relate the state and measurement axis to the possible outcomes.") };
+const spinConcern = { kind: "unsupported_inference", status: "repairable", quotes: [spinDraft],
+  reason: "The reader would infer that no applied field erases a prepared spin state.",
+  correction: "Explain that equal energy alone does not determine probabilities; distinguish preparation from measurement axis." };
+const spinCoverage = [{ id: "m1", status: "covered", quotes: [spinDraft], reason: "Checklist topic is present", consequence: "" }];
+
+test("an independent concern triggers repair even when every planned connection is covered", async () => {
+  for (const kind of ["prerequisite", "unsupported_inference", "contradiction", "misleading_analogy", "factual_error"]) {
+    const concern = { ...spinConcern, kind };
+    const p = provider([spinPlan, { coverage: spinCoverage, concerns: [concern] },
+      { answer: spinRepair, coverage: [{ id: "m1", quotes: [spinRepair] }] }, verified]);
+    const result = await run(p, { userRequest: "so basically it is fifty fifty", answer: spinDraft });
+    assert.equal(result.report.status, "repaired", kind);
+    assert.equal(result.answer, spinRepair);
+    assert.deepEqual(result.report.draftConcerns, [concern]);
+    assert.deepEqual(p.calls[2].data.draftConcerns, [concern]);
+    assert.equal("draftConcerns" in p.calls[3].data, false, "verification must judge the full revision independently");
+    assert.equal(p.calls.length, 4);
+  }
+});
+
+test("independent concerns require real quotes, an explanation, and an explicit complete review", async () => {
+  for (const concerns of [undefined, null, [{ ...spinConcern, quotes: ["An invented sentence."] }],
+    [{ ...spinConcern, quotes: [] }], [{ ...spinConcern, correction: "" }],
+    [{ ...spinConcern, kind: "style_preference" }], [{ ...spinConcern, status: "guess" }]]) {
+    const p = provider([spinPlan, { coverage: spinCoverage, concerns }]);
+    const result = await run(p, { answer: spinDraft });
+    assert.equal(result.report.status, "unavailable");
+    assert.equal(result.answer, spinDraft);
+    assert.equal(p.calls.length, 2);
+  }
+});
+
+test("a concern needing evidence cannot be replaced with a guessed correction", async () => {
+  const p = provider([spinPlan, { coverage: spinCoverage, concerns: [{ ...spinConcern, status: "needs_evidence" }] }]);
+  const result = await run(p, { answer: spinDraft });
+  assert.equal(result.report.status, "needs_evidence");
+  assert.equal(result.answer, spinDraft);
   assert.equal(p.calls.length, 2);
 });
 

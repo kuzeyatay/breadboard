@@ -575,14 +575,19 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         "garden",
         _schema(
             "garden_import_source",
-            "Add a discovered or user-provided source to the Garden when the user asks to upload, add, import or save it. No additional confirmation is needed. Queued document/transcription jobs are still processing, not completed sources.",
+            "Add a chat attachment or source URL to the Garden when the user asks. For signed-in browser files use useBrowserSession=true with an exact downloadUrl or url from browser_terminal links; credentials stay in the browser. For attachments use attachmentName or attachmentIndex and omit url. Set both parseWithAnydoc and parseWithVlm for requested AnyDoc+VLM parsing. No additional confirmation is needed. Queued jobs are processing, not completed sources.",
             {
                 **_OPTIONAL_GARDEN,
-                "kind": {"type": "string", "enum": ["audio", "video", "link", "pdf"]},
-                "url": {"type": "string", "description": "Exact importUrl from discovery or URL supplied by the user."},
+                "kind": {"type": "string", "enum": ["audio", "video", "link", "pdf", "document", "image"], "description": "Required for public URLs; omit for attachments or browser downloads to infer the file type."},
+                "url": {"type": "string", "description": "Exact importUrl, user-supplied URL, or downloadUrl/url from the linked browser's links. Omit for attachments."},
+                "useBrowserSession": {"type": "boolean", "description": "Download the URL using this conversation's linked signed-in browser tab, then ingest the original file."},
+                "parseWithAnydoc": {"type": "boolean", "description": "Use AnyDoc document parsing; set true alongside parseWithVlm when both are requested."},
+                "parseWithVlm": {"type": "boolean", "description": "Use VLM visual parsing for PDFs/images; preserves the user's requested parser choice."},
+                "attachmentName": {"type": "string", "maxLength": 500, "description": "Exact filename attached to this conversation, including earlier turns."},
+                "attachmentIndex": {"type": "integer", "minimum": 1, "maximum": 10, "description": "One-based position in the most recent message with uploaded files."},
                 "title": _STRING,
             },
-            ["kind", "url"],
+            [],
         ),
     ),
     *tuple(

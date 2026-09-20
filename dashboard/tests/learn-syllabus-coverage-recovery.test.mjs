@@ -276,7 +276,7 @@ test("valid zero rereview is terminal and never coerced to teachable", async () 
   assert.equal(result.coverage.units[0].teachable, false);
 });
 
-test("an already-teachable decision never consumes a recovery provider call", async () => {
+test("a decision that refuses no unit never consumes a recovery provider call", async () => {
   const f = fixture();
   let calls = 0;
   await assert.rejects(
@@ -294,7 +294,7 @@ test("an already-teachable decision never consumes a recovery provider call", as
         return { rawResponse: "{}" };
       },
     }),
-    /may run only after a valid zero-teachable coverage decision/,
+    /may run only after a coverage decision that refuses at least one unit/,
   );
   assert.equal(calls, 0);
 });
@@ -478,4 +478,253 @@ test("fence-tainted structural anchors are filtered before selector identity che
     },
   });
   assert.equal(result.recovered, true);
+});
+
+/**
+ * telecom-1, 2026-09-19: the coverage reviewer refused two of nine M2 units
+ * because the bounded evidence transport never carried their pages, while the
+ * other seven were teachable. Recovery used to require an all-false verdict, so
+ * those two were dropped permanently and recorded as uncoverable syllabus items
+ * even though the selected Keiser source covered one of them outright.
+ */
+function partialFixture() {
+  const syllabusPlan = {
+    courseTitle: "Fields",
+    units: [
+      {
+        id: "SU1",
+        label: "Lecture 1",
+        title: "Coulomb fields",
+        objectives: ["Derive the field"],
+        topics: ["Coulomb law"],
+        materialIds: ["R1"],
+      },
+      {
+        id: "SU2",
+        label: "Lecture 2",
+        title: "Network topologies",
+        objectives: ["Compare bus, ring and star"],
+        topics: ["Topologies"],
+        materialIds: ["R2"],
+      },
+    ],
+    referencedMaterials: [
+      {
+        id: "R1",
+        citation: "Hayt, Engineering Electromagnetics, section 2.1",
+        title: "Engineering Electromagnetics",
+        authors: ["Hayt"],
+        kind: "textbook",
+        locator: "section 2.1",
+        required: true,
+      },
+      {
+        id: "R2",
+        citation: "Hayt, Engineering Electromagnetics, section 12.1",
+        title: "Engineering Electromagnetics",
+        authors: ["Hayt"],
+        kind: "textbook",
+        locator: "section 12.1",
+        required: true,
+      },
+    ],
+  };
+  const CRLF = String.fromCharCode(13) + String.fromCharCode(10);
+  const page1 = `## Page 1${CRLF}Title and contents${CRLF}`;
+  const page19 = `## Page 19${CRLF}Coulomb law is derived from force and charge.${CRLF}${CRLF}`;
+  const page41 = `## Page 41${CRLF}Section 12.1 compares bus, ring and star topologies.${CRLF}${CRLF}`;
+  const sources = [{
+    sourceId: "book",
+    relPath: "sources/book.md",
+    body: `## Internal planning${CRLF}nonproof${CRLF}## Source material${CRLF}${page1}${page19}${page41}`,
+  }];
+  const anchors = modelSourcePageAnchors([{
+    id: "book",
+    slug: "book",
+    title: "Book",
+    relPath: "sources/book.md",
+    body: sources[0].body,
+  }]);
+  // SU1 already teachable; SU2 refused only because its page was not transported.
+  const initialDecision = {
+    resolutions: [
+      {
+        materialId: "R1",
+        citation: syllabusPlan.referencedMaterials[0].citation,
+        status: "available",
+        sourceIds: ["book"],
+        matchReason: "Page 19 carries the assigned section.",
+      },
+      {
+        materialId: "R2",
+        citation: syllabusPlan.referencedMaterials[1].citation,
+        status: "missing",
+        sourceIds: [],
+        matchReason: "No transported page established section 12.1.",
+      },
+    ],
+    units: [
+      {
+        unitId: "SU1",
+        availableSourceIds: ["book"],
+        missingCitations: [],
+        teachable: true,
+        coverageReason: "Page 19 supports the unit in full.",
+      },
+      {
+        unitId: "SU2",
+        availableSourceIds: [],
+        missingCitations: [syllabusPlan.referencedMaterials[1].citation],
+        teachable: false,
+        coverageReason: "No substantive page was transported for section 12.1.",
+      },
+    ],
+  };
+  const finalDecision = {
+    resolutions: [
+      initialDecision.resolutions[0],
+      {
+        materialId: "R2",
+        citation: syllabusPlan.referencedMaterials[1].citation,
+        status: "available",
+        sourceIds: ["book"],
+        matchReason: "Recovered canonical Page 41 identifies and teaches section 12.1.",
+      },
+    ],
+    units: [
+      initialDecision.units[0],
+      {
+        unitId: "SU2",
+        availableSourceIds: ["book"],
+        missingCitations: [],
+        teachable: true,
+        coverageReason: "Recovered canonical Page 41 compares the topologies.",
+      },
+    ],
+  };
+  return { syllabusPlan, initialDecision, finalDecision, sources, anchors, page41 };
+}
+
+for (const outcome of ["unchanged", "regressed"]) test(`partial recovery reports ${outcome} without claiming success`, async () => {
+  const f = partialFixture();
+  const terminal = structuredClone(outcome === "unchanged" ? f.initialDecision : f.finalDecision);
+  if (outcome === "regressed") {
+    terminal.resolutions[0].status = "missing";
+    terminal.resolutions[0].sourceIds = [];
+    terminal.units[0] = { ...terminal.units[0], teachable: false, availableSourceIds: [], missingCitations: [f.syllabusPlan.referencedMaterials[0].citation] };
+  }
+  const result = await runSyllabusCoverageEvidenceRecovery({
+    syllabusPlan: f.syllabusPlan, initialCoverageRaw: JSON.stringify(f.initialDecision), initialCoverageDecision: f.initialDecision,
+    sources: f.sources, anchors: f.anchors, sourceSetHash: H1, sourceArtifactInventoryHash: H2, model: "model-a",
+    provider: async (request) => {
+      if (request.phase === "page_selection") {
+        const page = selectorPage(JSON.parse(request.user), (number) => number === 41);
+        return { rawResponse: JSON.stringify({ selectedPages: [{ anchorId: page.anchorId, selectionReason: "Test refused unit." }], selectionReason: "Retest." }), model: "model-a" };
+      }
+      return { rawResponse: JSON.stringify(terminal), model: "model-a" };
+    },
+  });
+  assert.equal(result.recovered, false);
+  assert.equal(result.receipt.outcome, outcome);
+  assert.deepEqual(syllabusCoverageRecoveryReceiptProblems({ receipt: result.receipt, sources: f.sources, anchors: f.anchors, coverage: result.coverage }), []);
+  const problems = syllabusCoverageRecoveryReceiptProblems({ receipt: { ...result.receipt, initialCoverageRaw: "null" }, sources: f.sources, anchors: f.anchors });
+  assert.ok(problems.length, "tampering yields diagnostics rather than throwing during projection");
+});
+
+test("a partially refused decision still runs recovery and can recover the refused unit", async () => {
+  const f = partialFixture();
+  const phases = [];
+  const result = await runSyllabusCoverageEvidenceRecovery({
+    syllabusPlan: f.syllabusPlan,
+    initialCoverageRaw: JSON.stringify(f.initialDecision),
+    initialCoverageDecision: f.initialDecision,
+    sources: f.sources,
+    anchors: f.anchors,
+    sourceSetHash: H1,
+    sourceArtifactInventoryHash: H2,
+    model: "model-a",
+    provider: async (request) => {
+      phases.push(request.phase);
+      if (request.phase === "page_selection") {
+        const payload = JSON.parse(request.user);
+        const page = selectorPage(payload, (pageNumber) => pageNumber === 41);
+        return {
+          rawResponse: JSON.stringify({
+            selectedPages: [{
+              anchorId: page.anchorId,
+              selectionReason: "This page carries the refused unit's assigned section.",
+            }],
+            selectionReason: "The refused unit is the only verdict worth retesting.",
+          }),
+          councilRunId: "selector-run",
+          model: "model-a",
+        };
+      }
+      const payload = JSON.parse(request.user);
+      assert.equal(payload.recoveredPages[0].exactText, f.page41);
+      return {
+        rawResponse: JSON.stringify(f.finalDecision),
+        councilRunId: "review-run",
+        model: "model-a",
+      };
+    },
+  });
+
+  assert.deepEqual(phases, ["page_selection", "coverage_rereview"]);
+  assert.equal(result.receipt.unteachableUnitIdsBefore.length, 1);
+  assert.equal(result.receipt.unteachableUnitIdsBefore[0], "SU2");
+  assert.deepEqual(result.receipt.unteachableUnitIdsAfter, []);
+  assert.equal(result.coverage.units[1].teachable, true);
+  // The already-teachable unit is never disturbed by the rereview.
+  assert.equal(result.coverage.units[0].teachable, true);
+  assert.equal(
+    syllabusCoverageRecoveryReceiptProblems({
+      receipt: result.receipt,
+      sources: f.sources,
+      anchors: f.anchors,
+      coverage: result.coverage,
+      expectedSourceSetHash: H1,
+      expectedSourceArtifactInventoryHash: H2,
+    }).length,
+    0,
+  );
+});
+
+test("a receipt whose refused-unit list disagrees with its initial decision is rejected", async () => {
+  const f = partialFixture();
+  const result = await runSyllabusCoverageEvidenceRecovery({
+    syllabusPlan: f.syllabusPlan,
+    initialCoverageRaw: JSON.stringify(f.initialDecision),
+    initialCoverageDecision: f.initialDecision,
+    sources: f.sources,
+    anchors: f.anchors,
+    sourceSetHash: H1,
+    sourceArtifactInventoryHash: H2,
+    model: "model-a",
+    provider: async (request) => {
+      if (request.phase === "page_selection") {
+        const payload = JSON.parse(request.user);
+        const page = selectorPage(payload, (pageNumber) => pageNumber === 41);
+        return {
+          rawResponse: JSON.stringify({
+            selectedPages: [{ anchorId: page.anchorId, selectionReason: "Assigned section page." }],
+            selectionReason: "One page tests the refused unit.",
+          }),
+          model: "model-a",
+        };
+      }
+      return { rawResponse: JSON.stringify(f.finalDecision), model: "model-a" };
+    },
+  });
+
+  const tampered = { ...result.receipt, unteachableUnitIdsBefore: ["SU1"] };
+  const problems = syllabusCoverageRecoveryReceiptProblems({
+    receipt: tampered,
+    sources: f.sources,
+    anchors: f.anchors,
+    coverage: result.coverage,
+    expectedSourceSetHash: H1,
+    expectedSourceArtifactInventoryHash: H2,
+  });
+  assert.ok(problems.some((problem) => /refused-unit list does not match/.test(problem)));
 });

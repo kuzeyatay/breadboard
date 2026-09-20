@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { QUARTZ_PUBLICATION_MARKER } from "../scripts/quartz-publication-contract.mjs";
 
 const executorUrl = pathToFileURL(
   path.join(
@@ -151,12 +152,17 @@ function writeGarden(contentDir, root, pages) {
 
 function readIndex(publicDir) {
   return JSON.parse(
-    fs.readFileSync(path.join(publicDir, "static", "contentIndex.json"), "utf8"),
+    fs.readFileSync(
+      path.join(publicDir, "static", "contentIndex.json"),
+      "utf8",
+    ),
   );
 }
 
 function lastBuild(buildLog) {
-  return JSON.parse(fs.readFileSync(buildLog, "utf8").trim().split(/\r?\n/).at(-1));
+  return JSON.parse(
+    fs.readFileSync(buildLog, "utf8").trim().split(/\r?\n/).at(-1),
+  );
 }
 
 test(
@@ -182,8 +188,14 @@ test(
       // A scope request with no previous publication builds the whole site.
       await runPublisher(publisherScript, workerLayout(dataRoot), ["math-1"]);
       assert.deepEqual(lastBuild(buildLog), { scope: [] });
-      assert.equal(fs.readFileSync(path.join(publicDir, "index.html"), "utf8"), "home");
-      const firstCss = fs.readFileSync(path.join(publicDir, "index.css"), "utf8");
+      assert.equal(
+        fs.readFileSync(path.join(publicDir, "index.html"), "utf8"),
+        "home",
+      );
+      const firstCss = fs.readFileSync(
+        path.join(publicDir, "index.css"),
+        "utf8",
+      );
       assert.deepEqual(Object.keys(readIndex(publicDir)).sort(), [
         "math-1/matrices",
         "math-1/vectors",
@@ -192,17 +204,33 @@ test(
       ]);
 
       // Change math-1, delete old-garden, and publish only those roots.
-      fs.writeFileSync(path.join(contentDir, "math-1", "vectors.md"), "v2", "utf8");
+      fs.writeFileSync(
+        path.join(contentDir, "math-1", "vectors.md"),
+        "v2",
+        "utf8",
+      );
       fs.rmSync(path.join(contentDir, "math-1", "matrices.md"));
-      fs.writeFileSync(path.join(contentDir, "math-1", "spans.md"), "s1", "utf8");
+      fs.writeFileSync(
+        path.join(contentDir, "math-1", "spans.md"),
+        "s1",
+        "utf8",
+      );
       fs.rmSync(path.join(contentDir, "old-garden"), { recursive: true });
-      const scoped = await runPublisher(publisherScript, workerLayout(dataRoot), [
-        "math-1",
-        "old-garden",
-      ]);
-      assert.deepEqual(lastBuild(buildLog), { scope: ["math-1", "old-garden"] });
-      assert.match(scoped.stdout, /Scoped publication of math-1, old-garden carried over/u);
-      const result = JSON.parse(scoped.stdout.slice(scoped.stdout.lastIndexOf("{")));
+      const scoped = await runPublisher(
+        publisherScript,
+        workerLayout(dataRoot),
+        ["math-1", "old-garden"],
+      );
+      assert.deepEqual(lastBuild(buildLog), {
+        scope: ["math-1", "old-garden"],
+      });
+      assert.match(
+        scoped.stdout,
+        /Scoped publication of math-1, old-garden carried over/u,
+      );
+      const result = JSON.parse(
+        scoped.stdout.slice(scoped.stdout.lastIndexOf("{")),
+      );
       assert.equal(result.published, true);
       assert.equal(result.reasonCount, 1);
 
@@ -211,21 +239,33 @@ test(
         fs.readFileSync(path.join(publicDir, "math-1", "vectors.html"), "utf8"),
         "page math-1/vectors",
       );
-      assert.equal(fs.existsSync(path.join(publicDir, "math-1", "matrices.html")), false);
-      assert.equal(fs.existsSync(path.join(publicDir, "math-1", "spans.html")), true);
+      assert.equal(
+        fs.existsSync(path.join(publicDir, "math-1", "matrices.html")),
+        false,
+      );
+      assert.equal(
+        fs.existsSync(path.join(publicDir, "math-1", "spans.html")),
+        true,
+      );
       assert.equal(fs.existsSync(path.join(publicDir, "old-garden")), false);
       // Everything outside the scope is carried over from the previous site.
       assert.equal(
         fs.readFileSync(path.join(publicDir, "telecom-1", "ofdm.html"), "utf8"),
         "page telecom-1/ofdm",
       );
-      assert.equal(fs.readFileSync(path.join(publicDir, "index.html"), "utf8"), "home");
+      assert.equal(
+        fs.readFileSync(path.join(publicDir, "index.html"), "utf8"),
+        "home",
+      );
       assert.equal(
         fs.readFileSync(path.join(publicDir, "tags", "index.html"), "utf8"),
         "all tags",
       );
       // Site-wide resources the build regenerates come from the new build.
-      assert.notEqual(fs.readFileSync(path.join(publicDir, "index.css"), "utf8"), firstCss);
+      assert.notEqual(
+        fs.readFileSync(path.join(publicDir, "index.css"), "utf8"),
+        firstCss,
+      );
       // The content index is spliced: new scoped entries, old entries elsewhere.
       const index = readIndex(publicDir);
       assert.deepEqual(Object.keys(index).sort(), [
@@ -235,13 +275,29 @@ test(
       ]);
       assert.equal(index["math-1/vectors"].content, "v2");
       assert.equal(index["telecom-1/ofdm"].content, "o1");
+      const metadata = JSON.parse(
+        fs.readFileSync(
+          path.join(publicDir, "static", "contentMetadata.json"),
+          "utf8",
+        ),
+      );
+      assert.deepEqual(Object.keys(metadata).sort(), Object.keys(index).sort());
+      assert.equal(
+        metadata["telecom-1/ofdm"].title,
+        index["telecom-1/ofdm"].title,
+      );
+      assert.ok(Object.values(metadata).every((entry) => entry.content === ""));
       // The transaction finished cleanly.
       assert.deepEqual(
-        fs.readdirSync(quartzRoot).filter((name) => name.startsWith(".breadboard-quartz")),
+        fs
+          .readdirSync(quartzRoot)
+          .filter((name) => name.startsWith(".breadboard-quartz")),
         [],
       );
       assert.equal(
-        fs.existsSync(path.join(publicDir, ".breadboard-quartz-build-complete.json")),
+        fs.existsSync(
+          path.join(publicDir, ".breadboard-quartz-build-complete.json"),
+        ),
         false,
       );
     } finally {
@@ -250,23 +306,112 @@ test(
   },
 );
 
-test("a scoped publication rejects unsafe roots", { timeout: 30_000 }, async () => {
-  const temporaryRoot = fs.mkdtempSync(
-    path.join(os.tmpdir(), "breadboard-quartz-scoped-invalid-"),
-  );
-  try {
-    const dataRoot = path.join(temporaryRoot, "data");
-    const quartzRoot = path.join(dataRoot, "quartz");
-    fs.mkdirSync(path.join(quartzRoot, "content"), { recursive: true });
-    writeFakeQuartzCli(quartzRoot, path.join(temporaryRoot, "builds.jsonl"));
-    const publisherScript = writePublisherScript(temporaryRoot, dataRoot);
-    for (const scope of [["../public"], [".hidden"], [""], ["a//b"], "math-1"]) {
-      await assert.rejects(
-        runPublisher(publisherScript, workerLayout(dataRoot), scope),
-        /Quartz publication scope is invalid/u,
+test(
+  "shared Quartz renderer changes refresh every Garden before scoped publishing resumes",
+  { timeout: 30_000 },
+  async () => {
+    const temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "breadboard-quartz-renderer-"),
+    );
+    try {
+      const dataRoot = path.join(temporaryRoot, "data");
+      const quartzRoot = path.join(dataRoot, "quartz");
+      const contentDir = path.join(quartzRoot, "content");
+      const publicDir = path.join(quartzRoot, "public");
+      const buildLog = path.join(temporaryRoot, "builds.jsonl");
+      fs.mkdirSync(contentDir, { recursive: true });
+      writeFakeQuartzCli(quartzRoot, buildLog);
+      writeGarden(contentDir, "electromagnetism-1", { note: "EM1" });
+      writeGarden(contentDir, "telecom-1", { note: "Telecom" });
+      const publisherScript = writePublisherScript(temporaryRoot, dataRoot);
+      const publish = () =>
+        runPublisher(publisherScript, workerLayout(dataRoot), [
+          "electromagnetism-1",
+        ]);
+      const receipt = () =>
+        JSON.parse(
+          fs.readFileSync(
+            path.join(publicDir, QUARTZ_PUBLICATION_MARKER),
+            "utf8",
+          ),
+        );
+      await publish();
+      const original = receipt().revision;
+      assert.match(original, /^[a-f0-9]{64}$/);
+
+      // A template update must refresh Telecom too, even when EM1 triggered it.
+      const component = path.join(
+        quartzRoot,
+        "quartz",
+        "components",
+        "ContentMeta.tsx",
       );
+      fs.mkdirSync(path.dirname(component), { recursive: true });
+      fs.writeFileSync(component, "// word count and handwriting time");
+      fs.writeFileSync(
+        path.join(contentDir, "telecom-1", "note.md"),
+        "Updated Telecom",
+      );
+      await publish();
+      assert.deepEqual(lastBuild(buildLog), { scope: [] });
+      assert.notEqual(receipt().revision, original);
+      assert.equal(
+        readIndex(publicDir)["telecom-1/note"].content,
+        "Updated Telecom",
+      );
+
+      // Generated caches must not turn every following content edit into a full build.
+      const cache = path.join(quartzRoot, "quartz", ".quartz-cache");
+      fs.mkdirSync(cache);
+      fs.writeFileSync(
+        path.join(cache, "transpiled-build.mjs"),
+        "generated output",
+      );
+      await publish();
+      assert.deepEqual(lastBuild(buildLog), { scope: ["electromagnetism-1"] });
+
+      // Older installations with no receipt are migrated, including every Garden.
+      fs.rmSync(path.join(publicDir, QUARTZ_PUBLICATION_MARKER));
+      await publish();
+      assert.deepEqual(lastBuild(buildLog), { scope: [] });
+      assert.equal(Object.keys(readIndex(publicDir)).length, 2);
+    } finally {
+      assert.equal(
+        path.dirname(path.resolve(temporaryRoot)),
+        path.resolve(os.tmpdir()),
+      );
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
-  } finally {
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
-  }
-});
+  },
+);
+
+test(
+  "a scoped publication rejects unsafe roots",
+  { timeout: 30_000 },
+  async () => {
+    const temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "breadboard-quartz-scoped-invalid-"),
+    );
+    try {
+      const dataRoot = path.join(temporaryRoot, "data");
+      const quartzRoot = path.join(dataRoot, "quartz");
+      fs.mkdirSync(path.join(quartzRoot, "content"), { recursive: true });
+      writeFakeQuartzCli(quartzRoot, path.join(temporaryRoot, "builds.jsonl"));
+      const publisherScript = writePublisherScript(temporaryRoot, dataRoot);
+      for (const scope of [
+        ["../public"],
+        [".hidden"],
+        [""],
+        ["a//b"],
+        "math-1",
+      ]) {
+        await assert.rejects(
+          runPublisher(publisherScript, workerLayout(dataRoot), scope),
+          /Quartz publication scope is invalid/u,
+        );
+      }
+    } finally {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  },
+);

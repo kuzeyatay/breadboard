@@ -17,8 +17,10 @@ import type { RailResize } from "./use-rail-resize";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
 import { conversationDisplayTitle } from "@/lib/conversations/origin-label";
 import { useOverflowMarquee } from "../overflow-marquee";
+import { Star } from "lucide-react";
+import TerminalWorkspaceMenu, { type TerminalWorkspacePicker } from "./terminal-workspace-menu";
 
-export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "processes";
+export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "starred" | "processes";
 
 /**
  * The rail's own widths, so every surface that mounts it agrees on them —
@@ -44,6 +46,7 @@ export const TERMINAL_PANELS: readonly TerminalPanel[] = [
   "uploads",
   "scheduled",
   "hooks",
+  "starred",
   "processes",
 ];
 
@@ -83,6 +86,7 @@ interface Props {
   onNewChat: () => void;
   /** The selected view is already an untouched ordinary new chat. */
   newChatDisabled?: boolean;
+  newChatWorkspace?: TerminalWorkspacePicker;
   onTogglePanel: (panel: TerminalPanel) => void;
   /**
    * Which panel buttons the rail offers, in `TERMINAL_PANELS` order. Defaults to
@@ -323,6 +327,8 @@ function NavButton({
   active = false,
   compact = false,
   disabled = false,
+  allowContextMenuWhenDisabled = false,
+  title,
   onClick,
 }: {
   label: string;
@@ -331,6 +337,8 @@ function NavButton({
   /** Icon-only, for the collapsed rail. The label stays as the accessible name. */
   compact?: boolean;
   disabled?: boolean;
+  allowContextMenuWhenDisabled?: boolean;
+  title?: string;
   onClick?: () => void;
 }) {
   // Flat list items, not cards: a column of raised controls reads as separate
@@ -362,13 +370,14 @@ function NavButton({
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled && !allowContextMenuWhenDisabled}
+      aria-disabled={disabled || undefined}
       aria-pressed={active}
       // Collapsed, the icon is the whole button, so the name has to be said out
       // loud — to the screen reader and, on hover, to the eye.
       aria-label={compact ? label : undefined}
-      title={compact ? label : undefined}
+      title={title ?? (compact ? label : undefined)}
       className={className}
     >
       {content}
@@ -1216,6 +1225,7 @@ export default function TerminalSidebar({
   openPanel,
   onNewChat,
   newChatDisabled = false,
+  newChatWorkspace,
   onTogglePanel,
   panels = TERMINAL_PANELS,
   onOpenSearch,
@@ -1419,13 +1429,27 @@ export default function TerminalSidebar({
         } ${resize ? "" : collapsed ? "w-[52px]" : "w-[260px]"}`}
       >
         <nav aria-label="Terminal actions" className={navClassName}>
-          <NavButton
-            label="New chat"
-            icon={<NewChatIcon />}
-            compact={collapsed}
-            disabled={newChatDisabled}
-            onClick={onNewChat}
-          />
+          {newChatWorkspace ? (
+            <TerminalWorkspaceMenu {...newChatWorkspace}>
+              <NavButton
+                label="New chat"
+                icon={<NewChatIcon />}
+                compact={collapsed}
+                disabled={newChatDisabled}
+                allowContextMenuWhenDisabled
+                title={`New chats: ${newChatWorkspace.selected?.name ?? "No workspace"}. Right-click to choose a workspace.`}
+                onClick={onNewChat}
+              />
+            </TerminalWorkspaceMenu>
+          ) : (
+            <NavButton
+              label="New chat"
+              icon={<NewChatIcon />}
+              compact={collapsed}
+              disabled={newChatDisabled}
+              onClick={onNewChat}
+            />
+          )}
           {panels.includes("artifacts") ? (
             <NavButton
               label="Artifacts"
@@ -1466,6 +1490,15 @@ export default function TerminalSidebar({
               active={openPanel === "hooks"}
               compact={collapsed}
               onClick={() => onTogglePanel("hooks")}
+            />
+          ) : null}
+          {panels.includes("starred") ? (
+            <NavButton
+              label="Starred"
+              icon={<Star className="h-[18px] w-[18px]" />}
+              active={openPanel === "starred"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("starred")}
             />
           ) : null}
           {panels.includes("processes") ? (

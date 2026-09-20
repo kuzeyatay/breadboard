@@ -237,3 +237,25 @@ test("the review hands back what it accepted so the next review keeps those verd
   assert.equal(outcome.problems.length, 1);
   assert.match(LESSON_TERM_REVIEW_PROMPT, /priorVerdicts/);
 });
+
+// 11.1 of telecom-1 M2 burned all four attempts on two demands it could never
+// meet (2026-09-17): the reviewer called the imaginary unit an unexplained
+// course term and wanted a fiber lesson to teach that j squared is minus one,
+// and it marked the V number abstract_only while itself recording that the
+// assigned sources do not establish the numbers such an example would need.
+test("ordinary engineering mathematics is background, not a term this course teaches", () => {
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /imaginary unit/i);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /phasor/i);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /taught_earlier/);
+  // The exemption must be conditional, or a course that really does teach
+  // complex notation would lose its own gate.
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /only when the course itself introduces them/i);
+});
+
+test("a concept the sources cannot ground is not floating; the boundary sentence anchors it", () => {
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /source boundary applies here/i);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /never record a concept as abstract_only/i);
+  // And the escape stays narrow: a concept the sources do ground still needs
+  // its instance, which is the rule the whole grounding check exists for.
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /Abstract_only is for a concept whose instance the sources do supply/i);
+});

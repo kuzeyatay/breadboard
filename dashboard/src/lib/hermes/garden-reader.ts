@@ -19,7 +19,7 @@ export function normalizeGardenReadPath(value: string, gardenSlug: string): stri
   return normalized.replace(/\.md$/i, "");
 }
 
-export async function gardenReadEntries(contentPath: string, gardenSlug: string, folders?: string[]): Promise<GardenReadEntry[]> {
+export async function gardenReadEntries(contentPath: string, gardenSlug: string, folders?: string[], options: { includeIndexes?: boolean } = {}): Promise<GardenReadEntry[]> {
   const root = gardenDirectory(gardenSlug, contentPath);
   const entries: GardenReadEntry[] = [];
   async function walk(folder: string) {
@@ -29,7 +29,7 @@ export async function gardenReadEntries(contentPath: string, gardenSlug: string,
       if (child.isSymbolicLink() || child.name.startsWith(".") || child.name === "assets" || (!folder && child.name === "Internal")) continue;
       const relPath = folder ? `${folder}/${child.name}` : child.name;
       if (child.isDirectory()) { folders?.push(relPath); await walk(relPath); }
-      else if (child.isFile() && /\.md$/i.test(child.name) && !/^_?index\.md$/i.test(child.name)) {
+      else if (child.isFile() && /\.md$/i.test(child.name) && (options.includeIndexes || !/^_?index\.md$/i.test(child.name))) {
         entries.push({ slug: child.name.replace(/\.md$/i, ""), folder, relPath });
       }
     }

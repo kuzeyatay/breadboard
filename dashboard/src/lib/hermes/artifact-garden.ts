@@ -28,14 +28,28 @@ import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
 
 export const ARTIFACTS_FOLDER = "artifacts";
 
-// Renderer ids that produce a text-representable garden note. Media/binary kinds
-// (image, audio, video, …) are intentionally excluded.
-const PUBLISHABLE_RENDERERS = new Set([
-  "pdf",
-  "docx",
+// Every artifact belongs in the garden. The folder used to accept five renderer
+// ids, and of those only `pdf` and `docx` wrote a file, so a garden's
+// artifacts/ folder held nothing but Word documents and PDFs while images,
+// diagrams, spreadsheets, audio, video, HTML and every imported file stayed
+// chat-only (2026-09-17). What differs between kinds is how the note presents
+// the file - viewer, embed, player or download - not whether it is published.
+const UNPUBLISHABLE_RENDERERS = new Set<string>([]);
+
+/** Extensions the garden can show inline rather than only offer as a file. */
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp"]);
+const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"]);
+const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".m4v", ".mkv"]);
+/** Text the note carries as prose; anything else is linked, never inlined. */
+const INLINE_TEXT_RENDERERS = new Set([
   "markdown",
   "text",
   "code",
+  "json",
+  "csv",
+  "html",
+  "svg",
+  "presentation-html",
 ]);
 
 export interface GardenArtifactRef {
@@ -50,7 +64,7 @@ export interface GardenArtifactRef {
 }
 
 export function isPublishableRenderer(rendererId: string): boolean {
-  return PUBLISHABLE_RENDERERS.has(rendererId);
+  return !UNPUBLISHABLE_RENDERERS.has(rendererId);
 }
 
 function contentRoot(): string | null {
@@ -150,26 +164,36 @@ export async function publishArtifactToGarden(
     let downloadAsset: string | undefined;
     const noteLines: string[] = [];
 
-    // Rendered file -> cluster assets (PDF for the viewer, docx as a download).
+    // Rendered file -> cluster assets. The extension comes from the rendered
+    // file itself, so a kind this code has never heard of still lands correctly
+    // instead of being silently dropped.
+    let sourceMedia: string | undefined;
     if (input.renderedFilePath && fs.existsSync(input.renderedFilePath)) {
-      const ext =
-        input.rendererId === "pdf"
-          ? "pdf"
-          : input.rendererId === "docx"
-            ? "docx"
-            : "";
-      if (ext) {
-        const assetName = `${slug}.${ext}`;
-        const assetPath = withinClusterAsset(dir, assetName);
-        if (assetPath) {
-          fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-          fs.copyFileSync(input.renderedFilePath, assetPath);
-          const rel = `/${input.clusterSlug.trim()}/assets/${assetName}`;
-          if (ext === "pdf") sourcePdf = rel;
-          else {
-            downloadAsset = rel;
-            noteLines.push(`> **Word document:** [${title}.docx](${rel})`, "");
-          }
+      const suffix = path.extname(input.renderedFilePath).toLowerCase();
+      const ext = /^\.[a-z0-9]{1,8}$/.test(suffix) ? suffix.slice(1) : "bin";
+      const assetName = `${slug}.${ext}`;
+      const assetPath = withinClusterAsset(dir, assetName);
+      if (assetPath) {
+        fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+        fs.copyFileSync(input.renderedFilePath, assetPath);
+        const rel = `/${input.clusterSlug.trim()}/assets/${assetName}`;
+        const dotted = `.${ext}`;
+        if (ext === "pdf") {
+          // The garden's PDF viewer reads source_pdf, so a published PDF opens
+          // in the same editor as an uploaded source.
+          sourcePdf = rel;
+        } else if (IMAGE_EXTENSIONS.has(dotted)) {
+          noteLines.push(`![${title}](${rel})`, "");
+          downloadAsset = rel;
+        } else if (AUDIO_EXTENSIONS.has(dotted) || VIDEO_EXTENSIONS.has(dotted)) {
+          sourceMedia = rel;
+          downloadAsset = rel;
+          noteLines.push(`> **${VIDEO_EXTENSIONS.has(dotted) ? "Video" : "Audio"}:** [${title}${dotted}](${rel})`, "");
+        } else {
+          downloadAsset = rel;
+          const label =
+            ext === "docx" ? "Word document" : ext === "pptx" ? "Presentation" : ext === "xlsx" ? "Spreadsheet" : "File";
+          noteLines.push(`> **${label}:** [${title}${dotted}](${rel})`, "");
         }
       }
     }
@@ -182,13 +206,27 @@ export async function publishArtifactToGarden(
       artifact_id: input.artifactId,
       source_pdf: sourcePdf,
       source_file: sourcePdf ? `${slug}.pdf` : undefined,
+      source_media: sourceMedia,
+      artifact_renderer: input.rendererId,
     };
 
-    // Code artifacts read best inside a fence; others carry their Markdown as-is.
-    const noteBody =
-      input.rendererId === "code"
-        ? `\`\`\`\n${body}\n\`\`\``
-        : body || `# ${title}\n`;
+    // Text-representable kinds carry their own source; a binary artifact has
+    // no prose to show, so the note is its asset plus a one-line description
+    // rather than a dump of unreadable bytes.
+    const fenced =
+      input.rendererId === "code" ||
+      input.rendererId === "json" ||
+      input.rendererId === "csv" ||
+      input.rendererId === "svg" ||
+      input.rendererId === "html" ||
+      input.rendererId === "presentation-html";
+    const noteBody = INLINE_TEXT_RENDERERS.has(input.rendererId)
+      ? fenced && input.rendererId !== "markdown"
+        ? `\`\`\`${input.rendererId === "code" ? "" : input.rendererId}\n${body}\n\`\`\``
+        : body || `# ${title}\n`
+      : body.trim()
+        ? body
+        : `# ${title}\n`;
     const markdown =
       frontmatter(fields, ["artifact"]) +
       noteLines.join("\n") +

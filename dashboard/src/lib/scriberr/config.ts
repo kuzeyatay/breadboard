@@ -155,7 +155,7 @@ export function loadVideoTranscriptionConfig(
     ),
     maxQueuedJobsPerGarden: intFromEnv(
       env.VIDEO_TRANSCRIPTION_MAX_QUEUED_PER_GARDEN,
-      5,
+      100,
       { min: 1, max: 100 },
     ),
   };

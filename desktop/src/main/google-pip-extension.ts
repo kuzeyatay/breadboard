@@ -2,11 +2,11 @@ import { WebContentsView, type Extension, type Session, type WebContents } from 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import { chromeExtensionIdFromPublicKey } from "./browser-extensions";
+import { chromeExtensionIdFromPublicKey, GOOGLE_PIP_EXTENSION_ID } from "./browser-extensions";
 import { googlePipExtensionApi } from "./google-pip-extension-api";
 import type { BrowserExtensionView } from "../shared/ipc-contract";
 
-export const GOOGLE_PIP_EXTENSION_ID = "hkgfoiooedgoejojocmhlaklaeopbecg";
+export { GOOGLE_PIP_EXTENSION_ID } from "./browser-extensions";
 const BRIDGE_PAGE = "breadboard-extension-host.html";
 const WORKER = "breadboard-extension-worker.js";
 type Action = NonNullable<BrowserExtensionView["action"]>;

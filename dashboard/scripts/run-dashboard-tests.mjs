@@ -11,6 +11,7 @@ const TESTS_ROOT = path.join(DASHBOARD_ROOT, "tests");
  * serial so each test retains deterministic browser cleanup proof; production
  * admission now permits independently bounded heavyweight classes to overlap. */
 export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
+  "product-carousel-browser.test.mjs",
   "model-change-surfaces-ui.test.mjs",
   "agent-preferences-ui.test.mjs",
   "startup-readiness-ui.test.mjs",
@@ -23,6 +24,9 @@ export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
   "paint-reveal-theme.test.mjs",
   "humanizer-chat-progress.test.mjs",
   "text-highlight-persistence.test.mjs",
+  "page-understanding-ui.test.mjs",
+  "terminal-highlight-click-ui.test.mjs",
+  "terminal-workspace-menu-browser.test.mjs",
   "quartz-workspace-widgets-ui.test.mjs",
   "quartz-message-controls-ui.test.mjs",
   "garden-proposal-review-ui.test.mjs",
@@ -41,9 +45,11 @@ export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
   "queued-steering-ui.test.mjs",
   "smooth-stream-reveal.test.mjs",
   "thought-topology-browser.test.mjs",
+  "quartz-folder-view.test.mjs",
   "thought-topology-3d.test.mjs",
   "generated-visual-presentation-convergence.test.mjs",
   "interactive-visualizer.test.mjs",
+  "interactive-visualizer-inline-browser.test.mjs",
   "inline-artifact-retry.test.mjs",
   "spotify-inline-player-ui.test.mjs",
   "generated-visual-spatial-scene.test.mjs",

@@ -9,6 +9,7 @@ interface SourceImportNotice {
   title: string;
   jobId: string | null;
   processing: boolean;
+  filename?: string;
 }
 
 /** Both runtime adapters wrap tool JSON; unwrap only the known result envelopes. */
@@ -23,12 +24,13 @@ export function gardenSourceImportNotice(value: unknown, depth = 0): SourceImpor
   if (row.ok === false || row.success === false || row.error) return null;
   const notice = row.sourceImport as Record<string, unknown> | undefined;
   if (notice && typeof notice.gardenId === "string" && notice.gardenId.length <= 256 &&
-      typeof notice.kind === "string" && ["audio", "video", "link", "pdf"].includes(notice.kind)) {
+      typeof notice.kind === "string" && ["audio", "video", "link", "pdf", "document", "image"].includes(notice.kind)) {
     return {
       gardenId: notice.gardenId, kind: notice.kind,
       title: typeof notice.title === "string" ? notice.title.slice(0, 180) : "Imported source",
       jobId: typeof notice.jobId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(notice.jobId) ? notice.jobId : null,
       processing: notice.processing === true,
+      ...(typeof notice.filename === "string" ? { filename: notice.filename.slice(0, 180) } : {}),
     };
   }
   for (const key of ["result", "data", "output", "details"]) {
@@ -44,12 +46,12 @@ export function handleGardenSourceImportResult(value: unknown): void {
   if (!notice) return;
   const notify = () => window.dispatchEvent(new CustomEvent(GARDEN_SOURCE_IMPORTED_EVENT, { detail: notice }));
   notify();
-  if (notice.kind !== "pdf" || !notice.processing || !notice.jobId || pending.has(notice.jobId)) return;
+  if (!["pdf", "document", "image"].includes(notice.kind) || !notice.processing || !notice.jobId || pending.has(notice.jobId)) return;
   const jobId = notice.jobId;
   const requestId = jobId;
   pending.add(jobId);
   beginRuntimeIngestRecovery({
-    requestId, clusterSlug: notice.gardenId, filename: `${notice.title.slice(0, 100)}.pdf`, fileKey: requestId, startedAt: Date.now(),
+    requestId, clusterSlug: notice.gardenId, filename: notice.filename ?? `${notice.title.slice(0, 100)}.pdf`, fileKey: requestId, startedAt: Date.now(),
   });
   const record = bindRuntimeIngestRecovery(requestId, { jobId });
   if (!record) { pending.delete(jobId); return; }

@@ -82,7 +82,7 @@ export function synchronizeNativeTheme(
   theme: BreadboardWindowTheme,
   target: NativeThemeTarget | undefined = nativeTheme,
 ): void {
-  if (target) target.themeSource = theme;
+  if (target && target.themeSource !== theme) target.themeSource = theme;
 }
 
 export const LOCAL_PAGE_RECOVERY_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
@@ -251,6 +251,7 @@ export class WindowManager {
   }
 
   rememberTheme(theme: BreadboardWindowTheme): void {
+    if (this.currentTheme === theme) return;
     this.currentTheme = theme;
     synchronizeNativeTheme(theme);
     this.tabs.synchronizeBrowserTheme(theme);

@@ -8,6 +8,8 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import db from "../db.ts";
+import { pageUnderstanding } from "../page-understanding.ts";
+import { understandingPageSlug, type PageUnderstanding } from "../page-understanding-types.ts";
 import { organizationIdsForUser } from "../organizations/store.ts";
 import { readThoughtTopology } from "../thought-topology/storage.ts";
 import type { ThoughtTopology } from "../thought-topology/types.ts";
@@ -156,6 +158,7 @@ export function authorizeQuartzAccess(
 // --- Page context assembly ------------------------------------------------
 
 export interface QuartzPageContext {
+  understanding?: PageUnderstanding | null;
   gardenId: string;
   gardenName: string;
   pageSlug: string;
@@ -210,6 +213,7 @@ export async function assembleQuartzContext(
   cluster: QuartzCluster,
   pageSlug: string,
   graphInput?: QuartzGraphInput | null,
+  userId: number | null = null,
 ): Promise<QuartzPageContext> {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath)
@@ -219,12 +223,12 @@ export async function assembleQuartzContext(
   const thoughtTopology = readThoughtTopology(
     path.join(contentPath, cluster.slug),
   );
-  const relativePageSlug = pageSlug.startsWith(`${cluster.slug}/`)
+  const relativePageSlug = pageSlug === cluster.slug ? "index" : pageSlug.startsWith(`${cluster.slug}/`)
     ? pageSlug.slice(cluster.slug.length + 1)
     : pageSlug;
-  const node = knowledge.nodes.find(
-    (n) => n.slug === relativePageSlug || n.relPath === relativePageSlug,
-  );
+  const exactNodes = knowledge.nodes.filter(n => understandingPageSlug(n.relPath) === understandingPageSlug(relativePageSlug));
+  const matches = exactNodes.length ? exactNodes : knowledge.nodes.filter(n => n.slug === relativePageSlug);
+  const node = matches.length === 1 ? matches[0] : undefined;
 
   const neighbors = node
     ? knowledge.edges
@@ -255,6 +259,7 @@ export async function assembleQuartzContext(
     gardenName: cluster.name,
     pageSlug,
     pageTitle: node?.title ?? pageSlug,
+    understanding: pageUnderstanding.get(userId, cluster.slug, node?.relPath ?? relativePageSlug),
     excerpt: node?.excerpt?.slice(0, 1200) ?? "",
     visibleContent: node?.content?.slice(0, 12_000) ?? "",
     sources: node?.sourceAnchors?.slice(0, 12) ?? [],
@@ -412,6 +417,9 @@ export function quartzSystemContext(
   return [
     `Authorized garden: ${page.gardenName} (${page.gardenId}).`,
     `Current page: ${page.pageTitle} (${page.pageSlug}).`,
+    page.understanding
+      ? `Reader self-report (${page.understanding.updatedAt}): ${page.understanding.understood ? "I understand this" : "needs more work"}. This is self-reported understanding, not tested mastery or a review grade. Use it to tailor help; do not assume recall or skip due reviews.`
+      : "The reader has not recorded understanding of this page. Do not infer mastery from page colors or visits.",
     page.visibleContent ? `Visible page content:\n${page.visibleContent}` : "",
     selectedText ? `Reader selection:\n${selectedText.slice(0, 2_000)}` : "",
     page.backlinks.length ? `Backlinks: ${page.backlinks.join(", ")}` : "",

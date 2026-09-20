@@ -106,6 +106,7 @@
     "officeparser": "^5.2.2",
     "openai": "^6.34.0",
     "opentype.js": "^2.0.0",
+    "parse5": "^7.3.0",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.4.296",
     "pdfkit": "^0.18.0",

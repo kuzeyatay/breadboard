@@ -512,8 +512,9 @@ export class AppLifecycle {
       pathToFileURL(computerUseOverlayHtmlPath).toString(),
     ]);
     installGlobalSecurity(this.allowedOrigins);
-    // A raw PDF address on the dashboard must open Breadboard's viewer, never
-    // Chromium's plugin. Product pages load in the default session.
+    // A raw PDF or video address on the dashboard must open Breadboard's own
+    // viewer, never Chromium's PDF plugin or bare media page. Product pages
+    // load in the default session.
     installPdfViewerRedirect(session.defaultSession, {
       dashboardOrigin: () =>
         this.runtimeDashboardUrl ? new URL(this.runtimeDashboardUrl).origin : null,
@@ -1305,6 +1306,7 @@ export class AppLifecycle {
       return this.windows.tabs.openChatgptWebTab({
         foreground: request.foreground,
         reset: request.reset === true,
+        lane: request.lane,
         cdpPort: this.browserAgentDebuggingPort,
       });
     });

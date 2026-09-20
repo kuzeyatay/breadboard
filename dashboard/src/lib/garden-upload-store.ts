@@ -20,6 +20,15 @@ import {
   runtimeIngestRecoveryRecord,
 } from "@/lib/runtime-v2/ingest-recovery-client";
 import type { IngestTokenUsage } from "@/lib/ingest-token-usage";
+import {
+  MAX_RETRIES_PER_DOCUMENT,
+  emptyIngestAutoRetryLedger,
+  ingestAutoRetryDecision,
+  ingestDocumentKey,
+  withRecordedIngestRetry,
+  type IngestAutoRetryDecision,
+  type IngestAutoRetryLedger,
+} from "@/lib/ingest-auto-retry";
 import { VLM_PARSE_FILE_RE } from "@/app/components/vlm-parse-option";
 import { ANYDOC_PARSE_FILE_RE } from "@/lib/anydoc/formats";
 
@@ -108,6 +117,15 @@ const abortControllers = new Map<string, AbortController>();
 const canceledTaskIds = new Set<string>();
 const runtimeJobIds = new Map<string, Set<string>>();
 const recoveryRequestIds = new Map<string, Set<string>>();
+/**
+ * What each document has already spent of its auto-retry budget, by
+ * `ingestDocumentKey`. It lives here rather than on the task because a retry
+ * is a new task: counting per task would hand every attempt a fresh budget and
+ * make the bound meaningless. It is per session on purpose — a reload is a
+ * person arriving, and they get the failed row and its Resume button.
+ */
+const retryLedgers = new Map<string, IngestAutoRetryLedger>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function gardenUploadFileKey(f: File): string {
   return `${f.name}-${f.size}`;
@@ -248,6 +266,11 @@ export function resumeGardenUploadRecovery(input: {
   recovery: GardenUploadRecovery;
 }): string {
   const { recovery } = input;
+  // A person taking over resets the automatic budget: they have seen the
+  // failure and decided it is worth another run.
+  settleUploadRetries(
+    ingestDocumentKey({ clusterSlug: input.clusterSlug, filename: recovery.filename }),
+  );
   const placeholder = new File([], recovery.filename);
   return startTask(
     input.clusterSlug,
@@ -261,6 +284,61 @@ export function resumeGardenUploadRecovery(input: {
     },
     { [gardenUploadFileKey(placeholder)]: recovery.recoveryId },
   );
+}
+
+/** Stop an auto-retry that a person or a later success has overtaken. */
+function settleUploadRetries(documentKey: string): void {
+  const timer = retryTimers.get(documentKey);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    retryTimers.delete(documentKey);
+  }
+  retryLedgers.delete(documentKey);
+}
+
+/**
+ * Re-run a failed upload from the copy the server kept, after a wait. The row
+ * that failed says so and names the wait, so an upload that is quietly fixing
+ * itself never looks like one that has hung.
+ */
+function scheduleUploadRetry(input: {
+  taskId: string;
+  clusterSlug: string;
+  key: string;
+  fileName: string;
+  documentKey: string;
+  recoveryId: string;
+  options: GardenUploadTaskOptions;
+  decision: IngestAutoRetryDecision;
+}): void {
+  const { decision, documentKey } = input;
+  const ledger = withRecordedIngestRetry(
+    retryLedgers.get(documentKey) ?? emptyIngestAutoRetryLedger(documentKey),
+    decision.cause,
+  );
+  retryLedgers.set(documentKey, ledger);
+  const seconds = Math.max(1, Math.round(decision.delayMs / 1000));
+  updateTask(input.taskId, (task) => ({
+    ...task,
+    statuses: { ...task.statuses, [input.key]: "error" },
+    errors: {
+      ...task.errors,
+      [input.key]:
+        `${input.fileName} failed (${decision.cause}); retrying in ${seconds}s — ` +
+        `attempt ${ledger.total} of ${MAX_RETRIES_PER_DOCUMENT}.`,
+    },
+    recoveryIds: { ...task.recoveryIds, [input.key]: input.recoveryId },
+  }));
+  const timer = setTimeout(() => {
+    retryTimers.delete(documentKey);
+    // The bytes are replayed from the retained copy, so the new task carries
+    // an empty placeholder exactly as a manual resume does.
+    const placeholder = new File([], input.fileName);
+    startTask(input.clusterSlug, [placeholder], input.options, {
+      [gardenUploadFileKey(placeholder)]: input.recoveryId,
+    });
+  }, decision.delayMs);
+  retryTimers.set(documentKey, timer);
 }
 
 function startTask(
@@ -550,6 +628,8 @@ async function runUploadTask(
       let result: Record<string, unknown> | null = null;
       let streamError = "";
       let streamRecoveryId: string | null = null;
+      let streamErrorCode: string | null = null;
+      let streamRetryable: boolean | null = null;
       let canceledEvent = false;
 
       while (true) {
@@ -601,6 +681,12 @@ async function runUploadTask(
               streamError =
                 typeof event.error === "string" ? event.error : "Upload failed";
               streamRecoveryId = recoveryIdFromEvent(event);
+              // Carried so the auto-retry can take a producer that declared
+              // itself unretryable at its word instead of reading its prose.
+              streamErrorCode =
+                typeof event.code === "string" ? event.code : null;
+              streamRetryable =
+                typeof event.retryable === "boolean" ? event.retryable : null;
             }
           } catch {
             // Ignore malformed stream events.
@@ -612,11 +698,15 @@ async function runUploadTask(
         terminalOutcome = true;
         forgetRuntimeIngestRecovery(requestId);
         canceledTaskIds.add(taskId);
+        settleUploadRetries(ingestDocumentKey({ clusterSlug, filename: file.name }));
         break;
       }
 
       if (result?.success) {
         terminalOutcome = true;
+        // Whatever it cost to get here, the document is in. Its budget starts
+        // over if it is ever uploaded again.
+        settleUploadRetries(ingestDocumentKey({ clusterSlug, filename: file.name }));
         forgetRuntimeIngestRecovery(requestId);
         if (resumingRecoveryId) sinkRefreshRecoveries(clusterSlug);
         setTaskStatuses((current) => ({ ...current, [key]: "done" }));
@@ -650,11 +740,35 @@ async function runUploadTask(
       } else if (streamError) {
         terminalOutcome = true;
         forgetRuntimeIngestRecovery(requestId);
-        failFile(key, file.name, streamError, streamRecoveryId);
-        if (resumingRecoveryId && !streamRecoveryId) {
-          // The resume failed before a new record could replace the old one;
-          // the list re-offers the original.
-          sinkRefreshRecoveries(clusterSlug);
+        const documentKey = ingestDocumentKey({ clusterSlug, filename: file.name });
+        const decision = ingestAutoRetryDecision({
+          ledger: retryLedgers.get(documentKey) ?? emptyIngestAutoRetryLedger(documentKey),
+          failureMessage: streamError,
+          code: streamErrorCode,
+          retryable: streamRetryable,
+          recoveryRetained: Boolean(streamRecoveryId),
+          canceled:
+            canceledTaskIds.has(taskId) || abortController.signal.aborted,
+        });
+        if (decision.retry && streamRecoveryId) {
+          scheduleUploadRetry({
+            taskId,
+            clusterSlug,
+            key,
+            fileName: file.name,
+            documentKey,
+            recoveryId: streamRecoveryId,
+            options,
+            decision,
+          });
+        } else {
+          settleUploadRetries(documentKey);
+          failFile(key, file.name, streamError, streamRecoveryId);
+          if (resumingRecoveryId && !streamRecoveryId) {
+            // The resume failed before a new record could replace the old one;
+            // the list re-offers the original.
+            sinkRefreshRecoveries(clusterSlug);
+          }
         }
       } else {
         continueRuntimeRecovery();

@@ -424,3 +424,30 @@ test("an extracted page contributes itself, not every link in its body", () => {
   assert.equal(websites.length, 1);
   assert.equal(websites[0].url, "https://www.tue.nl/en/education/student-teams");
 });
+
+// An EM1 chat (2026-09-16..18) had three correct physics answers badged
+// "contradicted": "charge elements located at equal distances above and
+// below" and "every point located at a distance $r$" read as addresses with
+// no map result, and "According to special relativity" read as a citation
+// with no source behind it.
+test("geometry and appeals to theory are not address or citation claims", () => {
+  const physics = [
+    "A symmetric pair of charge elements located at equal distances above and below the test charge cancel along the wire.",
+    "The symmetry forces the field to have the same strength at every point located at a distance $r$ from the wire.",
+    "The detectors are located at 3 points along the axis, and the charge is situated at the origin of the coordinate system.",
+    "According to special relativity, no mass can reach the speed of light. According to Newton's third law the forces pair up.",
+  ];
+  for (const answer of physics) {
+    const summary = assessVerification(answer, [], {});
+    assert.deepEqual(summary.unsupportedClaims, [], answer);
+  }
+});
+
+test("a real address or a real citation without evidence is still reported", () => {
+  const address = assessVerification("The shop is located at 12 Kruisstraat, and the office is situated at 5600 MB Eindhoven.", [], {});
+  assert.ok(address.unsupportedClaims.some((claim) => claim.startsWith("Address claim")));
+  const explicit = assessVerification("The address is Dorpsstraat 1.", [], {});
+  assert.ok(explicit.unsupportedClaims.some((claim) => claim.startsWith("Address claim")));
+  const citation = assessVerification("According to the lecture notes, the cutoff is at V = 2.405. According to Smith et al. it moves.", [], {});
+  assert.ok(citation.unsupportedClaims.some((claim) => claim.startsWith("Source-backed claim")));
+});

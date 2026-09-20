@@ -141,11 +141,14 @@ function newId(): string {
  * same thing whether or not the page is currently painted.
  */
 function buildTextMap(root: HTMLElement): TextMap {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
+      // Reject math/widget subtrees at their root. Walking every glyph and then
+      // checking its ancestors made indexing a textbook needlessly expensive.
+      if (node instanceof Element) {
+        return node.matches(SKIP_SELECTOR) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP
+      }
       if (!node.nodeValue) return NodeFilter.FILTER_REJECT
-      const parent = (node as Text).parentElement
-      if (!parent || parent.closest(SKIP_SELECTOR)) return NodeFilter.FILTER_REJECT
       return NodeFilter.FILTER_ACCEPT
     },
   })
@@ -366,20 +369,31 @@ function resolveHighlight(text: string, highlight: StoredHighlight): Span | null
 }
 
 function clearMarks(root: HTMLElement) {
+  const parents = new Set<Node>()
   for (const mark of Array.from(root.querySelectorAll("mark.bb-hl"))) {
     const parent = mark.parentNode
     if (!parent) continue
     while (mark.firstChild) parent.insertBefore(mark.firstChild, mark)
     parent.removeChild(mark)
+    parents.add(parent)
   }
-  root.normalize()
+  // Only text split by our marks needs joining; never normalize a whole book.
+  for (const parent of parents) parent.normalize()
 }
 
 function paint(map: TextMap, list: StoredHighlight[]) {
   const pieces: { node: Text; from: number; to: number; highlight: StoredHighlight }[] = []
   for (const highlight of list) {
-    for (const entry of map.entries) {
-      if (entry.end <= highlight.start || entry.start >= highlight.end) continue
+    let low = 0
+    let high = map.entries.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (map.entries[middle].end <= highlight.start) low = middle + 1
+      else high = middle
+    }
+    for (let index = low; index < map.entries.length; index += 1) {
+      const entry = map.entries[index]
+      if (entry.start >= highlight.end) break
       const from = Math.max(highlight.start, entry.start) - entry.start
       const to = Math.min(highlight.end, entry.end) - entry.start
       if (to <= from) continue
@@ -418,6 +432,7 @@ function paint(map: TextMap, list: StoredHighlight[]) {
 /** Repaints the page from storage, healing anchors that moved. */
 function render(root: HTMLElement, stored: StoredHighlight[]): StoredHighlight[] {
   clearMarks(root)
+  if (stored.length === 0) return []
   const map = buildTextMap(root)
 
   const resolved: StoredHighlight[] = []
@@ -461,6 +476,18 @@ document.addEventListener("nav", () => {
   const root = articleRoot()
   if (!container || !root || container.dataset.bound === "true") return
   container.dataset.bound = "true"
+
+  let repaintObserver: MutationObserver | undefined
+  const repaint = (stored: StoredHighlight[]) => {
+    // Local edits and storage updates also repaint. Mute those mutations just
+    // like an external article refresh, rather than painting a second time.
+    repaintObserver?.disconnect()
+    try {
+      return render(root, stored)
+    } finally {
+      repaintObserver?.observe(root, { childList: true, characterData: true, subtree: true })
+    }
+  }
 
   // The menu is positioned in page coordinates, so it has to hang off the body
   // rather than the column it was rendered into.
@@ -513,7 +540,7 @@ document.addEventListener("nav", () => {
   const answerStore = openTextHighlights(answerStorageKey(), endpoint)
   const writeStored = (list: StoredHighlight[]) => highlightStore.update(list)
   const writeInlineAnswers = (list: StoredInlineAnswer[]) => answerStore.update(list)
-  let highlights = render(root, normalizeStored(highlightStore.getSnapshot()))
+  let highlights = repaint(normalizeStored(highlightStore.getSnapshot()))
   let inlineAnswers = normalizeInlineAnswers(answerStore.getSnapshot())
   let openAnswerHighlightId: string | null = null
   let answerHostOrigin: string | null = null
@@ -697,6 +724,12 @@ document.addEventListener("nav", () => {
   }
 
   const showForSelection = () => {
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0 ||
+      !root.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      hide()
+      return
+    }
     const map = buildTextMap(root)
     const span = selectionSpan(map, root)
     if (!span) {
@@ -704,7 +737,6 @@ document.addEventListener("nav", () => {
       return
     }
 
-    const selection = window.getSelection()!
     const rect = selection.getRangeAt(0).getBoundingClientRect()
     if (!rect || (rect.width === 0 && rect.height === 0)) {
       hide()
@@ -726,7 +758,7 @@ document.addEventListener("nav", () => {
   }
 
   const finish = () => {
-    highlights = render(root, highlights)
+    highlights = repaint(highlights)
     syncAnswerMarks()
     window.getSelection()?.removeAllRanges()
     hide()
@@ -1034,7 +1066,7 @@ document.addEventListener("nav", () => {
       writeStored(highlights)
       writeInlineAnswers(inlineAnswers)
       closeAnswer()
-      highlights = render(root, highlights)
+      highlights = repaint(highlights)
       syncAnswerMarks()
       return
     }
@@ -1152,7 +1184,7 @@ document.addEventListener("nav", () => {
     const snapshot = JSON.stringify(entries)
     if (snapshot !== lastHighlightSnapshot) {
       lastHighlightSnapshot = snapshot
-      highlights = render(root, normalizeStored(entries))
+      highlights = repaint(normalizeStored(entries))
       syncAnswerMarks()
     }
     showSaveError("highlights", error)
@@ -1165,12 +1197,21 @@ document.addEventListener("nav", () => {
   })
   // A lesson may finish rendering after navigation. Retry anchors when its text
   // changes, without observing the <mark> wrappers created by our own repaint.
-  const observer = new MutationObserver(() => {
-    observer.disconnect()
-    highlights = render(root, highlights)
+  const observer = new MutationObserver((changes) => {
+    if (highlights.length === 0) return
+    // Reading controls are excluded from text anchors. Updating their save
+    // status must not unwrap and repaint every highlight in a long lesson.
+    if (changes.every(change => {
+      const element = change.target instanceof Element ? change.target : change.target.parentElement
+      return element?.closest("[data-no-highlight]") ||
+        (change.type === "childList" && [...change.addedNodes, ...change.removedNodes].every(
+          node => node instanceof Element && node.matches("[data-no-highlight]"),
+        ))
+    })) return
+    highlights = repaint(highlights)
     syncAnswerMarks()
-    observe()
   })
+  repaintObserver = observer
   const observe = () => observer.observe(root, { childList: true, characterData: true, subtree: true })
   observe()
 

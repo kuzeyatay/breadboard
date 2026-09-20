@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { reviewProductRecommendations } from "./recommendations.ts";
 
 import { assertPublicHost } from "../get-doc/download.ts";
 import {
@@ -24,6 +25,7 @@ const BROWSER_HEADERS = {
   "user-agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
   referer: "https://duckduckgo.com/",
+  "accept-language": "en-US,en;q=0.9",
 } as const;
 
 export class ProductSearchError extends Error {
@@ -140,15 +142,8 @@ function marketAliases(locale: string): string[] {
 }
 
 function marketSearchSuffix(locale: string): string {
-  const countryCode = marketCountryCode(locale);
-  const localized = ({
-    DE: "Deutschland kaufen Preis auf Lager",
-    ES: "Espana comprar precio disponible",
-    FR: "France acheter prix en stock",
-    NL: "Nederland kopen prijs op voorraad",
-    TR: "Turkiye satin al fiyat stokta",
-  } as Readonly<Record<string, string>>)[countryCode];
-  const words = localized ?? `${marketCountryName(locale)} buy price in stock`;
+  // Geography determines merchants and currency, not the display language.
+  const words = `${marketCountryName(locale)} buy price`;
   const country = marketCountryCode(locale).toLowerCase();
   const domain = country === "us" ? "" : country === "gb" ? "uk" : country;
   return domain ? `${words} site:.${domain}` : words;
@@ -252,15 +247,12 @@ async function duckDuckGoToken(query: string, signal?: AbortSignal): Promise<str
   return token;
 }
 
-async function discoverCandidates(
+async function discoverImageCandidates(
   input: NormalizedProductSearchInput,
   signal?: AbortSignal,
 ): Promise<SearchCandidate[]> {
   const discoveryQuery = `${input.query} product ${marketSearchSuffix(input.country)}`;
-  const [token, pricedCandidates] = await Promise.all([
-    duckDuckGoToken(discoveryQuery, signal),
-    discoverPricedCandidates(input, signal).catch(() => []),
-  ]);
+  const token = await duckDuckGoToken(discoveryQuery, signal);
   const params = new URLSearchParams({
     l: input.country,
     o: "json",
@@ -291,6 +283,22 @@ async function discoverCandidates(
     const imageUrl = safeProductUrl(candidate.image);
     return [{ title, pageUrl, ...(imageUrl ? { imageUrl } : {}) }];
   });
+  return candidates;
+}
+
+async function discoverCandidates(
+  input: NormalizedProductSearchInput,
+  signal?: AbortSignal,
+): Promise<SearchCandidate[]> {
+  // An image-search outage must not discard usable merchant text results.
+  const [textResults, imageResults] = await Promise.allSettled([
+    discoverPricedCandidates(input, signal),
+    discoverImageCandidates(input, signal),
+  ]);
+  signal?.throwIfAborted();
+  if (textResults.status === "rejected" && imageResults.status === "rejected") throw textResults.reason;
+  const pricedCandidates = textResults.status === "fulfilled" ? textResults.value : [];
+  const candidates = imageResults.status === "fulfilled" ? imageResults.value : [];
   const merged = new Map<string, SearchCandidate>();
   for (const candidate of [...pricedCandidates, ...candidates]) {
     const current = merged.get(candidate.pageUrl);
@@ -510,14 +518,19 @@ function formattedProductPrice(
   const raw = stringValue(rawAmount, 48);
   const currency = stringValue(rawCurrency, 3).toUpperCase();
   if (!raw || !/^[A-Z]{3}$/.test(currency)) return undefined;
-  let numericText = raw.replace(/\s+/g, "").replace(/[^0-9.,]/g, "");
-  if (numericText.includes(",") && numericText.includes(".")) {
-    const decimal = Math.max(numericText.lastIndexOf(","), numericText.lastIndexOf("."));
-    numericText = `${numericText.slice(0, decimal).replace(/[.,]/g, "")}.${numericText.slice(decimal + 1)}`;
-  } else if (/,[0-9]{1,2}$/.test(numericText)) {
-    numericText = numericText.replace(/,/g, ".");
+  // Validate one complete amount. Stripping arbitrary text used to concatenate
+  // prices, model numbers and quantities into multi-million-euro amounts.
+  let numericText: string;
+  if (/^\d+(?:[.,]\d{1,2})?$/.test(raw)) {
+    numericText = raw.replace(",", ".");
+  } else if (/^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.test(raw)) {
+    numericText = raw.replace(/,/g, "");
+  } else if (/^\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$/.test(raw)) {
+    numericText = raw.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?$/.test(raw)) {
+    numericText = raw.replace(/ /g, "").replace(",", ".");
   } else {
-    numericText = numericText.replace(/,/g, "");
+    return undefined;
   }
   const numeric = Number(numericText);
   if (!Number.isFinite(numeric) || numeric <= 0 || numeric > 100_000_000) return undefined;
@@ -630,13 +643,9 @@ export function productPriceFromHtml(html: string): ProductPrice | undefined {
 }
 
 function productMerchant(product: JsonRecord, pageUrl: string): string {
-  const brand = record(product.brand);
-  const manufacturer = record(product.manufacturer);
   const offer = firstOffer(product);
   const seller = record(offer?.seller);
   return (
-    stringValue(brand?.name ?? product.brand, 160) ||
-    stringValue(manufacturer?.name ?? product.manufacturer, 160) ||
     stringValue(seller?.name ?? offer?.seller, 160) ||
     new URL(pageUrl).hostname.replace(/^www\./i, "")
   );
@@ -751,7 +760,7 @@ function resolvedDirectProductUrl(
 ): string {
   const final = new URL(finalUrl);
   const offer = firstOffer(product);
-  for (const raw of [product.url, offer?.url, product["@id"], finalUrl]) {
+  for (const raw of [product.url, offer?.url, product["@id"], ...(allowFinalOfferEvidence ? [finalUrl] : [])]) {
     const text = stringValue(raw, 2_000);
     if (!text) continue;
     let resolved = "";
@@ -875,7 +884,7 @@ async function inspectCandidate(
       },
     }];
   }
-  return structuredProducts.flatMap((structured, index) => {
+  return (await Promise.all(structuredProducts.map(async (structured) => {
     const title = stringValue(structured.name, 300);
     const productUrl = resolvedDirectProductUrl(
       structured,
@@ -910,15 +919,26 @@ async function inspectCandidate(
     const reviewCount = Number(aggregate?.reviewCount ?? aggregate?.ratingCount);
     const offer = firstOffer(structured);
     const description = stringValue(structured.description, 1_200);
-    const price = productPrice(structured) ?? (index === 0 ? pagePrice : undefined);
+    const price = productPrice(structured) ?? (structuredProducts.length === 1 ? pagePrice : undefined);
     const availability = availabilityLabel(offer?.availability);
     const attributes = productAttributes(structured);
+    // Related products in JSON-LD must never inherit the main product's image.
+    const rawImage = Array.isArray(structured.image) ? structured.image[0] : structured.image;
+    let ownImage = safeProductUrl(typeof rawImage === "string" ? rawImage : record(rawImage)?.url);
+    if (ownImage) {
+      try {
+        await assertPublicHost(new URL(ownImage).hostname);
+      } catch {
+        ownImage = "";
+      }
+    }
+    const productImage = ownImage || (structuredProducts.length === 1 ? imageUrl : "");
     const product: ProductSearchItem = {
-      id: `product:${shortHash(`${productUrl}:${stringValue(structured.sku ?? structured.mpn) || index}`)}`,
+      id: `product:${shortHash(`${productUrl}:${stringValue(structured.sku ?? structured.mpn) || title}`)}`,
       title,
       merchant: productMerchant(structured, productUrl),
       url: productUrl,
-      ...(imageUrl ? { imageUrl } : {}),
+      ...(productImage ? { imageUrl: productImage } : {}),
       ...(description ? { description } : {}),
       ...(price ? { price } : {}),
       ...(availability ? { availability } : {}),
@@ -928,7 +948,7 @@ async function inspectCandidate(
       sourceIds: [sourceId],
     };
     return [{ product, source }];
-  });
+  }))).flat();
 }
 
 /**
@@ -946,6 +966,7 @@ async function projectDiscoveredCandidate(
   if (
     !pageUrl ||
     !candidate.priceHint ||
+    !isBuyableProductUrl(pageUrl) ||
     !isMerchantProductCandidate(candidate) ||
     !(candidate.marketEvidence || urlMatchesMarket(pageUrl, country))
   ) {
@@ -985,7 +1006,7 @@ async function projectDiscoveredCandidate(
 
 export async function searchProducts(
   rawInput: ProductSearchInput,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; baseUrl?: string } = {},
 ): Promise<ProductSearchResult> {
   const input = normalizeInput(rawInput);
   let candidates: SearchCandidate[];
@@ -1007,7 +1028,9 @@ export async function searchProducts(
         input.country,
         options.signal,
       );
-      if (structured.length) return structured;
+      // A successfully inspected page is authoritative. Do not resurrect an
+      // explicitly unavailable or out-of-market offer from a stale snippet.
+      return structured;
     } catch {
       if (options.signal?.aborted) {
         throw new ProductSearchError("product_search_aborted", "Product search was cancelled.");
@@ -1019,8 +1042,14 @@ export async function searchProducts(
     return projectDiscoveredCandidate(candidate, accessedAt, input.country).catch(() => []);
   }));
   const pairs = inspected.flat().filter(({ product }) => Boolean(product.price));
-  const products = [...new Map(pairs.map(({ product }) => [product.id, product])).values()]
-    .slice(0, input.count);
+  const uniqueProducts = [...new Map(pairs.map(({ product }) => [product.url, product])).values()].slice(0, 36);
+  let products: ProductSearchItem[];
+  try {
+    products = (await reviewProductRecommendations(input.query, uniqueProducts, options)).slice(0, input.count);
+  } catch {
+    if (options.signal?.aborted) throw new ProductSearchError("product_search_aborted", "Product search was cancelled.");
+    throw new ProductSearchError("product_search_review_failed", "Product matches could not be verified. Try the search again.");
+  }
   const usedSourceIds = new Set(products.flatMap((product) => product.sourceIds));
   const sources = [...new Map(
     pairs
@@ -1033,7 +1062,7 @@ export async function searchProducts(
       productsReturned: 0,
       sources: [],
       uiResources: [],
-      summary: `No in-stock direct product pages with a sourced price were found for ${marketCountryName(input.country)}.`,
+      summary: `No relevant direct product pages with a sourced price and sufficient evidence for the requested requirements were found for ${marketCountryName(input.country)}.`,
     };
   }
   const resource = normalizeGenerativeUiResource({

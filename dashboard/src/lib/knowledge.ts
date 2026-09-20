@@ -1402,47 +1402,22 @@ function buildLocatedPromptText(
   );
 }
 
-function fallbackKnowledgeExtraction(
-  title: string,
-  text: string,
-  pages: DocumentPage[],
-): KnowledgeExtraction {
-  const headings = Array.from(text.matchAll(/^#{1,3}\s+(.+)$/gm))
-    .map((match) => compactText(cleanGeneratedText(match[1] ?? "")))
-    .filter(Boolean)
-    .slice(0, 8);
-  const summary =
-    compactText(cleanGeneratedText(text)).slice(0, 800) ||
-    "No extractable text was found in this upload.";
-  const location = pages[0]?.label ? [pages[0].label] : ["Uploaded document"];
-  const topics = (headings.length > 0 ? headings : [title]).map((heading) => ({
-    title: heading,
-    slug: slugify(heading),
-    explanation: summary,
-    keyPoints: [summary],
-    sourceEvidence: [summary],
-    locations: location,
-    relatedTopics: [],
-    tags: semanticTagsFromText(`${heading}\n${summary}`, 6, text),
-  }));
-
-  return {
-    documentTitle: title,
-    summary,
-    topics,
-    relationships: [],
-    suggestedTags: semanticTagsFromText(`${title}\n${summary}`, 8, text),
-  };
-}
-
+/**
+ * A model answer that carries no knowledge at all. The source text is never a
+ * stand-in: a raw prefix of the transcript reads as a summary but was written
+ * by nobody, and headings copied into topic titles read as concepts that were
+ * never extracted. Both used to be published as if the model had produced
+ * them, which is why a garden could hold a "summary" that was the first 800
+ * characters of a lecture, cut mid-word. Treat it as a malformed answer so the
+ * caller retries and, if that fails too, refuses to publish.
+ */
 function normalizeExtraction(
   parsed: unknown,
   fallbackTitle: string,
   text: string,
-  pages: DocumentPage[],
 ): KnowledgeExtraction {
   if (!parsed || typeof parsed !== "object") {
-    return fallbackKnowledgeExtraction(fallbackTitle, text, pages);
+    throw new InvalidKnowledgeJsonError();
   }
 
   const obj = parsed as Record<string, unknown>;
@@ -1502,28 +1477,28 @@ function normalizeExtraction(
         )
     : [];
 
-  const normalized: KnowledgeExtraction = {
+  const summary = asString(obj.summary, "");
+
+  // The prompt allows an honest "no durable knowledge here" answer: a summary
+  // with no topics. What it never allows is neither. An answer with neither is
+  // indistinguishable from the model having failed, so it is retried as
+  // malformed rather than papered over with the source's own words.
+  if (!summary && topics.length === 0) {
+    throw new InvalidKnowledgeJsonError();
+  }
+
+  return {
     documentTitle: asString(obj.documentTitle, fallbackTitle),
-    summary: asString(obj.summary, compactText(text).slice(0, 800)),
+    summary,
     topics,
     relationships,
     suggestedTags: normalizeTopicTags(
       asStringArray(obj.suggestedTags),
-      [
-        fallbackTitle,
-        asString(obj.summary, compactText(text).slice(0, 800)),
-        text.slice(0, 2000),
-      ].join("\n"),
+      [fallbackTitle, summary, text.slice(0, 2000)].join("\n"),
       10,
       [fallbackTitle, text].join("\n"),
     ),
   };
-
-  if (normalized.topics.length === 0 && text.trim()) {
-    return fallbackKnowledgeExtraction(fallbackTitle, text, pages);
-  }
-
-  return normalized;
 }
 
 function cleanDocumentPages(pages: DocumentPage[]): DocumentPage[] {
@@ -1550,10 +1525,8 @@ function mergeKnowledgeExtractions(
   extractions: KnowledgeExtraction[],
   fallbackTitle: string,
   text: string,
-  pages: DocumentPage[],
 ): KnowledgeExtraction {
-  if (extractions.length === 0)
-    return fallbackKnowledgeExtraction(fallbackTitle, text, pages);
+  if (extractions.length === 0) throw new InvalidKnowledgeJsonError();
 
   const topicBySlug = new Map<string, ExtractedTopic>();
   for (const extraction of extractions) {
@@ -1657,9 +1630,7 @@ function mergeKnowledgeExtractions(
     extractions.map((extraction) => cleanGeneratedText(extraction.summary)),
     8,
   );
-  const summary =
-    summaries.join("\n\n") ||
-    compactText(cleanGeneratedText(text)).slice(0, 900);
+  const summary = summaries.join("\n\n");
 
   return {
     documentTitle: cleanGeneratedText(
@@ -1701,7 +1672,6 @@ async function requestKnowledgeExtraction({
   isHandwriting,
   locatedText,
   text,
-  pages,
   chunkLabel,
   onMalformedJsonRetry,
   onTransientTransportRetry,
@@ -1714,7 +1684,6 @@ async function requestKnowledgeExtraction({
   isHandwriting?: boolean;
   locatedText: string;
   text: string;
-  pages: DocumentPage[];
   chunkLabel?: string;
   onMalformedJsonRetry?: (attempt: number, totalAttempts: number) => void;
   onTransientTransportRetry?: (
@@ -1777,7 +1746,7 @@ async function requestKnowledgeExtraction({
       throw new Error("Knowledge extraction transport retry ended unexpectedly.");
     }
     try {
-      return normalizeExtraction(parseJsonObject(rawContent), title, text, pages);
+      return normalizeExtraction(parseJsonObject(rawContent), title, text);
     } catch (error) {
       if (
         !(error instanceof InvalidKnowledgeJsonError) ||
@@ -1790,6 +1759,19 @@ async function requestKnowledgeExtraction({
   }
 
   throw new InvalidKnowledgeJsonError();
+}
+
+/** Concept extraction could not produce a knowledge map for this source. */
+export class KnowledgeExtractionFailedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Concept extraction failed for this source, so nothing was published: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    this.name = "KnowledgeExtractionFailedError";
+    this.cause = cause;
+  }
 }
 
 export class IncompleteKnowledgeExtractionError extends Error {
@@ -1853,7 +1835,6 @@ export async function extractDocumentKnowledge({
         isHandwriting,
         locatedText: sourceChunk,
         text: cleanText,
-        pages: cleanPages,
         onMalformedJsonRetry: (attempt, totalAttempts) =>
           onProgress?.(
             `Retrying concept extraction after malformed JSON (${attempt}/${totalAttempts})…`,
@@ -1910,7 +1891,6 @@ export async function extractDocumentKnowledge({
           isHandwriting,
           locatedText: chunks[index],
           text: cleanText,
-          pages: cleanPages,
           chunkLabel: `${index + 1} of ${chunks.length}`,
           onMalformedJsonRetry: (attempt, totalAttempts) =>
             onProgress?.(
@@ -1939,10 +1919,14 @@ export async function extractDocumentKnowledge({
       }
     }
 
-    return mergeKnowledgeExtractions(extractions, title, cleanText, cleanPages);
+    return mergeKnowledgeExtractions(extractions, title, cleanText);
   } catch (error) {
     if (error instanceof IncompleteKnowledgeExtractionError) throw error;
-    return fallbackKnowledgeExtraction(title, cleanText, cleanPages);
+    // Never answer a failed extraction with invented knowledge. A caller that
+    // wants to keep the raw source anyway must decide that for itself, in the
+    // open, rather than receiving a fabricated map it cannot tell apart from a
+    // real one.
+    throw new KnowledgeExtractionFailedError(error);
   }
 }
 
@@ -3958,7 +3942,7 @@ export function refreshClusterIndex(
       node.draft !== "true" &&
       !rel.startsWith(`${LEARNING_FOLDER.toLowerCase()}/`) &&
       !rel.startsWith("sources/") &&
-      !isLegacySubtopicRelPath(node.relPath) &&
+      !isLegacySubtopicRelPath(node.relPath, node.type) &&
       !learnerRelPaths.has(node.relPath)
     );
   });

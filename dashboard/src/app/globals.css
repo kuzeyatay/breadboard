@@ -1600,6 +1600,10 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   flex: 0 0 var(--breadboard-titlebar-height);
   background: var(--paper-surface);
   user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+html[data-breadboard-desktop="true"] .desktop-title-bar[data-window-drag="true"] {
   -webkit-app-region: drag;
 }
 
@@ -1614,16 +1618,17 @@ html[data-breadboard-desktop="true"][data-voice-stage="open"]
   background: transparent;
 }
 
-/* Browser navigation: the window's tabs, drawn along the caption strip by the
-   page inside each tab. The strip stays the window's drag handle; only the
-   tabs and their buttons opt out of it. The strip ends where the native
-   caption buttons begin — Electron reports that edge as the titlebar area —
+/* Browser navigation: keep the entire control strip out of native caption hit
+   testing, including transformed tabs and the gaps between them. An explicit
+   empty area after the plus button remains a window drag handle. The strip ends
+   where the native caption buttons begin — Electron reports that edge as the titlebar area —
    with a fixed reserve for a page that is not told it. */
 html[data-breadboard-desktop="true"] .desktop-title-bar {
   align-items: flex-end;
 }
 
 .bb-tabstrip {
+  -webkit-app-region: no-drag;
   display: flex;
   align-items: flex-end;
   gap: 0;
@@ -1636,6 +1641,16 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+}
+
+.bb-tabstrip::after {
+  content: "";
+  flex: 1 0 28px;
+  align-self: stretch;
+}
+
+.desktop-title-bar[data-window-drag="true"] .bb-tabstrip::after {
+  -webkit-app-region: drag;
 }
 
 .bb-tab {
@@ -12252,4 +12267,10 @@ html[data-voice-stage='open'] .clap-indicator { display: none; }
    heavier than the muted label beside it. Pale it to the label's weight. */
 .bb-thinking-orb {
   opacity: 0.72;
+}
+
+[data-starred-message-target] {
+  outline: 2px solid var(--botanical);
+  outline-offset: 4px;
+  border-radius: 12px;
 }

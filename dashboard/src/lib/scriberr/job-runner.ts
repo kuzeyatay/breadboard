@@ -12,7 +12,11 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
-import { VideoTranscriptionError, sanitizeErrorForClient } from "./errors.ts";
+import {
+  VideoTranscriptionError,
+  isKnowledgeExtractionFailure,
+  sanitizeErrorForClient,
+} from "./errors.ts";
 import { assertProbeAcceptable } from "./ffprobe.ts";
 import {
   buildTranscriptMarkdown,
@@ -129,6 +133,7 @@ class CancelledSignal extends Error {
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const STALE_AFTER_MS = 120_000;
 const TEMP_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+const TRANSCRIPTION_STATUS_RETRY_MS = 30_000;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -696,6 +701,7 @@ export class VideoTranscriptionRunner {
     });
     const client = this.deps.createScriberrClient();
     const deadline = Date.now() + this.deps.config.transcriptionTimeoutMs;
+    let unavailablePolls = 0;
 
     for (;;) {
       this.checkCancelled(jobId);
@@ -707,7 +713,34 @@ export class VideoTranscriptionRunner {
         }
         throw new VideoTranscriptionError("transcription_timeout");
       }
-      const snapshot = await client.getJobStatus(job.scriberrJobId);
+      let snapshot: ScriberrJobSnapshot;
+      try {
+        snapshot = await client.getJobStatus(job.scriberrJobId);
+        unavailablePolls = 0;
+      } catch (error) {
+        // Whisper inference can temporarily starve Scriberr's status endpoint
+        // on a memory-constrained machine. The transcription process is still
+        // owned by this Runtime worker, so keep its service lease and poll
+        // again until the overall transcription deadline. Exiting on one
+        // request timeout tears down the service and loses hours of work.
+        if (
+          error instanceof VideoTranscriptionError &&
+          error.code === "scriberr_unavailable" &&
+          Date.now() <= deadline
+        ) {
+          unavailablePolls += 1;
+          if (unavailablePolls === 1 || unavailablePolls % 10 === 0) {
+            this.log(
+              `job ${jobId}: Scriberr status temporarily unavailable; ` +
+                `retrying while transcription remains within its deadline`,
+            );
+          }
+          this.deps.store.markHeartbeat(jobId);
+          await this.sleep(Math.max(this.deps.config.pollIntervalMs, TRANSCRIPTION_STATUS_RETRY_MS));
+          continue;
+        }
+        throw error;
+      }
       if (snapshot.status === "completed") break;
       if (snapshot.status === "failed") {
         throw new VideoTranscriptionError("transcription_failed", {
@@ -885,6 +918,12 @@ export class VideoTranscriptionRunner {
         throw new VideoTranscriptionError("indexing_failed", { cause: error });
       }
       if (error instanceof VideoTranscriptionError) throw error;
+      // Concept extraction refusing is not a write failure: the transcript is
+      // fine and nothing was written on purpose. Naming it plainly is what
+      // tells the user the garden is untouched and a retry is worth it.
+      if (isKnowledgeExtractionFailure(error)) {
+        throw new VideoTranscriptionError("concept_extraction_failed", { cause: error });
+      }
       throw new VideoTranscriptionError("markdown_write_failed", { cause: error });
     }
 

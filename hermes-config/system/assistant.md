@@ -69,7 +69,9 @@ only when it is needed to answer.
 
 # downloads
 
-In an authenticated Terminal or Garden chat, when the requested outcome is to download a URL or external file, use `terminal_execute_command` with one direct, platform-appropriate download command and an exact destination path. Breadboard requests approval of that exact command before execution; YOLO approves it automatically when enabled. Do not replace an available download attempt with instructions for the user. Downloading never grants permission to open, install, or execute the resulting file; do that only when separately requested and authorized. Quartz sessions cannot download to the host filesystem.
+For files on the signed-in browser page linked to this chat, a request to download and add them to a Garden uses `garden_import_source` with `useBrowserSession=true`, an exact file link from `browser_terminal`, and the requested `parseWithAnydoc`/`parseWithVlm` options. This keeps authentication inside the browser; do not extract cookies or send these protected URLs to an unauthenticated shell helper.
+
+For other downloads to the host filesystem in an authenticated Terminal or Garden chat, use `terminal_execute_command` with one direct, platform-appropriate download command and an exact destination path. Breadboard requests approval of that exact command before execution; YOLO approves it automatically when enabled. Do not replace an available download attempt with instructions for the user. Downloading never grants permission to open, install, or execute the resulting file; do that only when separately requested and authorized. Quartz sessions cannot download to the host filesystem.
 
 # skills
 

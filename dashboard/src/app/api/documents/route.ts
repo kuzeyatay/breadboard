@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import path from 'path';
+import { pageUnderstanding } from '@/lib/page-understanding.ts';
+import { pageFlagColor, understandingPageSlug } from '@/lib/page-understanding-types.ts';
 import { listClusterFolders, scanClusterKnowledge } from '@/lib/knowledge';
 import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath, readingOrderRank } from '@/lib/learning-garden';
 import { createGardenDocument } from '@/lib/garden-documents.ts';
@@ -19,7 +21,8 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });
     }
 
-    const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
+    const { cluster, userId } = await requireReadableClusterFromSlug(clusterSlug);
+    const understanding = new Map(pageUnderstanding.list(userId, cluster.slug).map(page => [page.pageSlug, page]));
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
@@ -43,7 +46,8 @@ export async function GET(request: Request) {
       .filter(
         (node) =>
           includeInternalConcepts ||
-          (node.type !== INTERNAL_CONCEPT_TYPE && !isLegacySubtopicRelPath(node.relPath)),
+          (node.type !== INTERNAL_CONCEPT_TYPE &&
+            !isLegacySubtopicRelPath(node.relPath, node.type)),
       )
       .map((node) => ({
         id: node.id,
@@ -59,7 +63,9 @@ export async function GET(request: Request) {
         sourcePdf: node.sourcePdf,
         sourceMedia: node.sourceMedia,
         sourceDocument: node.sourceDocument,
-        flagColor: node.flagColor,
+        manualFlagColor: pageFlagColor(node.flagColor),
+        flagColor: pageFlagColor(node.flagColor, understanding.get(understandingPageSlug(node.relPath))?.understood),
+        understanding: understanding.get(understandingPageSlug(node.relPath)) ?? null,
         locations: node.locations,
         tags: node.tags,
         date: node.date,
@@ -79,11 +85,18 @@ export async function GET(request: Request) {
         return dateDiff || a.title.localeCompare(b.title);
       });
 
+    // A folder earns its place when a visible document lives in it. That keeps
+    // the legacy topic-card folders hidden while letting `generated/` through
+    // once Save page has written a real page there - the two share a name.
+    const foldersWithVisibleDocuments = new Set(
+      documents.map((document) => document.folder?.toLowerCase()).filter(Boolean),
+    );
     const folders = listClusterFolders(path.join(contentPath, cluster.slug)).filter(
       (folder) =>
         includeInternalConcepts ||
         (!folder.toLowerCase().startsWith('internal/') &&
-          !isLegacySubtopicRelPath(`${folder}/placeholder.md`)),
+          (!isLegacySubtopicRelPath(`${folder}/placeholder.md`) ||
+            foldersWithVisibleDocuments.has(folder.toLowerCase()))),
     );
 
     // Derived live from the filesystem — must never be cached, or added/removed

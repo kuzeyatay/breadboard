@@ -16,11 +16,37 @@ const MAX_EXTENSION_FILES = 20_000;
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/u;
 const CHROME_WEB_STORE_HOST = "chromewebstore.google.com";
 const CHROME_WEB_STORE_UPDATE_URL = "https://clients2.google.com/service/update2/crx";
+export const GOOGLE_PIP_EXTENSION_ID = "hkgfoiooedgoejojocmhlaklaeopbecg";
+
+export class BrowserExtensionCompatibilityError extends Error {}
+
+/** Known missing host APIs in our Electron runtime. Loading a manifest succeeds
+ * even when these required permissions are ignored, so it is not a compatibility
+ * check. Optional permissions are deliberately excluded. */
+export function browserExtensionCompatibilityError(
+  manifest: Record<string, unknown>,
+  extensionId: string,
+): string | undefined {
+  const missingApis: Record<string, string> = {
+    downloads: "file downloads",
+    contextMenus: "context menus",
+    webNavigation: "page navigation events",
+  };
+  const permissions = Array.isArray(manifest.permissions) ? manifest.permissions : [];
+  const missing = [...new Set(permissions.filter((permission): permission is string =>
+    typeof permission === "string" && Object.hasOwn(missingApis, permission) &&
+    // This package has a dedicated, tested host adapter.
+    !(extensionId === GOOGLE_PIP_EXTENSION_ID && permission === "contextMenus"),
+  ))].map(permission => missingApis[permission]);
+  if (missing.length === 0) return undefined;
+  return `This extension requires ${missing.join(", ")}, which Breadboard does not support yet. Open this listing in Google Chrome to use it there.`;
+}
 
 export type BrowserWebStoreInstallState =
   | "available"
   | "installing"
   | "installed"
+  | "unsupported"
   | "failed";
 
 interface BrowserExtensionsState {
@@ -232,6 +258,7 @@ export function browserWebStoreInstallBootstrapScript(
     available: "Add to Breadboard",
     installing: "Adding…",
     installed: "Added to Breadboard",
+    unsupported: "Not supported",
     failed: "Try again",
   };
   const label = labels[state];
@@ -312,12 +339,14 @@ export function browserWebStoreInstallBootstrapScript(
       location.href = ${JSON.stringify(target)};
     });
     root.append(style, button);
-    if (${state === "failed"}) {
+    if (${state === "failed" || state === "unsupported"}) {
       const error = document.createElement("p");
       error.id = "install-error";
       error.className = "error";
       error.setAttribute("role", "alert");
-      error.textContent = ${JSON.stringify(errorMessage || "Couldn't add this extension. Try again.")};
+      error.textContent = ${JSON.stringify(errorMessage || (state === "unsupported"
+        ? "This extension needs browser features that Breadboard does not support yet."
+        : "Couldn't add this extension. Try again."))};
       button.setAttribute("aria-describedby", error.id);
       root.append(error);
     }
@@ -335,11 +364,21 @@ export function browserWebStoreInstallBootstrapScript(
       }
       return null;
     };
+    const nativeButtons = new Map();
     const place = () => {
       const nativeButton = findChromeButton();
       if (!nativeButton) return;
       const rect = nativeButton.getBoundingClientRect();
       if (rect.width < 80 || rect.height < 28) return;
+      if (!nativeButtons.has(nativeButton)) {
+        nativeButtons.set(nativeButton, {
+          visibility: nativeButton.style.getPropertyValue("visibility"),
+          priority: nativeButton.style.getPropertyPriority("visibility"),
+          ariaHidden: nativeButton.getAttribute("aria-hidden")
+        });
+        nativeButton.style.setProperty("visibility", "hidden", "important");
+        nativeButton.setAttribute("aria-hidden", "true");
+      }
       host.style.left = "auto";
       host.style.top = rect.top + "px";
       host.style.right = Math.max(16, innerWidth - rect.right) + "px";
@@ -367,6 +406,12 @@ export function browserWebStoreInstallBootstrapScript(
       if (placementFrame) cancelAnimationFrame(placementFrame);
       removeEventListener("resize", schedulePlace);
       removeEventListener("scroll", schedulePlace, true);
+      for (const [nativeButton, previous] of nativeButtons) {
+        if (previous.visibility) nativeButton.style.setProperty("visibility", previous.visibility, previous.priority);
+        else nativeButton.style.removeProperty("visibility");
+        if (previous.ariaHidden === null) nativeButton.removeAttribute("aria-hidden");
+        else nativeButton.setAttribute("aria-hidden", previous.ariaHidden);
+      }
     };
     place();
   })()`;
@@ -664,6 +709,8 @@ export function installChromeWebStorePackage(
     ) {
       throw new Error("The browser extension manifest is invalid.");
     }
+    const compatibilityError = browserExtensionCompatibilityError(manifestRecord, extensionId);
+    if (compatibilityError) throw new BrowserExtensionCompatibilityError(compatibilityError);
     manifestRecord.key = publicKey.toString("base64");
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     fs.rmSync(installed, { recursive: true, force: true });

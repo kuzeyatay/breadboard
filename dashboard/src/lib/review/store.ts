@@ -6,6 +6,7 @@
 import type DatabaseType from "better-sqlite3";
 
 import { ensureReviewSchema } from "./schema.ts";
+import { PageUnderstandingStore } from "../page-understanding-store.ts";
 import {
   applyGrade,
   newCardState,
@@ -66,6 +67,7 @@ export class ReviewStore {
   constructor(db: Db) {
     this.db = db;
     ensureReviewSchema(db);
+    new PageUnderstandingStore(db);
   }
 
   // ------------------------------------------------------------ user settings
@@ -283,8 +285,9 @@ export class ReviewStore {
    * The cards due now, newest-material-first within each garden, capped per
    * garden by that garden's own limit and overall by `limit`.
    *
-   * Ordering is by due date so the longest-overdue card is asked first; a card
-   * that has lapsed repeatedly therefore keeps priority over fresh material.
+   * Explicit requests for more work come first among due cards. Within each
+   * group the longest-overdue card comes first. Understanding never grades,
+   * suppresses, or brings forward a card that is not yet due.
    */
   due(userId: number, options: { limit: number; gardenSlugs?: string[]; now?: Date }): ReviewCardRow[] {
     const now = (options.now ?? new Date()).toISOString();
@@ -293,15 +296,31 @@ export class ReviewStore {
     const placeholders = slugs.map(() => "?").join(", ");
     return this.db
       .prepare(
-        `SELECT * FROM review_cards
-          WHERE user_id = ?
+        `SELECT c.* FROM review_cards c
+          LEFT JOIN page_understanding u ON u.user_id = c.user_id
+            AND u.garden_slug = c.garden_slug AND u.page_slug = c.page_slug
+          WHERE c.user_id = ?
             AND suspended = 0
-            AND garden_slug IN (${placeholders})
+            AND c.garden_slug IN (${placeholders})
             AND due <= ?
-          ORDER BY due ASC
+          ORDER BY CASE WHEN u.understood = 0 THEN 0 ELSE 1 END, due ASC
           LIMIT ?`,
       )
       .all(userId, ...slugs, now, options.limit) as ReviewCardRow[];
+  }
+
+  /** Indexed lookup so ordinary page toggles can skip legacy migration work. */
+  hasPageCard(userId: number, gardenSlug: string, pageSlug: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM review_cards WHERE user_id = ? AND garden_slug = ? AND page_slug = ?`)
+      .get(userId, gardenSlug, pageSlug));
+  }
+
+  /** Preserve existing schedules when old basename-only cards acquire folder paths. */
+  migratePageSlug(userId: number, gardenSlug: string, from: string, to: string): void {
+    this.db.prepare(`UPDATE review_cards SET page_slug = ?
+      WHERE user_id = ? AND garden_slug = ? AND page_slug = ?
+        AND NOT EXISTS (SELECT 1 FROM review_cards WHERE user_id = ? AND garden_slug = ? AND page_slug = ?)`)
+      .run(to, userId, gardenSlug, from, userId, gardenSlug, to);
   }
 
   listCards(userId: number, gardenSlug: string, limit = 100): ReviewCardSummary[] {

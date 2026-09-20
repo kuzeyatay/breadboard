@@ -6,7 +6,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   breadboardPdfViewerPath,
+  breadboardVideoPlayerPath,
   isInlinePdfResponse,
+  isInlineVideoResponse,
   pdfViewerRedirectFor,
 } from "../src/main/pdf-viewer-redirect";
 
@@ -14,6 +16,10 @@ const origin = "http://127.0.0.1:52225";
 const pdfHeaders = {
   "Content-Type": ["application/pdf"],
   "Content-Disposition": ['inline; filename="book.pdf"'],
+};
+const videoHeaders = {
+  "Content-Type": ["video/mp4"],
+  "Content-Disposition": ['inline; filename="lecture.mp4"'],
 };
 
 test("a raw PDF response is one the frame would display, not save", () => {
@@ -71,6 +77,48 @@ test("only the dashboard origin's inline PDFs are redirected", () => {
   assert.equal(pdfViewerRedirectFor("http://127.0.0.1:4303/garden/assets/a.pdf", pdfHeaders, origin), null);
   assert.equal(pdfViewerRedirectFor(raw, { "content-type": ["text/html"] }, origin), null);
   assert.equal(pdfViewerRedirectFor("not a url", pdfHeaders, origin), null);
+});
+
+test("a raw video response is one the frame would play, not save", () => {
+  assert.ok(isInlineVideoResponse(videoHeaders));
+  assert.ok(isInlineVideoResponse({ "content-type": ["video/webm"] }));
+  assert.ok(!isInlineVideoResponse({ "content-type": ["application/octet-stream"] }));
+  assert.ok(!isInlineVideoResponse({
+    "content-type": ["video/mp4"],
+    "content-disposition": ['attachment; filename="clip.mp4"'],
+  }));
+  assert.ok(!isInlineVideoResponse(undefined));
+});
+
+test("a video artifact gets its own player; anything else gets the generic one", () => {
+  assert.equal(
+    breadboardVideoPlayerPath(new URL(
+      `${origin}/api/hermes/artifacts/art_7/preview?conversationId=conv_2&version=3`,
+    )),
+    "/artifacts/art_7/video?conversationId=conv_2&version=3",
+  );
+  assert.equal(
+    breadboardVideoPlayerPath(new URL(`${origin}/api/files/lecture%201.mp4`)),
+    "/video?src=%2Fapi%2Ffiles%2Flecture%25201.mp4&name=lecture+1.mp4",
+  );
+  assert.equal(
+    breadboardVideoPlayerPath(new URL(`${origin}/api/gardens/em1/media/clip`)),
+    "/video?src=%2Fapi%2Fgardens%2Fem1%2Fmedia%2Fclip",
+  );
+});
+
+test("only the dashboard origin's inline video is redirected", () => {
+  const raw = `${origin}/api/hermes/artifacts/art_7/preview?conversationId=conv_2`;
+  assert.equal(
+    pdfViewerRedirectFor(raw, videoHeaders, origin),
+    `${origin}/artifacts/art_7/video?conversationId=conv_2`,
+  );
+  assert.equal(pdfViewerRedirectFor(raw, videoHeaders, null), null);
+  assert.equal(pdfViewerRedirectFor(raw, videoHeaders, "http://127.0.0.1:4303"), null);
+  assert.equal(
+    pdfViewerRedirectFor(raw, { "content-type": ["video/mp4"], "content-disposition": ["attachment"] }, origin),
+    null,
+  );
 });
 
 test(

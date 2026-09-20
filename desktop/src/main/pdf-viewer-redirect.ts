@@ -1,18 +1,19 @@
 import type { Session } from "electron";
 
 /**
- * Breadboard reads PDFs in its own viewer — pdf.js with annotations, the Ask
- * palette, the remembered page. A frame that navigates straight to a
- * dashboard URL answering with PDF bytes (a middle-click or "open in new tab"
- * on the address a viewer fetches, an agent-driven navigation, a tab restored
- * on that address) would otherwise land in Chromium's built-in PDF plugin,
- * which has none of that and does not look like Breadboard. The shell notices
- * the PDF at the response and turns it into a redirect to the viewer route
- * for that file, so the guarantee holds no matter which click produced the
- * raw address.
+ * Breadboard reads PDFs and plays video in its own viewers — pdf.js with
+ * annotations, the Ask palette, the remembered page; the video player with the
+ * app's controls and a way back. A frame that navigates straight to a
+ * dashboard URL answering with those bytes (a middle-click or "open in new
+ * tab" on the address a viewer fetches, an agent-driven navigation, a tab
+ * restored on that address) would otherwise land in Chromium's built-in PDF
+ * plugin or its bare media viewer, which have none of that and do not look
+ * like Breadboard. The shell notices the content type at the response and
+ * turns it into a redirect to the viewer route for that file, so the guarantee
+ * holds no matter which click produced the raw address.
  *
  * Only the dashboard origin is covered: the sandboxed browser lives on its own
- * session, and a garden's static site is another origin whose PDFs the viewer
+ * session, and a garden's static site is another origin whose files the viewer
  * cannot fetch. Downloads (`Content-Disposition: attachment`) pass untouched.
  */
 
@@ -26,11 +27,30 @@ function header(headers: ResponseHeaders, name: string): string {
   return (Array.isArray(value) ? value[0] : value) ?? "";
 }
 
+function displayedInline(headers: ResponseHeaders): boolean {
+  return !/^\s*attachment/i.test(header(headers, "content-disposition"));
+}
+
+function contentType(headers: ResponseHeaders): string {
+  return header(headers, "content-type").split(";")[0]!.trim().toLowerCase();
+}
+
 /** A PDF the frame would display, as opposed to one it would save to disk. */
 export function isInlinePdfResponse(headers: ResponseHeaders): boolean {
-  const type = header(headers, "content-type").split(";")[0]!.trim().toLowerCase();
+  const type = contentType(headers);
   if (type !== "application/pdf" && type !== "application/x-pdf") return false;
-  return !/^\s*attachment/i.test(header(headers, "content-disposition"));
+  return displayedInline(headers);
+}
+
+/**
+ * A video the frame would display. `application/octet-stream` is deliberately
+ * not treated as video: a route that does not say what it is serving is not
+ * evidence enough to hijack the navigation.
+ */
+export function isInlineVideoResponse(headers: ResponseHeaders): boolean {
+  const type = contentType(headers);
+  if (!type.startsWith("video/")) return false;
+  return displayedInline(headers);
 }
 
 /**
@@ -67,6 +87,38 @@ export function breadboardPdfViewerPath(rawUrl: URL): string {
 }
 
 /**
+ * The player page for a dashboard address that serves a video. A video
+ * artifact has its own route; anything else gets the generic `/video?src=`
+ * player, which fetches the same address with the same cookies.
+ */
+export function breadboardVideoPlayerPath(rawUrl: URL): string {
+  const segments = rawUrl.pathname.split("/").filter(Boolean);
+  const [api, first, second, third, fourth] = segments;
+  if (
+    api === "api" && first === "hermes" && second === "artifacts" &&
+    third && fourth === "preview" && segments.length === 5
+  ) {
+    const query = new URLSearchParams();
+    for (const key of ["conversationId", "version"]) {
+      const value = rawUrl.searchParams.get(key);
+      if (value) query.set(key, value);
+    }
+    const suffix = query.toString();
+    return `/artifacts/${third}/video${suffix ? `?${suffix}` : ""}`;
+  }
+  const query = new URLSearchParams({ src: `${rawUrl.pathname}${rawUrl.search}` });
+  const name = decodeURIComponent(segments[segments.length - 1] ?? "");
+  if (/\.(mp4|m4v|mov|webm|mkv|avi|ogv)$/i.test(name)) query.set("name", name);
+  return `/video?${query.toString()}`;
+}
+
+function viewerPathFor(rawUrl: URL, headers: ResponseHeaders): string | null {
+  if (isInlinePdfResponse(headers)) return breadboardPdfViewerPath(rawUrl);
+  if (isInlineVideoResponse(headers)) return breadboardVideoPlayerPath(rawUrl);
+  return null;
+}
+
+/**
  * Where a main-frame response should be sent instead, or null to leave it be.
  */
 export function pdfViewerRedirectFor(
@@ -74,7 +126,7 @@ export function pdfViewerRedirectFor(
   headers: ResponseHeaders,
   dashboardOrigin: string | null,
 ): string | null {
-  if (!dashboardOrigin || !isInlinePdfResponse(headers)) return null;
+  if (!dashboardOrigin) return null;
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -82,7 +134,9 @@ export function pdfViewerRedirectFor(
     return null;
   }
   if (parsed.origin !== dashboardOrigin) return null;
-  return new URL(breadboardPdfViewerPath(parsed), dashboardOrigin).toString();
+  const viewerPath = viewerPathFor(parsed, headers);
+  if (!viewerPath) return null;
+  return new URL(viewerPath, dashboardOrigin).toString();
 }
 
 const BODY_HEADERS = new Set([
@@ -121,7 +175,7 @@ export function installPdfViewerRedirect(
         callback({});
         return;
       }
-      options.log?.(`[pdf] opening ${details.url} in the Breadboard viewer`);
+      options.log?.(`[media] opening ${details.url} in the Breadboard viewer`);
       const responseHeaders: Record<string, string[] | string> = {};
       for (const [key, value] of Object.entries(details.responseHeaders ?? {})) {
         if (!BODY_HEADERS.has(key.toLowerCase())) responseHeaders[key] = value;

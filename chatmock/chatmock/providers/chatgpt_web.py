@@ -42,6 +42,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional
@@ -136,6 +137,12 @@ ATTACH_TIMEOUT_SECONDS = 15
 BRIDGE_TTL_SECONDS = 120
 SESSION_CACHE_SECONDS = 45
 LOGIN_TIMEOUT_SECONDS = 15 * 60
+
+# The two pages ChatMock keeps on chatgpt.com (see `_Lane`). A streaming
+# caller is a person's chat; everything else is batch work.
+INTERACTIVE_LANE = "interactive"
+BATCH_LANE = "batch"
+LANES = (INTERACTIVE_LANE, BATCH_LANE)
 
 # Reasoning depths the site's own picker understands, as chat-on-steroids
 # forwards them in the URL. Anything else is dropped rather than guessed.
@@ -271,9 +278,40 @@ def cached_model_ids() -> List[str]:
     return [row["slug"] for row in cached_models()]
 
 
+#: How long a recorded signed-out verdict keeps refusing turns before the
+#: provider re-checks the live page. A sign-in performed in the app (or a page
+#: that was simply not probed yet) must not leave the provider refusing
+#: forever: on 2026-09-17 a never-probed state file (checkedAt null) blocked
+#: every Learn call for hours while chatting through the same page worked.
+SIGNED_OUT_CACHE_SECONDS = _env_seconds("CHATMOCK_CHATGPT_WEB_SIGNED_OUT_CACHE", 300)
+
+
+def _signed_out_verdict_is_fresh(state: Dict[str, Any]) -> bool:
+    checked_at = state.get("checkedAt")
+    if not isinstance(checked_at, str) or not checked_at:
+        # Never probed: nothing was verified, so nothing may be refused.
+        return False
+    try:
+        checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - checked).total_seconds()
+    return 0 <= age < SIGNED_OUT_CACHE_SECONDS
+
+
 def unavailable_reason() -> str | None:
-    """Why this provider cannot serve right now, or None when it can."""
-    if not is_signed_in():
+    """Why this provider cannot serve right now, or None when it can.
+
+    A signed-out verdict is only trusted while it is fresh. Once it ages out,
+    the turn path's own live `_probe_session` decides - and refreshes the
+    cache - so a sign-in in the app takes effect without restarting ChatMock.
+    """
+    state = cached_state()
+    if state.get("signedIn"):
+        return None
+    if _signed_out_verdict_is_fresh(state):
         return "not signed in to chatgpt.com"
     return None
 
@@ -357,6 +395,9 @@ def answer_tab_request(nonce: Any, payload: Any) -> bool:
         target = payload.get("targetId")
         if isinstance(port, int) and 0 < port < 65536 and isinstance(target, str) and target.strip():
             answer = {"cdpPort": port, "targetId": target.strip()}
+            lane = payload.get("lane")
+            if isinstance(lane, str) and lane.strip():
+                answer["lane"] = lane.strip()
             note_agent_seen(port)
         else:
             error = payload.get("error")
@@ -367,7 +408,13 @@ def answer_tab_request(nonce: Any, payload: Any) -> bool:
         return True
 
 
-def _bridge_open_tab(bridge: Dict[str, Any], *, foreground: bool, reset: bool = False) -> tuple[int, str]:
+def _bridge_open_tab(
+    bridge: Dict[str, Any],
+    *,
+    foreground: bool,
+    reset: bool = False,
+    lane: str = INTERACTIVE_LANE,
+) -> tuple[int, str]:
     """Ask the shell for its ChatGPT tab: ``(cdp port, CDP target id)``.
 
     The shell reuses the tab it already has (activating it when asked to
@@ -375,14 +422,23 @@ def _bridge_open_tab(bridge: Dict[str, Any], *, foreground: bool, reset: bool = 
     id is stable for as long as the person leaves the tab alone. ``reset``
     is the one way to break that: the shell throws its page away and builds a
     new one, which is what a page that has stopped answering CDP needs.
+
+    ``lane`` names which of the shell's pages is wanted (see ``_Lane``). A
+    shell that keeps a page per lane echoes the lane in its answer; one that
+    does not (an older shell, or an older dashboard relaying between the
+    two) answers with its only page, and that silence is recorded so every
+    lane shares that page as before - two lanes on one composer would be
+    two turns typed over each other.
     """
     del bridge
+    global _lanes_supported
     nonce = uuid4().hex
     with _bridge_lock:
         _tab_requests[nonce] = {
             "nonce": nonce,
             "foreground": bool(foreground),
             "reset": bool(reset),
+            "lane": lane,
             "requestedAt": _now_iso(),
         }
         _bridge_lock.notify_all()
@@ -407,6 +463,8 @@ def _bridge_open_tab(bridge: Dict[str, Any], *, foreground: bool, reset: bool = 
             phase="prepare",
             replay_safe=True,
         )
+    with _lifecycle_lock:
+        _lanes_supported = answer.get("lane") == lane
     return int(answer["cdpPort"]), str(answer["targetId"])
 
 
@@ -1264,6 +1322,8 @@ PAGE_SCRIPT = r"""
 class _Page:
     def __init__(self, ws_url: str, surface: str) -> None:
         self.surface = surface
+        # Which lane this page serves; set by `_ensure_page` once attached.
+        self.lane: str = INTERACTIVE_LANE
         self.events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._loaded = threading.Event()
         # Request ids of the site's own refusals of a message, newest last.
@@ -1600,18 +1660,51 @@ def system_browser_allowed() -> bool:
 
 
 _lifecycle_lock = threading.RLock()
-_turn_lock = threading.Lock()
-_page: _Page | None = None
 _system: _SystemBrowser | None = None
 _session_cache: tuple[float, Dict[str, Any]] | None = None
 
 
-def _drop_page() -> None:
-    global _page
+@dataclass
+class _Lane:
+    """One chatgpt.com page and the turn lock that serialises it.
+
+    A page is a single composer, so it holds one conversation at a time. Two
+    lanes mean two pages: ``interactive`` for a person's chat (and signing in,
+    which needs a page in front of them), ``batch`` for Learn, the council and
+    Thought Topology. Before lanes, a Learn stage that thought for fifteen
+    minutes held the only page, and the person's chat was refused three times
+    in a row and gave up (2026-09-18).
+
+    ``holder`` says who has the lock and since when, so a refusal can name
+    them instead of "an earlier message".
+    """
+
+    name: str
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    page: _Page | None = None
+    holder: Dict[str, Any] | None = None
+
+
+_lanes: Dict[str, _Lane] = {name: _Lane(name) for name in LANES}
+# Whether the shell hands out a page per lane; learned from its first answer
+# (see ``_bridge_open_tab``). Unknown until then.
+_lanes_supported: bool | None = None
+
+
+def _lane(name: str = INTERACTIVE_LANE) -> _Lane:
+    return _lanes[name]
+
+
+def _drop_page(lane: str = INTERACTIVE_LANE) -> None:
     with _lifecycle_lock:
-        if _page is not None:
-            _page.close()
-        _page = None
+        slot = _lane(lane)
+        if slot.page is not None:
+            slot.page.close()
+        slot.page = None
+
+
+def _page_lane(page: _Page) -> str:
+    return getattr(page, "lane", None) or INTERACTIVE_LANE
 
 
 def _focus(page: _Page) -> None:
@@ -1620,7 +1713,7 @@ def _focus(page: _Page) -> None:
         bridge = _live_bridge()
         if bridge is not None:
             try:
-                _bridge_open_tab(bridge, foreground=True)
+                _bridge_open_tab(bridge, foreground=True, lane=_page_lane(page))
             except ProviderError:
                 pass
         return
@@ -1653,10 +1746,17 @@ def _attach(page: _Page, *, foreground: bool) -> None:
         page.set_window_state("normal")
 
 
-def _ensure_page(*, foreground: bool = False) -> _Page:
-    """The driven ChatGPT page, opening a surface for it when none is live."""
-    global _page, _system
+def _ensure_page(*, foreground: bool = False, lane: str = INTERACTIVE_LANE) -> _Page:
+    """The driven ChatGPT page for ``lane``, opening a surface for it when none is live.
+
+    A lane the surface cannot give its own page to - the system browser has
+    one window, an older shell one page - is served the interactive page,
+    and ``_lanes_supported`` records that so callers stop asking (and, more
+    to the point, stop taking a lock of their own for a page they share).
+    """
+    global _system, _lanes_supported
     with _lifecycle_lock:
+        slot = _lane(lane)
         # A page that was ours and has stopped being usable is not one to
         # reattach to, whichever way it went: a wedged renderer answers the
         # same nothing through a second socket, and a socket that closed under
@@ -1666,13 +1766,13 @@ def _ensure_page(*, foreground: bool = False) -> _Page:
         # at all is different: ChatMock has just started, and the page the
         # shell is holding is exactly the one to attach to.
         wedged = False
-        if _page is not None:
-            if _page.alive():
+        if slot.page is not None:
+            if slot.page.alive():
                 if foreground:
-                    _focus(_page)
-                return _page
+                    _focus(slot.page)
+                return slot.page
             wedged = True
-            _drop_page()
+            _drop_page(lane)
 
         bridge = _live_bridge()
         if bridge is None and not system_browser_allowed():
@@ -1684,13 +1784,21 @@ def _ensure_page(*, foreground: bool = False) -> _Page:
                 phase="prepare",
                 replay_safe=True,
             )
+        if bridge is None and lane != INTERACTIVE_LANE:
+            _lanes_supported = False
+            return _ensure_page(foreground=foreground, lane=INTERACTIVE_LANE)
 
         # The shell can hand out a replacement page; the system browser cannot,
         # so there the one attempt is all there is.
         resets = ((True,) if wedged else (False, True)) if bridge is not None else (False,)
         for reset in resets:
             if bridge is not None:
-                cdp_port, target_id = _bridge_open_tab(bridge, foreground=foreground, reset=reset)
+                cdp_port, target_id = _bridge_open_tab(bridge, foreground=foreground, reset=reset, lane=lane)
+                if lane != INTERACTIVE_LANE and not _lanes_supported:
+                    # The shell answered with its only page - the interactive
+                    # lane's. Attaching to it a second time under another
+                    # lock would type two turns into one composer.
+                    return _ensure_page(foreground=foreground, lane=INTERACTIVE_LANE)
                 ws_url = _page_websocket(cdp_port, target_id=target_id)
                 page = _Page(ws_url, surface="desktop")
             else:
@@ -1699,6 +1807,7 @@ def _ensure_page(*, foreground: bool = False) -> _Page:
                 port = _system.ensure()
                 ws_url = _page_websocket(port)
                 page = _Page(ws_url, surface="browser")
+            page.lane = lane
             try:
                 _attach(page, foreground=foreground)
             except _PageUnresponsive:
@@ -1709,7 +1818,7 @@ def _ensure_page(*, foreground: bool = False) -> _Page:
             except ProviderError:
                 page.close()
                 raise
-            _page = page
+            slot.page = page
             return page
         raise _unresponsive_error("desktop")
 
@@ -1796,7 +1905,8 @@ def session_state(*, refresh: bool = False) -> Dict[str, Any]:
     state = cached_state()
     with _login_lock:
         login = dict(_login) if _login else None
-    live = _page is not None and not _page.cdp.closed.is_set()
+    current = _lane().page
+    live = current is not None and not current.cdp.closed.is_set()
     return {
         "signedIn": bool(state.get("signedIn")),
         "email": state.get("email"),
@@ -1882,13 +1992,17 @@ def logout() -> Dict[str, Any]:
     signed out through the site."""
     global _system, _session_cache
     with _lifecycle_lock:
-        page = _page if _page is not None and _page.alive() else None
+        current = _lane().page
+        page = current if current is not None and current.alive() else None
         if page is not None and page.surface == "desktop":
             try:
                 page.navigate(f"{ORIGIN}/auth/logout", timeout=20)
             except ProviderError:
                 pass
-        _drop_page()
+        # The session is a cookie shared by every lane's page: one logout
+        # signs them all out, and none is worth keeping attached.
+        for name in LANES:
+            _drop_page(name)
         if _system is not None:
             _system.close()
             _system = None
@@ -2113,14 +2227,15 @@ def _begin_turn(
     images: List[str] | None = None,
     *,
     temporary: bool = True,
+    lane: str = INTERACTIVE_LANE,
 ) -> tuple[_Page, str]:
     """Open a fresh temporary chat for ``model`` and submit ``prompt``.
 
-    Runs under ``_turn_lock``: the browser is one page, and the page answers
-    one message at a time. Everything here happens before the site accepts
-    the message, so a failure is safe to report as a plain refusal.
+    Runs under the lane's turn lock: a page answers one message at a time.
+    Everything here happens before the site accepts the message, so a
+    failure is safe to report as a plain refusal.
     """
-    page = _ensure_page()
+    page = _ensure_page(lane=lane)
     try:
         return page, _submit_turn(page, model, prompt, effort, images or [], temporary=temporary)
     except _PageUnresponsive:
@@ -2128,7 +2243,7 @@ def _begin_turn(
         # is nothing to read back from it, and reusing it would wedge the next
         # request too, so it is dropped here and the person is told what to do
         # rather than shown a DevTools method name.
-        _drop_page()
+        _drop_page(_page_lane(page))
         raise _unresponsive_error(page.surface) from None
 
 
@@ -2582,6 +2697,86 @@ def _watch_client(
     return thread
 
 
+def _describe_caller(payload: Dict[str, Any], upstream_model: str, *, stream: bool) -> str:
+    """Who is asking, in the words a refusal will use about them."""
+    try:
+        from .. import usage_ledger
+
+        origin = usage_ledger.request_origin(payload)
+    except Exception:  # noqa: BLE001 - a label, never a reason to fail
+        origin = {}
+    source = str(origin.get("source") or "")
+    task = origin.get("taskType")
+    garden = origin.get("gardenId")
+    where = f" on {garden}" if garden else ""
+    what = f" ({task})" if task else ""
+    if source == "learn":
+        label = f"a Learn job{where}{what}"
+    elif source == "council-task":
+        label = f"a council task{where}{what}"
+    elif source == "voice":
+        label = "a read-aloud request"
+    elif source in ("agent-turn", "chat") or stream:
+        label = "another chat message"
+    elif source and source not in ("direct", "background"):
+        label = f"a {source} request"
+    else:
+        label = "an earlier message"
+    return f"{label} on {upstream_model}"
+
+
+def _elapsed_words(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {rest:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def busy_message(lane: str) -> str:
+    """Why the lane's page cannot take a message right now, naming its holder."""
+    holder = _lane(lane).holder
+    page = "chat page" if lane == INTERACTIVE_LANE else "background page"
+    if holder:
+        return (
+            f"OpenAI (web)'s {page} is still answering {holder['label']} "
+            f"(sent {_elapsed_words(time.time() - holder['since'])} ago). "
+            "Let that answer finish, or stop it, and send again."
+        )
+    return (
+        f"OpenAI (web)'s {page} is still answering an earlier message. The browser page holds "
+        "one conversation at a time - let that answer finish, or stop it, and send again."
+    )
+
+
+def _hold(lane: str, label: str) -> None:
+    _lane(lane).holder = {"label": label, "since": time.time()}
+
+
+def _resolve_lane(*, stream: bool) -> str:
+    """Which page serves this request.
+
+    A streaming caller is a person's chat and always gets the interactive
+    page. Batch work gets its own page when the shell can provide one; the
+    first batch request finds that out by asking for the page before it
+    takes any lock, so that a shell with one page leaves batch callers
+    sharing the interactive lock rather than a lock of their own over the
+    same composer.
+    """
+    if stream:
+        return INTERACTIVE_LANE
+    if _lanes_supported is None:
+        try:
+            _ensure_page(lane=BATCH_LANE)
+        except ProviderError:
+            # The turn itself will report why no page could be had.
+            pass
+    return BATCH_LANE if _lanes_supported else INTERACTIVE_LANE
+
+
 def request_chat(
     credentials: ResolvedCredentials,
     payload: Dict[str, Any],
@@ -2598,9 +2793,10 @@ def request_chat(
     otherwise keep the page busy until the site finishes or the turn times
     out, and every caller queued behind it waits that long too.
 
-    The turn lock is taken here and, for a streaming answer, released only
-    when the client has read (or abandoned) the stream: the page is a single
-    composer and cannot hold two conversations at once.
+    The lane's turn lock is taken here and, for a streaming answer, released
+    only when the client has read (or abandoned) the stream: a page is a
+    single composer and cannot hold two conversations at once. A chat and a
+    Learn job are different lanes, so they hold different pages.
     """
     del allow_preconnect_retry  # the page is never retried behind the caller's back
     if _is_work_model(upstream_model):
@@ -2632,18 +2828,11 @@ def request_chat(
     # retry would only meet the same lock. So batch callers queue for as long
     # as one turn may take.
     queue_wait = TURN_QUEUE_WAIT_SECONDS if stream else TURN_TIMEOUT_SECONDS
-    if not _turn_lock.acquire(timeout=queue_wait):
-        return _WebResponse(
-            503,
-            {
-                "error": {
-                    "message": (
-                        "OpenAI (web) is still answering an earlier message. The browser page holds "
-                        "one conversation at a time - let that answer finish, or stop it, and send again."
-                    )
-                }
-            },
-        )
+    lane = _resolve_lane(stream=stream)
+    turn_lock = _lane(lane).lock
+    if not turn_lock.acquire(timeout=queue_wait):
+        return _WebResponse(503, {"error": {"message": busy_message(lane)}})
+    _hold(lane, _describe_caller(payload, upstream_model, stream=stream))
     released = False
     # A client that walks away mid-answer (a retry, a closed tab) must not
     # leave the collector polling the page behind the next turn's back: it
@@ -2668,10 +2857,11 @@ def request_chat(
             if released:
                 return
             released = True
-        _turn_lock.release()
+        _lane(lane).holder = None
+        turn_lock.release()
 
     try:
-        page, turn_id = _begin_turn(upstream_model, prompt, effort, _image_data_urls(messages))
+        page, turn_id = _begin_turn(upstream_model, prompt, effort, _image_data_urls(messages), lane=lane)
     except _TurnFailed as exc:
         release()
         return _WebResponse(exc.status_code or 502, {"error": {"message": str(exc)}})
@@ -2878,11 +3068,15 @@ def verify(credentials: ResolvedCredentials) -> Dict[str, Any]:
 
 
 def reset_for_tests() -> None:
-    global _page, _system, _session_cache, _login, _state_cache
+    global _system, _session_cache, _login, _state_cache, _lanes_supported
     with _lifecycle_lock:
-        if _page is not None:
-            _page.close()
-        _page = None
+        for slot in _lanes.values():
+            if slot.page is not None:
+                slot.page.close()
+            slot.page = None
+            slot.holder = None
+            slot.lock = threading.Lock()
+        _lanes_supported = None
         _system = None
         _session_cache = None
     with _login_lock:

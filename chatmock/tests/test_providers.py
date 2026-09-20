@@ -905,6 +905,89 @@ class OpenAICompatibleTests(unittest.TestCase):
             },
         )
 
+    def test_tool_result_images_are_hoisted_into_a_following_user_message(self) -> None:
+        """CLIProxyAPI's Gemini translation stringifies a tool message's content
+        list into the functionResponse text, data URL included, so a screenshot
+        inside a tool result is billed as base64 text (53k tokens for a 60 KB
+        JPEG, ~1M for a 1 MB PNG) and the turn dies with "input token count
+        exceeds the maximum number of tokens allowed 1048576". Text stays in the
+        tool result; images follow the whole tool-result run as a user message."""
+        shot = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        shot2 = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBBB"}}
+        calls = [
+            {"id": "c1", "type": "function", "function": {"name": "browser_terminal", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "computer_use", "arguments": "{}"}},
+        ]
+        payload = openai_compatible.build_payload(
+            {
+                "messages": [
+                    {"role": "user", "content": "scroll and read"},
+                    {"role": "assistant", "content": None, "tool_calls": calls},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "browser_terminal",
+                        "content": [{"type": "text", "text": "page text"}, shot],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c2",
+                        "name": "computer_use",
+                        "content": [{"type": "text", "text": "capture"}, shot2],
+                    },
+                    {"role": "assistant", "content": "I see it."},
+                ]
+            },
+            "gemini-3.8-flash-high",
+            stream=True,
+            provider_id="cliproxy",
+        )
+        messages = payload["messages"]
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "tool", "tool", "user", "assistant"])
+        # Both results keep their text and their tool_call_id pairing.
+        self.assertEqual(messages[2]["tool_call_id"], "c1")
+        self.assertEqual(messages[3]["tool_call_id"], "c2")
+        for result in messages[2:4]:
+            self.assertFalse(any(p.get("type") == "image_url" for p in result["content"]))
+        self.assertEqual(messages[2]["content"][0], {"type": "text", "text": "page text"})
+        self.assertIn("browser_terminal", messages[2]["content"][1]["text"])
+        # The hoisted user message carries every image, labelled by tool, in order.
+        hoisted = messages[4]["content"]
+        self.assertEqual([p for p in hoisted if p.get("type") == "image_url"], [shot, shot2])
+        self.assertIn("browser_terminal", hoisted[0]["text"])
+        self.assertIn("computer_use", hoisted[2]["text"])
+
+    def test_tool_result_images_join_an_existing_user_message(self) -> None:
+        shot = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        payload = openai_compatible.build_payload(
+            {
+                "messages": [
+                    {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "shot", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "c1", "name": "shot", "content": [shot]},
+                    {"role": "user", "content": "are you sure?"},
+                ]
+            },
+            "gemini-3.8-flash-high",
+            stream=False,
+        )
+        messages = payload["messages"]
+        self.assertEqual([m["role"] for m in messages], ["assistant", "tool", "user"])
+        self.assertEqual(messages[2]["content"][1], shot)
+        self.assertEqual(messages[2]["content"][-1], {"type": "text", "text": "are you sure?"})
+        # A tool result that was only an image still says where it went.
+        self.assertEqual(len(messages[1]["content"]), 1)
+        self.assertEqual(messages[1]["content"][0]["type"], "text")
+
+    def test_messages_without_tool_images_are_passed_through_untouched(self) -> None:
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "plain text"},
+            {"role": "tool", "tool_call_id": "c2", "content": [{"type": "text", "text": "text parts"}]},
+        ]
+        payload = openai_compatible.build_payload({"messages": messages}, "m", stream=False)
+        self.assertIs(payload["messages"], messages)
+
     def test_chat_url_appends_the_path_once(self) -> None:
         self.assertEqual(
             openai_compatible.chat_url(self._credentials()),

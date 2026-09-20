@@ -309,8 +309,12 @@ export interface ChatgptWebTabRequestRow {
   foreground: boolean;
   /** Replace the page rather than reuse it; the one it holds stopped answering. */
   reset: boolean;
+  /** Which of ChatMock's pages: "interactive" (chat) or "batch" (Learn, council). */
+  lane?: string;
   requestedAt: string;
 }
+
+const CHATGPT_WEB_LANE = /^[a-z][a-z0-9-]{0,31}$/;
 
 export const CHATGPT_WEB_TAB_POLL_MAX_WAIT_SECONDS = 25;
 
@@ -331,12 +335,13 @@ export async function pollChatgptWebTabRequests(
   return {
     requests: rows.flatMap((row): ChatgptWebTabRequestRow[] => {
       if (!row || typeof row !== "object") return [];
-      const { nonce, foreground, reset, requestedAt } = row as Record<string, unknown>;
+      const { nonce, foreground, reset, lane, requestedAt } = row as Record<string, unknown>;
       if (typeof nonce !== "string" || !/^[0-9a-f]{32}$/.test(nonce)) return [];
       return [{
         nonce,
         foreground: foreground === true,
         reset: reset === true,
+        ...(typeof lane === "string" && CHATGPT_WEB_LANE.test(lane) ? { lane } : {}),
         requestedAt: typeof requestedAt === "string" ? requestedAt : "",
       }];
     }),
@@ -350,7 +355,7 @@ export function isChatgptWebTabNonce(value: unknown): value is string {
 export async function answerChatgptWebTabRequest(
   incoming: Request,
   nonce: string,
-  answer: { cdpPort: number; targetId: string } | { error: string },
+  answer: { cdpPort: number; targetId: string; lane?: string } | { error: string },
 ): Promise<boolean> {
   let response: Response;
   try {

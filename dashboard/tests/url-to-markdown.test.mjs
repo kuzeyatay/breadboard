@@ -80,15 +80,38 @@ describe("URL to Markdown provider", () => {
     );
   });
 
-  test("requires READER_BASE_URL for local Reader", async () => {
+  // Saving a link used to fail with the bare text "READER_BASE_URL is
+  // required" whenever no local Reader was configured (2026-09-17). An
+  // unconfigured Reader is not a refusal to read pages off this machine, so
+  // the remote Reader now carries it; only an explicit opt-out refuses.
+  test("with no local Reader configured, the remote Reader carries the page", async () => {
+    const requested = [];
+    const result = await convertUrlToMarkdown({
+      url: "https://example.com/article",
+      env: {},
+      fetchImpl: async (input) => {
+        requested.push(String(input));
+        return new Response("# Article\n\nBody.");
+      },
+    });
+    assert.equal(result.provider, "jina-reader-remote");
+    assert.ok(
+      requested.every((url) => url.startsWith("https://r.jina.ai/")),
+      `remote Reader should be used, got ${requested.join(", ")}`,
+    );
+  });
+
+  test("an explicit opt-out refuses instead of reading the page remotely", async () => {
     await assert.rejects(
       () =>
         convertUrlToMarkdown({
           url: "https://example.com/article",
-          env: {},
-          fetchImpl: async () => new Response("# Should not be called"),
+          env: { READER_ALLOW_REMOTE_FALLBACK: "0" },
+          fetchImpl: async () => {
+            throw new Error("must not be called");
+          },
         }),
-      /READER_BASE_URL/,
+      /remote Reader is disabled/,
     );
   });
 
@@ -116,6 +139,21 @@ describe("URL to Markdown provider", () => {
 });
 
 describe("URL source duplicate lookup", () => {
+  test("a page-only import cannot satisfy a website or section import", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-site-duplicate-"));
+    try {
+      fs.mkdirSync(path.join(root, "garden", "sources"), { recursive: true });
+      fs.writeFileSync(path.join(root, "garden", "sources", "homepage.md"),
+        '---\nsource_type: "url"\noriginal_url: "https://example.com/"\ncontent_hash: "homepage-hash"\n---\nHome');
+      for (const importScope of ["site", "section"]) {
+        assert.equal(findExistingUrlSource({contentPath:root,clusterSlug:"garden",originalUrl:"https://example.com/",contentHash:"whole-site-hash",importScope}),null);
+      }
+      fs.writeFileSync(path.join(root, "garden", "sources", "section.md"),
+        '---\nsource_type: "url"\noriginal_url: "https://example.com/section/"\nimport_scope: "section"\ncontent_hash: "old-section"\n---\nOld section');
+      assert.equal(findExistingUrlSource({contentPath:root,clusterSlug:"garden",originalUrl:"https://example.com/section/",contentHash:"new-section",importScope:"section"}),null);
+      assert.equal(findExistingUrlSource({contentPath:root,clusterSlug:"garden",originalUrl:"https://example.com/section/",contentHash:"old-section",importScope:"section"})?.sourceSlug,"section");
+    } finally { fs.rmSync(root,{recursive:true,force:true}); }
+  });
   test("finds an existing URL source by content hash", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-url-source-"));
     const garden = path.join(root, "garden");

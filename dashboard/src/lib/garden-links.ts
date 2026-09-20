@@ -195,7 +195,12 @@ export function addGardenLink(
       updatedAt: now,
     };
     const links = readGardenLinks(contentPath, gardenSlug);
-    writeGardenLinks(contentPath, gardenSlug, [link, ...links]);
+    const existing = links.find(saved => saved.url === url);
+    if (existing) {
+      link.id = existing.id;
+      link.createdAt = existing.createdAt;
+    }
+    writeGardenLinks(contentPath, gardenSlug, [link, ...links.filter(saved => saved.url !== url)]);
     return link;
   } finally {
     lease.release();

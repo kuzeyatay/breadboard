@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { reviewExplanation } from "../src/lib/hermes/explanation-review.ts";
+import { createHash } from "node:crypto";
+import { reviewExplanation, EXPLANATION_PLAN_PROMPT, EXPLANATION_REVIEW_PROMPT, EXPLANATION_REPAIR_PROMPT, EXPLANATION_VERIFY_PROMPT } from "../src/lib/hermes/explanation-review.ts";
 import { explanationReviewModel } from "../src/lib/hermes/explanation-review-provider.ts";
 
 // Run explicitly against the configured provider; never part of offline tests.
@@ -8,6 +9,9 @@ import { explanationReviewModel } from "../src/lib/hermes/explanation-review-pro
 // A returned "repaired" status is not the quality verdict: inspect the answer
 // for the target omission, factual regressions, and unnecessary expansions.
 const model = process.argv[2] || "gpt-5.6-sol";
+const reviewContractSha256 = createHash("sha256").update(JSON.stringify([
+  EXPLANATION_PLAN_PROMPT, EXPLANATION_REVIEW_PROMPT, EXPLANATION_REPAIR_PROMPT, EXPLANATION_VERIFY_PROMPT,
+])).digest("hex");
 const cases = [
   {
     id: "battery-omission", expected: "repaired",
@@ -35,6 +39,7 @@ cases.splice(1, 0, {
   sourcePassages: "Source notes, paraphrased from Chabay and Sherwood, American Journal of Physics 87, 341 (2019), https://doi.org/10.1119/1.5095939: Charges in and on the battery produce an electric field that polarizes the conductors even before the final connection. Closing the gap changes the field conditions; the disturbance reaches other parts electromagnetically. Local transient currents modify surface charges, whose field combines with the battery's field. Only tiny local electron displacements are needed. The redistribution and electric field adjust together toward steady current.",
 });
 const outDir = path.resolve("artifacts/explanation-review");
+cases.push(...JSON.parse(await fs.readFile(new URL("../tests/fixtures/explanation-comprehension.json", import.meta.url), "utf8")));
 await fs.mkdir(outDir, { recursive: true });
 for (const fixture of cases) {
   if (process.argv[3] && process.argv[3] !== fixture.id) continue;
@@ -46,12 +51,14 @@ for (const fixture of cases) {
     responses.push({ stage: request.stage, ...response });
     return response;
   } });
-  results.push({ fixture, ...result, responses });
-  console.log(JSON.stringify({ id: fixture.id, status: result.report.status, calls: result.report.calls, durationMs: result.report.durationMs, tokens: result.usage?.totalTokens, reason: result.report.reason }));
+  const expectedStatusMatched = result.report.status === fixture.expected;
+  results.push({ fixture, expectedStatusMatched, ...result, responses });
+  console.log(JSON.stringify({ id: fixture.id, status: result.report.status, expectedStatusMatched, calls: result.report.calls, durationMs: result.report.durationMs, tokens: result.usage?.totalTokens, reason: result.report.reason }));
   const at = new Date().toISOString();
-  const report = JSON.stringify({ model, at, kind: "fixture_smoke_not_baseline_comparison", requiresHumanContentReview: true, results }, null, 2);
+  const report = JSON.stringify({ model, at, reviewContractSha256, kind: "fixture_smoke_not_baseline_comparison", requiresHumanContentReview: true, results }, null, 2);
   await fs.writeFile(path.join(outDir, "latest.json"), report);
-  const caseReport = JSON.stringify({ model, at, fixture, ...result, responses }, null, 2);
+  const caseReport = JSON.stringify({ model, at, reviewContractSha256, fixture, expectedStatusMatched, ...result, responses }, null, 2);
   await fs.writeFile(path.join(outDir, `${fixture.id}.json`), caseReport);
   await fs.writeFile(path.join(outDir, `${fixture.id}-${at.replace(/[:.]/g, "-")}.json`), caseReport);
 }
+if (results.some(result => !result.expectedStatusMatched)) process.exitCode = 1;

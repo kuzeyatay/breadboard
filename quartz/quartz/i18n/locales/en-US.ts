@@ -1,4 +1,5 @@
 import { Translation } from "./definition"
+import { formatDuration } from "../../util/duration"
 
 export default {
   propertyDefaults: {
@@ -57,7 +58,7 @@ export default {
       title: "Table of Contents",
     },
     contentMeta: {
-      readingTime: ({ minutes }) => `${minutes} min read`,
+      readingTime: ({ minutes }) => `${formatDuration(minutes, "en-US")} read`,
     },
   },
   pages: {

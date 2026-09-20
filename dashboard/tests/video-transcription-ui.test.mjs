@@ -40,6 +40,7 @@ test("stage lists match the documented progressions for both input kinds", () =>
       "Formatting transcript",
       "Writing source",
       "Indexing source",
+      "Analyzing what the video shows",
       "Complete",
     ],
   );
@@ -52,6 +53,7 @@ test("stage lists match the documented progressions for both input kinds", () =>
       "Formatting transcript",
       "Writing source",
       "Indexing source",
+      "Analyzing what the video shows",
       "Complete",
     ],
   );
@@ -124,7 +126,7 @@ test("video, audio, and YouTube inputs render in the same media-import panel", (
   assert.match(componentSource, /aria-label="YouTube URL"/);
   assert.match(componentSource, /Video: \{ACCEPTED_VIDEO_EXTENSIONS\.join\(" "\)\}/);
   assert.match(componentSource, /Audio: \{ACCEPTED_AUDIO_EXTENSIONS\.join\(" "\)\}/);
-  assert.match(componentSource, /form\.append\("media", submissionFile/);
+  assert.match(componentSource, /gardenMediaUploadQueue\.enqueue/);
   assert.match(componentSource, /onDrop=\{handleDrop\}/, "drag-and-drop supported");
 });
 
@@ -147,17 +149,17 @@ test("inputs are mutually exclusive in both directions", () => {
   );
   assert.match(
     componentSource,
-    /Entering a URL clears the file side[\s\S]*?setSelectedFile\(null\)/,
+    /Entering a URL clears the file side[\s\S]*?setSelectedFiles\(\[\]\)/,
   );
 });
 
-test("active progress stays actionable while failed history stays out of the source list", () => {
+test("active progress and failures remain actionable in the source list", () => {
   assert.match(componentSource, /stagesForInputKind\(selectedJob\.inputKind\)/);
   assert.match(componentSource, /formatElapsed\(job\.createdAt, nowMs\)/);
   assert.match(componentSource, /cancelJob\(selectedJob\.id\)/);
   assert.match(
     componentSource,
-    /filter\(\(job\) => !isTerminalJob\(job\)\)/,
+    /filter\(\(job\) => !isTerminalJob\(job\) \|\| job\.status === "failed"\)/,
   );
   assert.doesNotMatch(componentSource, /postJobAction\(job\.id, "retry"\)/);
   assert.match(componentSource, /selectedJob\.errorMessage/);

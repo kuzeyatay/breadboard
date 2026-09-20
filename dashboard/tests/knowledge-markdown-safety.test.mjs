@@ -12,6 +12,7 @@ await import("../scripts/learn-worker-import-hook.mjs");
 const { sanitizeKnowledgeMarkdownForQuartz } = await import(
   pathToFileURL(path.join(dashboardRoot, "src", "lib", "knowledge.ts")).href,
 );
+const { websiteSnapshotMarkdown } = await import('../src/lib/website-to-markdown.ts');
 
 test("knowledge Markdown encodes raw angle brackets without changing math or code", () => {
   const input = [
@@ -40,4 +41,17 @@ test("knowledge Markdown sanitization is idempotent", () => {
   const input = "# Topic\n\nA < b and `c < d` and $p<1$.";
   const once = sanitizeKnowledgeMarkdownForQuartz(input);
   assert.equal(sanitizeKnowledgeMarkdownForQuartz(once), once);
+});
+
+test("website chapter links retain real heading targets after garden sanitization", () => {
+  const markdown = websiteSnapshotMarkdown({
+    rootUrl: 'https://example.com/', aliases: {}, failures: [], skipped: [], complete: true,
+    pages: [{ originalUrl: 'https://example.com/', title: 'An original page', anchor: 'website-page-1',
+      markdown: 'The complete original body.\n\n[Home](/)', discoveredLinks: [] }],
+  });
+  const saved = sanitizeKnowledgeMarkdownForQuartz(markdown);
+  assert.match(saved, /\[An original page\]\(#website-page-1\)/);
+  assert.match(saved, /^## Website page 1$/m);
+  assert.match(saved, /\[Home\]\(#website-page-1\)/);
+  assert.doesNotMatch(saved, /&lt;a id=/);
 });

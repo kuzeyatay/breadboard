@@ -22,6 +22,7 @@ import {
   type ProductSearchInput,
 } from "@/lib/product-search/service.ts";
 import { productSearchMarketContext } from "@/lib/product-search/market-context.ts";
+import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -96,7 +97,7 @@ export async function POST(request: Request) {
         ...args,
         ...(market ? { country: market.locale } : {}),
       },
-      { signal: request.signal },
+      { signal: request.signal, baseUrl: resolveChatmockBaseUrl(request).baseURL },
     );
     recordAuditEvent({
       eventType: "productSearch.tool_completed",

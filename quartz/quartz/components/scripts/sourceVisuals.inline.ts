@@ -96,7 +96,18 @@ document.addEventListener("nav", () => {
       frame = requestAnimationFrame(layout)
     }
 
-    const observer = new ResizeObserver(scheduleLayout)
+    const widths = new WeakMap<Element, number>()
+    const observer = new ResizeObserver((entries) => {
+      // Lazy article blocks and images change the page height while scrolling.
+      // Figure pairing depends on column width, not the length of the book.
+      let changed = false
+      for (const entry of entries) {
+        const width = entry.contentRect.width
+        if (widths.get(entry.target) !== width) changed = true
+        widths.set(entry.target, width)
+      }
+      if (changed) scheduleLayout()
+    })
     observer.observe(column)
     if (column !== article) observer.observe(article)
     for (const image of images) {

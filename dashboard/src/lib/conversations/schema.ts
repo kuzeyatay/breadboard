@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { ensureChatNotificationSchema } from "../chat-notifications/store.ts";
 import { ensureLearnNotificationSchema } from "../chat-notifications/learn.ts";
 import { backfillGenerativeUiResources } from "../generative-ui/backfill.ts";
+import { ensureStarredMessagesSchema } from "../starred-messages-store.ts";
 
 /**
  * Additive, repeatable migration for Breadboard-owned conversations.
@@ -149,6 +150,7 @@ export function ensureConversationSchema(database: Database.Database): void {
     );
   `);
 
+  ensureStarredMessagesSchema(database);
   ensureColumn(database, "chat_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
   ensureColumn(
     database,

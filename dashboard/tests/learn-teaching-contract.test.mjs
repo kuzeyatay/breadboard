@@ -321,3 +321,29 @@ test("callout syntax and bold terms are not mistaken for emoji", () => {
   const body = "**Electric flux density** is a local vector.\n\n> [!note]\n> Phasors arrive in section 10.";
   assert.deepEqual(emojiMatches(body), []);
 });
+
+test("a collapsed answer block satisfies the question gate without a bold Answer marker", () => {
+  // 11.2 of telecom-1 M2 failed four attempts on "missing a Question./Answer.
+  // pair" (2026-09-17) while carrying three questions, each with a correct
+  // collapsed answer. The contract asks for <details><summary>Answer</summary>
+  // *and* a bold "**Answer.**" inside it, which writes "Answer" twice running,
+  // so the writer kept dropping the second. The summary line already labels it.
+  const prose = "Imagine a charged sphere. ".repeat(200);
+  const collapsed =
+    `## Title\n\n${prose}\n\n**Question.** Why?\n\n<details><summary>Answer</summary>\n\nBecause the field is radial.\n\n</details>`;
+  const outcome = assessLessonQuality(collapsed);
+  assert.ok(!outcome.problems.some((p) => p.code === "no-qa"), "a collapsed answer is an answer");
+
+  // The bold marker still works, and a page with neither still fails.
+  const bold = `## Title\n\n${prose}\n\n**Question.** Why?\n\n**Answer.** Because.`;
+  assert.ok(!assessLessonQuality(bold).problems.some((p) => p.code === "no-qa"));
+  const none = `## Title\n\n${prose}`;
+  const missing = assessLessonQuality(none).problems.find((p) => p.code === "no-qa");
+  assert.ok(missing, "a page with no question at all is still a hard failure");
+  assert.equal(missing.hard, true);
+
+  // A question whose answer never arrives is named as that, not as the pair.
+  const orphan = `## Title\n\n${prose}\n\n**Question.** Why?`;
+  const unanswered = assessLessonQuality(orphan).problems.find((p) => p.code === "no-qa");
+  assert.match(unanswered.message, /answer for its question/);
+});

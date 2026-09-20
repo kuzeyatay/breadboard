@@ -2,12 +2,17 @@ import { createHash } from "node:crypto";
 import { assertPublicHost, downloadPdf } from "../get-doc/download.ts";
 import { SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS } from "../scriberr/paths.ts";
 import { publicSourceUrl, sourceKind, youtubeSourceUrl, type GardenSourceKind } from "./garden-source-discovery.ts";
+import type { GardenAttachmentSource } from "./garden-attachment-source.ts";
+import { anydocFormatForExtension } from "../anydoc/formats.ts";
+import { uploadLimitBytes } from "../ingest-upload.ts";
 
 export interface GardenSourceImportContext {
   userId: number;
   clusterId: number;
   clusterSlug: string;
   contentPath: string;
+  conversationId?: number;
+  runtimeSessionId?: number;
 }
 
 /** Fetch direct media only; playlists, players, and podcast landing pages are not media files. */
@@ -61,53 +66,93 @@ export async function downloadGardenMedia(rawUrl: string, kind: "audio" | "video
   throw new Error("Too many media redirects.");
 }
 
-async function importPdf(context: GardenSourceImportContext, url: string, title: string) {
+async function importPdf(context: GardenSourceImportContext, url: string, title: string, options: GardenDocumentParseOptions = {}) {
   const downloaded = await downloadPdf(url);
+  const filename = `${title.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 70) || "source"}.pdf`;
+  return { ...await importGardenDocument(context, new File([new Uint8Array(downloaded.buffer)], filename, { type: "application/pdf" }), url.length <= 256 ? url : title.slice(0, 60), options), url, title };
+}
+
+export interface GardenDocumentParseOptions {
+  parseWithVlm?: boolean;
+  parseWithAnydoc?: boolean;
+}
+
+function documentParseOptions(args: Record<string, unknown>): GardenDocumentParseOptions {
+  const options: GardenDocumentParseOptions = {};
+  for (const key of ["parseWithVlm", "parseWithAnydoc"] as const) {
+    if (args[key] === undefined) continue;
+    if (typeof args[key] !== "boolean") throw new Error(`${key} must be true or false.`);
+    options[key] = args[key];
+  }
+  return options;
+}
+
+export async function importGardenDocument(context: GardenSourceImportContext, file: File, sourceLabel = file.name, options: GardenDocumentParseOptions = {}) {
+  options = documentParseOptions({ ...options });
+  const maximumUploadBytes = uploadLimitBytes();
+  if (!file.size || file.size > maximumUploadBytes) throw new Error("The source is empty or exceeds the Garden upload limit.");
   const { reserveRuntimeJobInput, uploadRuntimeJobInput, abandonRuntimeJobInput, submitRuntimeJob, lookupRuntimeJobByIdempotencyKey, RuntimeJobControlError } = await import("../supervisor-control.ts");
   const { selectedModelForUser } = await import("../selected-model.ts");
   const { localChatmockBaseUrl } = await import("../chatmock-server.ts");
   const authority = { userId: context.userId, gardenId: context.clusterSlug, conversationId: null };
-  const digest = createHash("sha256").update(downloaded.buffer).digest("hex");
-  let idempotencyKey = `garden-source-${digest}`;
+  const hash = createHash("sha256");
+  const reader = file.stream().getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      hash.update(value);
+    }
+  } finally { reader.releaseLock(); }
+  const digest = hash.digest("hex");
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const stem = file.name.slice(0, -(extension.length + 1));
+  const defaultVlm = /^(png|jpe?g|webp)$/.test(extension);
+  const defaultAnydoc = extension !== "pdf" && Boolean(anydocFormatForExtension(extension));
+  const parsing = { parseWithVlm: options.parseWithVlm ?? defaultVlm, parseWithAnydoc: options.parseWithAnydoc ?? defaultAnydoc };
+  // Preserve existing default imports, but never reuse a different parser run.
+  const parserKey = parsing.parseWithVlm === defaultVlm && parsing.parseWithAnydoc === defaultAnydoc
+    ? "" : `-parse-${Number(parsing.parseWithVlm)}${Number(parsing.parseWithAnydoc)}`;
+  const baseKey = `garden-source-${digest}${parserKey}`;
+  let idempotencyKey = baseKey;
   for (let attempt = 0; attempt < 5; attempt++) {
     const existing = await lookupRuntimeJobByIdempotencyKey(authority, idempotencyKey).catch((error) => {
       if (error instanceof RuntimeJobControlError && ["JOB_NOT_FOUND", "RUNTIME_JOB_NOT_FOUND"].includes(error.code)) return null;
       throw error;
     });
     if (!existing) break;
-    if (existing.state === "uncertain") throw new Error("The previous PDF import has an uncertain outcome. Check its process status before retrying.");
+    if (existing.state === "uncertain") throw new Error("The previous document import has an uncertain outcome. Check its process status before retrying.");
     if (["failed", "cancelled", "interrupted", "resource_exhausted"].includes(existing.state)) {
-      if (attempt === 4) throw new Error(`The PDF import repeatedly failed: ${existing.failureMessage ?? existing.state}`);
-      idempotencyKey = `garden-source-${digest}-retry-${attempt + 1}`;
+      if (attempt === 4) throw new Error(`The document import repeatedly failed: ${existing.failureMessage ?? existing.state}`);
+      idempotencyKey = `${baseKey}-retry-${attempt + 1}`;
       continue;
     }
-    return { status: existing.state, duplicate: true, jobId: existing.jobId, url, processing: existing.state !== "succeeded" };
+    return { status: existing.state, duplicate: true, jobId: existing.jobId, filename: file.name, parsing, processing: existing.state !== "succeeded" };
   }
   const reservation = await reserveRuntimeJobInput(authority, {
     gardenId: context.clusterSlug, conversationId: null,
-    displayName: `${title.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 70) || "source"}-${digest.slice(0, 10)}.pdf`,
-    mediaType: "application/pdf", declaredSizeBytes: downloaded.buffer.length,
+    displayName: `${stem.slice(0, 90)}-${digest.slice(0, 10)}.${extension}`,
+    mediaType: file.type || "application/octet-stream", declaredSizeBytes: file.size,
   });
   try {
-    const staged = await uploadRuntimeJobInput(authority, reservation, new Blob([new Uint8Array(downloaded.buffer)]).stream());
+    const staged = await uploadRuntimeJobInput(authority, reservation, file.stream());
     const job = await submitRuntimeJob(authority, {
       jobType: "document-ingestion", idempotencyKey,
       inputUploads: [{ uploadId: staged.uploadId }],
       requestPayload: {
-        sourceLabel: url.length <= 256 ? url : title.slice(0, 60), isHandwriting: false, parseWithVlm: false,
-        parseWithAnydoc: false, vlmTask: "doc_parse", generateMap: true,
+        sourceLabel, isHandwriting: false, ...parsing, vlmTask: "doc_parse", generateMap: true,
         model: selectedModelForUser(context.userId), chatmockBaseUrl: localChatmockBaseUrl(),
-        maximumUploadBytes: 64 * 1024 * 1024,
+        maximumUploadBytes,
       },
     });
-    return { status: job.state, jobId: job.jobId, url, title, processing: true };
+    return { status: job.state, jobId: job.jobId, filename: file.name, parsing, processing: job.state !== "succeeded" };
   } catch (error) {
     await abandonRuntimeJobInput(authority, reservation.uploadId).catch(() => {});
     throw error;
   }
 }
 
-async function importMedia(context: GardenSourceImportContext, url: string, kind: "audio" | "video", title: string) {
+async function mediaDependencies(context: GardenSourceImportContext) {
   const [{ videoTranscriptionRouteDeps }, { handleCreateVideoTranscription }] = await Promise.all([
     import("../scriberr/instance.ts"), import("../scriberr/route-core.ts"),
   ]);
@@ -118,6 +163,26 @@ async function importMedia(context: GardenSourceImportContext, url: string, kind
     if (gardenId !== context.clusterSlug) throw new Error("Garden scope mismatch.");
     return { userId: context.userId, clusterId: context.clusterId, clusterSlug: context.clusterSlug };
   };
+  return { deps, handleCreateVideoTranscription };
+}
+
+function mediaImportResult(result: { status: number; body: Record<string, unknown> }) {
+  if (result.status >= 400) throw new Error(String(result.body.error ?? "Media import failed."));
+  const job = result.body.job as { id?: string; status?: string } | undefined;
+  return { ...result.body, jobId: job?.id ?? null, processing: Boolean(job && job.status !== "completed") };
+}
+
+export async function importGardenMediaFile(context: GardenSourceImportContext, file: File) {
+  const { deps, handleCreateVideoTranscription } = await mediaDependencies(context);
+  if (file.size > deps.config.maxUploadBytes) throw new Error("Media file exceeds the Garden upload limit.");
+  const form = new FormData();
+  form.set("media", file);
+  const request = new Request("http://breadboard.internal/media", { method: "POST", body: form });
+  return { ...mediaImportResult(await handleCreateVideoTranscription(deps, context.clusterSlug, request)), filename: file.name };
+}
+
+async function importMedia(context: GardenSourceImportContext, url: string, kind: "audio" | "video", title: string) {
+  const { deps, handleCreateVideoTranscription } = await mediaDependencies(context);
   const youtube = kind === "video" ? youtubeSourceUrl(url) : null;
   let request: Request;
   if (youtube) {
@@ -130,16 +195,18 @@ async function importMedia(context: GardenSourceImportContext, url: string, kind
     request = new Request("http://breadboard.internal/media", { method: "POST", body: form });
   }
   const result = await handleCreateVideoTranscription(deps, context.clusterSlug, request);
-  if (result.status >= 400) throw new Error(String(result.body.error ?? "Media import failed."));
-  const job = result.body.job as { status?: string } | undefined;
-  return { ...result.body, url, processing: Boolean(job && job.status !== "completed") };
+  return { ...mediaImportResult(result), url };
 }
 
 export interface GardenSourceImportDependencies {
   assertHost(host: string): Promise<void>;
   link(context: GardenSourceImportContext, url: string, title: string): Promise<unknown>;
-  pdf(context: GardenSourceImportContext, url: string, title: string): Promise<unknown>;
+  pdf(context: GardenSourceImportContext, url: string, title: string, options?: GardenDocumentParseOptions): Promise<unknown>;
   media(context: GardenSourceImportContext, url: string, kind: "audio" | "video", title: string): Promise<unknown>;
+  attachment?(context: GardenSourceImportContext, args: Record<string, unknown>): Promise<GardenAttachmentSource>;
+  browser?(context: GardenSourceImportContext, url: string): Promise<GardenAttachmentSource>;
+  document?(context: GardenSourceImportContext, file: File, sourceLabel?: string, options?: GardenDocumentParseOptions): Promise<unknown>;
+  mediaFile?(context: GardenSourceImportContext, file: File): Promise<unknown>;
 }
 
 const dependencies: GardenSourceImportDependencies = {
@@ -157,11 +224,32 @@ const dependencies: GardenSourceImportDependencies = {
 };
 
 export async function importGardenSource(context: GardenSourceImportContext, args: Record<string, unknown>, deps = dependencies) {
+  const options = documentParseOptions(args);
+  if (args.useBrowserSession !== undefined && typeof args.useBrowserSession !== "boolean") throw new Error("useBrowserSession must be true or false.");
+  const browser = args.useBrowserSession === true;
+  const hasSelector = args.attachmentName !== undefined || args.attachmentIndex !== undefined;
+  if (args.url !== undefined && hasSelector) throw new Error("Provide a source URL or an attachment selector, not both.");
+  if (browser && (typeof args.url !== "string" || !args.url || args.url.length > 4096 || hasSelector)) {
+    throw new Error("Browser imports require an exact file URL from the linked page, without an attachment selector.");
+  }
+  if (browser || args.url === undefined) {
+    const { file, kind } = browser
+      ? await (deps.browser ?? (await import("./garden-browser-source.ts")).resolveGardenBrowserSource)(context, args.url as string)
+      : await (deps.attachment ?? (await import("./garden-attachment-source.ts")).resolveGardenAttachment)(context, args);
+    if (args.kind !== undefined && args.kind !== kind && !(args.kind === "document" && kind === "pdf")) {
+      throw new Error(`This file is ${kind}; omit kind to infer it from the original file.`);
+    }
+    const title = typeof args.title === "string" && args.title.trim() ? args.title.trim().slice(0, 180) : file.name;
+    const data = kind === "audio" || kind === "video"
+      ? await (deps.mediaFile ?? importGardenMediaFile)(context, file)
+      : await (deps.document ?? importGardenDocument)(context, file, file.name, options);
+    return { ...(data as Record<string, unknown>), kind, title, filename: file.name };
+  }
   const kind: GardenSourceKind = sourceKind(args.kind);
   const url = publicSourceUrl(args.url);
   await deps.assertHost(url.hostname);
   const title = typeof args.title === "string" && args.title.trim() ? args.title.trim().slice(0, 180) : url.hostname;
-  if (kind === "pdf") return deps.pdf(context, url.href, title);
+  if (kind === "pdf") return deps.pdf(context, url.href, title, options);
   if (kind === "link") return deps.link(context, url.href, title);
   return deps.media(context, url.href, kind, title);
 }

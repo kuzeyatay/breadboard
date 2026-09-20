@@ -5,6 +5,7 @@ export interface ArtifactReference {
   conversationId: string
   title: string
   kind: string
+  version?: number
 }
 
 export const ARTIFACT_CATEGORIES = ["All", "Documents", "Web & interactive", "Images", "Media", "Data & code", "Files & folders"] as const
@@ -31,11 +32,13 @@ export function parseArtifactReference(value: string): ArtifactReference | null 
     if (!item || typeof item !== "object") return null
     const validId = (id: unknown) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,160}$/.test(id)
     if (!validId(item.id) || !validId(item.conversationId)) return null
+    if (item.version !== undefined && (!Number.isSafeInteger(item.version) || item.version < 1)) return null
     return {
       id: item.id,
       conversationId: item.conversationId,
       title: typeof item.title === "string" ? item.title.slice(0, 240) : "Artifact",
       kind: typeof item.kind === "string" ? item.kind.slice(0, 40) : "artifact",
+      ...(item.version === undefined ? {} : { version: item.version }),
     }
   } catch {
     return null

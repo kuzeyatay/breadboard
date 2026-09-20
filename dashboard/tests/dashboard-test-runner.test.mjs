@@ -22,6 +22,7 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
   assert.ok(discovered.includes("dashboard-test-runner.test.mjs"));
   assert.deepEqual(partition.browser, [...SERIAL_BROWSER_TEST_FILES]);
   assert.deepEqual(partition.browser, [
+    "product-carousel-browser.test.mjs",
     "model-change-surfaces-ui.test.mjs",
     "agent-preferences-ui.test.mjs",
     "startup-readiness-ui.test.mjs",
@@ -30,9 +31,13 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
     "garden-folder-creation.test.mjs",
     "garden-note-creation.test.mjs",
     "garden-markdown-artifacts.test.mjs",
+    "artifact-browser-ui.test.mjs",
     "paint-reveal-theme.test.mjs",
     "humanizer-chat-progress.test.mjs",
     "text-highlight-persistence.test.mjs",
+    "page-understanding-ui.test.mjs",
+    "terminal-highlight-click-ui.test.mjs",
+    "terminal-workspace-menu-browser.test.mjs",
     "quartz-workspace-widgets-ui.test.mjs",
     "quartz-message-controls-ui.test.mjs",
     "garden-proposal-review-ui.test.mjs",
@@ -51,9 +56,11 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
     "queued-steering-ui.test.mjs",
     "smooth-stream-reveal.test.mjs",
     "thought-topology-browser.test.mjs",
+    "quartz-folder-view.test.mjs",
     "thought-topology-3d.test.mjs",
     "generated-visual-presentation-convergence.test.mjs",
     "interactive-visualizer.test.mjs",
+    "interactive-visualizer-inline-browser.test.mjs",
     "inline-artifact-retry.test.mjs",
     "spotify-inline-player-ui.test.mjs",
     "generated-visual-spatial-scene.test.mjs",

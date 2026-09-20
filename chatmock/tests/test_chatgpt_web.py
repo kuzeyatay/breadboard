@@ -40,6 +40,17 @@ class IsolatedHome(unittest.TestCase):
         chatgpt_web.reset_for_tests()
         self.addCleanup(chatgpt_web.reset_for_tests)
 
+    def sign_out(self) -> None:
+        """A freshly verified signed-out page: the only state that refuses."""
+        from datetime import datetime, timezone
+
+        chatgpt_web._write_state(
+            signedIn=False,
+            email=None,
+            checkedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            models=[],
+        )
+
     def sign_in(self, models: List[str] | None = None) -> None:
         chatgpt_web._write_state(
             signedIn=True,
@@ -63,10 +74,25 @@ class CatalogTests(IsolatedHome):
 
     def test_signed_out_is_not_configured_and_says_why(self) -> None:
         spec = provider_spec("openaiweb")
+        self.sign_out()
         credentials = store.resolve_credentials(spec)
         self.assertFalse(credentials.usable)
         self.assertIn("not signed in", credentials.reason or "")
         self.assertNotIn("openaiweb/auto", external_model_ids())
+
+    def test_an_unverified_state_never_refuses_a_turn(self) -> None:
+        # 2026-09-17: a state file that had never been probed (checkedAt null)
+        # refused every request for hours while the same page answered chats.
+        # Nothing was verified, so nothing may be refused: the turn's own live
+        # probe decides and records the verdict.
+        spec = provider_spec("openaiweb")
+        self.assertIsNone(chatgpt_web.unavailable_reason())
+        self.assertTrue(store.resolve_credentials(spec).usable)
+        self.sign_out()
+        self.assertIsNotNone(chatgpt_web.unavailable_reason())
+        # A stale signed-out verdict is re-checked rather than trusted forever.
+        chatgpt_web._write_state(checkedAt="2026-09-01T00:00:00Z")
+        self.assertIsNone(chatgpt_web.unavailable_reason())
 
     def test_signed_in_models_are_listed_with_the_provider_prefix(self) -> None:
         self.sign_in(["auto", "gpt-5-2-thinking"])
@@ -230,7 +256,7 @@ class AttachTests(IsolatedHome):
         asked: List[bool] = []
         pages: List[AttachStub] = []
 
-        def open_tab(bridge: Any, *, foreground: bool, reset: bool = False) -> tuple[int, str]:
+        def open_tab(bridge: Any, *, foreground: bool, reset: bool = False, lane: str = "interactive") -> tuple[int, str]:
             asked.append(reset)
             return 9333, "FRESH" if reset else "STALE"
 
@@ -257,7 +283,7 @@ class AttachTests(IsolatedHome):
         self.assertEqual(asked, [False, True])
         self.assertTrue(pages[0].closed)
         self.assertTrue(pages[1].installed)
-        self.assertIs(chatgpt_web._page, page)
+        self.assertIs(chatgpt_web._lane().page, page)
 
     def test_a_fresh_page_that_answers_nothing_either_is_reported_plainly(self) -> None:
         outcome, asked, pages = self.attach(unresponsive={"STALE", "FRESH"})
@@ -266,7 +292,7 @@ class AttachTests(IsolatedHome):
         self.assertNotIn("Page.enable", str(outcome))
         self.assertEqual(asked, [False, True])
         self.assertTrue(all(page.closed for page in pages))
-        self.assertIsNone(chatgpt_web._page)
+        self.assertIsNone(chatgpt_web._lane().page)
 
     def unusable_page(self, *, socket_closed: bool) -> Any:
         import threading
@@ -289,7 +315,7 @@ class AttachTests(IsolatedHome):
         return Unusable()
 
     def test_a_wedged_live_page_goes_straight_for_a_replacement(self) -> None:
-        chatgpt_web._page = self.unusable_page(socket_closed=False)
+        chatgpt_web._lane().page = self.unusable_page(socket_closed=False)
         page, asked, _pages = self.attach(unresponsive=set())
         self.assertIsInstance(page, AttachStub)
         self.assertEqual(asked, [True])
@@ -298,7 +324,7 @@ class AttachTests(IsolatedHome):
         # A crashed renderer takes its target, and its socket, with it. Trying
         # the same page first only spends the attach budget twice over before
         # asking for the replacement that was always the answer.
-        chatgpt_web._page = self.unusable_page(socket_closed=True)
+        chatgpt_web._lane().page = self.unusable_page(socket_closed=True)
         page, asked, _pages = self.attach(unresponsive=set())
         self.assertIsInstance(page, AttachStub)
         self.assertEqual(asked, [True])
@@ -442,7 +468,7 @@ class ImageTests(unittest.TestCase):
 
 class TurnTests(IsolatedHome):
     def run_request(self, page: FakePage, *, stream: bool, payload: Dict[str, Any] | None = None):
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             page.start("turn-1")
             return page, "turn-1"
 
@@ -467,7 +493,7 @@ class TurnTests(IsolatedHome):
         self.assertEqual(body["choices"][0]["message"]["reasoning"], "thought")
         self.assertEqual(body["model"], "openaiweb/gpt-5-2")
         self.assertGreater(body["usage"]["completion_tokens"], 0)
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
     def test_streaming_answer_relays_deltas_and_releases_the_lock(self) -> None:
         page = FakePage(
@@ -480,9 +506,9 @@ class TurnTests(IsolatedHome):
         )
         response = self.run_request(page, stream=True, payload={"messages": [{"role": "user", "content": "hi"}], "stream": True, "stream_options": {"include_usage": True}})
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(chatgpt_web._turn_lock.locked())
+        self.assertTrue(chatgpt_web._lane().lock.locked())
         frames = list(chatgpt_web.relay_stream(response))
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
         payloads = [json.loads(f.decode()[6:]) for f in frames if f.startswith(b"data: {")]
         deltas = "".join(p["choices"][0]["delta"].get("content", "") for p in payloads)
         self.assertEqual(deltas, "Hello")
@@ -533,7 +559,7 @@ class TurnTests(IsolatedHome):
         response = self.run_request(page, stream=False)
         self.assertEqual(response.status_code, 429)
         self.assertIn("usage limit", response.json()["error"]["message"])
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
     def test_rendered_page_carries_the_turn_when_no_stream_is_heard(self) -> None:
         page = FakePage(
@@ -638,7 +664,7 @@ class TurnTests(IsolatedHome):
                 page.events.put({"type": "text", "append": answer[start:start + 50], "turn": "turn-1"})
             page.events.put({"type": "done", "text": answer, "reasoning": "", "turn": "turn-1"})
 
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             threading.Thread(target=feed, daemon=True).start()
             return page, "turn-1"
 
@@ -677,7 +703,7 @@ class TurnTests(IsolatedHome):
 
         with patch.object(chatgpt_web, "_ensure_page", return_value=page), patch.object(
             chatgpt_web, "_submit_turn", side_effect=submit
-        ), patch.object(chatgpt_web, "_drop_page", side_effect=lambda: dropped.append(True)):
+        ), patch.object(chatgpt_web, "_drop_page", side_effect=lambda *_: dropped.append(True)):
             credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
             response = chatgpt_web.request_chat(
                 credentials, {"messages": [{"role": "user", "content": "hi"}]}, "gpt-5-2", stream=False
@@ -687,7 +713,7 @@ class TurnTests(IsolatedHome):
         self.assertNotIn("Runtime.evaluate", message)
         self.assertIn("stopped responding", message)
         self.assertEqual(dropped, [True])
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
     def test_an_abandoned_stream_stops_the_page_and_frees_it(self) -> None:
         # A retry arrives as a second request. The first one's collector must
@@ -702,7 +728,7 @@ class TurnTests(IsolatedHome):
         stream = chatgpt_web.relay_stream(response)
         next(stream)
         stream.close()
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
         self.assertIn("stop()", "".join(page.evaluated))
 
     def test_a_long_think_keeps_the_stream_warm(self) -> None:
@@ -735,7 +761,7 @@ class TurnTests(IsolatedHome):
         page = FakePage([{"type": "stream", "mode": "ws", "model": "gpt-5-2"}, {"type": "text", "append": "A slow"}])
         hung_up = threading.Event()
 
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             page.start("turn-1")
             return page, "turn-1"
 
@@ -751,13 +777,13 @@ class TurnTests(IsolatedHome):
         self.assertEqual(response.status_code, 499)
         self.assertIn("abandoned", response.json()["error"]["message"])
         self.assertTrue(any("stop()" in expression for expression in page.evaluated), "the site's Stop must be pressed")
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
     def test_a_second_interactive_turn_is_refused_rather_than_queued(self) -> None:
         # A person watching a spinner: waiting out a thinking model behind the
         # lock is indistinguishable from a hang, so they are told to send again.
-        chatgpt_web._turn_lock.acquire()
-        self.addCleanup(chatgpt_web._turn_lock.release)
+        chatgpt_web._lane().lock.acquire()
+        self.addCleanup(chatgpt_web._lane().lock.release)
         with patch.object(chatgpt_web, "TURN_QUEUE_WAIT_SECONDS", 0.1), patch.object(
             chatgpt_web, "TURN_TIMEOUT_SECONDS", 5.0
         ):
@@ -770,20 +796,154 @@ class TurnTests(IsolatedHome):
         self.assertEqual(response.status_code, 503)
         self.assertIn("one conversation at a time", response.json()["error"]["message"])
 
-    def test_a_batch_caller_waits_for_the_page_instead(self) -> None:
-        # Learn, the council and Thought Topology have no one watching and no
-        # stand-in to fall back to: a "busy" refusal fails a whole stage. They
-        # wait for the page - and get it when the earlier turn lets go.
-        chatgpt_web._turn_lock.acquire()
-        page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "Hello", "reasoning": ""}])
+    def test_a_refusal_names_who_holds_the_page_and_for_how_long(self) -> None:
+        # 2026-09-18: three chat turns were refused with "an earlier message"
+        # while a Learn job held the page; the person had no way to know.
+        lane = chatgpt_web._lane()
+        lane.lock.acquire()
+        self.addCleanup(lane.lock.release)
+        chatgpt_web._hold(chatgpt_web.INTERACTIVE_LANE, "a Learn job on telecom-1 (subsection_repair) on gpt-5-6-thinking")
+        lane.holder["since"] -= 192  # type: ignore[index]
+        with patch.object(chatgpt_web, "TURN_QUEUE_WAIT_SECONDS", 0.05):
+            credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
+            response = chatgpt_web.request_chat(
+                credentials, {"messages": [{"role": "user", "content": "hi"}], "stream": True}, "gpt-5-2", stream=True
+            )
+        self.assertEqual(response.status_code, 503)
+        message = response.json()["error"]["message"]
+        self.assertIn("a Learn job on telecom-1 (subsection_repair) on gpt-5-6-thinking", message)
+        self.assertIn("3m 12s ago", message)
+        self.assertIn("chat page", message)
 
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+    def test_callers_are_described_by_what_asked(self) -> None:
+        describe = chatgpt_web._describe_caller
+        self.assertEqual(
+            describe({"taskType": "subsection_generation", "gardenId": "telecom-1"}, "gpt-5-6-thinking", stream=False),
+            "a Learn job on telecom-1 (subsection_generation) on gpt-5-6-thinking",
+        )
+        self.assertEqual(
+            describe({"taskType": "subsection_repair"}, "gpt-6-pro", stream=False),
+            "a council task (subsection_repair) on gpt-6-pro",
+        )
+        self.assertEqual(describe({"tools": [{"type": "function"}]}, "gpt-6-pro", stream=True), "another chat message on gpt-6-pro")
+        self.assertEqual(describe({}, "gpt-6-pro", stream=True), "another chat message on gpt-6-pro")
+        self.assertEqual(describe({}, "gpt-6-pro", stream=False), "an earlier message on gpt-6-pro")
+
+    def test_batch_work_runs_on_its_own_page_while_a_chat_holds_the_other(self) -> None:
+        # The whole point of lanes: a Learn stage and a chat turn are two
+        # pages, so neither waits for the other.
+        chatgpt_web._lanes_supported = True
+        interactive = chatgpt_web._lane()
+        interactive.lock.acquire()
+        self.addCleanup(interactive.lock.release)
+        page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "Hello", "reasoning": ""}])
+        lanes: List[str] = []
+
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **kwargs: Any):
+            lanes.append(kwargs.get("lane", chatgpt_web.INTERACTIVE_LANE))
+            page.start("turn-1")
+            return page, "turn-1"
+
+        with patch.object(chatgpt_web, "TURN_QUEUE_WAIT_SECONDS", 0.05), patch.object(
+            chatgpt_web, "_begin_turn", side_effect=begin
+        ):
+            credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
+            started = time.time()
+            response = chatgpt_web.request_chat(
+                credentials, {"messages": [{"role": "user", "content": "hi"}]}, "gpt-5-2", stream=False
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(time.time() - started, 2.0, "the batch turn must not wait behind the chat page")
+        self.assertEqual(lanes, [chatgpt_web.BATCH_LANE])
+        self.assertTrue(interactive.lock.locked())
+        self.assertFalse(chatgpt_web._lane(chatgpt_web.BATCH_LANE).lock.locked())
+
+    def test_batch_work_shares_the_page_when_the_shell_has_only_one(self) -> None:
+        # An older shell (or dashboard relay) hands out one page whatever the
+        # lane, so batch work must queue on the interactive lock - a lock of
+        # its own would be two turns typed into one composer.
+        chatgpt_web._lanes_supported = False
+        interactive = chatgpt_web._lane()
+        interactive.lock.acquire()
+        page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "Hello", "reasoning": ""}])
+        lanes: List[str] = []
+
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **kwargs: Any):
+            lanes.append(kwargs.get("lane"))
             page.start("turn-1")
             return page, "turn-1"
 
         import threading
 
-        threading.Timer(0.4, chatgpt_web._turn_lock.release).start()
+        threading.Timer(0.4, interactive.lock.release).start()
+        with patch.object(chatgpt_web, "TURN_QUEUE_WAIT_SECONDS", 0.05), patch.object(
+            chatgpt_web, "_begin_turn", side_effect=begin
+        ):
+            credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
+            started = time.time()
+            response = chatgpt_web.request_chat(
+                credentials, {"messages": [{"role": "user", "content": "hi"}]}, "gpt-5-2", stream=False
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(time.time() - started, 0.3)
+        self.assertEqual(lanes, [chatgpt_web.INTERACTIVE_LANE])
+        self.assertFalse(interactive.lock.locked())
+
+    def test_the_first_batch_turn_learns_whether_the_shell_keeps_lanes(self) -> None:
+        # Learned from the shell's answer to the tab request: a shell that
+        # keeps a page per lane echoes the lane; an older one does not.
+        import threading
+
+        def answer(echo_lane: bool) -> None:
+            pending = chatgpt_web.pending_tab_requests(wait=5)
+            row = pending[0]
+            reply: Dict[str, Any] = {"cdpPort": 9333, "targetId": f"T-{row['lane']}"}
+            if echo_lane:
+                reply["lane"] = row["lane"]
+            chatgpt_web.answer_tab_request(row["nonce"], reply)
+
+        for echo_lane, expected in ((True, chatgpt_web.BATCH_LANE), (False, chatgpt_web.INTERACTIVE_LANE)):
+            chatgpt_web.reset_for_tests()
+            AttachStub.unresponsive_targets = set()
+            pages: List[AttachStub] = []
+            responder = threading.Thread(target=answer, args=(echo_lane,), daemon=True)
+            responder.start()
+            if not echo_lane:
+                # The interactive page is then asked for in turn.
+                threading.Thread(target=answer, args=(False,), daemon=True).start()
+            with patch.object(chatgpt_web, "_live_bridge", return_value={"cdpPort": 9333}), patch.object(
+                chatgpt_web,
+                "_page_websocket",
+                side_effect=lambda port, target_id=None: f"ws://127.0.0.1:{port}/devtools/page/{target_id}",
+            ), patch.object(chatgpt_web, "_Page", lambda ws_url, surface: pages.append(AttachStub(ws_url, surface)) or pages[-1]):
+                lane = chatgpt_web._resolve_lane(stream=False)
+            responder.join(5)
+            self.assertEqual(lane, expected, f"echo_lane={echo_lane}")
+            self.assertEqual(chatgpt_web._lanes_supported, echo_lane)
+            if echo_lane:
+                self.assertEqual([page.lane for page in pages], [chatgpt_web.BATCH_LANE])
+                self.assertIs(chatgpt_web._lane(chatgpt_web.BATCH_LANE).page, pages[0])
+                self.assertIn("T-batch", pages[0].ws_url)
+            else:
+                self.assertIsNone(chatgpt_web._lane(chatgpt_web.BATCH_LANE).page)
+                self.assertEqual([page.lane for page in pages], [chatgpt_web.INTERACTIVE_LANE])
+            # A streaming caller never leaves the interactive page.
+            self.assertEqual(chatgpt_web._resolve_lane(stream=True), chatgpt_web.INTERACTIVE_LANE)
+
+    def test_a_batch_caller_waits_for_the_page_instead(self) -> None:
+        # Learn, the council and Thought Topology have no one watching and no
+        # stand-in to fall back to: a "busy" refusal fails a whole stage. They
+        # wait for the page - and get it when the earlier turn lets go.
+        chatgpt_web._lane().lock.acquire()
+        page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "Hello", "reasoning": ""}])
+
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
+            page.start("turn-1")
+            return page, "turn-1"
+
+        import threading
+
+        threading.Timer(0.4, chatgpt_web._lane().lock.release).start()
         with patch.object(chatgpt_web, "TURN_QUEUE_WAIT_SECONDS", 0.05), patch.object(
             chatgpt_web, "_begin_turn", side_effect=begin
         ):
@@ -795,17 +955,17 @@ class TurnTests(IsolatedHome):
         self.assertGreaterEqual(time.time() - started, 0.3)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["choices"][0]["message"]["content"], "Hello")
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
     def test_signed_out_refusal_is_reported_not_raised(self) -> None:
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             raise ProviderError("signed out", status_code=401, phase="prepare", replay_safe=True)
 
         with patch.object(chatgpt_web, "_begin_turn", side_effect=begin):
             credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
             response = chatgpt_web.request_chat(credentials, {"messages": [{"role": "user", "content": "hi"}]}, "auto", stream=True)
         self.assertEqual(response.status_code, 401)
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
     def test_learn_strict_routing_is_admitted(self) -> None:
         # Learn asks for exactly one upstream call per logical call. One turn
@@ -819,7 +979,7 @@ class TurnTests(IsolatedHome):
 
         page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "strict", "reasoning": ""}])
 
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             page.start("s")
             return page, "s"
 
@@ -836,7 +996,7 @@ class TurnTests(IsolatedHome):
     def test_council_call_returns_text_and_usage(self) -> None:
         page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "Council says hi", "reasoning": "r"}])
 
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             page.start("turn-1")
             return page, "turn-1"
 
@@ -879,7 +1039,7 @@ class WorkModeTests(IsolatedHome):
         message = response.json()["error"]["message"]
         self.assertIn("Work-mode", message)
         self.assertIn("openaiweb/gpt-5-6-thinking", message)
-        self.assertFalse(chatgpt_web._turn_lock.locked())
+        self.assertFalse(chatgpt_web._lane().lock.locked())
 
 
 class RouteTests(IsolatedHome):
@@ -897,6 +1057,7 @@ class RouteTests(IsolatedHome):
         self.assertFalse(payload["bridge"]["connected"])
 
     def test_provider_list_carries_the_web_provider(self) -> None:
+        self.sign_out()
         entry = next(p for p in self.client.get("/v1/providers").get_json()["providers"] if p["id"] == "openaiweb")
         self.assertEqual(entry["kind"], "chatgpt_web")
         self.assertFalse(entry["configured"])
@@ -927,7 +1088,7 @@ class RouteTests(IsolatedHome):
 
         seen: List[tuple[str, str]] = []
 
-        def begin(model: str, prompt: str, effort: str | None, images: Any = None):
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **_: Any):
             seen.append((model, prompt))
             page.start("t")
             return page, "t"

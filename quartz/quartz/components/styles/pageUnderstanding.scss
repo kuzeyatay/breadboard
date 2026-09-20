@@ -1,0 +1,48 @@
+.bb-page-understanding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  margin-top: 1.5rem;
+  padding: 0.75rem 0 0;
+  border-top: 1px solid var(--lightgray);
+  font-size: 0.875rem;
+  line-height: 1.5;
+
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2rem;
+    margin: 0;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  // Quartz's task-list checkboxes have a negative margin and a custom tick.
+  // This standalone control must keep its own box and native checked state.
+  input[type="checkbox"] {
+    appearance: auto;
+    position: static;
+    flex: 0 0 1rem;
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    margin-inline: 0;
+    padding: 0;
+    transform: none;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    accent-color: #22c55e;
+    cursor: pointer;
+
+    &:checked { background: transparent; border: 0; }
+    &::after, &:checked::after { content: none; display: none; }
+    &:focus-visible { outline: 2px solid var(--secondary); outline-offset: 3px; }
+  }
+
+  .bb-page-understanding-status { color: var(--darkgray); font-size: 0.8rem; }
+  button { margin: 0; font: inherit; cursor: pointer; }
+  [hidden] { display: none; }
+}

@@ -327,7 +327,7 @@ export function ChatSelectionMenu({
   return createPortal(
     <div
       ref={menuRef}
-      // Above the inline answer popover (z-[121]): the same menu serves text
+      // Above the inline answer popovers: the same menu serves text
       // selected inside an "Ask here" answer, and under it the menu is dead.
       className="bb-chat-selection-menu fixed z-[130] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 shadow-[0_12px_34px_rgba(45,48,40,0.2)]"
       style={{ left, top, width }}
@@ -577,6 +577,13 @@ export function QuotedChatSelection({
 const NO_ANSWER_ANNOTATIONS: readonly ChatTextAnnotation[] = [];
 const INLINE_ANSWER_LAYOUT_EVENT = "breadboard:inline-answer-layout";
 
+function raiseInlineAnswer(popover: HTMLElement) {
+  document.querySelectorAll<HTMLElement>(".bb-inline-answer").forEach(card => {
+    card.style.zIndex = card.dataset.inlineAnswerLayer ?? "25";
+  });
+  popover.style.zIndex = String(Number(popover.dataset.inlineAnswerLayer ?? 25) + 1);
+}
+
 export function InlineSelectionAnswerPopover({
   anchor,
   selection,
@@ -639,8 +646,6 @@ export function InlineSelectionAnswerPopover({
   useLayoutEffect(() => {
     const popover = popoverRef.current;
     if (!popover) return;
-    document.querySelectorAll<HTMLElement>(".bb-inline-answer").forEach(card => { card.style.zIndex = "25"; });
-    popover.style.zIndex = "26";
     let frame = 0;
     let disposed = false;
     let releaseView: (() => void) | undefined;
@@ -649,6 +654,14 @@ export function InlineSelectionAnswerPopover({
     const selector = selection
       ? `[data-chat-selectable-message="${CSS.escape(selection.sourceMessageId)}"] [data-chat-selection-id="${CSS.escape(selection.id)}"]`
       : null;
+    const source = selector ? document.querySelector(selector) : null;
+    // Body portals escape the terminal's stacking context. Keep its answers
+    // above the dock (40), below response menus (50), and let nested cards
+    // inherit that layer while other chat surfaces retain their own ordering.
+    popover.dataset.inlineAnswerLayer = source?.closest("[data-terminal-dock]")
+      ? "45"
+      : source?.closest<HTMLElement>(".bb-inline-answer")?.dataset.inlineAnswerLayer ?? "25";
+    raiseInlineAnswer(popover);
     const setStyle = (property: "width" | "maxHeight" | "left" | "top" | "visibility", value: string) => {
       if (popover.style[property] !== value) popover.style[property] = value;
     };
@@ -765,7 +778,6 @@ export function InlineSelectionAnswerPopover({
     resizeObserver.observe(popover);
     if (contentRef.current) resizeObserver.observe(contentRef.current);
     document.querySelectorAll(".bb-composer-overlay, .breadboard-flower-navbar").forEach(element => resizeObserver.observe(element));
-    const source = selector ? document.querySelector(selector) : null;
     // Observe the transcript's content as well as its viewport: an earlier
     // streaming answer can move this mark without resizing the mark itself.
     for (let parent = source?.parentElement; parent && parent !== document.body && !parent.closest(".bb-inline-answer"); parent = parent.parentElement) {
@@ -872,8 +884,7 @@ export function InlineSelectionAnswerPopover({
       role="dialog"
       aria-label="Answer about highlighted text"
       onPointerDownCapture={() => {
-        document.querySelectorAll<HTMLElement>(".bb-inline-answer").forEach(card => { card.style.zIndex = "25"; });
-        if (popoverRef.current) popoverRef.current.style.zIndex = "26";
+        if (popoverRef.current) raiseInlineAnswer(popoverRef.current);
       }}
     >
       <div ref={contentRef}>
@@ -947,7 +958,7 @@ export function InlineSelectionAnswerPopover({
                 disabled={!onAskAgain || !(draft ?? "").trim()}
                 className="rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 py-1 text-xs font-medium text-[var(--paper-raised)] transition hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]"
               >
-                Ask again
+                {question ? "Ask again" : "Ask"}
               </button>
               </MetalSendButton>
             </div>
@@ -967,6 +978,14 @@ export function InlineSelectionAnswerPopover({
               <SelectionArrowIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--botanical)]" />
               <p className="text-sm leading-6 text-[var(--ink-heading)]">{question}</p>
             </div>
+          </button>
+        ) : !pending && !answer && onAskAgain ? (
+          <button
+            type="button"
+            onClick={() => setDraft("")}
+            className="bb-inline-answer-question neu-inset min-w-0 flex-1 rounded-2xl border px-4 py-3 text-left text-[var(--ink-heading)]"
+          >
+            Ask a question
           </button>
         ) : (
           <div className="min-w-0 flex-1" />
@@ -1056,7 +1075,7 @@ export function InlineSelectionAnswerPopover({
           <p className="text-sm leading-6 text-[var(--ink-muted)]">
             {question
               ? "This highlight has no answer yet - retry to ask the question again."
-              : "Ask a question in the chat field to attach an answer to this highlight."}
+              : "No question has been sent for this highlight."}
           </p>
         )}
       </div>

@@ -9,6 +9,7 @@ import { write } from "./helpers"
 import { i18n } from "../../i18n"
 import { isScopedBuild } from "../../util/scope"
 import { fileOf } from "../../processors/treeSpill"
+import { contentMetadata } from "../../util/contentMeta"
 
 export type ContentIndexMap = Map<FullSlug, ContentDetails>
 export type ContentDetails = {
@@ -26,6 +27,8 @@ export type ContentDetails = {
   flagColor?: string
   locations?: string[]
   content: string
+  wordCount?: number
+  readingTimeMs?: number
   richContent?: string
   date?: Date
   description?: string
@@ -194,6 +197,22 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
         ctx,
         content: JSON.stringify(simplifiedIndex),
         slug: fp,
+        ext: ".json",
+      })
+      // Browsing the explorer needs metadata, not every note's full text.
+      // Keep the full index above for on-demand search and older publications.
+      const metadata = Object.fromEntries(
+        Object.entries(simplifiedIndex).map(
+          ([slug, { content: _text, richContent: _html, ...details }]) => {
+            const { words, readingTimeMs } = contentMetadata([_text])
+            return [slug, { ...details, content: "", wordCount: words, readingTimeMs }]
+          },
+        ),
+      )
+      yield write({
+        ctx,
+        content: JSON.stringify(metadata),
+        slug: "static/contentMetadata" as FullSlug,
         ext: ".json",
       })
     },
