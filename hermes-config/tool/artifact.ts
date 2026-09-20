@@ -4,7 +4,10 @@ type Args = Record<string, unknown>
 
 async function call(sessionID: string, toolCallId: string | undefined, action: string, args: Args) {
   const dashboardUrl = process.env.BREADBOARD_INTERNAL_URL || "http://127.0.0.1:3000"
-  const serviceSecret = process.env.HERMES_TOOL_SECRET || process.env.HERMES_PASSWORD || "breadboard-local-dev"
+  const serviceSecret =
+    process.env.BREADBOARD_HERMES_TOOL_SECRET?.trim() ||
+    process.env.HERMES_TOOL_SECRET?.trim()
+  if (!serviceSecret) throw new Error("Agent tool authentication is not configured.")
   const response = await fetch(new URL("/api/hermes/tools/artifacts", dashboardUrl), {
     method: "POST",
     headers: {

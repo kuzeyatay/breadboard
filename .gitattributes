@@ -1,3 +1,6 @@
+# Git executes these shell hooks on Windows too.
+.githooks/* text eol=lf
+
 # Quartz's public tree is generated build output, not authored source code.
 quartz/public/** linguist-generated=true
 

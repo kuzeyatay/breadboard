@@ -99,7 +99,9 @@
     "qa:selftest:burn-in": "node qa/harness-selftest/run-burn-in.mjs",
     "qa:selftest:secrets": "node qa/harness-selftest/scan-artifacts.mjs",
     "qa:repair:experiments": "node qa/autonomous/run-repair-experiment.mjs",
-    "cliproxy": "node scripts/start-cliproxy.mjs"
+    "cliproxy": "node scripts/start-cliproxy.mjs",
+    "security:check": "node scripts/check-repository-security.mjs",
+    "security:test": "node --test scripts/repository-security.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

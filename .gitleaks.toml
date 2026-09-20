@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "breadboard-runtime-key"
+description = "Per-install runtime key file must never be committed"
+path = '''(^|/)(api-key|management-key|cliproxy\.key)$'''
+regex = '''(?m)^[a-fA-F0-9]{48,64}\s*$'''
+entropy = 3.0

@@ -2,22 +2,9 @@ class OpenVerse {
 	
 	constructor ()
 	{
-		//register your key at https://api.openverse.engineering/v1/ and replace client_id, client_secret and name bellow
-		this.key = {
-				"client_secret" : "REMOVED_EXPOSED_CREDENTIAL",
-				"client_id" : "pm8GMaIXIhkjQ4iDfXLOvVUUcIKGYRnMlZYApbda",
-				"name" : "My amazing project",
-    			"grant_type" : "client_credentials"
-		};	
-		
-		this.accessToken =  {
-			"access_token" : "REMOVED_EXPOSED_CREDENTIAL",
-			"scope" : "read write groups",
-			"expires_in" : 36000,
-			"token_type" : "Bearer"
-		 };
-		
-		
+		// Public image search uses Openverse anonymous access.
+		// Browser assets must never contain OAuth credentials.
+
 		this.filters = {
 			"license" :["BY-ND", "PDM", "BY-NC", "BY-NC-SA", "BY-NC-ND", "BY-SA", "BY", "CC0"],
 			"license_type" :["all", "all-cc", "commercial", "modification"],
@@ -27,36 +14,10 @@ class OpenVerse {
 			"source" :["woc_tech", "wikimedia", "wellcome_collection", "thorvaldsensmuseum", "thingiverse", "svgsilh", "statensmuseum", "spacex", "smithsonian_zoo_and_conservation", "smithsonian_postal_museum", "smithsonian_portrait_gallery", "smithsonian_national_museum_of_natural_history", "smithsonian_libraries", "smithsonian_institution_archives", "smithsonian_hirshhorn_museum", "smithsonian_gardens", "smithsonian_freer_gallery_of_art", "smithsonian_cooper_hewitt_museum", "smithsonian_anacostia_museum", "smithsonian_american_indian_museum", "smithsonian_american_history_museum", "smithsonian_american_art_museum", "smithsonian_air_and_space_museum", "smithsonian_african_art_museum", "smithsonian_african_american_history_museum", "sketchfab", "sciencemuseum", "rijksmuseum", "rawpixel", "phylopic", "nypl", "nasa", "museumsvictoria", "met", "mccordmuseum", "iha", "geographorguk", "floraon", "flickr", "europeana", "eol", "digitaltmuseum", "deviantart", "clevelandmuseum", "brooklynmuseum", "bio_diversity", "behance", "animaldiversity", "WoRMS", "CAPL", "500px"]			
 		},
 		
-		this.baseUrl = 'https://api.openverse.engineering/v1/images?format=json&filter_dead=true&';
+		this.baseUrl = 'https://api.openverse.org/v1/images/?format=json&filter_dead=true&';
 		this.currentUrl = this.baseUrl;
 		this.filtersParameters = "";
 	}
-	
-	authenticate() {
-		let url = "https://api.openverse.engineering/v1/auth_tokens/token/";
-		let self = this;
-
-		fetch(url, {
-			method: "POST",  
-			headers: {
-			  "Content-Type": "application/json",
-			},
-   			body: this.key
-		})
-		.then((response) => {
-			if (!response.ok) { throw new Error(response) }
-			return response.text()
-		})
-		.then((data) => {
-			this.accessToken = data;
-			console.log('OpenVerse Authentication:' , data);				
-		})
-		.catch(error => {
-			console.log(error.statusText);
-			displayToast("bg-danger", "Error", "Openverse authentication failed!");
-		});	
-	}
-	
 	
 	setFiltersParams(filtersParameters) {
 		this.filtersParameters = filtersParameters;
@@ -65,16 +26,15 @@ class OpenVerse {
 	getResults(callback) {
 		this.currentUrl = this.baseUrl + this.filtersParameters;
 
-		fetch(this.currentUrl, {
+		return fetch(this.currentUrl, {
 			method: "GET",  
 			headers: {
 			  "Content-Type": "application/json",
-			  'Authorization': 'Bearer ' + this.accessToken.access_token,
 			},
 		})
 		.then((response) => {
 			if (!response.ok) { throw new Error(response) }
-			return response.text()
+			return response.json()
 		})
 		.then((data) => {
 			callback(data);
