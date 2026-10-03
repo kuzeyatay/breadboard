@@ -193,10 +193,19 @@ impl WorkerServiceDependencyControl {
                 reply: reply_tx,
             })
             .map_err(|_| RuntimeServiceControlError::Unavailable)?;
-        let _ = reply_rx
+        let result = reply_rx
             .recv_timeout(CONTROL_RESPONSE_TIMEOUT)
-            .map_err(|_| RuntimeServiceControlError::Unavailable)??;
-        Ok(())
+            .map_err(|_| RuntimeServiceControlError::Unavailable)?;
+        finish_worker_dependency_release(result)
+    }
+}
+
+fn finish_worker_dependency_release(
+    result: ReleaseReply,
+) -> Result<(), RuntimeServiceControlError> {
+    match result {
+        Ok(_) | Err(RuntimeServiceControlError::NotFound) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -4447,6 +4456,23 @@ mod tests {
             Err(WorkerServiceDependencyAcquireError::Control(
                 RuntimeServiceControlError::Unavailable,
             ))
+        );
+    }
+
+    #[test]
+    fn worker_dependency_release_is_idempotent_after_service_revocation() {
+        let released = RuntimeServiceLeaseReleaseResponse {
+            ok: true,
+            released: true,
+        };
+        assert_eq!(finish_worker_dependency_release(Ok(released)), Ok(()));
+        assert_eq!(
+            finish_worker_dependency_release(Err(RuntimeServiceControlError::NotFound)),
+            Ok(())
+        );
+        assert_eq!(
+            finish_worker_dependency_release(Err(RuntimeServiceControlError::Unavailable)),
+            Err(RuntimeServiceControlError::Unavailable)
         );
     }
 
