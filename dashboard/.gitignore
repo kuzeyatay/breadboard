@@ -46,3 +46,6 @@ yarn-error.log*
 next-env.d.ts
 # Built from Quartz's Markdown transforms; bundled into the dashboard server.
 /src/lib/generated/quartz-reader.mjs
+/src/lib/generated/quartz-pdf-visuals.mjs
+/public/quartz-runtime/
+/public/quartz-editor/

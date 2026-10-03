@@ -263,6 +263,7 @@ dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/
 # ---------------------------------------------------------------------------
 .tmp-*
 .tmp/
+/tmp/
 *.tmp
 *.temp
 pytest-of-*/
@@ -282,6 +283,12 @@ desktop/artifacts/
 # Nested clone kept for reference; committing it would only leave a broken
 # gitlink in the monorepo.
 /clicky/
+
+# Pinned upstream source is vendored by multisim-service; this is the inspection clone.
+/.references/
+/multisim-service/*.egg-info/
+/multisim-service/build/
+/multisim-service/dist/
 
 # Benchmark candidates mined from rated-down answers. These hold questions and
 # answers verbatim out of private conversations; promoting one into
