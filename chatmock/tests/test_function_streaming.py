@@ -87,6 +87,41 @@ class FunctionStreamingTests(unittest.TestCase):
         self.assertEqual(len(deltas), 1)
         self.assertEqual(json.loads(deltas[0]["function"]["arguments"]), {"name": "Hand"})
 
+    def test_batch_finishes_once_after_both_calls_and_the_response_complete(self):
+        upstream = Upstream([
+            item_event("added"), item_event("added", "item_2", "call_2"),
+            arguments_delta('{"page":1}'), item_event("done", arguments='{"page":1}'),
+            arguments_delta('{"page":2}', "item_2"),
+            item_event("done", "item_2", "call_2", '{"page":2}'),
+            {"type":"response.completed", "response":{"id":"batch"}},
+        ])
+        finishes = []
+        calls = {}
+        for raw in sse_translate_chat(upstream, "gpt-6-sol", 1):
+            if raw.strip() == b"data: [DONE]":
+                continue
+            chunk = decode(raw)
+            for choice in chunk.get("choices", []):
+                if choice.get("finish_reason"):
+                    finishes.append((choice["finish_reason"], upstream.consumed))
+                for delta in choice.get("delta", {}).get("tool_calls", []):
+                    entry = calls.setdefault(delta["index"], {"id":None, "arguments":""})
+                    entry["id"] = delta.get("id", entry["id"])
+                    entry["arguments"] += delta["function"].get("arguments", "")
+        self.assertEqual(finishes, [("tool_calls", 7)])
+        self.assertEqual(calls, {0:{"id":"call_1", "arguments":'{"page":1}'},
+                                 1:{"id":"call_2", "arguments":'{"page":2}'}})
+
+    def test_incomplete_batch_cannot_signal_success_after_the_first_call(self):
+        chunks = translate(Upstream([
+            item_event("done", arguments='{"page":1}'),
+            item_event("added", "item_2", "call_2"),
+            arguments_delta('{"page":', "item_2"),
+        ]))
+        self.assertTrue(any("error" in chunk for chunk in chunks))
+        self.assertFalse(any(choice.get("finish_reason") for chunk in chunks
+                             for choice in chunk.get("choices", [])))
+
     def test_inconsistent_final_arguments_fail_instead_of_appending_a_different_call(self):
         upstream = Upstream([item_event("added"), arguments_delta('{"a":1}'), item_event("done", arguments='{"a":2}')])
         chunks = translate(upstream)

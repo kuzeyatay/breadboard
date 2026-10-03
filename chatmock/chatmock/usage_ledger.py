@@ -515,6 +515,7 @@ def tap_chatgpt_response(
     origin: Any = None,
     started_at: Any = None,
     kind: str = "chat",
+    fallback: bool = False,
 ) -> Any:
     """Arrange for one ledger row when this ChatGPT HTTP response is consumed."""
     if upstream is None:
@@ -531,6 +532,7 @@ def tap_chatgpt_response(
                 "request_id": request_id,
                 "origin": origin if isinstance(origin, dict) else request_origin(kind=kind),
                 "started_at": started_at,
+                "fallback": fallback,
             },
         )
         upstream.iter_content = tap.iter_content

@@ -32,7 +32,10 @@ from .types import ModelCall, ModelTokenUsage, ProviderError
 # default must outwait that observed boundary. The idle deadline resets on every
 # upstream frame; the total deadline never does.
 DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS = 1_200.0
-DEFAULT_WEBSOCKET_TOTAL_TIMEOUT_SECONDS = 3_600.0
+# Two hours: gpt-6-sol's largest Source Map part and full Learning Unit
+# Contract ran past one hour on every telecom-1 M1 run (2026-10-01). Learn's
+# planning timeout and Breadboard's ChatMock client derive from this default.
+DEFAULT_WEBSOCKET_TOTAL_TIMEOUT_SECONDS = 7_200.0
 DEFAULT_WEBSOCKET_OPEN_TIMEOUT_SECONDS = 30.0
 _MIN_CONFIGURED_STREAM_DEADLINE_SECONDS = 901.0
 _MAX_CONFIGURED_STREAM_DEADLINE_SECONDS = 21_600.0

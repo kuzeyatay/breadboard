@@ -26,6 +26,7 @@ from .usage_ledger import request_origin, tap_chatgpt_response
 from .providers import dispatch as provider_dispatch
 from .providers.registry import NoDefaultModelError, ResolvedModel, model_entries, resolve_model
 from .providers.store import is_default_sentinel
+from .providers.request_fallback import current_attempt, rejected_response, with_default_fallback
 from .responses_api import (
     ResponsesRequestError,
     aggregate_response_from_sse,
@@ -53,6 +54,7 @@ from .upstream import (
     start_upstream_request,
 )
 from .utils import (
+    chat_usage_from_response_event,
     convert_chat_messages_to_responses_input,
     convert_tool_choice_chat_to_responses,
     convert_tools_chat_to_responses,
@@ -137,7 +139,10 @@ def _record_chatgpt_dispatch(
     upstream_model: str,
 ) -> str:
     """Persist the exact ChatGPT model before the upstream request starts."""
-    request_id = f"mreq_{uuid4().hex}"
+    attempt = current_attempt.get()
+    request_id = attempt.request_id if attempt else f"mreq_{uuid4().hex}"
+    if attempt is not None:
+        requested_model = attempt.requested_model
     record_model_attempt(
         request_id=request_id,
         endpoint=endpoint,
@@ -146,7 +151,7 @@ def _record_chatgpt_dispatch(
         upstream_model=upstream_model,
         provider=resolved.provider.id,
         outcome="dispatched",
-        fallback=False,
+        fallback=bool(attempt and attempt.fallback),
     )
     return request_id
 
@@ -169,12 +174,14 @@ def _tap_chatgpt_usage(
     """
     if upstream is None:
         return upstream
+    attempt = current_attempt.get()
     return tap_chatgpt_response(
         upstream,
         request_id=request_id,
         endpoint=endpoint,
         model=upstream_model,
-        requested_model=requested_model,
+        requested_model=attempt.requested_model if attempt else requested_model,
+        fallback=bool(attempt and attempt.fallback),
         origin=request_origin(payload),
         started_at=started_at,
         kind=endpoint.split(".")[0] if endpoint else "chat",
@@ -272,6 +279,15 @@ def chat_completions() -> Response:
             return jsonify(err), 400
     if not isinstance(payload, dict):
         return jsonify({"error": {"message": "Request body must be a JSON object"}}), 400
+    return with_default_fallback(payload, _chat_completions)
+
+
+def _chat_completions(payload: Dict[str, Any]) -> Response:
+    verbose = bool(current_app.config.get("VERBOSE"))
+    verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
+    reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
+    reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
+    reasoning_compat = current_app.config.get("REASONING_COMPAT", "think-tags")
     learn_strict_route, strict_error = _take_learn_strict_route(payload)
     if strict_error is not None:
         return strict_error
@@ -314,7 +330,7 @@ def chat_completions() -> Response:
         model=resolved_model.public_model,
         provider=resolved_model.provider.id,
     )
-    council_response = maybe_handle_with_council(
+    council_response = None if (current_attempt.get() and current_attempt.get().fallback) else maybe_handle_with_council(
         payload,
         resolved_messages,
         requested_model=requested_model,
@@ -367,7 +383,10 @@ def chat_completions() -> Response:
         for tool in tools_responses
     )
     tool_choice = convert_tool_choice_chat_to_responses(payload.get("tool_choice", "auto"))
-    parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
+    # Preserve the model's ability to batch independent function requests.
+    # Explicit false still requires zero or one call; execution ordering stays
+    # with the caller's tool runtime.
+    parallel_tool_calls = bool(payload.get("parallel_tool_calls", True))
     responses_tools_payload = payload.get("responses_tools") if isinstance(payload.get("responses_tools"), list) else []
     extra_tools: List[Dict[str, Any]] = []
     had_responses_tools = False
@@ -448,7 +467,7 @@ def chat_completions() -> Response:
         parallel_tool_calls=parallel_tool_calls,
         reasoning_param=reasoning_param,
         service_tier=service_tier,
-        strict_single_attempt=learn_strict_route,
+        strict_single_attempt=learn_strict_route or bool(current_attempt.get() and current_attempt.get().fallback),
     )
     upstream = _tap_chatgpt_usage(
         upstream,
@@ -482,7 +501,7 @@ def chat_completions() -> Response:
             err_body = json.loads(raw.decode("utf-8", errors="ignore")) if raw else {"raw": upstream.text}
         except Exception:
             err_body = {"raw": upstream.text}
-        if had_responses_tools and upstream.status_code in (400, 422) and not learn_strict_route:
+        if had_responses_tools and upstream.status_code in (400, 422) and not learn_strict_route and not (current_attempt.get() and current_attempt.get().fallback):
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
             base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
@@ -535,7 +554,7 @@ def chat_completions() -> Response:
             }
             if verbose:
                 _log_json("OUT POST /v1/chat/completions", err)
-            return jsonify(err), upstream.status_code
+            return rejected_response((jsonify(err), upstream.status_code), replay_safe=not learn_strict_route)
 
     if is_stream:
         if verbose:
@@ -566,19 +585,8 @@ def chat_completions() -> Response:
     response_id = "chatcmpl"
     tool_calls: List[Dict[str, Any]] = []
     error_message: str | None = None
-    usage_obj: Dict[str, int] | None = None
+    usage_obj: Dict[str, Any] | None = None
 
-    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-        try:
-            usage = (evt.get("response") or {}).get("usage")
-            if not isinstance(usage, dict):
-                return None
-            pt = int(usage.get("input_tokens") or 0)
-            ct = int(usage.get("output_tokens") or 0)
-            tt = int(usage.get("total_tokens") or (pt + ct))
-            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-        except Exception:
-            return None
     try:
         for raw in upstream.iter_lines(decode_unicode=False):
             if not raw:
@@ -596,7 +604,7 @@ def chat_completions() -> Response:
             except Exception:
                 continue
             kind = evt.get("type")
-            mu = _extract_usage(evt)
+            mu = chat_usage_from_response_event(evt)
             if mu:
                 usage_obj = mu
             if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
@@ -686,6 +694,14 @@ def completions() -> Response:
         if verbose:
             _log_json("OUT POST /v1/completions", err)
         return jsonify(err), 400
+    return with_default_fallback(payload, _completions)
+
+
+def _completions(payload: Dict[str, Any]) -> Response:
+    verbose = bool(current_app.config.get("VERBOSE"))
+    verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
+    reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
+    reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
     try:
         strict_value = consume_learn_strict_route(payload)
     except LearnStrictRouteError as exc:
@@ -748,6 +764,7 @@ def completions() -> Response:
     upstream, error_resp = start_upstream_request(
         model,
         input_items,
+        strict_single_attempt=bool(current_attempt.get() and current_attempt.get().fallback),
         instructions=_instructions_for_model(model),
         reasoning_param=reasoning_param,
         service_tier=service_tier,
@@ -788,7 +805,7 @@ def completions() -> Response:
         }
         if verbose:
             _log_json("OUT POST /v1/completions", err)
-        return jsonify(err), upstream.status_code
+        return rejected_response((jsonify(err), upstream.status_code))
 
     if stream_req:
         if verbose:
@@ -814,18 +831,7 @@ def completions() -> Response:
 
     full_text = ""
     response_id = "cmpl"
-    usage_obj: Dict[str, int] | None = None
-    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-        try:
-            usage = (evt.get("response") or {}).get("usage")
-            if not isinstance(usage, dict):
-                return None
-            pt = int(usage.get("input_tokens") or 0)
-            ct = int(usage.get("output_tokens") or 0)
-            tt = int(usage.get("total_tokens") or (pt + ct))
-            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-        except Exception:
-            return None
+    usage_obj: Dict[str, Any] | None = None
     try:
         for raw_line in upstream.iter_lines(decode_unicode=False):
             if not raw_line:
@@ -844,7 +850,7 @@ def completions() -> Response:
                 continue
             if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
                 response_id = evt["response"].get("id") or response_id
-            mu = _extract_usage(evt)
+            mu = chat_usage_from_response_event(evt)
             if mu:
                 usage_obj = mu
             kind = evt.get("type")
@@ -896,6 +902,11 @@ def responses_create() -> Response:
         if verbose:
             _log_json("OUT POST /v1/responses", err)
         return jsonify(err), 400
+    return with_default_fallback(payload, _responses_create)
+
+
+def _responses_create(payload: Dict[str, Any]) -> Response:
+    verbose = bool(current_app.config.get("VERBOSE"))
     try:
         strict_value = consume_learn_strict_route(payload)
     except LearnStrictRouteError as exc:
@@ -920,7 +931,7 @@ def responses_create() -> Response:
     # Tool/image/multimodal/session-bound requests keep the raw passthrough.
     # This call also strips council routing fields (taskType, gardenId, ...)
     # from the payload so the legacy path never forwards them upstream.
-    council_response = maybe_handle_responses_with_council(payload, verbose=verbose)
+    council_response = None if (current_attempt.get() and current_attempt.get().fallback) else maybe_handle_responses_with_council(payload, verbose=verbose)
     if council_response is not None:
         return council_response
 
@@ -986,6 +997,7 @@ def responses_create() -> Response:
     dispatched_at = time.time()
     upstream, error_resp = start_upstream_raw_request(
         upstream_payload,
+        strict_single_attempt=bool(current_attempt.get() and current_attempt.get().fallback),
         session_id=normalized.session_id,
         stream=True,
     )
@@ -1033,7 +1045,7 @@ def responses_create() -> Response:
         resp = make_response(jsonify(err_body), upstream.status_code)
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
-        return resp
+        return rejected_response(resp)
 
     if stream_req:
         if verbose:

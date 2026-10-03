@@ -11,6 +11,7 @@ from unittest.mock import patch
 import tempfile
 
 from chatmock.app import create_app
+from chatmock.model_registry import list_public_models
 from chatmock.model_identity import (
     RESOLVED_MODEL_PLACEHOLDER,
     RESOLVED_PROVIDER_PLACEHOLDER,
@@ -104,7 +105,7 @@ class RouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
         model_ids = [item["id"] for item in body["data"]]
-        self.assertEqual(model_ids[0], "gpt-5.6-sol")
+        self.assertEqual(model_ids, list_public_models())
         self.assertIn("gpt-5.4", model_ids)
         self.assertIn("gpt-5.4-mini", model_ids)
         self.assertIn("gpt-5.3-codex-spark", model_ids)
@@ -229,7 +230,7 @@ class RouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
         model_names = [item["name"] for item in body["models"]]
-        self.assertEqual(model_names[0], "gpt-5.6-sol")
+        self.assertEqual(model_names, list_public_models())
         self.assertIn("gpt-5.4", model_names)
         self.assertIn("gpt-5.4-mini", model_names)
 
@@ -308,6 +309,77 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(body["model"], "gpt5.4-mini")
 
     @patch("chatmock.routes_openai.start_upstream_request")
+    def test_nonstream_completions_preserve_usage_details(self, mock_start) -> None:
+        for endpoint, request_body in [
+            ("/v1/chat/completions", {"messages":[{"role":"user", "content":"hi"}]}),
+            ("/v1/completions", {"prompt":"hi"}),
+        ]:
+            with self.subTest(endpoint=endpoint):
+                mock_start.return_value = (FakeUpstream([
+                    {"type":"response.output_text.delta", "delta":"answer"},
+                    {"type":"response.completed", "response":{"id":"usage", "usage":{
+                        "input_tokens":10000, "output_tokens":200, "total_tokens":10200,
+                        "input_tokens_details":{"cached_tokens":9000},
+                        "output_tokens_details":{"reasoning_tokens":150},
+                    }}},
+                ]), None)
+                response = self.client.post(endpoint, json={"model":"gpt-6-sol", "council":False, **request_body})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["usage"], {
+                    "prompt_tokens":10000, "completion_tokens":200, "total_tokens":10200,
+                    "prompt_tokens_details":{"cached_tokens":9000},
+                    "completion_tokens_details":{"reasoning_tokens":150},
+                })
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_allows_function_batches_and_preserves_explicit_opt_out(self, mock_start) -> None:
+        for stream in [False, True]:
+            for setting in [None, False, True]:
+                with self.subTest(stream=stream, setting=setting):
+                    mock_start.return_value = (FakeUpstream([
+                        {"type":"response.output_text.delta", "delta":"answer"},
+                        {"type":"response.completed", "response":{"id":"batch-policy"}},
+                    ]), None)
+                    payload = {"model":"gpt-6-sol", "council":False, "stream":stream,
+                               "messages":[{"role":"user", "content":"Read the two source pages."}],
+                               "tools":[{"type":"function", "function":{"name":"read_page", "parameters":{
+                                   "type":"object", "properties":{"page":{"type":"integer"}}}}}]}
+                    if setting is not None:
+                        payload["parallel_tool_calls"] = setting
+                    response = self.client.post("/v1/chat/completions", json=payload)
+                    self.assertEqual(response.status_code, 200)
+                    response.get_data()
+                    self.assertEqual(mock_start.call_args.kwargs["parallel_tool_calls"],
+                                     True if setting is None else setting)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_preserves_tool_image_for_selected_model(self, mock_start) -> None:
+        mock_start.return_value = (FakeUpstream([
+            {"type": "response.output_text.delta", "delta": "The diagram is visible."},
+            {"type": "response.completed", "response": {"id": "resp-tool-image"}},
+        ]), None)
+        image = "data:image/png;base64,aGVsbG8="
+        response = self.client.post("/v1/chat/completions", json={
+            "model": "gpt-6-sol", "council": False, "allow_model_fallback": False,
+            "messages": [
+                {"role": "user", "content": "Read this diagram."},
+                {"role": "assistant", "tool_calls": [{"type": "function", "id": "figure", "function": {"name": "garden_get_source_figure", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "figure", "content": [
+                    {"type": "text", "text": "Source figure"},
+                    {"type": "image_url", "image_url": {"url": image, "detail": "high"}},
+                ]},
+            ],
+        })
+        self.assertEqual(response.status_code, 200)
+        mock_start.assert_called_once()
+        self.assertEqual(mock_start.call_args.args[0], "gpt-6-sol")
+        result = mock_start.call_args.args[1][-1]
+        self.assertEqual(result, {"type": "function_call_output", "call_id": "figure", "output": [
+            {"type": "input_text", "text": "Source figure"},
+            {"type": "input_image", "image_url": image, "detail": "high"},
+        ]})
+
+    @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions_preserves_all_application_instruction_roles(self, mock_start) -> None:
         mock_start.return_value = (
             FakeUpstream([
@@ -333,6 +405,62 @@ class RouteTests(unittest.TestCase):
                          ["developer", "developer", "developer", "user", "assistant", "user"])
         self.assertIn("Honor explicit standing preferences.", json.dumps(items))
         self.assertEqual(json.dumps(messages), original)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_general_chat_does_not_inject_a_coding_persona_or_remove_tools(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream([
+                {"type": "response.output_text.delta", "delta": "An explanation."},
+                {"type": "response.completed", "response": {"id": "resp-general"}},
+            ]), None,
+        )
+        response = self.client.post("/v1/chat/completions", json={
+            "model": "gpt-6-sol", "council": False, "reasoning_effort": "max",
+            "messages": [
+                {"role": "system", "content": "You are Bread. Teach from the supplied sources."},
+                {"role": "user", "content": "Explain this chapter from first principles."},
+            ],
+            "tools": [{"type": "function", "function": {
+                "name": "garden_get_page", "description": "Read source material",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        })
+        self.assertEqual(response.status_code, 200)
+        sent = mock_start.call_args
+        instructions = sent.kwargs["instructions"]
+        self.assertNotIn("Codex CLI", instructions)
+        self.assertNotIn("10 lines", instructions)
+        self.assertNotIn("update_plan", instructions)
+        self.assertIn("supplied by the application", instructions)
+        self.assertIn("Teach from the supplied sources.", json.dumps(sent.args[1]))
+        self.assertEqual(sent.kwargs["tools"][0]["name"], "garden_get_page")
+        self.assertEqual(sent.kwargs["reasoning_param"]["effort"], "max")
+
+    @patch("chatmock.routes_openai.start_upstream_raw_request")
+    def test_responses_uses_neutral_default_and_preserves_explicit_instructions(self, mock_start) -> None:
+        for explicit in (None, "Teach using the application instructions and source evidence."):
+            with self.subTest(explicit=explicit):
+                reset_session_state()
+                mock_start.return_value = (FakeUpstream([
+                    {"type": "response.completed", "response": {
+                        "id": "resp-general-responses", "status": "completed", "output": [],
+                    }},
+                ]), None)
+                payload = {
+                    "model": "gpt-6-sol", "council": False, "tool_choice": "none",
+                    "input": "Explain this chapter from first principles.",
+                }
+                if explicit:
+                    payload["instructions"] = explicit
+                response = self.client.post("/v1/responses", json=payload)
+                self.assertEqual(response.status_code, 200)
+                instructions = mock_start.call_args.args[0]["instructions"]
+                if explicit:
+                    self.assertEqual(instructions, explicit)
+                else:
+                    self.assertNotIn("Codex CLI", instructions)
+                    self.assertNotIn("10 lines", instructions)
+                    self.assertIn("supplied by the application", instructions)
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions_reports_the_upstream_refusal_verbatim(self, mock_start) -> None:

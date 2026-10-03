@@ -290,9 +290,13 @@ def _message_text(content: object) -> str:
     return ""
 
 
-def _demands_structured_output(payload: Dict[str, Any]) -> bool:
+def demands_structured_output(payload: Dict[str, Any]) -> bool:
     """A forced function call or a schema means the answer is machine-read."""
     if isinstance(payload.get("response_format"), dict):
+        return True
+    text = payload.get("text")
+    output_format = text.get("format") if isinstance(text, dict) else None
+    if isinstance(output_format, dict) and output_format.get("type") in ("json_schema", "json_object"):
         return True
     choice = payload.get("tool_choice")
     if isinstance(choice, dict):
@@ -312,7 +316,7 @@ def unslop_passthrough_applies(
     """True when a council-bypassed request is a Breadboard UI prose turn."""
     if not unslop_applies(_payload_task_type(payload)):
         return False
-    if _demands_structured_output(payload):
+    if demands_structured_output(payload):
         return False
     return BREADBOARD_UI_SYSTEM_MARKER in text_with_system
 

@@ -39,15 +39,7 @@ def _is_quota_error(status_code: int | None, message: str) -> bool:
 
 
 class ProviderRouter:
-    """Routes each Council model call to the provider that owns its model id.
-
-    ChatGPT-shaped ids (``gpt-5.6-sol``) keep going through ChatMock's OAuth
-    upstream, which is still the default for every seat. Provider-prefixed ids
-    (``anthropic/claude-opus-4-5``) go to that provider once the user has
-    configured it; if it is not configured the call falls back to the ChatGPT
-    upstream rather than failing the run, so a half-finished provider setup
-    degrades instead of breaking the council.
-    """
+    """Run the selected model, then only the user's configured default."""
 
     def __init__(
         self,
@@ -63,80 +55,47 @@ class ProviderRouter:
         return resolved.upstream_model if resolved.is_chatgpt else resolved.public_model
 
     def _route(self, model: str):
-        resolved = resolve_model(model or self.config.upstream_fallback_model)
+        resolved = resolve_model(model or registry.preferred_model())
         if resolved.is_unknown_external:
-            return resolve_model(self.config.upstream_fallback_model)
+            return registry.default_fallback(model) or resolved
         if not resolved.is_chatgpt:
             try:
                 dispatch.credentials_for(resolved.provider)
             except ProviderError:
-                return resolve_model(self.config.upstream_fallback_model)
-        # A provider that has just failed several calls in a row will fail this
-        # one too. Stepping over it here is what turns a bad ten minutes from
-        # "every request waits out the retry ladder" into "requests keep
-        # working" — and the fallback is only taken while the cooldown holds.
-        if _observe(
-            provider_health.is_unhealthy,
-            resolved.provider.id,
-            default=False,
-        ):
-            fallback = resolve_model(self.config.upstream_fallback_model)
-            if not _observe(
-                provider_health.is_unhealthy,
-                fallback.provider.id,
-                default=False,
-            ):
-                return fallback
+                return registry.default_fallback(model) or resolved
         return resolved
 
     def call_model(self, call: ModelCall) -> str:
+        requested = resolve_model(call.model or registry.preferred_model())
+        fallback = registry.default_fallback(call.model or registry.preferred_model())
         resolved = self._route(call.model)
+        substituted = (
+            requested.provider.id != resolved.provider.id
+            or requested.upstream_model != resolved.upstream_model
+        )
         try:
-            requested_resolution = resolve_model(
-                call.model or self.config.upstream_fallback_model
-            )
-            substituted = (
-                requested_resolution.provider.id != resolved.provider.id
-                or requested_resolution.upstream_model != resolved.upstream_model
-            )
             return self._attempt(call, resolved, fallback=substituted)
         except ProviderError as exc:
-            status = getattr(exc, "status_code", None)
-            public = resolved.public_model if not resolved.is_chatgpt else resolved.upstream_model
-            message = str(exc)
-
-            # No observed fragment is not proof of non-acceptance. A provider
-            # must explicitly classify a pre-send failure or terminal upstream
-            # rejection as replay-safe before this logical call may fail over.
-            if not getattr(exc, "replay_safe", False):
-                _observe(
-                    provider_health.note_failure,
-                    resolved.provider.id,
-                    reason=message,
-                    status_code=status,
-                )
+            self._note_failure(resolved, exc)
+            if substituted or fallback is None or not exc.replay_safe:
                 raise
+        # Exactly one direct attempt. Do not route or discover another model
+        # if the default is unconfigured, unhealthy, or itself fails.
+        call.allow_account_failover = False
+        call.allow_transport_retry = False
+        try:
+            return self._attempt(call, fallback, fallback=True)
+        except ProviderError as exc:
+            self._note_failure(fallback, exc)
+            raise
 
-            # "Out of quota" is not a failed call to report — the model cannot
-            # answer for hours or days. Record that so `default` stops choosing
-            # it, then serve this request from a healthy model rather than
-            # failing a run the user can do nothing about.
-            if _is_quota_error(status, message):
-                _observe(failover.note_exhausted, public, reason=message)
-                return self._serve_from_fallback(call, public, exc)
-
-            # A provider that is merely failing gets counted rather than acted
-            # on. Only the call that pushes it over the threshold reroutes, so
-            # one bad response never moves a user off the model they chose.
-            outage = _observe(
-                provider_health.note_failure,
-                resolved.provider.id,
-                reason=message,
-                status_code=status,
-            )
-            if outage is None:
-                raise
-            return self._serve_from_fallback(call, public, exc)
+    @staticmethod
+    def _note_failure(resolved, error: ProviderError) -> None:
+        if _is_quota_error(error.status_code, str(error)):
+            _observe(failover.note_exhausted, resolved.public_model, reason=str(error))
+        else:
+            _observe(provider_health.note_failure, resolved.provider.id,
+                     reason=str(error), status_code=error.status_code)
 
     def call_model_strict(self, call: ModelCall) -> str:
         """Invoke exactly the requested route with substitution disabled.
@@ -158,74 +117,6 @@ class ProviderRouter:
             # Validate configuration before the attempt without falling back.
             dispatch.credentials_for(resolved.provider)
         return self._attempt(call, resolved, fallback=False)
-
-    def _serve_from_fallback(self, call: ModelCall, public: str, original: ProviderError) -> str:
-        """Answer this request from the best model that is not currently ruled out.
-
-        Shared by both reasons a model becomes unusable, because from here they
-        are the same problem: something healthy has to answer, and if nothing is,
-        the user should see the failure that started it rather than whichever
-        substitute happened to be tried last.
-        """
-        candidates = _observe(
-            lambda: list(self._fallback_order(public)),
-            default=[],
-        )
-        for candidate in candidates:
-            try:
-                routed = self._route(candidate)
-            except Exception:
-                # Candidate discovery is recovery bookkeeping. If it is broken,
-                # the original authoritative ProviderError remains the answer.
-                continue
-            try:
-                return self._attempt(call, routed, fallback=True)
-            except ProviderError as exc:
-                if not getattr(exc, "replay_safe", False):
-                    raise
-                # That one is unusable too; keep the original explanation, but
-                # still count the failure — a substitute that is also down is
-                # exactly what the next request needs to know.
-                _observe(
-                    provider_health.note_failure,
-                    routed.provider.id,
-                    reason=str(exc),
-                    status_code=getattr(exc, "status_code", None),
-                )
-                continue
-        raise original
-
-    @staticmethod
-    def _fallback_order(public: str) -> list[str]:
-        """Stand-ins for an exhausted model, best first.
-
-        For any external model — subscription or API key — the other external
-        models stand in first, ordered as the passthrough path orders them
-        (one sibling of the same family, then the rest), and ChatGPT is the
-        last layer. It used to lead for API-key providers on the reasoning
-        that the configured default is the least surprising place to land;
-        that was the build's default, not the person's, and a burst of
-        OpenRouter stealth 429s on 2026-09-16 sent each one to an exhausted
-        ChatGPT account first. The 429s of a subscription model are mostly
-        per-request rate limits that flap under a burst — one Thought Topology
-        build produced 134 from one Gemini alias in seven minutes while the
-        same alias kept answering in between — which is the same reason in a
-        different provider's clothing.
-        """
-        healthy = list(registry.healthy_fallbacks(public))
-        exhausted = resolve_model(public)
-        if exhausted.is_chatgpt:
-            return healthy
-        external_first = [
-            candidate.public_model for candidate in dispatch.stand_ins(public)
-        ]
-        seen = set(external_first)
-        rest = [
-            candidate
-            for candidate in healthy
-            if candidate not in seen and resolve_model(candidate).is_chatgpt
-        ]
-        return external_first + rest
 
     def _attempt(self, call: ModelCall, resolved, *, fallback: bool) -> str:
         """Invoke one resolved model and retain its exact routing identity."""

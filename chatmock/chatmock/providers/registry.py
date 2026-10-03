@@ -153,71 +153,40 @@ def drives_a_browser(model: str) -> bool:
         return False
 
 
-def healthy_fallbacks(exclude: str) -> List[str]:
-    """Models that could stand in for an unusable one, best first.
+def default_fallback(model: Any) -> ResolvedModel | None:
+    """The user's configured default is the only permitted fallback.
 
-    The built-in ChatGPT model (``DEFAULT_MODEL``) is the *last* layer, never
-    the first. It used to lead on the reasoning that the configured default is
-    the least surprising place to land — but it is the build's default, not
-    the person's, and a paid weekly window. Leading with it meant every
-    rate-limit flap on a free or subscription model (134 Gemini 429s in seven
-    minutes; a burst of OpenRouter stealth 429s on 2026-09-16) spent that
-    window on the person's behalf, and once it was spent, an exhausted
-    ChatGPT account was still the first thing every fallback tried. The other
-    configured external models stand in first; ChatGPT answers only when none
-    of them can. A browser-driven model is never offered at all - see
-    ``drives_a_browser``.
-    """
-    candidates: List[str] = list(external_model_ids())
-    if exclude != DEFAULT_MODEL:
-        candidates.append(DEFAULT_MODEL)
-
-    seen = {exclude}
-    out: List[str] = []
-    for candidate in candidates:
-        if candidate in seen or is_unavailable(candidate):
-            continue
-        seen.add(candidate)
-        if drives_a_browser(candidate):
-            continue
-        out.append(candidate)
-    return out
-
-
-def default_model() -> str:
-    """The model `default` resolves to *right now*.
-
-    Normally the user's choice. When that model cannot serve — its plan window
-    is spent, or the provider behind it is failing — this steps over it to a
-    healthy one, so every subsystem asking for `default` keeps working instead
-    of each failing separately against a model that cannot answer. The user's
-    choice is not overwritten: once it is usable again this returns to it on
-    its own.
+    Compare resolved routes so aliases cannot retry the same default. A missing
+    or disabled default means failure, never provider discovery or a built-in
+    substitute for an explicitly configured default.
     """
     preferred = preferred_model()
     if preferred == store.NO_MODEL_SENTINEL:
-        return preferred
-    if not is_unavailable(preferred):
-        return preferred
+        return None
+    selected = resolve_model(model)
+    fallback = resolve_model(preferred)
+    if fallback.is_unknown_external or (
+        selected.provider.id == fallback.provider.id
+        and selected.upstream_model == fallback.upstream_model
+    ):
+        return None
+    return fallback
 
-    for candidate in healthy_fallbacks(preferred):
-        return candidate
-    # Nothing is available: keep the user's choice so the error names the model
-    # they actually picked.
-    return preferred
+
+def healthy_fallbacks(exclude: str) -> List[str]:
+    """Compatibility accessor: at most the configured default, never a catalog."""
+    fallback = default_fallback(exclude)
+    return [fallback.public_model] if fallback is not None else []
+
+
+def default_model() -> str:
+    """Keep the configured default even when it is unavailable."""
+    return preferred_model()
 
 
 def chat_model() -> str:
-    """The model the `chat` sentinel resolves to right now: the composer's
-    pick, or the background model while nothing has been picked for chat."""
-    chosen = store.get_chat_model(preferred_model())
-    if chosen == store.NO_MODEL_SENTINEL:
-        return chosen
-    if not is_unavailable(chosen):
-        return chosen
-    for candidate in healthy_fallbacks(chosen):
-        return candidate
-    return chosen
+    """Keep the chat selection; failure recovery belongs to the request."""
+    return store.get_chat_model(preferred_model())
 
 
 def active_failover() -> Dict[str, Any] | None:
@@ -266,8 +235,9 @@ def reasoning_efforts_for(model: Any) -> List[str]:
 
     This is what drives the "intelligence mode" choices in the UI. ChatGPT
     models vary per model, so they come from the model registry; other providers
-    declare a fixed ladder in the catalog. An empty list means the model has no
-    notion of reasoning effort and the UI must not offer one — a mode that
+    use catalog defaults with model-specific overrides where needed. An empty
+    list means the model has no notion of reasoning effort and the UI must not
+    offer one — a mode that
     silently does nothing is worse than no mode.
     """
     resolved = resolve_model(model)
@@ -287,6 +257,8 @@ def reasoning_efforts_for(model: Any) -> List[str]:
             for effort in ALL_REASONING_EFFORTS
             if effort in allowed and effort not in ("none", "minimal")
         ]
+    if resolved.upstream_model == "claude-opus-5-5" and resolved.provider.id in ("anthropic", "cliproxy"):
+        return ["low", "medium", "high", "xhigh", "max"]
     return list(resolved.provider.reasoning_efforts)
 
 

@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List
 
+import requests
+
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .fast_mode import ServiceTierResolution, resolve_service_tier
 from .model_registry import (
@@ -233,31 +235,56 @@ def stream_upstream_bytes(
     on_event: Any | None = None,
 ) -> Iterable[bytes]:
     buffer = b""
+    saw_terminal = False
+
+    def observe(line: bytes) -> bool:
+        nonlocal saw_terminal
+        if not line.startswith(b"data:"):
+            return True
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            return saw_terminal
+        try:
+            evt = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            return True
+        if isinstance(evt, dict):
+            saw_terminal |= evt.get("type") in {
+                "response.completed", "response.failed", "response.incomplete", "error",
+            }
+            if callable(on_event):
+                try:
+                    on_event(evt)
+                except Exception:
+                    pass
+        return True
+
+    def incomplete_event() -> bytes:
+        data = b'data: {"type":"error","code":"upstream_incomplete","message":"The upstream response ended before completion. Partial text is not a finished answer."}'
+        # Session observers must discard reuse state on this local failure just
+        # as they do when the provider sends an explicit error.
+        observe(data)
+        return b"event: error\n" + data + b"\n\n"
     try:
         for chunk in upstream.iter_content(chunk_size=None):
             if chunk:
-                if callable(on_event):
-                    if isinstance(chunk, bytes):
-                        buffer += chunk
-                    else:
-                        buffer += str(chunk).encode("utf-8", errors="ignore")
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        line = line.rstrip(b"\r")
-                        if not line.startswith(b"data: "):
-                            continue
-                        data = line[len(b"data: ") :].strip()
-                        if not data or data == b"[DONE]":
-                            continue
-                        try:
-                            evt = json.loads(data.decode("utf-8", errors="ignore"))
-                        except Exception:
-                            evt = None
-                        if isinstance(evt, dict):
-                            try:
-                                on_event(evt)
-                            except Exception:
-                                pass
-                yield chunk
+                buffer += chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8")
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if not observe(line):
+                        yield incomplete_event()
+                        return
+                    yield line + b"\n"
+        if buffer:
+            if not observe(buffer):
+                yield incomplete_event()
+                return
+            yield buffer
+            yield b"\n\n"
+        if not saw_terminal:
+            yield incomplete_event()
+    except requests.RequestException:
+        if not saw_terminal:
+            yield incomplete_event()
     finally:
         upstream.close()

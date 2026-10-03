@@ -8,11 +8,15 @@ import requests
 from flask import Flask
 
 from chatmock.accounts import ChatGptAccount
-from chatmock.council.gateway import _empty_final_answer_message
+from chatmock.council.gateway import _empty_final_answer_message, _empty_final_answer_status
 from chatmock.council.types import CouncilRun
 from chatmock.providers.chatgpt_upstream import ChatGptUpstreamProvider
 from chatmock.providers.types import ModelCall, ProviderError
-from chatmock.upstream import start_upstream_raw_request
+from chatmock.upstream import (
+    _DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    _DEFAULT_READ_TIMEOUT_SECONDS,
+    start_upstream_raw_request,
+)
 
 
 class FakeResponse:
@@ -64,7 +68,12 @@ class UpstreamRetryTests(unittest.TestCase):
         self.assertIsNone(error_response)
         self.assertEqual(mock_post.call_count, 1)
         self.assertFalse(first.closed)
-        self.assertEqual(mock_post.call_args.kwargs["timeout"], (30.0, 120.0))
+        # Assert the configured defaults rather than their values, so a
+        # deliberate timeout change does not read as a retry regression.
+        self.assertEqual(
+            mock_post.call_args.kwargs["timeout"],
+            (_DEFAULT_CONNECT_TIMEOUT_SECONDS, _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
 
     @patch("chatmock.upstream.get_effective_chatgpt_auth", return_value=("token", "account"))
     @patch("chatmock.upstream.requests.post")
@@ -390,8 +399,9 @@ class UpstreamRetryTests(unittest.TestCase):
         )
         self.assertNotIn("all candidate models failed", message)
         self.assertNotIn("64000", message)
+        self.assertEqual(_empty_final_answer_status(run), 429)
 
-    def test_mixed_route_failures_keep_generic_wording(self) -> None:
+    def test_mixed_route_failures_name_the_selected_model(self) -> None:
         run = CouncilRun(
             id="crun_mixed",
             user_prompt="test",
@@ -408,7 +418,10 @@ class UpstreamRetryTests(unittest.TestCase):
 
         message = _empty_final_answer_message(run)
 
-        self.assertIn("all candidate models failed", message)
+        self.assertIn("selected model a failed (HTTP 429)", message)
+        self.assertIn("no fallback model succeeded", message)
+        self.assertNotIn("all candidate models failed", message)
+        self.assertEqual(_empty_final_answer_status(run), 502)
 
 
 if __name__ == "__main__":
@@ -504,3 +517,46 @@ class QuotaDetailTests(unittest.TestCase):
         self.assertEqual(
             _event_quota_detail(None), ("the upstream account returned HTTP 429", None)
         )
+
+
+class UpstreamReadTimeoutWindowTest(unittest.TestCase):
+    """The read timeout bounds silence between events, not generation length.
+
+    A Learn Source Map and Learning Map streamed reasoning for ~28-30 minutes,
+    fell quiet while composing their very large final JSON, and were aborted as
+    "Request timed out." by a 120s per-read window (telecom-1, 2026-09-22).
+    The window has to outlast a long final assembly while still catching a
+    genuinely stalled stream well inside the hour-long council lifetime.
+    """
+
+    def setUp(self) -> None:
+        self.app = Flask(__name__)
+        for name in ("CHATMOCK_UPSTREAM_READ_TIMEOUT", "CHATMOCK_UPSTREAM_CONNECT_TIMEOUT"):
+            os.environ.pop(name, None)
+
+    def _read_timeout_used(self) -> float:
+        with patch("chatmock.upstream.get_effective_chatgpt_auth", return_value=("token", "account")), \
+             patch("chatmock.upstream.requests.post") as mock_post:
+            mock_post.return_value = FakeResponse(200)
+            with self.app.test_request_context():
+                start_upstream_raw_request(
+                    {"model": "gpt-test", "input": [], "stream": True},
+                    session_id="session-test",
+                    stream=True,
+                )
+            _connect, read = mock_post.call_args.kwargs["timeout"]
+            return read
+
+    def test_default_window_outlasts_a_long_final_assembly(self) -> None:
+        read = self._read_timeout_used()
+        self.assertGreaterEqual(read, 600.0, "a quiet final assembly must not be aborted")
+        # Still far inside the 3600s council websocket lifetime, so a truly
+        # stalled stream is caught rather than held open for the whole hour.
+        self.assertLess(read, 3600.0)
+
+    def test_env_override_still_applies_within_its_bounds(self) -> None:
+        os.environ["CHATMOCK_UPSTREAM_READ_TIMEOUT"] = "900"
+        try:
+            self.assertEqual(self._read_timeout_used(), 900.0)
+        finally:
+            os.environ.pop("CHATMOCK_UPSTREAM_READ_TIMEOUT", None)

@@ -25,7 +25,21 @@ from .utils import get_effective_chatgpt_auth
 
 
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 30.0
-_DEFAULT_READ_TIMEOUT_SECONDS = 120.0
+# Per-read gap allowed on a streamed upstream response.
+#
+# This bounds silence between events, not the length of a generation, so it has
+# to be longer than the quietest stretch a healthy call can have. 120s assumed
+# the backend always emits reasoning or keepalive events more often than that.
+# It does not while a model is composing a very large final answer: a Learn
+# Source Map (409 figures, 148 anchors) and Learning Map streamed reasoning for
+# ~28-30 minutes, went quiet to assemble their JSON, and were aborted as
+# "Request timed out." after the run had already paid for the whole generation
+# (telecom-1, 2026-09-22 - twice, on the two largest planning calls).
+#
+# Ten minutes still aborts a genuinely stalled stream promptly relative to the
+# hour-long council websocket lifetime, while leaving room for a long final
+# assembly. CHATMOCK_UPSTREAM_READ_TIMEOUT overrides it, up to 1800.
+_DEFAULT_READ_TIMEOUT_SECONDS = 600.0
 _DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
 _DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES = 16 * 1024 * 1024

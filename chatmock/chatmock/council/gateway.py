@@ -37,6 +37,7 @@ from .request_receipts import (
     valid_request_id,
 )
 from .types import CouncilInput, CouncilRun, CouncilTokenUsage
+from .unslop import demands_structured_output
 
 _STREAM_CHUNK_CHARS = 4000
 
@@ -495,8 +496,10 @@ def _exhausted_route_message(run: CouncilRun) -> Optional[str]:
         status = attempt.get("statusCode")
         if status == 402:
             reason = f"{label} needs more provider credits (HTTP 402)"
-        elif status == 429 or attempt.get("outcome") == "quota_exhausted":
+        elif status == 429:
             reason = f"{label} has reached its usage limit (HTTP 429)"
+        elif attempt.get("outcome") == "quota_exhausted":
+            reason = f"{label} is out of quota or credits"
         else:
             # A sign-in or availability refusal is not a quota problem, and
             # telling the user to add credits sends them to the wrong place
@@ -512,6 +515,39 @@ def _exhausted_route_message(run: CouncilRun) -> Optional[str]:
         f"was out of quota or credits: {listed}. Add credits or wait for the "
         "limit to reset, or choose a model from another provider, then try again."
     )
+
+
+def _failed_route_message(run: CouncilRun) -> Optional[str]:
+    """Name the selected route when fallbacks fail for mixed reasons."""
+    attempts = [
+        attempt
+        for attempt in run.model_attempts_snapshot()
+        if attempt.get("outcome") != "succeeded"
+    ]
+    if not attempts:
+        return None
+    selected = next(
+        (attempt for attempt in attempts if not attempt.get("fallback")),
+        attempts[0],
+    )
+    raw_model = selected.get("resolvedModel") or selected.get("upstreamModel")
+    model = (
+        raw_model
+        if isinstance(raw_model, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", raw_model)
+        else "the selected model"
+    )
+    status = selected.get("statusCode")
+    status_copy = f" (HTTP {status})" if isinstance(status, int) else ""
+    return (
+        "The council could not produce an answer because the selected model "
+        f"{model} failed{status_copy}, and no fallback model succeeded. "
+        "Choose another model or try again."
+    )
+
+
+def _empty_final_answer_status(run: CouncilRun) -> int:
+    return 429 if _exhausted_route_message(run) is not None else 502
 
 
 def _empty_final_answer_message(run: CouncilRun) -> str:
@@ -570,6 +606,9 @@ def _empty_final_answer_message(run: CouncilRun) -> str:
             "account cannot serve these models. Switch to an account with Codex "
             "access in Settings, or choose a model from another provider."
         )
+    failed_route = _failed_route_message(run)
+    if failed_route is not None:
+        return failed_route
     return "The council could not produce an answer because all candidate models failed."
 
 
@@ -689,6 +728,7 @@ def maybe_handle_with_council(
         return _error_response(
             _empty_final_answer_message(run),
             run,
+            status=_empty_final_answer_status(run),
         )
 
     created = int(time.time())
@@ -847,6 +887,10 @@ def _responses_bypass_reason(payload: Dict[str, Any], fields: Dict[str, Any]) ->
         return "council disabled via ENABLE_COUNCIL"
     if fields.get("council") is False:
         return "explicit council=false"
+    # CouncilInput does not carry the Responses output schema. Passing these
+    # requests through Council silently drops the contract the caller needs.
+    if demands_structured_output(payload):
+        return "structured output requested"
     if payload.get("tools"):
         return "tools requested"
     if isinstance(payload.get("tool_choice"), dict):
@@ -1097,6 +1141,7 @@ def maybe_handle_responses_with_council(
         return _error_response(
             _empty_final_answer_message(run),
             run,
+            status=_empty_final_answer_status(run),
         )
 
     created = int(time.time())

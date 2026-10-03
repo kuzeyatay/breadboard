@@ -1399,6 +1399,40 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         mock_start.assert_called_once()
 
     @patch("chatmock.routes_openai.start_upstream_raw_request")
+    def test_structured_responses_preserve_format_and_selected_model(self, mock_start) -> None:
+        formats = [
+            {"type": "json_object"},
+            {"type": "json_schema", "name": "teaching_edits", "strict": True,
+             "schema": {"type": "object", "properties": {"edits": {"type": "array", "items": {"type": "string"}}},
+                        "required": ["edits"], "additionalProperties": False}},
+        ]
+        for output_format in formats:
+            with self.subTest(format=output_format["type"]):
+                mock_start.reset_mock()
+                upstream = FakeUpstream([
+                    {"type": "response.completed", "response": {
+                        "id": "resp_schema", "status": "completed", "output": [
+                            {"type": "message", "content": [{"type": "output_text", "text": '{"edits": []}'}]},
+                        ],
+                    }},
+                ])
+                upstream.headers = {"Content-Type": "text/event-stream"}
+                mock_start.return_value = (upstream, None)
+                response = self.client.post("/v1/responses", json={
+                    "model": "gpt-6-sol", "instructions": "Return the required JSON.",
+                    "input": "Check this explanation.", "tool_choice": "none",
+                    "text": {"format": output_format},
+                })
+                self.assertEqual(response.status_code, 200)
+                mock_start.assert_called_once()
+                outbound = mock_start.call_args.args[0]
+                self.assertEqual(outbound["text"]["format"], output_format)
+                self.assertEqual(outbound["model"], "gpt-6-sol")
+                self.assertEqual(outbound["instructions"], "Return the required JSON.")
+                self.assertNotIn("councilRunId", response.get_json())
+                self.assertEqual(response.get_json()["output"][0]["content"][0]["text"], '{"edits": []}')
+
+    @patch("chatmock.routes_openai.start_upstream_raw_request")
     def test_council_false_bypasses_responses(self, mock_start) -> None:
         mock_start.return_value = (
             FakeUpstream(

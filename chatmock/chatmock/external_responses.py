@@ -350,7 +350,7 @@ def external_responses_response(
         metadata = {}
         response_body["metadata"] = metadata
     metadata["chatmockModelRouting"] = {
-        "requestedModel": payload.get("model"),
+        "requestedModel": upstream.headers.get("X-ChatMock-Requested-Model") or payload.get("model"),
         "resolvedModel": actual_model,
         "upstreamModel": upstream.headers.get("X-ChatMock-Upstream-Model"),
         "provider": upstream.headers.get("X-ChatMock-Provider"),

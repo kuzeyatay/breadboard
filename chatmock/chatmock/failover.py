@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-"""Quota failover: keep working when the preferred model runs out.
+"""Persist quota cooldowns without changing the user's configured default.
 
-A ChatGPT plan's weekly Codex window can be exhausted for days. Before this,
-that surfaced as an HTTP 429 on every request — the background model kept
-pointing at a model that could not answer, and each subsystem failed
-separately with a message nobody connected to "the plan is out".
-
-Instead, an exhausted model is put on a cooldown and `default` resolves past it
-to the next healthy one. The choice is not silently rewritten: the cooldown is
-recorded with its reason and expiry so the dashboard can say which model is
-unavailable, what is being used instead, and when the original returns.
+A failed selection may try the configured default once. If that fails, the
+request stops; cooldowns report availability and never authorize another
+provider or a different default.
 
 State lives beside the other ChatMock state in the home directory, so a restart
 does not lose a cooldown and re-hammer an exhausted upstream.
@@ -50,6 +44,7 @@ _QUOTA_PATTERNS = (
     "extra usage",
     "exceeded your current",
     "out of credit",
+    "out of usage credit",
 )
 
 

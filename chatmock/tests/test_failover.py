@@ -53,6 +53,9 @@ class QuotaDetectionTests(unittest.TestCase):
         )
         self.assertTrue(failover.is_quota_error(400, "You exceeded your current quota"))
         self.assertTrue(failover.is_quota_error(None, "usage limit reached"))
+        self.assertTrue(
+            failover.is_quota_error(None, "You're out of usage credits. Upgrade or wait.")
+        )
 
     def test_ordinary_failures_are_not_exhaustion(self) -> None:
         # Misreading these as "out of quota" would bench a healthy model.
@@ -130,9 +133,9 @@ class DefaultModelFailoverTests(unittest.TestCase):
         self.assertEqual(default_model(), "gpt-5.6-sol")
         self.assertIsNone(active_failover())
 
-    def test_an_exhausted_model_is_stepped_over(self) -> None:
+    def test_an_exhausted_default_never_moves_to_another_provider(self) -> None:
         failover.note_exhausted("gpt-5.6-sol", reason="plan window spent", seconds=3600)
-        self.assertEqual(default_model(), "cliproxy/claude-opus-5")
+        self.assertEqual(default_model(), "gpt-5.6-sol")
 
     def test_the_chat_pick_is_kept_apart_from_the_background_model(self) -> None:
         # Picking Gemini in the composer used to move `default` too, so every
@@ -163,22 +166,17 @@ class DefaultModelFailoverTests(unittest.TestCase):
         failover.note_exhausted("gpt-5.6-sol", reason="plan window spent", seconds=3600)
         notice = active_failover()
         self.assertEqual(notice["preferredModel"], "gpt-5.6-sol")
-        self.assertEqual(notice["servingModel"], "cliproxy/claude-opus-5")
-        self.assertTrue(notice["usingFallback"])
+        self.assertEqual(notice["servingModel"], "gpt-5.6-sol")
+        self.assertFalse(notice["usingFallback"])
         self.assertEqual(notice["reason"], "plan window spent")
         self.assertGreater(notice["resetsInSeconds"], 0)
 
-    def test_chatgpt_is_the_last_layer_of_the_fallback_order(self) -> None:
-        # The built-in default is the build's, not the person's, and a paid
-        # weekly window: every other configured model stands in before it.
-        fallbacks = healthy_fallbacks("cliproxy/claude-opus-5")
-        self.assertEqual(fallbacks[-1], "gpt-5.6-sol")
-        self.assertNotIn("gpt-5.6-sol", fallbacks[:-1])
-        # With another external model configured it comes before ChatGPT.
+    def test_only_the_configured_default_is_a_fallback(self) -> None:
         store.upsert_provider("openrouter", api_key="or-key", models=["stealth/union-alpha"])
-        fallbacks = healthy_fallbacks("cliproxy/claude-opus-5")
-        self.assertIn("openrouter/stealth/union-alpha", fallbacks)
-        self.assertEqual(fallbacks[-1], "gpt-5.6-sol")
+        self.assertEqual(healthy_fallbacks("cliproxy/claude-opus-5"), ["gpt-5.6-sol"])
+        store.set_default_model("cliproxy/claude-opus-5")
+        self.assertEqual(healthy_fallbacks("gpt-5.6-sol"), ["cliproxy/claude-opus-5"])
+        self.assertEqual(healthy_fallbacks("cliproxy/claude-opus-5"), [])
 
     def sign_in_the_browser_provider(self) -> None:
         """The "OpenAI (web)" provider, signed in and offering one model."""

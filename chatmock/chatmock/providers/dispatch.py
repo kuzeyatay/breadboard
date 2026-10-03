@@ -34,18 +34,11 @@ from .catalog import (
 )
 from .registry import (
     ResolvedModel,
-    healthy_fallbacks,
     reasoning_efforts_for,
-    resolve_model,
 )
 from .store import ResolvedCredentials, resolve_credentials
 from .types import ModelCall, ProviderError
-
-# How many stand-ins to try before reporting the original refusal. The council
-# walks the whole list, but this path has a client waiting on the socket: a long
-# chain of full model calls would replace a clear "out of quota" with a minute
-# of silence.
-_MAX_FALLBACK_ATTEMPTS = 3
+from .request_fallback import current_attempt, rejected_response
 
 # Antigravity sometimes returns a bare RESOURCE_EXHAUSTED for one request while
 # the same model and sibling Gemini aliases remain healthy. Treating that as an
@@ -128,7 +121,7 @@ def _client_for_model(spec: ProviderSpec, upstream_model: str):
 def credentials_for(spec: ProviderSpec) -> ResolvedCredentials:
     credentials = resolve_credentials(spec)
     if not credentials.usable:
-        raise ProviderError(f"{spec.label} is not available: {credentials.reason}")
+        raise ProviderError(f"{spec.label} is not available: {credentials.reason}", phase="prepare", replay_safe=True)
     return credentials
 
 
@@ -254,60 +247,6 @@ def _exhaustion_details(
     return transport.error_message(response, spec.id), seconds
 
 
-def _stand_ins(exhausted: str) -> List[ResolvedModel]:
-    """Models that can answer in place of an exhausted one, best first.
-
-    ChatGPT ids are skipped even though ``healthy_fallbacks`` offers them first:
-    serving one needs the OAuth upstream in ``routes_openai``, a layer above this
-    dispatcher. The route only lands here for external models, so the honest
-    substitutes are the other external ones. Providers without usable
-    credentials are dropped here rather than attempted, so the small attempt
-    budget is not spent on models that were never going to answer.
-    """
-    exhausted_model = resolve_model(exhausted)
-    out: List[ResolvedModel] = []
-    try:
-        candidates = list(healthy_fallbacks(exhausted))
-    except Exception:
-        return []
-    for candidate in candidates:
-        substitute = resolve_model(candidate)
-        if substitute.is_chatgpt or substitute.is_unknown_external:
-            continue
-        try:
-            credentials_for(substitute.provider)
-        except ProviderError:
-            continue
-        out.append(substitute)
-
-    # A transient Antigravity refusal can be isolated to one Gemini alias. Try
-    # exactly one sibling before leaving Google; direct live probes have shown
-    # those siblings serving while the selected alias returns a bare 429. The
-    # one-sibling cap keeps a genuine account-wide outage from walking the
-    # entire Gemini catalog before reaching Claude.
-    out.sort(key=lambda candidate: _stand_in_priority(exhausted_model, candidate))
-    selected: List[ResolvedModel] = []
-    tried_same_family = False
-    for candidate in out:
-        same_family = (
-            candidate.provider.id == exhausted_model.provider.id
-            and _subscription_family(candidate) == _subscription_family(exhausted_model)
-        )
-        if same_family:
-            if tried_same_family:
-                continue
-            tried_same_family = True
-        selected.append(candidate)
-        if len(selected) >= _MAX_FALLBACK_ATTEMPTS:
-            break
-    return selected
-
-
-def stand_ins(exhausted: str) -> List[ResolvedModel]:
-    """The council router orders its subscription fallbacks the same way."""
-    return _stand_ins(exhausted)
-
-
 def _subscription_family(model: ResolvedModel) -> str:
     if model.provider.id != "cliproxy":
         return model.provider.id
@@ -319,25 +258,6 @@ def _subscription_family(model: ResolvedModel) -> str:
     if claude_code.is_claude_model(upstream):
         return "claude"
     return upstream.split("-", 1)[0]
-
-
-def _stand_in_priority(
-    exhausted: ResolvedModel,
-    candidate: ResolvedModel,
-) -> tuple[int, str]:
-    if (
-        candidate.provider.id == exhausted.provider.id
-        and _subscription_family(candidate) == _subscription_family(exhausted)
-    ):
-        return (0, candidate.public_model)
-    if (
-        candidate.provider.id == "cliproxy"
-        and claude_code.is_claude_model(candidate.upstream_model)
-    ):
-        return (1, candidate.public_model)
-    if candidate.provider.id != exhausted.provider.id:
-        return (2, candidate.public_model)
-    return (3, candidate.public_model)
 
 
 def _record_exhaustion(resolved: ResolvedModel, outcome: _Exhausted) -> None:
@@ -389,20 +309,11 @@ def chat_completion_response(
     endpoint: str = "chat.completions",
     strict_route: bool = False,
 ) -> Response:
-    """Serve one ``/v1/chat/completions`` request from an external provider.
-
-    A spent quota is not a failed call to report. The model cannot answer for
-    the next minute, hour or week no matter how the client retries, so the
-    refusal is recorded as a cooldown — which is how ``default`` and the
-    dashboard learn to stop pointing at it — and the request is served from a
-    healthy model instead.
-
-    ``ProviderRouter`` already does this for council calls. Without it here, the
-    same 429 reached every passthrough client verbatim, and a subscription model
-    on a one-minute free-tier cooldown looked like a provider that had simply
-    stopped responding.
-    """
-    request_id = request_id or f"mreq_{uuid4().hex}"
+    """Serve one provider attempt; the HTTP route owns default-only recovery."""
+    attempt = current_attempt.get()
+    request_id = request_id or (attempt.request_id if attempt else f"mreq_{uuid4().hex}")
+    if attempt is not None:
+        requested_model = attempt.requested_model
     requested_model = (
         requested_model
         if isinstance(requested_model, str)
@@ -434,7 +345,7 @@ def chat_completion_response(
             requested_model=requested_model,
             request_id=request_id,
             endpoint=endpoint,
-            fallback=False,
+            fallback=bool(attempt and attempt.fallback),
             strict_route=strict_route,
         )
     if isinstance(outcome, Response):
@@ -447,33 +358,11 @@ def chat_completion_response(
         # whole logical call. A quota refusal is terminal for this call.
         return _error_response(outcome.message, outcome.status)
 
-    for substitute in _stand_ins(resolved.public_model):
-        if verbose:
-            print(
-                f"[Providers] {resolved.public_model} is out of quota; "
-                f"trying {substitute.public_model}"
-            )
-        retried = _attempt(
-            substitute,
-            payload,
-            verbose=verbose,
-            requested_model=requested_model,
-            request_id=request_id,
-            endpoint=endpoint,
-            fallback=True,
-            strict_route=False,
-        )
-        if isinstance(retried, Response):
-            # A failed stand-in is the last request whose acceptance state we
-            # actually know. In particular, a 502 synthesized from an
-            # ambiguous transport exception must stop the chain: trying another
-            # model could duplicate a request the stand-in already accepted.
-            # Return that exact failure instead of replacing it with the
-            # original quota response or walking to a third model.
-            return retried
-        _record_exhaustion(substitute, retried)
-
-    return _error_response(outcome.message, outcome.status)
+    return rejected_response(_annotate_response(
+        _error_response(outcome.message, outcome.status),
+        resolved, requested_model=requested_model, request_id=request_id,
+        fallback=bool(attempt and attempt.fallback),
+    ))
 
 
 def _attempt(
@@ -528,7 +417,7 @@ def _attempt(
             replay_safe=True,
         )
         return _annotate_response(
-            _error_response(str(exc), 503),
+            rejected_response(_error_response(str(exc), 503), replay_safe=not strict_route),
             resolved,
             requested_model=requested_model,
             request_id=request_id,
@@ -553,7 +442,7 @@ def _attempt(
 
     try:
         request_kwargs = {"stream": stream}
-        if strict_route:
+        if strict_route or fallback:
             request_kwargs["allow_preconnect_retry"] = False
         if not stream and _accepts_client_gone(client.request_chat):
             request_kwargs["client_gone"] = _client_gone_probe()
@@ -607,7 +496,7 @@ def _attempt(
         )
         ledger("failed", status_code=502, error=str(exc))
         return _annotate_response(
-            _error_response(str(exc), 502),
+            rejected_response(_error_response(str(exc), 502), replay_safe=not strict_route and exc.replay_safe),
             resolved,
             requested_model=requested_model,
             request_id=request_id,
@@ -643,7 +532,7 @@ def _attempt(
         )
         ledger("failed", status_code=status, error=message)
         return _annotate_response(
-            _error_response(message, status),
+            rejected_response(_error_response(message, status), replay_safe=not strict_route),
             resolved,
             requested_model=requested_model,
             request_id=request_id,
@@ -743,7 +632,7 @@ def _attempt(
                 error=str(exc),
             )
             return _annotate_response(
-                _error_response(str(exc), 502),
+                rejected_response(_error_response(str(exc), 502), replay_safe=not strict_route and exc.replay_safe),
                 resolved,
                 requested_model=requested_model,
                 request_id=request_id,

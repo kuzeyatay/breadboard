@@ -359,7 +359,7 @@ def call_model(call: ModelCall, credentials: ResolvedCredentials, upstream_model
             message,
             status_code=status,
             phase="upstream",
-            replay_safe=status == 429,
+            replay_safe=True,
             code="http_error",
         )
 

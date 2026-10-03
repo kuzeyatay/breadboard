@@ -568,6 +568,7 @@ class ModelResolutionTests(unittest.TestCase):
         store.upsert_provider("anthropic", api_key="sk-ant-key", models=["claude-custom"])
         listed = external_model_ids()
         self.assertIn("anthropic/claude-custom", listed)
+        self.assertIn("anthropic/claude-opus-5-5", listed)
         self.assertIn("anthropic/claude-opus-4-5", listed)
 
     def test_model_entries_keep_chatgpt_ids_first(self) -> None:
@@ -588,6 +589,8 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(entries["gpt-5.6-sol"], ["low", "medium", "high", "xhigh", "max"])
         # Claude gets the levels ChatMock maps onto thinking budgets.
         self.assertEqual(entries["anthropic/claude-opus-4-5"], ["low", "medium", "high"])
+        # Opus 5.5 uses adaptive effort and supports the full depth ladder.
+        self.assertEqual(entries["anthropic/claude-opus-5-5"], ["low", "medium", "high", "xhigh", "max"])
         # A plain OpenAI-compatible endpoint has no reasoning notion; the UI
         # must offer no modes at all.
         self.assertEqual(entries["custom/llama3.3"], [])
@@ -748,25 +751,20 @@ class ProviderRouterTests(unittest.TestCase):
         ):
             self.assertEqual(router.call_model(call), "chatgpt fallback")
 
-        # ChatGPT is the last layer: the provider's own siblings are tried
-        # (and, patched to be exhausted too, recorded) before it answers.
-        self.assertGreaterEqual(len(call.model_attempts_out), 2)
-        exhausted, *siblings, served = call.model_attempts_out
+        # The configured default is the only fallback, with no sibling walk.
+        self.assertEqual(len(call.model_attempts_out), 2)
+        exhausted, served = call.model_attempts_out
         self.assertEqual(exhausted["requestedModel"], "default")
         self.assertEqual(exhausted["callModel"], "anthropic/claude-opus-4-5")
         self.assertEqual(exhausted["upstreamModel"], "claude-opus-4-5")
         self.assertEqual(exhausted["outcome"], "quota_exhausted")
         self.assertFalse(exhausted["fallback"])
-        for sibling in siblings:
-            self.assertEqual(sibling["provider"], "anthropic")
-            self.assertEqual(sibling["outcome"], "quota_exhausted")
-            self.assertTrue(sibling["fallback"])
         self.assertEqual(served["upstreamModel"], "gpt-5.6-sol")
         self.assertEqual(served["outcome"], "succeeded")
         self.assertTrue(served["fallback"])
 
 
-    def test_a_rate_limited_subscription_model_stands_in_with_subscriptions_before_chatgpt(self) -> None:
+    def test_a_rate_limited_subscription_uses_the_explicit_default(self) -> None:
         # A Gemini alias behind CLIProxyAPI answers a burst with per-request
         # 429s while siblings keep serving. Leading the fallback with ChatGPT
         # sent every one of those to a paid ChatGPT account with the full
@@ -777,6 +775,8 @@ class ProviderRouterTests(unittest.TestCase):
             api_key="loopback-secret",
             models=["gemini-3.6-flash-high", "gemini-3.1-flash-lite"],
         )
+
+        store.set_default_model("cliproxy/gemini-3.1-flash-lite")
 
         class NeverUpstream:
             def call_model(self, routed_call):
@@ -1106,7 +1106,7 @@ class OpenAICompatibleTests(unittest.TestCase):
                 openai_compatible.call_model(call, self._credentials(), "llama-3.3-70b")
         self.assertEqual(str(caught.exception), "Invalid API key")
         self.assertEqual(caught.exception.status_code, 401)
-        self.assertFalse(caught.exception.replay_safe)
+        self.assertTrue(caught.exception.replay_safe)
         self.assertNotIn("gsk-key", str(caught.exception))
 
     def test_http_error_without_a_reason_falls_back_to_the_status(self) -> None:
@@ -1117,7 +1117,7 @@ class OpenAICompatibleTests(unittest.TestCase):
                 openai_compatible.call_model(call, self._credentials(), "llama-3.3-70b")
         self.assertIn("503", str(caught.exception))
         self.assertEqual(caught.exception.status_code, 503)
-        self.assertFalse(caught.exception.replay_safe)
+        self.assertTrue(caught.exception.replay_safe)
 
     def test_explicit_quota_response_is_replay_safe_for_model_failover(self) -> None:
         response = FakeResponse(
@@ -1208,6 +1208,25 @@ class AnthropicTranslationTests(unittest.TestCase):
         self.assertEqual(payload["thinking"], {"type": "enabled", "budget_tokens": 16384})
         # max_tokens must exceed the budget or the API rejects the request.
         self.assertGreater(payload["max_tokens"], 16384)
+
+    def test_opus_5_5_uses_adaptive_effort_and_auto_tool_choice(self) -> None:
+        payload = anthropic.build_payload(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "max",
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "tools": [{"type": "function", "function": {"name": "lookup"}}],
+                "tool_choice": "required",
+            },
+            "claude-opus-5-5",
+            stream=False,
+        )
+        self.assertEqual(payload["output_config"], {"effort": "max"})
+        self.assertNotIn("thinking", payload)
+        self.assertNotIn("temperature", payload)
+        self.assertNotIn("top_p", payload)
+        self.assertEqual(payload["tool_choice"], {"type": "auto"})
 
     def test_thinking_suppresses_temperature(self) -> None:
         # Anthropic rejects a custom temperature alongside extended thinking.
@@ -1321,9 +1340,9 @@ class AnthropicTranslationTests(unittest.TestCase):
         self.assertEqual(call.usage_out.total_tokens, 39)
         self.assertEqual(call.usage_out.cached_input_tokens, 20)
 
-    def test_call_model_only_marks_explicit_quota_response_replay_safe(self) -> None:
+    def test_call_model_marks_explicit_http_rejections_replay_safe(self) -> None:
         call = ModelCall(model="anthropic/claude", messages=[])
-        for status, expected in ((429, True), (502, False)):
+        for status, expected in ((429, True), (502, True)):
             with self.subTest(status=status):
                 response = FakeResponse(
                     status_code=status,
@@ -1660,7 +1679,7 @@ class ProviderRoutesTests(unittest.TestCase):
         )
         seen: dict = {}
 
-        def capture(credentials, payload, upstream_model, *, stream):
+        def capture(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             seen["payload"] = payload
             return FakeResponse(body={"choices": [{"message": {"content": "ok"}}]})
 
@@ -1681,7 +1700,7 @@ class ProviderRoutesTests(unittest.TestCase):
         self.client.put("/v1/providers/anthropic", json={"apiKey": "sk-ant-key"})
         seen: dict = {}
 
-        def capture(credentials, payload, upstream_model, *, stream):
+        def capture(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             seen["payload"] = payload
             return FakeResponse(body={"content": [{"type": "text", "text": "ok"}]})
 
@@ -1703,7 +1722,8 @@ class ProviderRoutesTests(unittest.TestCase):
         entry = next(item for item in data if item["id"] == "gpt-5.6-sol")
         self.assertIn("max", entry["reasoning_efforts"])
 
-    def test_unconfigured_provider_returns_a_clear_error(self) -> None:
+    def test_unconfigured_provider_without_default_returns_a_clear_error(self) -> None:
+        store.set_default_model("none")
         response = self.client.post(
             "/v1/chat/completions",
             json={
@@ -1759,6 +1779,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
 
     def _configure(self, models: list[str]) -> None:
         store.upsert_provider("cliproxy", api_key="loopback-secret", models=models)
+        store.set_default_model("cliproxy/claude-opus-5" if "claude-opus-5" in models else f"cliproxy/{models[0]}")
 
     def _ask(self, model: str):
         return self.client.post(
@@ -1793,7 +1814,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         asked: list[str] = []
         identities: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             asked.append(upstream_model)
             identities.append(payload["messages"][0]["content"])
             if upstream_model == "gemini-3.6-flash-high":
@@ -1930,7 +1951,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
         asked: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             asked.append(upstream_model)
             if upstream_model == "gemini-3.6-flash-high":
                 return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
@@ -1963,9 +1984,10 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
                 "claude-opus-5",
             ]
         )
+        store.set_default_model("cliproxy/gemini-3.1-pro-low")
         asked: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             asked.append(upstream_model)
             if upstream_model == "gemini-3.6-flash-high":
                 return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
@@ -2011,7 +2033,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self.assertFalse(ambiguous["replaySafe"])
         self.assertEqual(ambiguous["failurePhase"], "transport")
 
-    def test_transient_google_exhaustion_tries_one_google_sibling(self) -> None:
+    def test_transient_google_exhaustion_skips_siblings_for_the_default(self) -> None:
         self._configure(
             [
                 "gemini-3.6-flash-high",
@@ -2023,7 +2045,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         )
         asked: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             asked.append(upstream_model)
             if upstream_model == "gemini-3.6-flash-high":
                 return FakeResponse(
@@ -2049,11 +2071,11 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             asked,
-            ["gemini-3.6-flash-high", "gemini-3.1-pro-low"],
+            ["gemini-3.6-flash-high", "claude-opus-5"],
         )
         self.assertEqual(
             response.headers["X-ChatMock-Resolved-Model"],
-            "cliproxy/gemini-3.1-pro-low",
+            "cliproxy/claude-opus-5",
         )
         self.assertFalse(failover.is_cooling("cliproxy/gemini-3.1-pro-low"))
         self.assertFalse(failover.is_cooling("cliproxy/gemini-3.5-flash-low"))
@@ -2087,7 +2109,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self.assertFalse(failover.is_cooling("cliproxy/gemini-3.6-flash-high"))
         self.assertTrue(failover.is_cooling("cliproxy/gemini-3.1-pro-low"))
 
-    def test_only_one_google_sibling_is_tried_before_claude(self) -> None:
+    def test_no_google_sibling_is_tried_before_the_default(self) -> None:
         self._configure(
             [
                 "gemini-3.6-flash-high",
@@ -2098,7 +2120,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         )
         asked: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             asked.append(upstream_model)
             if upstream_model.startswith("gemini"):
                 return FakeResponse(
@@ -2122,7 +2144,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             asked,
-            ["gemini-3.6-flash-high", "gemini-3.1-pro-low", "claude-opus-5"],
+            ["gemini-3.6-flash-high", "claude-opus-5"],
         )
         self.assertEqual(
             response.headers["X-ChatMock-Resolved-Model"],
@@ -2133,7 +2155,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
         asked: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             asked.append(upstream_model)
             if upstream_model == "gemini-3.6-flash-high":
                 return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
@@ -2161,7 +2183,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
     def test_responses_adapter_reports_the_model_that_actually_served_codex(self) -> None:
         self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             if upstream_model == "gemini-3.6-flash-high":
                 return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
             return FakeResponse(
@@ -2208,7 +2230,7 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         minute for the rest of the quarter hour."""
         self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             if upstream_model == "gemini-3.6-flash-high":
                 return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
             return FakeResponse(body={"choices": [{"message": {"content": "ok"}}]})
@@ -2244,23 +2266,23 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self.assertIn("52 seconds", message)
 
     def test_a_real_error_is_not_mistaken_for_exhaustion(self) -> None:
-        """A malformed request must reach the client unchanged: retrying it on a
-        different model would hide the thing the caller has to fix."""
+        """A provider rejection may try the default once, without creating a quota cooldown."""
         self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
         calls: list[str] = []
 
-        def respond(credentials, payload, upstream_model, *, stream):
+        def respond(credentials, payload, upstream_model, *, stream, allow_preconnect_retry=True):
             calls.append(upstream_model)
             return FakeResponse(
                 status_code=400,
                 body={"error": {"message": "tools.0.input_schema: Field required"}},
             )
 
-        with patch.object(openai_compatible, "request_chat", side_effect=respond):
+        with (patch.object(openai_compatible, "request_chat", side_effect=respond),
+              patch.object(claude_code, "request_chat", side_effect=respond)):
             response = self._ask("cliproxy/gemini-3.6-flash-high")
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(calls, ["gemini-3.6-flash-high"])
+        self.assertEqual(calls, ["gemini-3.6-flash-high", "claude-opus-5"])
         self.assertFalse(failover.is_cooling("cliproxy/gemini-3.6-flash-high"))
 
 

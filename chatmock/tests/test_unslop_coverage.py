@@ -296,6 +296,12 @@ class UnslopRequestCoverageTests(unittest.TestCase):
             "You are someone else.",
         )
 
+    def test_responses_json_format_does_not_inject_prose_instructions(self) -> None:
+        instructions = f"{BREADBOARD_UI_SYSTEM_MARKER} Return the required JSON."
+        for output_format in ({"type": "json_object"}, {"type": "json_schema", "name": "teaching_edits", "strict": True}):
+            with self.subTest(format=output_format["type"]):
+                self.assertIs(maybe_unslop_instructions(instructions, {"text": {"format": output_format}}), instructions)
+
     def test_disabling_unslop_turns_the_passthrough_off(self) -> None:
         messages, payload = self._hermes_turn()
         with patch.dict(os.environ, {"ENABLE_UNSLOP": "false"}):

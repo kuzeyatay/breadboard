@@ -22,11 +22,35 @@ class ModelSpec:
 
 _MODEL_SPECS = (
     ModelSpec(
+        public_id="gpt-6.1-sol",
+        upstream_id="gpt-6.1-sol",
+        aliases=("gpt6.1-sol", "gpt-6.1", "gpt6.1", "gpt-6.1-latest", "gpt-6.1-sol-latest"),
+        allowed_efforts=frozenset(("low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low"),
+    ),
+    ModelSpec(
         public_id="gpt-6-astra",
         upstream_id="gpt-6-astra",
         aliases=("gpt6-astra", "gpt-6-astra-latest"),
         allowed_efforts=frozenset(("low", "medium", "high", "xhigh", "max")),
         variant_efforts=("max", "xhigh", "high", "medium", "low"),
+    ),
+    # GPT-6 Sol and Luna shipped 2026-09-22 alongside Astra: Sol the balanced
+    # agentic-coding model, Luna the lightweight low-cost one. Both take the
+    # same effort range as the 5.6 pair they succeed.
+    ModelSpec(
+        public_id="gpt-6-sol",
+        upstream_id="gpt-6-sol",
+        aliases=("gpt6-sol", "gpt-6", "gpt6", "gpt-6-latest", "gpt-6-sol-latest"),
+        allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
+    ),
+    ModelSpec(
+        public_id="gpt-6-luna",
+        upstream_id="gpt-6-luna",
+        aliases=("gpt6-luna", "gpt-6-luna-latest"),
+        allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
     ),
     ModelSpec(
         public_id="gpt-5.6-sol",

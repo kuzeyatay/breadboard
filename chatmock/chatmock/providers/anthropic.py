@@ -23,9 +23,8 @@ ANTHROPIC_VERSION = "2023-06-01"
 # large enough for normal answers without capping long generations early.
 DEFAULT_MAX_TOKENS = 8192
 
-# Anthropic has no `reasoning_effort`; it takes an explicit thinking budget.
-# Mapping the effort ladder onto budgets is what makes the UI's intelligence
-# modes real for Claude rather than a control that does nothing.
+# Claude 4.5 and earlier take an explicit thinking budget. Opus 5.5 uses
+# adaptive thinking and output_config.effort instead.
 THINKING_BUDGETS = {"low": 4096, "medium": 8192, "high": 16384}
 # The API requires max_tokens to exceed the thinking budget, and leaves this
 # much room for the answer itself on top of it.
@@ -209,18 +208,22 @@ def build_payload(payload: Dict[str, Any], upstream_model: str, *, stream: bool)
         body["system"] = system
 
     effort = payload.get("reasoning_effort")
-    budget = THINKING_BUDGETS.get(effort.strip().lower()) if isinstance(effort, str) else None
-    if budget is not None:
+    normalized_effort = effort.strip().lower() if isinstance(effort, str) else ""
+    adaptive_opus = upstream_model == "claude-opus-5-5"
+    budget = THINKING_BUDGETS.get(normalized_effort) if not adaptive_opus else None
+    if adaptive_opus and normalized_effort in {"low", "medium", "high", "xhigh", "max"}:
+        body["output_config"] = {"effort": normalized_effort}
+    elif budget is not None:
         body["thinking"] = {"type": "enabled", "budget_tokens": budget}
         # max_tokens covers the thinking budget plus the answer, so raise it when
         # the caller's value would leave no room (or be rejected outright).
         body["max_tokens"] = max(body["max_tokens"], budget + _ANSWER_HEADROOM_TOKENS)
 
-    if isinstance(payload.get("temperature"), (int, float)) and budget is None:
+    if isinstance(payload.get("temperature"), (int, float)) and budget is None and not adaptive_opus:
         # Extended thinking requires the default temperature; sending one
         # alongside it is rejected.
         body["temperature"] = payload["temperature"]
-    if isinstance(payload.get("top_p"), (int, float)) and budget is None:
+    if isinstance(payload.get("top_p"), (int, float)) and budget is None and not adaptive_opus:
         body["top_p"] = payload["top_p"]
     stop = payload.get("stop")
     if isinstance(stop, str):
@@ -233,7 +236,9 @@ def build_payload(payload: Dict[str, Any], upstream_model: str, *, stream: bool)
         body["tools"] = tools
         choice = convert_tool_choice(payload.get("tool_choice"))
         if choice:
-            body["tool_choice"] = choice
+            # Opus 5.5 rejects forced tool choice. Keep tools available and let
+            # the model decide which to call, as its API requires.
+            body["tool_choice"] = {"type": "auto"} if adaptive_opus else choice
     return body
 
 
@@ -510,7 +515,7 @@ def call_model(call: ModelCall, credentials: ResolvedCredentials, upstream_model
             message,
             status_code=status,
             phase="upstream",
-            replay_safe=status == 429,
+            replay_safe=True,
             code="http_error",
         )
     try:

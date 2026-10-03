@@ -18,6 +18,26 @@ def eprint(*args, **kwargs) -> None:
     print(*args, file=sys.stderr, **kwargs)
 
 
+def chat_usage_from_response_event(event: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Translate usage without losing cached-input or reasoning counters."""
+    try:
+        response = event.get("response")
+        usage = response.get("usage") if isinstance(response, dict) else None
+        if not isinstance(usage, dict):
+            return None
+        prompt = int(usage.get("input_tokens") or 0)
+        completion = int(usage.get("output_tokens") or 0)
+        translated: Dict[str, Any] = {"prompt_tokens": prompt, "completion_tokens": completion,
+                      "total_tokens": int(usage.get("total_tokens") or (prompt + completion))}
+        for source, target in (("input_tokens_details", "prompt_tokens_details"),
+                               ("output_tokens_details", "completion_tokens_details")):
+            if isinstance(usage.get(source), dict):
+                translated[target] = dict(usage[source])
+        return translated
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def get_home_dir() -> str:
     home = os.getenv("CHATGPT_LOCAL_HOME") or os.getenv("CODEX_HOME")
     if not home:
@@ -277,14 +297,27 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
             if isinstance(call_id, str) and call_id:
                 content = message.get("content", "")
                 if isinstance(content, list):
-                    texts = []
+                    parts = []
                     for part in content:
                         if isinstance(part, dict):
-                            t = part.get("text") or part.get("content")
-                            if isinstance(t, str) and t:
-                                texts.append(t)
-                    content = "\n".join(texts)
-                if isinstance(content, str):
+                            if part.get("type") in {"image_url", "input_image"}:
+                                image = part.get("image_url")
+                                url = image.get("url") if isinstance(image, dict) else image
+                                if isinstance(url, str) and url:
+                                    image_part = {"type": "input_image", "image_url": _normalize_image_data_url(url)}
+                                    detail = image.get("detail") if isinstance(image, dict) else part.get("detail")
+                                    if detail in {"auto", "low", "high", "original"}:
+                                        image_part["detail"] = detail
+                                    parts.append(image_part)
+                            else:
+                                t = part.get("text") or part.get("content")
+                                if isinstance(t, str) and t:
+                                    parts.append({"type": "input_text", "text": t})
+                    # Responses accepts multimodal function output. Keep the
+                    # image with its tool call; dropping it leaves only captions
+                    # and makes a successful screenshot unreadable to the model.
+                    content = parts if any(p["type"] == "input_image" for p in parts) else "\n".join(p["text"] for p in parts)
+                if isinstance(content, (str, list)):
                     input_items.append(
                         {
                             "type": "function_call_output",
@@ -612,6 +645,7 @@ def sse_translate_chat(
     think_closed = False
     saw_output = False
     sent_stop_chunk = False
+    saw_terminal_response = False
     saw_any_summary = False
     pending_summary_paragraph = False
     upstream_usage = None
@@ -654,24 +688,13 @@ def sse_translate_chat(
         else:
             return "{}"
     
-    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-        try:
-            usage = (evt.get("response") or {}).get("usage")
-            if not isinstance(usage, dict):
-                return None
-            pt = int(usage.get("input_tokens") or 0)
-            ct = int(usage.get("output_tokens") or 0)
-            tt = int(usage.get("total_tokens") or (pt + ct))
-            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-        except Exception:
-            return None
     try:
         try:
             line_iterator = upstream.iter_lines(decode_unicode=False)
         except requests.exceptions.ChunkedEncodingError as e:
             if verbose and vlog:
                 vlog(f"Failed to start stream: {e}")
-            yield b"data: [DONE]\n\n"
+            yield b'data: {"error":{"code":"upstream_incomplete","message":"The upstream connection failed before the response started."}}\n\n'
             return
 
         for raw in line_iterator:
@@ -816,16 +839,9 @@ def sse_translate_chat(
                         }
                         yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
 
-                    if call_id and name and isinstance(args, str):
-                        finish_chunk = {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": model,
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-                        }
-                        yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
-                        sent_stop_chunk = True
+                    # A completed function is not the end of a response: more
+                    # calls in the same batch may still be streaming. Emit the
+                    # terminal finish reason only after response.completed.
             elif kind == "response.reasoning_summary_part.added":
                 if compat in ("think-tags", "o3"):
                     if saw_any_summary:
@@ -946,11 +962,16 @@ def sse_translate_chat(
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
                 sent_stop_chunk = True
             elif kind == "response.failed":
+                saw_terminal_response = True
                 err = evt.get("response", {}).get("error", {}).get("message", "response.failed")
                 chunk = {"error": {"message": err}}
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+            elif kind == "response.incomplete":
+                saw_terminal_response = True
+                yield b'data: {"error":{"code":"upstream_incomplete","message":"The upstream response is incomplete. Partial text is not a finished answer."}}\n\n'
             elif kind == "response.completed":
-                m = _extract_usage(evt)
+                saw_terminal_response = True
+                m = chat_usage_from_response_event(evt)
                 if m:
                     upstream_usage = m
                 if compat == "think-tags" and think_open and not think_closed:
@@ -970,7 +991,7 @@ def sse_translate_chat(
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if ws_index else "stop"}],
                     }
                     yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
                     sent_stop_chunk = True
@@ -990,6 +1011,11 @@ def sse_translate_chat(
                         pass
                 yield b"data: [DONE]\n\n"
                 break
+        if not saw_terminal_response:
+            yield b'data: {"error":{"code":"upstream_incomplete","message":"The upstream response ended before completion. Partial text is not a finished answer."}}\n\n'
+    except requests.RequestException:
+        if not saw_terminal_response:
+            yield b'data: {"error":{"code":"upstream_incomplete","message":"The upstream connection failed before the response completed."}}\n\n'
     finally:
         upstream.close()
 
@@ -998,17 +1024,6 @@ def sse_translate_text(upstream, model: str, created: int, verbose: bool = False
     response_id = "cmpl-stream"
     upstream_usage = None
     
-    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-        try:
-            usage = (evt.get("response") or {}).get("usage")
-            if not isinstance(usage, dict):
-                return None
-            pt = int(usage.get("input_tokens") or 0)
-            ct = int(usage.get("output_tokens") or 0)
-            tt = int(usage.get("total_tokens") or (pt + ct))
-            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-        except Exception:
-            return None
     try:
         for raw_line in upstream.iter_lines(decode_unicode=False):
             if not raw_line:
@@ -1057,7 +1072,7 @@ def sse_translate_text(upstream, model: str, created: int, verbose: bool = False
                 }
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
             elif kind == "response.completed":
-                m = _extract_usage(evt)
+                m = chat_usage_from_response_event(evt)
                 if m:
                     upstream_usage = m
                 if include_usage and upstream_usage:
