@@ -48,6 +48,12 @@ is available, use it instead of invoking the bundled Python files directly. Pass
 - optional `maxFrames` and `resolution` only when the request justifies them;
 - `noWhisper: true` only when the user declines remote transcription.
 
+Preserve the user's actual question in `question`. Do not rewrite a general
+question about an idea or experiment into a claim that it occurs at the URL's
+playback timestamp. Always retain the full available transcript. In every
+host, `start` and `end` focus frames only; no opt-in flag is needed to keep
+spoken context.
+
 When a video was attached to the Terminal or selected from a Garden's retained
 recordings, this skill is selected automatically. The turn's context carries an
 `[Attached video]` or `[Selected Garden video]` block naming the exact
@@ -87,10 +93,15 @@ captioned videos and frame-only analysis still work.
 - Use `balanced` by default for scene-aware coverage, capped at 100 frames.
 - Use `token-burner` only when maximum visual fidelity is explicitly useful;
   it can consume a large context window.
-- For a named moment or range, pass `start` and `end` rather than scanning the
-  entire video.
-- For long videos, ask for or infer a relevant section when the user's request
-  is narrow. A sparse full-video pass is less reliable than a focused pass.
+- For a question about an idea, claim, or experiment, start with the full
+  transcript. A URL's `t=`, `start=`, or timestamp fragment is a playback cue,
+  not a request to restrict the evidence. Locate the relevant passage, then
+  focus frames there if visuals matter.
+- Use `start` and `end` for visual inspection of a named moment or range.
+  The complete available transcript remains in the report.
+- For long videos, inspect or search the available transcript before choosing
+  a visual range. A sparse full-video frame pass is less reliable than focused
+  frames, but an arbitrary excerpt cannot establish what the whole video says.
 - Keep the default 512-pixel frame width. Increase resolution only to read
   small on-screen text.
 
@@ -108,9 +119,23 @@ captioned videos and frame-only analysis still work.
 6. Describe limitations plainly: missing captions, unavailable Whisper,
    download restrictions, sparse coverage, or unread frames.
 
+Before contradicting the user's description, find the relevant passage in the
+full available transcript, including related terms rather than only the exact
+word the user used. Verify the underlying idea even when their terminology is
+imprecise. If only an excerpt was inspected, say
+"I did not find that in this excerpt" and retrieve wider context; do not say
+"the video does not say that." Do not wait for the user to catch a missing passage.
+
+Separate what the video reports, what the experiment measured, and what you
+infer about the user's proposed application. Do not generalize a measured
+result to different tasks, outcomes, or populations without supporting evidence.
+Attribute an unverified mechanism to the video and verify research separately
+before presenting it as established. `chatmockAnalysis` is a synthesis of the
+same evidence, not an independent source; check its claims against the transcript.
+
 Do not paste the full transcript unless the user asks for it. For a follow-up
-about the same processed video, reuse the existing report and frames instead of
-downloading or extracting them again.
+about the same processed video, reuse the existing report and frames when they
+cover the question. If the prior report is partial, retrieve the missing context.
 
 ## Useful options for the bundled script
 

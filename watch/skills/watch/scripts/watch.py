@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
-from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
+from transcribe import format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
@@ -46,8 +46,15 @@ def main() -> int:
              "e.g. transcript-flagged 'look here' moments. Added on top of the detail frames "
              "(reserved against the cap); with --detail transcript these become the only frames.",
     )
-    ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
-    ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
+    ap.add_argument("--start", type=str, default=None, help="Frame range start (SS, MM:SS, or HH:MM:SS); transcript stays complete")
+    ap.add_argument("--end", type=str, default=None, help="Frame range end (SS, MM:SS, or HH:MM:SS); transcript stays complete")
+    # Older Breadboard callers pass this flag. Transcript retention is now
+    # unconditional, so accept it only for compatibility.
+    ap.add_argument(
+        "--full-transcript",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
     ap.add_argument(
         "--no-whisper",
@@ -169,10 +176,6 @@ def main() -> int:
         fps = min(args.fps, MAX_FPS)
         target = max(1, int(round(fps * effective_duration)))
 
-    if transcript_segments and focused:
-        transcript_segments = filter_range(transcript_segments, start_sec, end_sec)
-        transcript_text = format_transcript(transcript_segments)
-
     scope = (
         f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
         if focused else f"full {effective_duration:.1f}s"
@@ -239,7 +242,7 @@ def main() -> int:
     if not transcript_segments and dl.get("subtitle_path"):
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
-            transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+            transcript_segments = all_segments
             transcript_text = format_transcript(transcript_segments)
             transcript_source = "captions"
         except Exception as exc:
@@ -255,7 +258,7 @@ def main() -> int:
                     backend=backend,
                     api_key=api_key,
                 )
-                transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                transcript_segments = all_segments
                 transcript_text = format_transcript(transcript_segments)
                 transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:
@@ -321,13 +324,19 @@ def main() -> int:
     if frames:
         print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
     if transcript_segments:
-        in_range = " in range" if focused else ""
         print(
-            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
+            f"- **Transcript:** {len(transcript_segments)} segments "
             f"(via {transcript_source or 'captions'})"
         )
+        print("- **Transcript coverage:** Full available transcript (not filtered to the focus range). "
+              "Captions may still contain gaps or recognition errors. Read the relevant passages before answering.")
     else:
         print("- **Transcript:** none available")
+        print("- **Transcript coverage:** Unavailable. The spoken content is unverified; "
+              "do not infer its absence from sampled frames.")
+    if focused and frames:
+        print("- **Visual coverage:** Sampled frames in the focus range only; "
+              "visual content outside that range was not inspected.")
 
     if detail == "token-burner" and len(frames) > 250:
         print()
@@ -370,10 +379,7 @@ def main() -> int:
     print()
     if transcript_text:
         label = transcript_source or "captions"
-        if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
-        else:
-            print(f"_Source: {label}._")
+        print(f"_Source: {label}._")
         print()
         print("```")
         print(transcript_text)
@@ -384,8 +390,6 @@ def main() -> int:
             "unavailable or failed, so there is no visual fallback here. Re-run with "
             "`--detail balanced` for frames._"
         )
-    elif focused and dl.get("subtitle_path"):
-        print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:
         setup_py = SCRIPT_DIR / "setup.py"
         print(
